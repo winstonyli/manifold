@@ -1176,6 +1176,37 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         }
     }
 
+    m.mark("inline-json-edit");
+    // Edits on an inline level go through one writer and undo as Ctrl+Z steps: three adds, then three undos
+    // empty the document and a redo brings the first back.
+    let at = sm.settle("inline_edit_before")?;
+    sm.send(&format!("DOUBLECLICK {}", uncovered_xy(&at, &new_json)?))?;
+    for line in ["JSONEDIT add root a 1", "JSONEDIT add root b [1,2]", "JSONEDIT insert /b 0 9"] {
+        sm.send(line)?;
+    }
+    sm.check_state(
+        "inline_edit_done",
+        "JSONEDIT adds two members to the inline level",
+        "s['json_level']['keys'] == ['a', 'b']",
+        |v| json_level(v.s)["keys"] == serde_json::json!(["a", "b"]),
+    )?;
+    for _ in 0..3 {
+        sm.send("UNDOKEY")?;
+        sm.send("WAITIDLE")?;
+    }
+    sm.check_state("inline_edit_undone", "three undos empty the document", "s['json_level']['keys'] == []", |v| {
+        json_level(v.s)["keys"] == serde_json::json!([])
+    })?;
+    sm.send("UNDOKEY shift")?;
+    sm.send("WAITIDLE")?;
+    sm.check_state(
+        "inline_edit_redone",
+        "a redo brings the first member back",
+        "s['json_level']['keys'] == ['a']",
+        |v| json_level(v.s)["keys"] == serde_json::json!(["a"]),
+    )?;
+    sm.inst.click_control(BACK)?;
+
     if was_tab_view {
         sm.send("TOGGLEVIEW")?; // back to where the next mark expects to be
         sm.send("WAITIDLE")?;

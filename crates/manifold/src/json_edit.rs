@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::json_view::{child_pointer, parent_pointer, pointer_tokens};
+use crate::json_view::{child_pointer, last_key, parent_pointer, pointer_tokens};
 use crate::store::body::{
     self, between, elements, initial_order, pointer_path, tree_to_value, value_to_tree_at, Element, INLINE_MAX_LEAVES,
 };
@@ -39,6 +39,142 @@ impl JsonOp {
             JsonOp::Remove { .. } => "Delete",
             JsonOp::Move { .. } => "Move element",
         }
+    }
+}
+
+/// What a row edit changes: the member's key, or its scalar value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum EditWhat {
+    Key,
+    Value,
+}
+
+/// The text box open over a row (`JsonLevel::edit`). `original` is the entry's value when the box opened: a commit or
+/// a refresh that finds something else there cancels the edit.
+pub(crate) struct RowEdit {
+    pub(crate) pointer: String,
+    pub(crate) on: EditWhat,
+    pub(crate) buffer: String,
+    pub(crate) original: Value,
+    /// The box has not yet taken the keyboard focus (and the text selection) it opens with.
+    pub(crate) focus: bool,
+}
+
+/// The six JSON kinds the Type menu offers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum JsonType {
+    String,
+    Number,
+    Boolean,
+    Null,
+    Object,
+    Array,
+}
+
+impl JsonType {
+    pub(crate) const ALL: [JsonType; 6] =
+        [JsonType::String, JsonType::Number, JsonType::Boolean, JsonType::Null, JsonType::Object, JsonType::Array];
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            JsonType::String => "Text",
+            JsonType::Number => "Number",
+            JsonType::Boolean => "Bool",
+            JsonType::Null => "Null",
+            JsonType::Object => "{}",
+            JsonType::Array => "[]",
+        }
+    }
+}
+
+/// `text` as the new value of a scalar whose old value was `original`: a string takes it verbatim, any other scalar
+/// reads it as a JSON scalar.
+pub(crate) fn parse_edit(original: &Value, text: &str) -> Result<Value, String> {
+    if original.is_string() {
+        return Ok(Value::String(text.to_owned()));
+    }
+    match serde_json::from_str::<Value>(text.trim()) {
+        Ok(value) if !value.is_object() && !value.is_array() => Ok(value),
+        _ => Err("Not a JSON value".to_owned()),
+    }
+}
+
+/// The value an entry of kind `kind` takes when retyped from `from`, keeping what carries over.
+pub(crate) fn type_default(kind: JsonType, from: &Value) -> Value {
+    match kind {
+        JsonType::String => Value::String(match from {
+            Value::String(s) => s.clone(),
+            Value::Number(_) | Value::Bool(_) => from.to_string(),
+            _ => String::new(),
+        }),
+        JsonType::Number => match from {
+            Value::Number(_) => from.clone(),
+            Value::String(s) => {
+                serde_json::from_str::<serde_json::Number>(s.trim()).map_or(Value::from(0), Value::Number)
+            }
+            _ => Value::from(0),
+        },
+        JsonType::Boolean => Value::Bool(*from == Value::Bool(true) || from.as_str() == Some("true")),
+        JsonType::Null => Value::Null,
+        JsonType::Object => Value::Object(Default::default()),
+        JsonType::Array => Value::Array(Vec::new()),
+    }
+}
+
+/// The structure rows of an entry's context menu, in order; `Type` stands for the row of six kinds. A file level has
+/// none (it edits nothing).
+pub(crate) fn json_menu_rows(inline: bool, value: &Value, is_root: bool, parent_is_array: bool) -> Vec<&'static str> {
+    if !inline {
+        return Vec::new();
+    }
+    let mut rows = Vec::new();
+    match value {
+        Value::Object(_) => rows.push("Add key"),
+        Value::Array(_) => rows.push("Add element"),
+        _ => {}
+    }
+    if parent_is_array {
+        rows.extend(["Insert above", "Insert below", "Move up", "Move down"]);
+    }
+    rows.push("Type");
+    if !is_root {
+        rows.push("Delete");
+    }
+    rows
+}
+
+/// The op a structure row of the menu (`json_menu_rows`) runs on the entry at `pointer`, with the edit to open once
+/// it landed (the new entry's key or value). `None` for a row that does nothing here: Move up at the first element.
+pub(crate) fn menu_op(row: &str, doc: &Value, pointer: &str) -> Option<(JsonOp, Option<(String, EditWhat)>)> {
+    let value = doc.pointer(pointer)?;
+    let parent = parent_pointer(pointer).unwrap_or("");
+    let index = last_key(pointer).and_then(|k| k.parse::<usize>().ok());
+    let siblings = doc.pointer(parent).and_then(Value::as_array).map_or(0, Vec::len);
+    let insert = |at: usize| {
+        let op = JsonOp::Insert { pointer: parent.to_owned(), index: at, value: Value::Null };
+        Some((op, Some((child_pointer(parent, &at.to_string()), EditWhat::Value))))
+    };
+    match (row, value) {
+        ("Add key", Value::Object(map)) => {
+            let key = std::iter::once("new".to_owned())
+                .chain((2..).map(|n| format!("new{n}")))
+                .find(|k| !map.contains_key(k))?;
+            let follow = (child_pointer(pointer, &key), EditWhat::Key);
+            Some((JsonOp::AddKey { pointer: pointer.to_owned(), key, value: Value::Null }, Some(follow)))
+        }
+        ("Add element", Value::Array(items)) => {
+            let at = items.len();
+            let op = JsonOp::Insert { pointer: pointer.to_owned(), index: at, value: Value::Null };
+            Some((op, Some((child_pointer(pointer, &at.to_string()), EditWhat::Value))))
+        }
+        ("Insert above", _) => insert(index?),
+        ("Insert below", _) => insert(index? + 1),
+        ("Move up", _) => Some((JsonOp::Move { pointer: pointer.to_owned(), to: index?.checked_sub(1)? }, None)),
+        ("Move down", _) => {
+            Some((JsonOp::Move { pointer: pointer.to_owned(), to: index.filter(|i| i + 1 < siblings)? + 1 }, None))
+        }
+        ("Delete", _) => Some((JsonOp::Remove { pointer: pointer.to_owned() }, None)),
+        _ => None,
     }
 }
 
@@ -180,6 +316,7 @@ pub(crate) fn parse_json_edit(line: &str) -> Result<JsonOp, String> {
 }
 
 const GONE: &str = "That entry is gone";
+pub(crate) const EDIT_CHANGED: &str = "That entry changed; edit cancelled";
 
 /// One write: `path` and everything under it become `leaves` (none: deleted).
 type Step = (TreePath, Vec<(TreePath, Leaf)>);
@@ -242,6 +379,51 @@ impl App {
         if let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) {
             level.selected = level.selected.take().and_then(|p| f(&p));
             level.outline.open = level.outline.open.drain().filter_map(|p| f(&p)).collect();
+        }
+    }
+
+    /// Opens a text box over the entry at `pointer` on the open level: its key, or its scalar value. Nothing opens on
+    /// a file level, a container's value, an array element's key or the root's.
+    pub(crate) fn begin_json_edit(&mut self, pointer: String, on: EditWhat) {
+        let Some(level) = self.json_level.as_ref().filter(|l| self.json_editable(l.node_id)) else { return };
+        let Some(value) = level.value.pointer(&pointer) else { return };
+        let in_object = parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_object);
+        let text = match on {
+            EditWhat::Key if in_object => last_key(&pointer),
+            EditWhat::Value => crate::json_view::scalar_text(value),
+            EditWhat::Key => None,
+        };
+        let Some(buffer) = text else { return };
+        let edit = RowEdit { pointer, on, buffer, original: value.clone(), focus: true };
+        if let Some(level) = self.json_level.as_mut() {
+            level.edit = Some(edit);
+        }
+    }
+
+    /// Writes the open text box as one edit and closes it. A box whose entry changed since it opened is dropped
+    /// with a toast; one whose text isn't a JSON value stays open with a toast.
+    pub(crate) fn commit_json_edit(&mut self) {
+        let Some(level) = self.json_level.as_mut() else { return };
+        let Some(edit) = level.edit.take() else { return };
+        let id = level.node_id;
+        if level.value.pointer(&edit.pointer) != Some(&edit.original) {
+            return self.queue_toast(EDIT_CHANGED.to_owned());
+        }
+        let op = match edit.on {
+            EditWhat::Value => match parse_edit(&edit.original, &edit.buffer) {
+                Ok(value) => JsonOp::Set { pointer: edit.pointer, value },
+                Err(message) => {
+                    self.queue_toast(message);
+                    if let Some(level) = self.json_level.as_mut() {
+                        level.edit = Some(edit);
+                    }
+                    return;
+                }
+            },
+            EditWhat::Key => JsonOp::Rename { pointer: edit.pointer, to: edit.buffer },
+        };
+        if self.edit_json(id, op).is_ok() {
+            self.save_session();
         }
     }
 

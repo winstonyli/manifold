@@ -753,3 +753,13 @@ fn a_remote_body_change_swaps_the_open_levels_value() {
     app.swap_json_value(j, std::sync::Arc::new(serde_json::json!({"x": 1})));
     assert_eq!(app.json_level.as_ref().unwrap().selected, None, "/a/b no longer exists");
 }
+
+/// A file-backed level shows no editor: `Begin` opens nothing and the export says it is not editable.
+#[test]
+fn a_file_level_cannot_open_an_edit() {
+    let (mut app, j) = app_with_json("no-edit", r#"{"a": 1}"#);
+    app.switch_group_level(Some(j));
+    app.apply_json_edit(JsonEdit::Begin("/a".into(), crate::json_edit::EditWhat::Value));
+    assert!(app.json_level.as_ref().unwrap().edit.is_none());
+    assert_eq!(app.json_level_state()["editable"], serde_json::json!(false));
+}

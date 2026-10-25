@@ -8,6 +8,7 @@ use serde_json::Value;
 use super::*;
 use crate::card::card_focus_ring;
 use crate::identity::Identity;
+use crate::json_edit::{json_menu_rows, type_default, EditWhat, JsonOp, JsonType, RowEdit};
 use crate::json_level::{CopyWhat, JsonEdit};
 use crate::json_view::{self, Card};
 
@@ -498,6 +499,62 @@ pub(crate) fn json_focus_root_key() -> egui::Id {
     egui::Id::new("json_focus_root")
 }
 
+/// What a double click at `x` (world units from the card's left edge) on the row at `pointer` edits: an object
+/// member's key when it lands in the key column, else a scalar's value; nothing on a container's value.
+pub(crate) fn edit_target(root: &Value, pointer: &str, x: f32) -> Option<EditWhat> {
+    let in_object = json_view::parent_pointer(pointer).and_then(|p| root.pointer(p)).is_some_and(Value::is_object);
+    if in_object && x < PAD + KEY_WIDTH {
+        Some(EditWhat::Key)
+    } else {
+        json_view::scalar_text(root.pointer(pointer)?).map(|_| EditWhat::Value)
+    }
+}
+
+/// Where the text box for `edit` sits (world): over the row's key column, or over the rest of the row.
+fn edit_rect(level: &crate::json_level::JsonLevel, edit: &RowEdit) -> Option<egui::Rect> {
+    let row = level.entry_rect(&edit.pointer)?;
+    let in_array =
+        json_view::parent_pointer(&edit.pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+    let (left, right) = (row.left() + PAD, row.right() - PAD);
+    Some(match edit.on {
+        EditWhat::Key => {
+            egui::Rect::from_min_max(egui::pos2(left, row.top()), egui::pos2(left + KEY_WIDTH, row.bottom()))
+        }
+        EditWhat::Value => {
+            let used = if in_array { INDEX_WIDTH } else { KEY_WIDTH } + 6.0;
+            egui::Rect::from_min_max(egui::pos2(left + used, row.top()), egui::pos2(right, row.bottom()))
+        }
+    })
+}
+
+/// The row's text box: takes the focus and selects its text when it opens; Enter or a click away commits it, and
+/// Escape cancels.
+fn draw_row_edit(ui: &mut egui::Ui, node: NodeId, edit: &mut RowEdit, rect: egui::Rect, edits: &mut Vec<JsonEdit>) {
+    let id = egui::Id::new(("json_row_edit", &node, &edit.pointer));
+    let response = ui.put(
+        rect,
+        egui::TextEdit::singleline(&mut edit.buffer)
+            .id(id)
+            .frame(egui::Frame::NONE)
+            .font(egui::FontId::proportional(TEXT_SIZE))
+            .vertical_align(egui::Align::Center),
+    );
+    if std::mem::take(&mut edit.focus) {
+        response.request_focus();
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            let end = egui::text::CCursor::new(edit.buffer.chars().count());
+            state.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), end)));
+            state.store(ui.ctx(), id);
+        }
+    } else if response.lost_focus() {
+        edits.push(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            JsonEdit::CancelEdit
+        } else {
+            JsonEdit::Commit
+        });
+    }
+}
+
 impl App {
     /// The JSON level's cards, inside `build_graph_ui`'s Scene: painted,
     /// culled to the viewport, and their clicks and drags turned into
@@ -523,6 +580,7 @@ impl App {
         let idle_border = ui.visuals().weak_text_color();
         let text_color = ui.visuals().text_color();
         let hits = level.search.result.as_ref().map(|r| &r.hits);
+        let editable = self.json_editable(level.node_id);
         let mut moves = Vec::new();
         let card_id = |i: usize| egui::Id::new(("json_card", &level.node_id, &level.cards[i].pointer));
         // Tab / Shift+Tab walk the cards in order, including ones culled off screen (egui's own
@@ -630,6 +688,14 @@ impl App {
             let in_header = at.is_some_and(|p| p.y < rect.top() + json_view::HEADER_HEIGHT);
             if response.double_clicked() && in_header && json_view::entry_count(value) > 0 {
                 edits.push(JsonEdit::Toggle(card.pointer.clone()));
+            } else if response.double_clicked() && editable {
+                // The first click of the pair already selected the row; the second opens its box.
+                if let Some((p, x)) = at.and_then(|p| level.row_at(i, p).map(|row| (row, p.x - rect.left()))) {
+                    edits.push(JsonEdit::Select(p.clone()));
+                    if let Some(what) = edit_target(&level.value, &p, x) {
+                        edits.push(JsonEdit::Begin(p, what));
+                    }
+                }
             } else if response.clicked() {
                 if let Some(p) = at {
                     if level.earlier_row_at(i, p) {
@@ -668,6 +734,13 @@ impl App {
         if let Some(level) = self.json_level.as_mut() {
             for (i, delta) in moves {
                 level.rects[i] = level.rects[i].translate(delta);
+            }
+            let (node, rect) = (level.node_id, level.edit.as_ref().and_then(|e| edit_rect(level, e)));
+            if let Some(edit) = level.edit.as_mut() {
+                match rect {
+                    Some(rect) => draw_row_edit(ui, node, edit, rect, edits),
+                    None => edits.push(JsonEdit::CancelEdit), // its card collapsed or paged away
+                }
             }
         }
     }
@@ -757,6 +830,11 @@ impl App {
         let collapsed = card.filter(|_| has_entries).map(|c| c.collapsed);
         let view = self.doc.mirror.view(level.node_id);
         let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
+        let value = level.value.pointer(&pointer).cloned().unwrap_or(Value::Null);
+        let parent_is_array =
+            json_view::parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+        let rows = json_menu_rows(self.json_editable(level.node_id), &value, pointer.is_empty(), parent_is_array);
+        let doc = level.value.clone();
         let mut close = false;
         let mut edit = None;
         let area = egui::Area::new(egui::Id::new("json_context_menu")).fixed_pos(pos);
@@ -778,6 +856,28 @@ impl App {
                 menu_separator(ui);
                 if ui.button(if collapsed { "Expand" } else { "Collapse" }).clicked() {
                     edit = Some(JsonEdit::Toggle(pointer.clone()));
+                    close = true;
+                }
+            }
+            if !rows.is_empty() {
+                menu_separator(ui);
+            }
+            for row in rows {
+                if row == "Type" {
+                    ui.horizontal(|ui| {
+                        for kind in JsonType::ALL {
+                            if ui.selectable_label(false, kind.label()).clicked() {
+                                let value = type_default(kind, &value);
+                                edit = Some(JsonEdit::Op(JsonOp::Set { pointer: pointer.clone(), value }, None));
+                                close = true;
+                            }
+                        }
+                    });
+                    continue;
+                }
+                let op = crate::json_edit::menu_op(row, &doc, &pointer);
+                if ui.add_enabled(op.is_some(), egui::Button::new(row)).clicked() {
+                    edit = op.map(|(op, next)| JsonEdit::Op(op, next));
                     close = true;
                 }
             }
@@ -827,6 +927,23 @@ impl App {
             self.copy_json(ui.ctx(), selected.as_deref(), if shift { CopyWhat::Path } else { CopyWhat::Value });
         }
         let key = |k| ui.input(|i| i.key_pressed(k));
+        let selected =
+            self.json_level.as_ref().filter(|l| self.json_editable(l.node_id)).and_then(|l| l.selected.clone());
+        if let Some(pointer) = selected {
+            if key(egui::Key::F2) {
+                let doc = self.json_level.as_ref().map(|l| l.value.clone()).unwrap_or_default();
+                // A scalar edits its value; a container, its key (when it has one).
+                let what = edit_target(&doc, &pointer, f32::MAX).or_else(|| edit_target(&doc, &pointer, 0.0));
+                if let Some(what) = what {
+                    self.apply_json_edit(JsonEdit::Begin(pointer, what));
+                }
+                return;
+            }
+            if key(egui::Key::Delete) && !pointer.is_empty() {
+                self.apply_json_edit(JsonEdit::Op(JsonOp::Remove { pointer }, None));
+                return;
+            }
+        }
         if key(egui::Key::ArrowDown) {
             self.step_json_selection(1);
         } else if key(egui::Key::ArrowUp) {

@@ -10,6 +10,7 @@ use std::sync::{mpsc, Arc};
 
 use super::*;
 use crate::card_id::{fnv64, JSON_SOURCE};
+use crate::json_edit::{EditWhat, JsonOp, RowEdit};
 use crate::json_view::{self, Card, JsonView, OutlineRow, SearchResult};
 
 pub(crate) struct JsonLevel {
@@ -37,6 +38,8 @@ pub(crate) struct JsonLevel {
     pub(crate) search: Search,
     /// A context menu: the pointer it acts on and where it opened (screen).
     pub(crate) menu: Option<(String, egui::Pos2)>,
+    /// The text box open over a row (inline levels only).
+    pub(crate) edit: Option<RowEdit>,
 }
 
 /// The outline's own state (spec "Outline"): not saved, separate from
@@ -96,6 +99,14 @@ pub(crate) enum JsonEdit {
     Relayout,
     /// A card header's colour, `0x00RRGGBB` (plan ruling 4), or none.
     Color(String, Option<u32>),
+    /// Opens a text box over the entry (a double click, F2, or the end of an add).
+    Begin(String, EditWhat),
+    /// The open text box's text is final (Enter, or the box lost focus).
+    Commit,
+    /// Escape in the text box.
+    CancelEdit,
+    /// A structural or type edit; the second part opens a text box once the edit has landed.
+    Op(JsonOp, Option<(String, EditWhat)>),
 }
 
 /// What a copy takes from an entry (spec "Copy").
@@ -123,6 +134,7 @@ impl JsonLevel {
             outline: Outline { open: HashSet::from([String::new()]), dirty: true, ..Outline::default() },
             search: Search::default(),
             menu: None,
+            edit: None,
         };
         level.relayout(view);
         level
@@ -281,9 +293,20 @@ impl App {
             level.selected = None;
         }
         level.outline.open.retain(|p| p.is_empty() || level.value.pointer(p).is_some());
+        // A text box or menu aimed at an entry that moved or changed would act on the wrong one.
+        let cancelled = level.edit.as_ref().is_some_and(|e| level.value.pointer(&e.pointer) != Some(&e.original));
+        if cancelled {
+            level.edit = None;
+        }
+        if level.menu.as_ref().is_some_and(|(p, _)| level.value.pointer(p).is_none()) {
+            level.menu = None;
+        }
         level.outline.dirty = true;
         level.relayout(view);
         let query = level.search.query.clone();
+        if cancelled {
+            self.queue_toast(crate::json_edit::EDIT_CHANGED.to_owned());
+        }
         self.set_json_search(query);
     }
 
@@ -339,6 +362,22 @@ impl App {
             }
             JsonEdit::Relayout => self.edit_json_view(|view, _, _| view.clear_positions()),
             JsonEdit::Color(pointer, color) => self.edit_json_view(|view, _, _| view.entry(&pointer).color = color),
+            JsonEdit::Begin(pointer, what) => self.begin_json_edit(pointer, what),
+            JsonEdit::Commit => self.commit_json_edit(),
+            JsonEdit::CancelEdit => {
+                if let Some(level) = self.json_level.as_mut() {
+                    level.edit = None;
+                }
+            }
+            JsonEdit::Op(op, then) => {
+                let Some(id) = self.json_level.as_ref().map(|l| l.node_id) else { return };
+                if self.edit_json(id, op).is_ok() {
+                    self.save_session();
+                    if let Some((pointer, what)) = then {
+                        self.begin_json_edit(pointer, what);
+                    }
+                }
+            }
         }
     }
 

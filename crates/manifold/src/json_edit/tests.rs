@@ -1,6 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
+use crate::json_level::JsonEdit;
 use crate::store::body::{tree_to_value, value_to_tree};
 use crate::store::model::field;
 
@@ -320,4 +321,162 @@ fn the_level_export_says_whether_it_is_editable() {
     app.current_group = Some(id);
     app.sync_json_level();
     assert_eq!(app.json_level_state()["editable"], json!(true));
+}
+
+#[test]
+fn parse_edit_takes_text_by_the_originals_kind() {
+    assert_eq!(parse_edit(&json!("old"), "12 apples"), Ok(json!("12 apples")));
+    assert_eq!(parse_edit(&json!("old"), ""), Ok(json!("")));
+    assert_eq!(parse_edit(&json!(1), " 2.5 "), Ok(json!(2.5)));
+    assert_eq!(parse_edit(&json!(1), "true"), Ok(json!(true)));
+    assert_eq!(parse_edit(&json!(true), "null"), Ok(Value::Null));
+    assert_eq!(parse_edit(&json!(null), "\"now a string\""), Ok(json!("now a string")));
+    for bad in ["", "abc", "{\"a\":1}", "[1]", "1 2"] {
+        assert_eq!(parse_edit(&json!(1), bad), Err("Not a JSON value".to_owned()), "{bad:?}");
+    }
+}
+
+#[test]
+fn type_default_carries_what_it_can() {
+    use JsonType::*;
+    assert_eq!(type_default(String, &json!(12)), json!("12"));
+    assert_eq!(type_default(String, &json!(true)), json!("true"));
+    assert_eq!(type_default(String, &json!({"a": 1})), json!(""));
+    assert_eq!(type_default(Number, &json!("2.5")), json!(2.5));
+    assert_eq!(type_default(Number, &json!("x")), json!(0));
+    assert_eq!(type_default(Number, &json!(7)), json!(7));
+    assert_eq!(type_default(Boolean, &json!(true)), json!(true));
+    assert_eq!(type_default(Boolean, &json!("true")), json!(true));
+    assert_eq!(type_default(Boolean, &json!(3)), json!(false));
+    assert_eq!(type_default(Null, &json!(3)), Value::Null);
+    assert_eq!(type_default(Object, &json!([1])), json!({}));
+    assert_eq!(type_default(Array, &json!({"a": 1})), json!([]));
+}
+
+#[test]
+fn the_menu_rows_depend_on_the_entry() {
+    let object = json!({"a": 1});
+    let array = json!([1]);
+    let scalar = json!(1);
+    assert_eq!(json_menu_rows(true, &object, true, false), ["Add key", "Type"]);
+    assert_eq!(json_menu_rows(true, &object, false, false), ["Add key", "Type", "Delete"]);
+    assert_eq!(json_menu_rows(true, &array, false, false), ["Add element", "Type", "Delete"]);
+    assert_eq!(
+        json_menu_rows(true, &scalar, false, true),
+        ["Insert above", "Insert below", "Move up", "Move down", "Type", "Delete"]
+    );
+    assert_eq!(json_menu_rows(true, &array, false, true)[..2], ["Add element", "Insert above"]);
+    assert!(json_menu_rows(false, &object, false, false).is_empty(), "a file level edits nothing");
+}
+
+/// An app on `id`'s level, opened the way a click does.
+fn open_level(app: &mut App, id: NodeId) {
+    app.current_group = Some(id);
+    app.sync_json_level();
+}
+
+fn edit_of(app: &App) -> Option<(String, String)> {
+    app.json_level.as_ref().unwrap().edit.as_ref().map(|e| (e.pointer.clone(), e.buffer.clone()))
+}
+
+#[test]
+fn begin_opens_a_value_or_key_edit_on_the_right_entries() {
+    let (mut app, id) = card(json!({"a": "x", "b": {"c": 1}, "l": [true]}));
+    open_level(&mut app, id);
+    for (pointer, what, expect) in [
+        ("/a", EditWhat::Value, Some(("/a", "x"))),
+        ("/l/0", EditWhat::Value, Some(("/l/0", "true"))),
+        ("/a", EditWhat::Key, Some(("/a", "a"))),
+        ("/b", EditWhat::Value, None),
+        ("/l/0", EditWhat::Key, None),
+        ("", EditWhat::Key, None),
+        ("/nope", EditWhat::Value, None),
+    ] {
+        app.apply_json_edit(JsonEdit::CancelEdit);
+        app.apply_json_edit(JsonEdit::Begin(pointer.into(), what));
+        assert_eq!(edit_of(&app), expect.map(|(p, b)| (p.to_owned(), b.to_owned())), "{pointer} {what:?}");
+    }
+}
+
+#[test]
+fn commit_applies_one_set_and_clears_the_edit() {
+    let (mut app, id) = card(json!({"a": 1}));
+    open_level(&mut app, id);
+    app.apply_json_edit(JsonEdit::Begin(s("/a"), EditWhat::Value));
+    app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("42");
+    app.apply_json_edit(JsonEdit::Commit);
+    assert_eq!(doc(&app, id), json!({"a": 42}));
+    assert_eq!(edit_of(&app), None);
+    undo(&mut app);
+    assert_eq!(doc(&app, id), json!({"a": 1}));
+}
+
+#[test]
+fn a_bad_value_keeps_the_editor_open_and_writes_nothing() {
+    let (mut app, id) = card(json!({"a": 1}));
+    open_level(&mut app, id);
+    app.apply_json_edit(JsonEdit::Begin(s("/a"), EditWhat::Value));
+    app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("oops");
+    app.apply_json_edit(JsonEdit::Commit);
+    assert_eq!(doc(&app, id), json!({"a": 1}));
+    assert_eq!(edit_of(&app), Some((s("/a"), s("oops"))));
+}
+
+#[test]
+fn a_key_commit_renames_and_a_taken_name_changes_nothing() {
+    let (mut app, id) = card(json!({"a": 1, "b": 2}));
+    open_level(&mut app, id);
+    app.apply_json_edit(JsonEdit::Begin(s("/a"), EditWhat::Key));
+    app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("c");
+    app.apply_json_edit(JsonEdit::Commit);
+    assert_eq!(doc(&app, id), json!({"c": 1, "b": 2}));
+    app.apply_json_edit(JsonEdit::Begin(s("/c"), EditWhat::Key));
+    app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("b");
+    app.apply_json_edit(JsonEdit::Commit);
+    assert_eq!(doc(&app, id), json!({"c": 1, "b": 2}));
+    assert_eq!(edit_of(&app), None);
+}
+
+#[test]
+fn a_commit_after_the_entry_changed_underneath_is_cancelled() {
+    let (mut app, id) = card(json!({"a": [10, 11, 12]}));
+    open_level(&mut app, id);
+    app.apply_json_edit(JsonEdit::Begin(s("/a/1"), EditWhat::Value));
+    app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("99");
+    app.edit_json(id, insert("/a", 0, json!(9))).unwrap();
+    assert_eq!(edit_of(&app), None, "the swap cancelled it: /a/1 now holds another value");
+    app.apply_json_edit(JsonEdit::Commit);
+    assert_eq!(doc(&app, id), json!({"a": [9, 10, 11, 12]}), "no extra change");
+}
+
+#[test]
+fn op_then_opens_the_next_edit_after_the_op_landed() {
+    let (mut app, id) = card(json!({"a": 1}));
+    open_level(&mut app, id);
+    let add = JsonOp::AddKey { pointer: s(""), key: s("new"), value: Value::Null };
+    app.apply_json_edit(JsonEdit::Op(add, Some((s("/new"), EditWhat::Key))));
+    assert_eq!(doc(&app, id), json!({"a": 1, "new": null}));
+    assert_eq!(edit_of(&app), Some((s("/new"), s("new"))));
+}
+
+#[test]
+fn menu_rows_become_ops_with_the_edit_to_open_next() {
+    use crate::json_edit::{menu_op, EditWhat};
+    let doc = json!({"a": 1, "new": 2, "l": [10, 20]});
+    let row = |r: &str, p: &str| menu_op(r, &doc, p);
+    // The first free name, then a key edit on it.
+    let (op, next) = row("Add key", "").unwrap();
+    assert_eq!(op, JsonOp::AddKey { pointer: "".into(), key: "new2".into(), value: Value::Null });
+    assert_eq!(next, Some(("/new2".into(), EditWhat::Key)));
+    // Appending edits the new element's value.
+    let (op, next) = row("Add element", "/l").unwrap();
+    assert_eq!(op, JsonOp::Insert { pointer: "/l".into(), index: 2, value: Value::Null });
+    assert_eq!(next, Some(("/l/2".into(), EditWhat::Value)));
+    assert_eq!(row("Insert above", "/l/1").unwrap().1, Some(("/l/1".into(), EditWhat::Value)));
+    assert_eq!(row("Insert below", "/l/1").unwrap().1, Some(("/l/2".into(), EditWhat::Value)));
+    // The ends of an array cannot move further.
+    assert!(row("Move up", "/l/0").is_none() && row("Move down", "/l/1").is_none());
+    assert_eq!(row("Move down", "/l/0").unwrap().0, JsonOp::Move { pointer: "/l/0".into(), to: 1 });
+    assert_eq!(row("Delete", "/a").unwrap().0, JsonOp::Remove { pointer: "/a".into() });
+    assert!(row("Add key", "/a").is_none(), "a scalar takes no key");
 }

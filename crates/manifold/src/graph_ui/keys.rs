@@ -119,6 +119,9 @@ impl App {
             return;
         }
         if self.json_level.is_some() {
+            if !typing {
+                self.handle_undo_keys(ui);
+            }
             self.handle_json_keys(ui, typing);
             return;
         }
@@ -309,16 +312,19 @@ impl App {
     /// Whether the Graph view's own plain keys (undo, card digits) may act: no text field, popup, menu, JSON level or
     /// Tab view has the keyboard.
     fn graph_keys_free(&self, ui: &egui::Ui) -> bool {
-        self.json_level.is_none()
-            && !self.modal_open()
-            && !self.showing_tab_view()
-            && !ui.ctx().egui_wants_keyboard_input()
+        self.json_level.is_none() && self.undo_keys_free(ui)
+    }
+
+    /// Whether the undo chord may act: no text field, popup, menu or Tab view has the keyboard. A JSON level
+    /// does not block it (its inline edits are undoable).
+    fn undo_keys_free(&self, ui: &egui::Ui) -> bool {
+        !self.modal_open() && !self.showing_tab_view() && !ui.ctx().egui_wants_keyboard_input()
     }
 
     /// Ctrl+Z undoes and Ctrl+Shift+Z or Ctrl+Y redoes the newest step (`step_history`). Ignored where the digit keys
-    /// are: a text field, popup, menu, JSON level or Tab view has the keyboard.
+    /// are, except on a JSON level: a text field, popup, menu or Tab view has the keyboard.
     pub(super) fn handle_undo_keys(&mut self, ui: &egui::Ui) {
-        let free = self.graph_keys_free(ui);
+        let free = self.undo_keys_free(ui);
         if let Some(redo) = free.then(|| ui.input_mut(undo_chord)).flatten() {
             self.step_history(None, redo);
         }
@@ -400,6 +406,31 @@ mod tests {
         assert_eq!(press(egui::Key::Z, cmd | egui::Modifiers::SHIFT), [Some(true), None]);
         assert_eq!(press(egui::Key::Y, cmd), [Some(true), None]);
         assert_eq!(press(egui::Key::Z, egui::Modifiers::NONE), [None, None]);
+    }
+
+    /// A JSON level keeps the digit keys out, but Ctrl+Z still undoes its inline edits.
+    #[test]
+    fn ctrl_z_on_a_json_level_undoes_an_edit() {
+        let mut app = App::default();
+        let id = app.alloc_node_id();
+        app.insert_inline_json_at(id, None);
+        let mut mint = |_: &str| app.alloc_node_id();
+        let tree = crate::store::body::value_to_tree(&serde_json::json!({"a": 1}), &mut mint).unwrap();
+        app.set_body(id, tree);
+        app.refresh_inline(id);
+        app.view_mode = ViewMode::Graph;
+        app.current_group = Some(id);
+        app.sync_json_level();
+        let op = crate::json_edit::JsonOp::Set { pointer: "/a".into(), value: serde_json::json!(2) };
+        app.edit_json(id, op).unwrap();
+        assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!({"a": 2}));
+        let ctx = egui::Context::default();
+        let mut raw = egui::RawInput::default();
+        raw.events.push(crate::debug_control::debug_key_event(egui::Key::Z, egui::Modifiers::COMMAND));
+        let mut full = ctx.run_ui(raw, |ui| app.handle_undo_keys(ui));
+        full.textures_delta.clear();
+        app.sync_json_level();
+        assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!({"a": 1}));
     }
 
     #[test]
