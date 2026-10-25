@@ -686,7 +686,14 @@ const VERBS: &[Verb] = &[
     row("GOBACK", "Back button on the focused tab", |_| go(Dir::Back)),
     row("GOFORWARD", "Forward button on the focused tab", |_| go(Dir::Forward)),
     row("NEWGROUP", "Ctrl+Shift+G -- new group", |_| job(|app, _| app.new_group_shortcut())),
-    row("NEWJSON", "A new inline JSON card (its document lives in the synced document)", |_| job(|app, _| app.new_json_shortcut())),
+    row("NEWJSON [x y]", "A new inline JSON card (its document lives in the synced document); x y is a window point", |rest| {
+        let at = match rest.split_whitespace().collect::<Vec<_>>()[..] {
+            [] => None,
+            [x, y] => Some(egui::pos2(x.parse().ok()?, y.parse().ok()?)),
+            _ => return None,
+        };
+        job(move |app, _| app.new_json_shortcut(at))
+    }),
     row("DETACHJSON id", "Move a file JSON card's document into the synced document", |rest| {
         let (id, _) = split_id(rest)?;
         job(move |app, _| {
@@ -1379,6 +1386,7 @@ mod tests {
             "NEWGROUP",
             "NEWNOTE",
             "NEWJSON",
+            "NEWJSON 10 20",
             "DETACHJSON 0000000000000001-4",
             r"ADDFILE C:\x.json 10 20",
             r"ADDDOWNLOAD C:\x.zip",

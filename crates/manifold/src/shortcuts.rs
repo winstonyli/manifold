@@ -314,10 +314,14 @@ impl App {
         self.save_session();
     }
 
-    /// Headless `NEWJSON`: a new inline Json card.
-    pub(crate) fn new_json_shortcut(&mut self) {
+    /// Headless `NEWJSON [x y]`: a new inline Json card, at a window point when given.
+    pub(crate) fn new_json_shortcut(&mut self, at: Option<egui::Pos2>) {
         let id = self.alloc_node_id();
-        self.insert_inline_json_at(id, None);
+        let pos = at.map(|p| {
+            self.leave_json_level();
+            self.graph_screen_point_to_world(p)
+        });
+        self.insert_inline_json_at(id, pos);
         self.save_session();
     }
 

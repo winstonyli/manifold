@@ -304,6 +304,32 @@ fn xy(s: &State, id: &str) -> io::Result<String> {
     s.xy(id).ok_or_else(|| bad(format!("no card {id:?} to aim at")))
 }
 
+/// A point on card `id` that no other card covers, as "x y": the centre of the first 10px grid cell of its rect
+/// (inset 8px) outside every other rect. Cards overlap after a drop, and a click lands on the topmost.
+fn uncovered_xy(s: &State, id: &str) -> io::Result<String> {
+    let rect = rect_of(s, id).ok_or_else(|| bad(format!("no card {id:?} to aim at")))?;
+    let others: Vec<[f64; 4]> = s
+        .all_cards()
+        .iter()
+        .filter_map(|c| c["id"].as_str())
+        .filter(|other| *other != id)
+        .filter_map(|other| rect_of(s, other))
+        .collect();
+    let covered = |x: f64, y: f64| others.iter().any(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]);
+    let mut y = rect[1] + 8.0;
+    while y < rect[3] - 8.0 {
+        let mut x = rect[0] + 8.0;
+        while x < rect[2] - 8.0 {
+            if !covered(x, y) {
+                return Ok(format!("{x} {y}"));
+            }
+            x += 10.0;
+        }
+        y += 10.0;
+    }
+    Err(bad(format!("every part of card {id:?} is covered")))
+}
+
 fn first<'a>(v: &'a [String], what: &str) -> io::Result<&'a String> {
     v.first().ok_or_else(|| bad(format!("no {what}")))
 }
@@ -1086,6 +1112,73 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
             r#"url.startswith("file://")"#,
             |v| v.url.starts_with("file://"),
         )?;
+    }
+
+    m.mark("inline-json");
+    // An inline Json card keeps its document in the synced document: NEWJSON makes `{}`, DETACHJSON moves a file
+    // card's value in and drops its path. Both open as levels and export a `body`, not a path.
+    sm.write(
+        "detach.json",
+        b"{\"k\": 1}
+",
+    )?;
+    // The html tab above left the window in Tab view; the cards are clicked in Graph view.
+    let was_tab_view = truthy_key(&sm.state("inline_view")?, "tab_view");
+    if was_tab_view {
+        sm.send("TOGGLEVIEW")?;
+        sm.send("WAITIDLE")?;
+    }
+    let before_inline = sorted_ids(&sm.state("before_inline")?);
+    sm.send("NEWJSON 400 500")?;
+    sm.send(&format!("ADDFILE {} 700 300", sm.win("detach.json")))?;
+    let made = sm.settle("inline_made")?;
+    let new_json = new_card(&made, JSON, None, &before_inline);
+    check_found(&made, "inline_made", "NEWJSON makes a Json card", &new_json);
+    let file_json = made
+        .all_cards()
+        .iter()
+        .filter(|c| State::card_is(c, JSON, None))
+        .filter_map(|c| c["id"].as_str())
+        .find(|id| !before_inline.iter().any(|b| b == id) && *id != new_json)
+        .unwrap_or("none")
+        .to_string();
+    check_found(&made, "inline_made", "the dropped detach.json is a second new Json card", &file_json);
+    sm.send(&format!("DETACHJSON {file_json}"))?;
+    for (id, keys) in [(&new_json, serde_json::json!([])), (&file_json, serde_json::json!(["k"]))] {
+        let at = sm.settle("inline_before_enter")?;
+        sm.send(&format!("DOUBLECLICK {}", uncovered_xy(&at, id)?))?;
+        let level = sm.settle("inline_level")?;
+        check_query(
+            &level,
+            "inline_level",
+            "an inline Json card opens as a level showing its own document",
+            &format!(
+                "s['json_level']['root'] == '{id}' and s['json_level']['inline'] and s['json_level']['keys'] == {keys}"
+            ),
+            |s| {
+                json_level(s)["root"] == id.as_str() && json_level(s)["inline"] == true && json_level(s)["keys"] == keys
+            },
+        );
+        sm.inst.click_control(BACK)?;
+        sm.check_state("inline_out", "the back button leaves the inline level", "s['json_level'] is None", |v| {
+            null_key(v.s, "json_level")
+        })?;
+    }
+    let path = sm.export("EXPORTSESSION", "inline.json")?;
+    let session: Value = serde_json::from_slice(&fs::read(path)?).map_err(|e| bad(format!("inline.json: {e}")))?;
+    let exported = |id: &str| session["nodes"].as_array().and_then(|a| a.iter().find(|n| n["id"] == id)).cloned();
+    for (id, body) in [(&new_json, serde_json::json!({})), (&file_json, serde_json::json!({"k": 1}))] {
+        let node = exported(id);
+        if node.as_ref().is_some_and(|n| n["body"] == body && n.get("path").is_none()) {
+            pass("an inline card exports its body and no path");
+        } else {
+            failed(&format!("inline card {id} exported as {node:?}, wanted body {body} and no path (see inline.json)"));
+        }
+    }
+
+    if was_tab_view {
+        sm.send("TOGGLEVIEW")?; // back to where the next mark expects to be
+        sm.send("WAITIDLE")?;
     }
 
     m.mark("conversion");

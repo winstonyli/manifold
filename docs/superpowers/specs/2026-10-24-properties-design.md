@@ -182,7 +182,7 @@ Each ends green and could be tagged on its own.
 2. **App** (plan 2, done; plan 1 is this section 1 only, and `Kind::card()` moved to plan 3): mirror trees and version counter, `edit_prop`, `UndoKind::Props`, duplicate and `Carried`, export and import.
 3. **Labels**: `Kind::card()` first (D7), then `Kind::Label`, the menu and bar, chips and border, find, suggest arm,
    color removal, the `labels` gate stage.
-4. **Inline Json**: `BODY`, the level reading it, the write path, detach and export, the cap.
+4. **Inline Json**: **4a done 2026-10-25** (plan `docs/superpowers/plans/2026-10-25-properties-4a-inline-json.md`: `BODY`, the level reading it, New JSON, Detach to inline, the cap, export/import/duplicate). **4b open**: the write path (section 4 "Editing"), the Export action, `Ref` chips, global-index text.
 
 ## 6. Tests
 

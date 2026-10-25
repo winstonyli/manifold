@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Properties 4a: Inline Json Cards (read-only) Implementation Plan
