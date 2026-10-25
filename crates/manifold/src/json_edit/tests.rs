@@ -536,3 +536,16 @@ fn a_ref_row_does_not_open_a_value_edit_and_a_chip_opens_its_target() {
     assert!(app.json_level.is_none());
     assert!(app.interaction.selected.contains(&crate::card_id::CardId::from(note)));
 }
+
+#[test]
+fn export_inline_json_matches_the_document_and_round_trips_through_a_file_card() {
+    let source = json!({"a": [1, {"b": null}], "s": "x"});
+    let (mut app, id) = card(source.clone());
+    assert_eq!(app.export_inline_json(id), Some(source.clone()));
+    let path = crate::store::testutil::temp_dir("export-inline").join("out.json");
+    crate::export::write_json_export(&app.export_inline_json(id).unwrap(), &path, "json");
+    let imported = app.alloc_node_id();
+    app.insert_json_node_with_id(imported, path.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+    assert_eq!(*app.nodes[&imported].as_json().unwrap().value, source);
+    assert_eq!(app.export_inline_json(imported), None, "a file card has no inline document");
+}

@@ -619,6 +619,15 @@ const VERBS: &[Verb] = &[
             }
         })
     }),
+    row("EXPORTJSON id path", "Write inline Json card `id`'s document to `path`", |rest| {
+        let (id, path) = rest.split_once(' ')?;
+        let (id, path) = (id.parse::<NodeId>().ok()?, path.trim().to_owned());
+        job(move |app, _| {
+            if let Some(json) = app.export_inline_json(id) {
+                write_json_export(&json, std::path::Path::new(&path), "json");
+            }
+        })
+    }),
     row("IMPORTGROUP path", "Import a group from `path`", |rest| {
         with_text(rest, |app, path| match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
             Ok(json) => app.import_group_json(&json),
@@ -1404,6 +1413,7 @@ mod tests {
             "NEWJSON",
             "NEWJSON 10 20",
             "DETACHJSON 0000000000000001-4",
+            "EXPORTJSON 0000000000000001-4 out.json",
             "JSONEDIT insert /list 0 [1,2]",
             r"ADDFILE C:\x.json 10 20",
             r"ADDDOWNLOAD C:\x.zip",

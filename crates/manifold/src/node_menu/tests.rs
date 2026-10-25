@@ -133,8 +133,8 @@ fn node_menu_config_matches_each_kinds_menu() {
         let inline = menu_of(&NodeMenuView { has_group, inline_json: true, ..view_of(plain(TYPE_JSON)) }, false);
         assert_eq!(
             inline,
-            ("json_context_menu", 170.0, format!("Rename | Duplicate | Pin{g} | --- | Delete")),
-            "an inline JSON card has no file to open, copy, refetch or detach"
+            ("json_context_menu", 170.0, format!("Export JSON... | --- | Rename | Duplicate | Pin{g} | --- | Delete")),
+            "an inline JSON card has no file to open, copy, refetch or detach, but exports its document"
         );
         assert_eq!(
             menu(loaded_tab(), false),

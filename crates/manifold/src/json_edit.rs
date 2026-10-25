@@ -437,6 +437,12 @@ impl App {
             && self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline() && p.error.is_none())
     }
 
+    /// Inline Json card `id`'s document as plain JSON (a `Ref` as `{"$ref": "<id>"}`); `None` for any other card.
+    pub(crate) fn export_inline_json(&self, id: NodeId) -> Option<Value> {
+        let inline = self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline());
+        inline.then(|| self.doc.mirror.tree(id, field::BODY).map_or(Value::Null, tree_to_value))
+    }
+
     fn write_json_op(&mut self, id: NodeId, op: &JsonOp) -> Result<(Vec<PropEdit>, Vec<PointerMap>), String> {
         if !self.json_editable(id) {
             return Err("Only an inline JSON card can be edited".to_owned());

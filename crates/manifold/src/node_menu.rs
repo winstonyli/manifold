@@ -19,6 +19,8 @@ pub(crate) enum NodeAction {
     CopyPath,
     /// A file Json card's document moves into the synced document (`App::detach_json`).
     DetachJson,
+    /// An inline Json card's document is saved to a file (`App::export_inline_json`).
+    ExportJson,
     /// Fetches a node's source URL again, in place.
     Refresh,
     /// A new tab at the node's source URL, beside it.
@@ -540,7 +542,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         // Image, Pdf and Json: the kinds with `Caps::file`, each with its own area id.
         _ if view.kind.caps().file => {
-            let mut items = if view.inline_json { Vec::new() } else { url_items(true) };
+            let mut items =
+                if view.inline_json { vec![Button("Export JSON...", A::ExportJson)] } else { url_items(true) };
             if !view.inline_json {
                 items.extend(file_items());
             }
@@ -940,6 +943,15 @@ impl App {
             }
             NodeAction::DetachJson => {
                 let _ = self.detach_json(id); // a refusal is already toasted
+            }
+            NodeAction::ExportJson => {
+                let name = export_file_name(self.doc.mirror.name(id)); // name rule: export_file_name cleans it
+                if let Some(json) = self.export_inline_json(id) {
+                    if let Some((path, toast)) = save_dialog_with_toast(name, "JSON") {
+                        write_json_export(&json, &path, "json");
+                        self.queue_toast(toast.0);
+                    }
+                }
             }
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),

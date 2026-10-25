@@ -18,13 +18,13 @@ pub(crate) fn save_dialog_with_toast(
     Some((path, toast))
 }
 
-/// Writes a JSON snapshot (spec "JSON snapshots") to `path`, pretty-
+/// Writes a JSON snapshot (spec "JSON snapshots") or any other serializable document to `path`, pretty-
 /// printed, logging (not toasting) a failure -- shared by every Export
 /// Group site (headless `EXPORTGROUP`, the node menu's own "Export
 /// Group..." and the popup's), matching the old per-group export file's
 /// own save, which likewise only logged. `what` names the file's kind for
 /// the log line, matching `json_file::load`'s own `what`.
-pub(crate) fn write_json_export(json: &crate::store::json::JsonDoc, path: &std::path::Path, what: &str) {
+pub(crate) fn write_json_export<T: serde::Serialize>(json: &T, path: &std::path::Path, what: &str) {
     let written = serde_json::to_string_pretty(json).map_err(|e| e.to_string()).and_then(|text| {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
