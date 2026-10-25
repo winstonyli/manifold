@@ -884,3 +884,17 @@ fn another_replica_follows_a_detach_to_an_inline_card() {
     assert!(p.is_inline(), "b follows the detach");
     assert_eq!(*p.value, serde_json::json!({"k": [1]}));
 }
+
+#[test]
+fn undoing_a_detach_restores_the_stored_path_not_this_machines() {
+    let path = crate::store::testutil::temp_dir("undo-detach-stored").join("session.mnf");
+    let mut app = crate::session_sync::tests::app_on(&path, 1);
+    let (id, file) = json_file_card(&mut app, "undo-detach-stored", r#"{"k": [1]}"#);
+    let stored = store::model::FieldValue::Str("/other/machine/d.json".into());
+    app.edit_field(id, store::model::field::PATH, stored.clone()); // the runtime path stays `file`
+    app.detach_json(id).unwrap();
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.get(id, store::model::field::PATH), stored);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(!p.is_inline() && p.path() == file.to_string_lossy(), "shown from the file this machine has");
+}

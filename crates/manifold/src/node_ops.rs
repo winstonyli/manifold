@@ -51,9 +51,13 @@ impl App {
     /// Moves a file card's document into the synced document (`BODY`) and drops the path; the file stays on disk. A
     /// document past the inline cap is refused with a toast and the card stays as it was.
     pub(crate) fn detach_json(&mut self, id: NodeId) -> Result<(), String> {
-        let path = self.nodes.get(&id).and_then(|n| n.as_json()).map(|p| p.path().to_owned()).unwrap_or_default();
+        let shown = self.nodes.get(&id).and_then(|n| n.as_json()).map(|p| p.path().to_owned()).unwrap_or_default();
+        let stored = match self.doc.mirror.get(id, store::model::field::PATH) {
+            store::model::FieldValue::Str(s) => s,
+            _ => shown.clone(),
+        };
         let body = self.detach_json_untracked(id)?;
-        self.record_undo("Detach to inline".to_owned(), UndoKind::Detach { node: id, path, body });
+        self.record_undo("Detach to inline".to_owned(), UndoKind::Detach { node: id, stored, shown, body });
         Ok(())
     }
 

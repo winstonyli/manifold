@@ -38,9 +38,10 @@ pub(crate) enum UndoKind {
     /// Tree edits (`App::edit_prop`): labels, properties, Json. Each part changed the leaves at `path` and under it
     /// from `before` to `after`; undo reverses them newest first, redo repeats them.
     Props(Vec<PropEdit>),
-    /// A file Json card detached to inline (`App::detach_json`): `path` was its file and `body` the BODY tree the
-    /// detach wrote. Undo applies only while the card still holds exactly `body`; redo detaches again.
-    Detach { node: NodeId, path: String, body: tree::Tree },
+    /// A file Json card detached to inline (`App::detach_json`): `stored` was its synced `PATH`, `shown` the file this
+    /// machine read, and `body` the BODY tree the detach wrote. Undo applies only while the card still holds exactly
+    /// `body`; redo detaches again.
+    Detach { node: NodeId, stored: String, shown: String, body: tree::Tree },
 }
 
 pub(crate) struct UndoEntry {
@@ -122,25 +123,27 @@ impl App {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
             UndoKind::Props(edits) => self.replay_props(edits, redo),
-            UndoKind::Detach { node, path, body } => (usize::from(self.replay_detach(*node, path, body, redo)), 1),
+            UndoKind::Detach { node, stored, shown, body } => {
+                (usize::from(self.replay_detach(*node, stored, shown, body, redo)), 1)
+            }
         }
     }
 
     /// A detach undone (the card is inline and still holds `body`: the BODY tree is deleted, the path restored and
     /// the file read again) or redone (the card is that file's again, and detaches once more). False when the card
     /// has moved on.
-    fn replay_detach(&mut self, node: NodeId, path: &str, body: &tree::Tree, redo: bool) -> bool {
+    fn replay_detach(&mut self, node: NodeId, stored: &str, shown: &str, body: &tree::Tree, redo: bool) -> bool {
         let Some(json) = self.nodes.get(&node).and_then(|n| n.as_json()) else { return false };
         if redo {
-            return !json.is_inline() && json.path() == path && self.detach_json_untracked(node).is_ok();
+            return !json.is_inline() && json.path() == shown && self.detach_json_untracked(node).is_ok();
         }
         if !json.is_inline() || self.doc.mirror.tree(node, field::BODY) != Some(body) {
             return false;
         }
         // One tombstone at the root, so a leaf another replica wrote meanwhile is hidden too.
         self.edit_prop(node, field::BODY, crate::store::body::root(), None);
-        self.edit_field(node, field::PATH, FieldValue::Str(path.to_owned()));
-        self.rebuild_file_json(node, path.to_owned());
+        self.edit_field(node, field::PATH, FieldValue::Str(stored.to_owned()));
+        self.rebuild_file_json(node, shown.to_owned());
         true
     }
 
