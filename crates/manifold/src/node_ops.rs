@@ -51,6 +51,14 @@ impl App {
     /// Moves a file card's document into the synced document (`BODY`) and drops the path; the file stays on disk. A
     /// document past the inline cap is refused with a toast and the card stays as it was.
     pub(crate) fn detach_json(&mut self, id: NodeId) -> Result<(), String> {
+        let path = self.nodes.get(&id).and_then(|n| n.as_json()).map(|p| p.path().to_owned()).unwrap_or_default();
+        let body = self.detach_json_untracked(id)?;
+        self.record_undo("Detach to inline".to_owned(), UndoKind::Detach { node: id, path, body });
+        Ok(())
+    }
+
+    /// `detach_json` without its undo step (a redo replays it); returns the BODY tree it wrote.
+    pub(crate) fn detach_json_untracked(&mut self, id: NodeId) -> Result<store::tree::Tree, String> {
         let Some(Runtime::Json(p)) = self.nodes.get(&id).map(|n| &n.runtime) else {
             return Err("not a JSON card".into());
         };
@@ -72,10 +80,25 @@ impl App {
                 return Err(err);
             }
         };
-        self.set_body(id, tree);
+        self.set_body(id, tree.clone());
         self.edit_field(id, store::model::field::PATH, store::model::FieldValue::Str(String::new()));
         self.refresh_inline(id);
-        Ok(())
+        Ok(tree)
+    }
+
+    /// Makes inline card `id` a file card again on `path` (the undo of a detach): the file is read afresh, and a level
+    /// open on the card is rebuilt from it.
+    pub(crate) fn rebuild_file_json(&mut self, id: NodeId, path: String) {
+        let (value, error) = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
+            Ok(value) => (value.into(), None),
+            Err(err) => (Default::default(), Some(err)),
+        };
+        let Some(node) = self.nodes.get_mut(&id) else { return };
+        node.runtime = Runtime::Json(JsonPayload::file(path, value, error));
+        if self.json_level.as_ref().is_some_and(|l| l.node_id == id) {
+            self.json_level = None;
+            self.sync_json_level();
+        }
     }
 
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_view_kind`).

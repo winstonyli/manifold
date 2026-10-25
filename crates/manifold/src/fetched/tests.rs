@@ -813,3 +813,46 @@ fn two_replicas_detaching_one_file_write_identical_registers() {
     }
     assert_eq!(trees[0], trees[1]);
 }
+
+fn detached(name: &str) -> (App, NodeId, String) {
+    let path = crate::store::testutil::temp_dir(name).join("session.mnf");
+    let mut app = crate::session_sync::tests::app_on(&path, 1);
+    let (id, file) = json_file_card(&mut app, name, r#"{"k": [1]}"#);
+    let file = file.to_string_lossy().into_owned();
+    app.detach_json(id).unwrap();
+    (app, id, file)
+}
+
+#[test]
+fn undoing_a_detach_restores_the_file_card_and_its_path() {
+    let (mut app, id, file) = detached("undo-detach");
+    app.step_history(None, false);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(!p.is_inline() && p.path() == file, "a file card again");
+    assert_eq!(*p.value, serde_json::json!({"k": [1]}));
+    assert_eq!(app.doc.mirror.get(id, store::model::field::PATH), store::model::FieldValue::Str(file));
+    assert!(app.doc.mirror.tree(id, store::model::field::BODY).is_none_or(|t| t.is_empty()), "the body is gone");
+}
+
+#[test]
+fn redoing_it_detaches_again() {
+    let (mut app, id, _) = detached("redo-detach");
+    app.step_history(None, false);
+    app.step_history(None, true);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(p.is_inline());
+    assert_eq!(*p.value, serde_json::json!({"k": [1]}));
+}
+
+#[test]
+fn an_undo_is_skipped_when_the_body_changed_since() {
+    let (mut app, id, _) = detached("skip-detach");
+    let tree = app.doc.mirror.tree(id, store::model::field::BODY).cloned().unwrap();
+    let path = store::body::pointer_path(&tree, "/k/0").unwrap();
+    app.edit_prop(id, store::model::field::BODY, path, Some(store::tree::Leaf::Int(2)));
+    app.refresh_inline(id);
+    app.step_history(None, false);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(p.is_inline(), "the later edit stands; the detach is not undone under it");
+    assert_eq!(*p.value, serde_json::json!({"k": [2]}));
+}
