@@ -487,23 +487,27 @@ impl App {
         }
         // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
         // commit wrote; its landing must not replay it over the local edit.
-        for (node, no, _) in self.doc.writes.fields() {
-            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
-                let value = match no {
-                    field::PARENT => FieldValue::Id(self.doc.mirror.parent(node)),
-                    _ => self.doc.mirror.get(node, no),
-                };
-                snap.fields.insert(no, value);
+        // One pass over the parked snapshots: each part this commit wrote is re-read from the mirror.
+        let (fields, moved): (Vec<(NodeId, u32)>, Vec<NodeId>) = (
+            self.doc.writes.fields().map(|(n, no, _)| (n, no)).collect(),
+            self.doc.writes.moves().map(|(n, _)| n).collect(),
+        );
+        let treed: Vec<NodeId> = self.doc.writes.tree_sets().map(|(n, ..)| n).collect();
+        for (&node, remote) in &mut self.spawns.remote_in_flight {
+            let Remote::Shown(snap) = remote else { continue };
+            for &(_, no) in fields.iter().filter(|(n, _)| *n == node) {
+                snap.fields.insert(
+                    no,
+                    match no {
+                        field::PARENT => FieldValue::Id(self.doc.mirror.parent(node)),
+                        _ => self.doc.mirror.get(node, no),
+                    },
+                );
             }
-        }
-        for (node, _) in self.doc.writes.moves() {
-            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
+            if moved.contains(&node) {
                 snap.group = self.doc.mirror.group(node);
             }
-        }
-        let tree_nodes: Vec<NodeId> = self.doc.writes.tree_sets().map(|(n, ..)| n).collect();
-        for node in tree_nodes {
-            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
+            if treed.contains(&node) {
                 snap.trees = self.doc.mirror.trees_of(node);
             }
         }
