@@ -142,6 +142,11 @@ impl App {
             }
             done += 1;
         }
+        let mut bodies: Vec<NodeId> = edits.iter().filter(|e| e.field == field::BODY).map(|e| e.node).collect();
+        bodies.dedup();
+        for node in bodies {
+            self.refresh_inline(node);
+        }
         (done, edits.len())
     }
 

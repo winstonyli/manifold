@@ -382,3 +382,19 @@ fn an_undo_of_a_closed_card_does_nothing() {
     assert!(app.undo.take(None, false).is_none(), "nothing was restored, so the entry is dropped");
     assert!(!app.doc.writes.tree_queued(card, field::PROPS));
 }
+
+#[test]
+fn undoing_a_body_edit_refreshes_the_open_level() {
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    app.insert_inline_json_at(id, None);
+    let path = crate::store::body::pointer_path(app.doc.mirror.tree(id, field::BODY).unwrap(), "").unwrap();
+    let edit = app.edit_prop(id, field::BODY, path, Some(Leaf::Int(7))).unwrap();
+    app.record_undo("Edit".into(), UndoKind::Props(vec![edit]));
+    app.refresh_inline(id);
+    app.current_group = Some(id);
+    app.sync_json_level();
+    assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!(7));
+    app.step_history(None, false);
+    assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!({}));
+}

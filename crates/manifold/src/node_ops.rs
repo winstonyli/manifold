@@ -45,10 +45,7 @@ impl App {
         let tree = store::body::value_to_tree(&serde_json::json!({}), &mut |_| self.alloc_node_id())
             .expect("an empty object is within the caps");
         self.set_body(id, tree);
-        let fresh = self.inline_payload(id);
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.runtime = Runtime::Json(fresh);
-        }
+        self.refresh_inline(id);
     }
 
     /// Moves a file card's document into the synced document (`BODY`) and drops the path; the file stays on disk. A
@@ -77,10 +74,7 @@ impl App {
         };
         self.set_body(id, tree);
         self.edit_field(id, store::model::field::PATH, store::model::FieldValue::Str(String::new()));
-        let fresh = self.inline_payload(id);
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.runtime = Runtime::Json(fresh);
-        }
+        self.refresh_inline(id);
         Ok(())
     }
 

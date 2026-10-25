@@ -1293,3 +1293,28 @@ fn a_remote_body_change_updates_the_open_cards_value() {
     let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!() };
     assert_eq!(*p.value, serde_json::json!({"k": 2}));
 }
+
+#[test]
+fn a_remote_whole_body_tombstone_keeps_the_card_inline_and_empty() {
+    let mut app = app_with(&BTreeMap::from([(node(1), inline_snapshot(serde_json::json!({"k": 1})))]));
+    app.apply_remote(vec![(node(1), Remote::Shown(shared(Kind::Json, None, &[])))]);
+    let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!() };
+    assert!(p.is_inline() && p.error.is_none(), "still an inline card");
+    assert_eq!(*p.value, serde_json::Value::Null);
+}
+
+#[test]
+fn a_json_card_with_no_body_path_or_url_materializes_inline_and_empty() {
+    let app = app_with(&BTreeMap::from([(node(1), shared(Kind::Json, None, &[]))]));
+    let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!() };
+    assert!(p.is_inline() && p.error.is_none());
+    assert_eq!(*p.value, serde_json::Value::Null);
+}
+
+#[test]
+fn a_pending_fetch_json_card_with_a_url_stays_a_file_card() {
+    let url = (field::URL, FieldValue::Str("https://example.test/d.json".into()));
+    let app = app_with(&BTreeMap::from([(node(1), shared(Kind::Json, None, &[url]))]));
+    let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!() };
+    assert!(!p.is_inline());
+}

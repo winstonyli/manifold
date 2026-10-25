@@ -70,6 +70,26 @@ impl App {
         JsonPayload::inline(self.doc.mirror.tree_version(id, field::BODY), std::sync::Arc::new(value))
     }
 
+    /// Whether the Json card `id` (stored as `fields`) holds its document in BODY: it has a tree, or it has neither a
+    /// file nor a source url (a `New JSON` card whose BODY was tombstoned). A pending-fetch card has a url.
+    pub(crate) fn is_inline_card(&self, id: NodeId, fields: &Fields) -> bool {
+        self.doc.mirror.tree(id, field::BODY).is_some()
+            || str_of(fields, field::PATH).is_empty() && str_of(fields, field::URL).is_empty()
+    }
+
+    /// Rebuilds inline card `id`'s payload from its BODY tree and gives the new document to the open level: the one
+    /// place a local edit, an undo, a detach and a remote change all land.
+    pub(crate) fn refresh_inline(&mut self, id: NodeId) {
+        let fresh = self.inline_payload(id);
+        let Some(Runtime::Json(p)) = self.nodes.get_mut(&id).map(|n| &mut n.runtime) else { return };
+        if p.is_inline() && fresh.version() == p.version() {
+            return;
+        }
+        let value = fresh.value.clone();
+        *p = fresh;
+        self.swap_json_value(id, value);
+    }
+
     /// Applies `fields` to the live node `id` in the fields `mirror_remote` found changed (`changed`); the ones it
     /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict (2b-3 Ruling 3),
     /// so a tab whose url edit is pending is not navigated away from it, and a card whose pos edit is pending is not
@@ -97,10 +117,11 @@ impl App {
             let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
             self.after_jar_ephemeral_changed(id, on);
         }
-        // A Json card whose BODY changed (or that another replica just made inline) takes the new document.
-        let body =
-            (changed(field::BODY) && self.doc.mirror.tree(id, field::BODY).is_some()).then(|| self.inline_payload(id));
-        let mut new_json_value = None;
+        // A Json card whose BODY changed (or that another replica just made inline) takes the new document; an
+        // inline card whose BODY was emptied stays inline and shows `null`.
+        let body_changed = changed(field::BODY)
+            && (self.doc.mirror.tree(id, field::BODY).is_some()
+                || self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline()));
         let Some(node) = self.nodes.get_mut(&id) else {
             return false;
         };
@@ -147,15 +168,10 @@ impl App {
             | Runtime::Download(_)
             | Runtime::Image(_)
             | Runtime::Pdf(_) => {}
-            Runtime::Json(p) => {
-                if let Some(fresh) = body.filter(|f| f.version() != p.version()) {
-                    new_json_value = Some(fresh.value.clone());
-                    *p = fresh;
-                }
-            }
+            Runtime::Json(_) => {}
         }
-        if let Some(value) = new_json_value {
-            self.swap_json_value(id, value);
+        if body_changed {
+            self.refresh_inline(id);
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -203,7 +219,7 @@ impl App {
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is
         // running (`content_index`), so a restore reads the dir once.
-        let inline = kind == Kind::Json && self.doc.mirror.tree(id, field::BODY).is_some();
+        let inline = kind == Kind::Json && self.is_inline_card(id, fields);
         let content_path = (matches!(kind, Kind::Image | Kind::Pdf) || kind == Kind::Json && !inline).then(|| {
             let stored = str_of(fields, field::PATH);
             match &self.content_index {
