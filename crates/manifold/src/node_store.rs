@@ -116,11 +116,9 @@ impl App {
             }
         }
         if !local && self.is_container(id) {
-            for (_, _, group) in
-                self.spawns.remote_in_flight.values_mut().filter_map(crate::session_sync::Remote::shown_mut)
-            {
-                if *group == Some(id) {
-                    *group = up;
+            for snap in self.spawns.remote_in_flight.values_mut().filter_map(crate::session_sync::Remote::shown_mut) {
+                if snap.group == Some(id) {
+                    snap.group = up;
                 }
             }
         }

@@ -13,7 +13,13 @@ fn a_json_nodes_view_round_trips_through_the_store() {
 
     // Restoring those fields gives the same view back.
     let mut restored = App::default();
-    restored.materialize(node, crate::store::model::TYPE_JSON, fields, None, None);
+    let snap = Snapshot {
+        ty: crate::store::model::TYPE_JSON.into(),
+        group: None,
+        fields: fields.clone(),
+        trees: Default::default(),
+    };
+    restored.materialize(node, &snap, None);
     assert_eq!(restored.doc.mirror.view(node).unwrap().get("/users").unwrap().collapsed, Some(true));
 }
 

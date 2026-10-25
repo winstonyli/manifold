@@ -4,9 +4,10 @@ use super::*;
 use std::collections::BTreeSet;
 
 use crate::local_state::LocalState;
-use crate::session_sync::imported_fields;
+use crate::session_sync::{imported_fields, Snapshot};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{Kind, NodeId};
+use crate::store::tree::Trees;
 
 impl App {
     /// Writes `settings.json`, unless another process (another
@@ -375,7 +376,8 @@ impl App {
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            self.materialize(node.id, &node.ty, &fields, group, None);
+            let snap = Snapshot { ty: node.ty.clone(), group, fields, trees: Trees::new() };
+            self.materialize(node.id, &snap, None);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);

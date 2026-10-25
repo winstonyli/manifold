@@ -37,7 +37,7 @@ pub(crate) struct SpawnTracker {
     /// Other replicas' latest change to a node in `spawning`, applied when
     /// its spawn lands (`Shown`: the change to apply; `Hidden`: hide it once it lands; `Deleted`: remove it). The
     /// spawn itself carries only what it was started with.
-    pub(crate) remote_in_flight: HashMap<NodeId, session_sync::Remote<session_sync::RemoteNode>>,
+    pub(crate) remote_in_flight: HashMap<NodeId, session_sync::Remote<session_sync::Snapshot>>,
 
     /// Tabs loading a url the host gave them, with when each was last seen
     /// loading; their url changes aren't shared meanwhile

@@ -32,14 +32,8 @@ impl App {
     /// settled position instead of `fields`'s stored `pos` (which the mirror
     /// holds), and reopens a tab at its live url (`LocalNode::live_url`).
     /// Every caller but `restore_session` passes `None`.
-    pub(crate) fn materialize(
-        &mut self,
-        id: NodeId,
-        ty: &str,
-        fields: &Fields,
-        group: Option<NodeId>,
-        local: Option<&LocalNode>,
-    ) {
+    pub(crate) fn materialize(&mut self, id: NodeId, snap: &Snapshot, local: Option<&LocalNode>) {
+        let (ty, fields, group) = (snap.ty.as_str(), &snap.fields, snap.group);
         let kind = Kind::from_type(ty);
         // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
         // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
@@ -54,7 +48,7 @@ impl App {
             return;
         }
         if self.spawns.spawning.contains_key(&id) {
-            self.spawns.remote_in_flight.insert(id, Remote::Shown((ty.to_owned(), fields.clone(), group)));
+            self.spawns.remote_in_flight.insert(id, Remote::Shown(snap.clone()));
             return;
         }
         let (held, changed) = self.mirror_remote(id, fields, group);
@@ -352,7 +346,7 @@ impl App {
                 Remote::Shown(s) => {
                     // A node coming back from hidden takes the personal state it left with (spec decision 8).
                     let local = self.doc.hidden_local.remove(&id);
-                    self.materialize(id, &s.ty, &s.fields, s.group, local.as_ref());
+                    self.materialize(id, &s, local.as_ref());
                     if let (Some(local), Some(live)) = (&local, self.nodes.get_mut(&id)) {
                         Self::apply_local_node(live, local);
                     }
@@ -456,9 +450,9 @@ impl App {
 
     /// Applies what other replicas changed while `id`'s spawn was in flight,
     /// now that its node exists (`handle_tab_spawn_result`).
-    pub(crate) fn land_remote_in_flight(&mut self, id: NodeId, remote: Option<Remote<RemoteNode>>) {
+    pub(crate) fn land_remote_in_flight(&mut self, id: NodeId, remote: Option<Remote<Snapshot>>) {
         match remote {
-            Some(Remote::Shown((ty, fields, group))) => self.materialize(id, &ty, &fields, group, None),
+            Some(Remote::Shown(snap)) => self.materialize(id, &snap, None),
             Some(Remote::Hidden) => {
                 self.leave_hidden(id);
                 self.hide_node(id);

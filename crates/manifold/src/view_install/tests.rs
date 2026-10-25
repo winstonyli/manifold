@@ -999,6 +999,7 @@ fn an_install_waits_while_a_tab_is_still_starting() {
         ty: crate::store::model::TYPE_TAB.into(),
         group: None,
         fields: Default::default(),
+        trees: Default::default(),
     };
     app.spawns.spawning.insert(crate::card_id::testutil::node(1), pending);
     assert!(!app.start_view_install_at(ViewKind::Cef, &data, &runtime_plan(&pin)));

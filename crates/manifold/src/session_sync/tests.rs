@@ -41,7 +41,7 @@ fn shared(kind: Kind, group: Option<NodeId>, set: &[(u32, FieldValue)]) -> Snaps
     for (no, value) in set {
         fields.insert(*no, value.clone());
     }
-    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields }
+    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields, trees: Default::default() }
 }
 
 fn note(text: &str, group: Option<NodeId>) -> Snapshot {
@@ -54,7 +54,7 @@ fn group(name: &str) -> Snapshot {
 
 /// A remote change's snapshot of a `kind` node: its type string, `fields` and `group`.
 fn snap(kind: Kind, fields: Fields, group: Option<NodeId>) -> Snapshot {
-    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields }
+    Snapshot { ty: kind.type_str().unwrap().to_owned(), group, fields, trees: Default::default() }
 }
 
 /// What `doc` shows, shaped like `snapshots`.

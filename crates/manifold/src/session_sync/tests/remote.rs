@@ -90,7 +90,8 @@ fn a_remote_view_change_updates_the_node_in_place() {
     let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
     let mut fields = snapshots(&app)[&node].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
-    app.materialize(node, crate::store::model::TYPE_JSON, &fields, None, None);
+    let snap = Snapshot { ty: crate::store::model::TYPE_JSON.into(), group: None, fields, trees: Default::default() };
+    app.materialize(node, &snap, None);
     assert_eq!(app.doc.mirror.view(node).unwrap().get("").unwrap().collapsed, Some(true));
     let json = app.nodes[&node].as_json().unwrap();
     assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
@@ -103,7 +104,8 @@ fn materialize_keeps_the_stored_type_string() {
     let mut app = App::default();
     let node = node(1);
     let fields = shared(Kind::Note, None, &[(field::TEXT, FieldValue::Str("n".into()))]).fields;
-    app.materialize(node, "Text/Markdown", &fields, None, None);
+    let snap = Snapshot { ty: "Text/Markdown".into(), group: None, fields, trees: Default::default() };
+    app.materialize(node, &snap, None);
     assert_eq!(app.doc.mirror.ty(node), "Text/Markdown");
     assert_eq!(app.card_kind(node).unwrap().ty, crate::store::model::TYPE_NOTE);
     assert_eq!(app.snapshot(node).unwrap().ty, "Text/Markdown");

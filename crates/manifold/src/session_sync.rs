@@ -19,6 +19,7 @@ use crate::store::model::{
     decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_LINK, TYPE_TAB,
 };
 use crate::store::ops::OpBody;
+use crate::store::tree::Trees;
 use crate::tabs::TabSpawn;
 use crate::{App, ViewMode};
 
@@ -58,12 +59,19 @@ pub(crate) struct Snapshot {
     pub ty: String,
     pub group: Option<NodeId>,
     pub fields: Fields,
+    /// The node's tree fields (`PROPS`), non-empty ones only. Travels wherever `fields` does.
+    pub trees: Trees,
 }
 
 impl Snapshot {
     /// What the document shows for its node `id`: its type, its effective group and its fields (`fields_of`).
     pub(crate) fn of(doc: &Doc, id: NodeId, node: &Node) -> Snapshot {
-        Snapshot { ty: node.ty().to_owned(), group: doc.effective_group(id), fields: fields_of(node) }
+        Snapshot {
+            ty: node.ty().to_owned(),
+            group: doc.effective_group(id),
+            fields: fields_of(node),
+            trees: node.trees(),
+        }
     }
 
     /// The kind its type means (`Kind::from_type`).
@@ -220,9 +228,6 @@ impl<T> Remote<T> {
 /// longer live (deleted or pruned).
 pub(crate) type RemoteChange = (NodeId, Remote<Snapshot>);
 
-/// A node's type string, fields and group, as `materialize` takes them.
-pub(crate) type RemoteNode = (String, Fields, Option<NodeId>);
-
 fn str_of(fields: &Fields, no: u32) -> String {
     match fields.get(&no) {
         Some(FieldValue::Str(s)) => s.clone(),
@@ -285,7 +290,7 @@ pub(crate) fn spawn_snapshot(
     let (pinned, parent) = (spawn.carry.pinned, spawn.parent);
     let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
     let ty = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
-    Snapshot { ty: ty.to_owned(), group: spawn.group, fields }
+    Snapshot { ty: ty.to_owned(), group: spawn.group, fields, trees: Trees::new() }
 }
 
 /// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
@@ -344,13 +349,13 @@ impl App {
         let toasts = self.toasts.save_toast_queue.len();
         // Links ride along: stored, never graph nodes.
         for (id, s) in nodes.iter().filter(|(_, s)| s.kind() == Kind::Link) {
-            self.materialize(*id, &s.ty, &s.fields, None, None);
+            self.materialize(*id, s, None);
         }
         nodes.retain(|(_, s)| s.kind() != Kind::Link);
         // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
         if nodes.iter().all(|(_, s)| s.kind() == Kind::Jar) {
             for (id, s) in &nodes {
-                self.materialize(*id, &s.ty, &s.fields, s.group, None);
+                self.materialize(*id, s, None);
             }
             self.keep_hidden(local.nodes);
             self.evict_closed();
@@ -363,7 +368,7 @@ impl App {
             // The store's own `pos` still reaches the mirror inside
             // `materialize`; only the live placement is overridden.
             let entry = local.nodes.get(id);
-            self.materialize(*id, &s.ty, &s.fields, s.group, entry);
+            self.materialize(*id, s, entry);
         }
         self.end_content_pass(pass);
         self.collapse_toasts_since(toasts);

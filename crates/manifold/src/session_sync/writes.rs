@@ -324,11 +324,11 @@ impl App {
                     _ => (no, self.doc.mirror.get(id, no)),
                 })
                 .collect();
-            return Some(Snapshot { ty: ty.to_owned(), group: self.doc.mirror.group(id), fields });
+            return Some(Snapshot { ty: ty.to_owned(), group: self.doc.mirror.group(id), fields, trees: Trees::new() });
         }
         if self.doc.mirror.is_link(id) {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(id, no))).collect();
-            return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields });
+            return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields, trees: Trees::new() });
         }
         self.spawns.spawning.get(&id).cloned()
     }
@@ -431,17 +431,17 @@ impl App {
         // A remote value parked for a tab still spawning (`remote_in_flight`) predates what this
         // commit wrote; its landing must not replay it over the local edit.
         for (node, no, _) in self.doc.writes.fields() {
-            if let Some(Remote::Shown((_, fields, _))) = self.spawns.remote_in_flight.get_mut(&node) {
+            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
                 let value = match no {
                     field::PARENT => FieldValue::Id(self.doc.mirror.parent(node)),
                     _ => self.doc.mirror.get(node, no),
                 };
-                fields.insert(no, value);
+                snap.fields.insert(no, value);
             }
         }
         for (node, _) in self.doc.writes.moves() {
-            if let Some(Remote::Shown((_, _, group))) = self.spawns.remote_in_flight.get_mut(&node) {
-                *group = self.doc.mirror.group(node);
+            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
+                snap.group = self.doc.mirror.group(node);
             }
         }
         // Text committed here is newer than another replica's held before it: the held text is dropped.
