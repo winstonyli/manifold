@@ -17,6 +17,8 @@ use super::model::{
     encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, VIEW_KINDS,
 };
 use super::ops::OpBody;
+use super::tree::{resolved, Trees, TREE_FIELDS};
+use super::tree_json::{tree_from_json, tree_to_json};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JsonDoc {
@@ -65,7 +67,13 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
 /// `type` from `ty`: what `doc_to_json` writes for a document node, for
 /// callers holding values rather than a `Node` (Recently Closed,
 /// `session_sync`).
-pub fn node_json(id: &str, ty: &str, fields: &BTreeMap<u32, FieldValue>, group: Option<NodeId>) -> JsonNode {
+pub fn node_json(
+    id: &str,
+    ty: &str,
+    fields: &BTreeMap<u32, FieldValue>,
+    trees: &Trees,
+    group: Option<NodeId>,
+) -> JsonNode {
     let mut out = Map::new();
     let mut put = |no: u32, value: &FieldValue| {
         if let (Some(def), Some(json)) = (field_def(no), value_to_json(value)) {
@@ -78,6 +86,11 @@ pub fn node_json(id: &str, ty: &str, fields: &BTreeMap<u32, FieldValue>, group: 
         }
     }
     put(field::GROUP, &FieldValue::Id(group));
+    for &(no, name) in &TREE_FIELDS {
+        if let Some(tree) = trees.get(&no).filter(|tree| resolved(tree).next().is_some()) {
+            out.insert(name.into(), tree_to_json(tree));
+        }
+    }
     out.insert("type".into(), Value::String(ty.to_owned()));
     JsonNode { id: id.to_owned(), fields: out }
 }
@@ -90,7 +103,7 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
         .filter(|k| k.field != field::TYPE && field_def(k.field).is_some())
         .map(|k| (k.field, node.get(k.field)))
         .collect();
-    node_json(&id.to_string(), node.ty(), &fields, group)
+    node_json(&id.to_string(), node.ty(), &fields, &node.trees(), group)
 }
 
 /// Every shown node, in id order, each under its effective group.
@@ -155,6 +168,7 @@ pub struct Imported {
     pub id: NodeId,
     pub ty: String,
     pub fields: BTreeMap<u32, FieldValue>,
+    pub trees: Trees,
 }
 
 impl Imported {
@@ -264,7 +278,25 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
             };
             fields.insert(def.no, parsed);
         }
-        out.push(Imported { id: fresh[node.id.as_str()], ty: ty.to_owned(), fields });
+        // A type this build doesn't know takes no tree either (decision 4). An id the file names becomes its fresh id;
+        // another real id stays under `Own` and is dropped under `Foreign`.
+        let mut trees = Trees::new();
+        if kind != Kind::Unknown {
+            let resolve = |text: &str| match fresh.get(text) {
+                Some(id) => Some(*id),
+                None if trust == Trust::Own => text.parse().ok(),
+                None => None,
+            };
+            for &(no, name) in &TREE_FIELDS {
+                let Some(value) = node.fields.get(name) else { continue };
+                let tree =
+                    tree_from_json(value, &resolve).map_err(|e| format!("node {:?}: bad {name}: {e}", node.id))?;
+                if !tree.is_empty() {
+                    trees.insert(no, tree);
+                }
+            }
+        }
+        out.push(Imported { id: fresh[node.id.as_str()], ty: ty.to_owned(), fields, trees });
     }
     Ok(out)
 }
@@ -286,7 +318,23 @@ fn create_op(node: &Imported) -> OpBody {
 pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
     let cards: std::collections::BTreeSet<NodeId> =
         imported.iter().filter(|n| n.kind() != Kind::Link).map(|n| n.id).collect();
-    imported.iter().filter(|n| !is_half_made_link(n, |id| cards.contains(&id))).map(create_op).collect()
+    imported
+        .iter()
+        .filter(|n| !is_half_made_link(n, |id| cards.contains(&id)))
+        .flat_map(|n| std::iter::once(create_op(n)).chain(tree_sets(n)))
+        .collect()
+}
+
+/// One `Set` per leaf of `node`'s trees, ancestors first, to follow its `Create`.
+fn tree_sets(node: &Imported) -> impl Iterator<Item = OpBody> + '_ {
+    node.trees.iter().flat_map(move |(&field, tree)| {
+        tree.iter().map(move |(path, leaf)| OpBody::Set {
+            node: node.id,
+            field,
+            path: path.clone(),
+            enc: leaf.encode(),
+        })
+    })
 }
 
 #[cfg(test)]
@@ -294,6 +342,7 @@ mod tests {
     use super::*;
     use crate::store::model::{ActorId, DocId, Hlc, TYPE_GROUP};
     use crate::store::ops::Op;
+    use crate::store::tree::Leaf;
 
     fn ids(actor: u64) -> impl FnMut() -> NodeId {
         let mut counter = 0;
@@ -497,7 +546,7 @@ mod tests {
         fields.insert(field::URL, FieldValue::Str("https://a.example/".into()));
         fields.insert(field::PINNED, FieldValue::Bool(true));
         fields.insert(field::COLOR, FieldValue::Color(None));
-        let json = node_json("n1", crate::store::model::TYPE_TAB, &fields, None);
+        let json = node_json("n1", crate::store::model::TYPE_TAB, &fields, &Trees::new(), None);
         assert_eq!(json.kind(), Some(Kind::Tab));
         assert_eq!(json.fields.get("url"), Some(&Value::String("https://a.example/".into())));
         assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
@@ -591,5 +640,62 @@ mod tests {
         )
         .unwrap();
         assert!(imported.iter().all(|i| !i.fields.contains_key(&field::CLOSED)));
+    }
+
+    const WITH_PROPS: &str = r##"{"nodes": [
+        {"id": "a", "type": "text/markdown", "text": "a", "props": {"label": "x", "n": {"deep": 2}, "link": {"$ref": "b"}}},
+        {"id": "b", "type": "text/markdown", "text": "b"}
+    ]}"##;
+
+    #[test]
+    fn a_document_with_props_exports_imports_and_creates_them() {
+        let first = doc_from(WITH_PROPS, 1);
+        let (a, b) = {
+            let mut notes: Vec<_> = first.live().map(|(id, n)| (id, n.get(field::TEXT))).collect();
+            notes.sort_by_key(|(_, text)| format!("{text:?}"));
+            (notes[0].0, notes[1].0)
+        };
+        assert_eq!(first.nodes[&a].trees()[&field::PROPS].len(), 3);
+        let exported = doc_to_json(&first);
+        let json_a = exported.nodes.iter().find(|n| n.id == a.to_string()).unwrap();
+        assert_eq!(json_a.fields["props"]["n"]["deep"], 2);
+        assert_eq!(json_a.fields["props"]["link"]["$ref"], b.to_string());
+        // Re-imported under fresh ids, the ref follows its target.
+        let imported = import(&exported, ids(2), Trust::Own).unwrap();
+        let mut second = Doc::new(DocId([0; 16]));
+        let mut op_ids = ids(200);
+        for (i, body) in creates(&imported).into_iter().enumerate() {
+            second.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
+        }
+        let id_of = |text: &str| {
+            imported.iter().find(|n| n.fields.get(&field::TEXT) == Some(&FieldValue::Str(text.into()))).unwrap().id
+        };
+        let (new_a, new_b) = (id_of("a"), id_of("b"));
+        let tree = &second.nodes[&new_a].trees()[&field::PROPS];
+        assert_eq!(tree.len(), 3);
+        assert!(tree.values().any(|leaf| *leaf == Leaf::Ref(new_b)), "the ref names the copy of b");
+    }
+
+    #[test]
+    fn a_foreign_import_drops_refs_outside_the_file() {
+        let json = r##"{"nodes": [{"id": "a", "type": "text/markdown", "text": "a",
+            "props": {"keep": 1, "gone": {"$ref": "424242"}, "@424242": {"x": 1}}}]}"##;
+        let parsed: JsonDoc = serde_json::from_str(json).unwrap();
+        let imported = import(&parsed, ids(1), Trust::Foreign).unwrap();
+        assert_eq!(imported[0].trees[&field::PROPS].len(), 1);
+    }
+
+    #[test]
+    fn props_on_an_unknown_type_are_not_copied() {
+        let json = r##"{"nodes": [{"id": "a", "type": "application/x-from-the-future", "props": {"k": 1}}]}"##;
+        let parsed: JsonDoc = serde_json::from_str(json).unwrap();
+        assert!(import(&parsed, ids(1), Trust::Own).unwrap()[0].trees.is_empty());
+    }
+
+    #[test]
+    fn a_bad_props_value_is_an_import_error() {
+        let json = r##"{"nodes": [{"id": "a", "type": "text/markdown", "props": {"k": [1]}}]}"##;
+        let parsed: JsonDoc = serde_json::from_str(json).unwrap();
+        assert!(import(&parsed, ids(1), Trust::Own).is_err());
     }
 }

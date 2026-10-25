@@ -117,3 +117,47 @@ fn a_queued_edit_on_a_node_deleted_in_the_same_save_is_dropped() {
     assert!(!app.doc.writes.tree_queued(card, field::PROPS));
     assert_eq!(ops_of(&app) - before, 1, "only the Delete is committed");
 }
+
+#[test]
+fn a_duplicate_carries_the_tree_and_remaps_refs_inside_the_copy() {
+    let path = temp_dir("props-duplicate").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
+    app.edit_prop(a, field::PROPS, key_path(&["label"]), Some(Leaf::Str("x".into()))).unwrap();
+    app.edit_prop(a, field::PROPS, key_path(&["link"]), Some(Leaf::Ref(b))).unwrap();
+    assert!(app.save_session());
+    app.duplicate_nodes(&[a, b]);
+    let copy_of = |text: &str| {
+        *app.nodes.keys().find(|&&id| ![a, b].contains(&id) && app.doc.mirror.text(id) == text).expect("a copy")
+    };
+    let (copy_a, copy_b) = (copy_of("a"), copy_of("b"));
+    let tree = app.doc.mirror.tree(copy_a, field::PROPS).expect("the copy has a tree");
+    assert_eq!(tree[&key_path(&["label"])], Leaf::Str("x".into()));
+    assert_eq!(tree[&key_path(&["link"])], Leaf::Ref(copy_b), "the ref names the copy of b, not b");
+    assert_eq!(doc_trees(&app, copy_a), app.doc.mirror.trees_of(copy_a), "and the document agrees");
+}
+
+#[test]
+fn a_tab_duplicate_keeps_the_tree() {
+    let path = temp_dir("props-tab-duplicate").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = succeed_spawn(&mut app, "https://a.test/");
+    app.edit_prop(tab, field::PROPS, key_path(&["label"]), Some(Leaf::Str("x".into()))).unwrap();
+    assert!(app.save_session());
+    app.duplicate_tab(tab);
+    let (spawn, generation) = app.test_spawns.pop().expect("the copy's spawn is parked");
+    let copy = spawn.id;
+    assert_eq!(app.spawns.spawning[&copy].trees, app.doc.mirror.trees_of(tab), "the spawn starts with the tree");
+    let (view, _peer) = crate::process_manager::ViewTab::fake(spawn.kind);
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
+        spawn,
+        generation,
+        result: Ok(view),
+        seeded: Default::default(),
+        jar: Default::default(),
+        seed_clears: None,
+    });
+    assert_eq!(app.doc.mirror.trees_of(copy), app.doc.mirror.trees_of(tab), "and lands with it");
+    assert!(app.save_session());
+    assert_eq!(doc_trees(&app, copy), app.doc.mirror.trees_of(copy), "and the save commits it");
+}

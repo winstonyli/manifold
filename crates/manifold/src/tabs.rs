@@ -452,7 +452,11 @@ impl App {
             return;
         };
         let jar = self.doc.mirror.jar(id);
-        self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, None);
+        let copy = self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, None);
+        // The copy keeps the original's trees (labels, properties): it is created with them and lands showing them.
+        if let Some(snap) = self.spawns.spawning.get_mut(&copy) {
+            snap.trees = self.doc.mirror.trees_of(id);
+        }
     }
 
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root

@@ -386,6 +386,12 @@ pub(crate) struct Carried {
 }
 
 impl Carried {
+    /// `trees` as its tree fields' leaves.
+    pub(crate) fn with_trees(mut self, trees: Trees) -> Self {
+        self.trees = trees;
+        self
+    }
+
     /// `value` for field `no`; an absent value removes it, so a carried map never holds one.
     pub(crate) fn with(mut self, no: u32, value: FieldValue) -> Self {
         if value == FieldValue::absent(field_def(no).expect("a known field").ty) {

@@ -79,7 +79,7 @@ pub(crate) fn subtree_json(app: &App, roots: &[NodeId], offset: egui::Vec2) -> O
         if let Some(store::model::FieldValue::Pos(x, y)) = root_fields.get_mut(&field::POS) {
             (*x, *y) = (*x + offset.x, *y + offset.y);
         }
-        nodes.push(store::json::node_json(&id.to_string(), &root.ty, &root_fields, None));
+        nodes.push(store::json::node_json(&id.to_string(), &root.ty, &root_fields, &root.trees, None));
         record(id);
         // Only a group has members; for anything else this finds none. Membership and containment are the mirror's.
         let members = members_under(id, &app.node_order, |id| app.doc.mirror.group(*id), |id| app.is_container(*id));
@@ -90,7 +90,13 @@ pub(crate) fn subtree_json(app: &App, roots: &[NodeId], offset: egui::Vec2) -> O
                 continue;
             }
             let fields = live_fields(app, member_id, &member.fields);
-            nodes.push(store::json::node_json(&member_id.to_string(), &member.ty, &fields, member.group));
+            nodes.push(store::json::node_json(
+                &member_id.to_string(),
+                &member.ty,
+                &fields,
+                &member.trees,
+                member.group,
+            ));
             record(member_id);
         }
     }
@@ -106,7 +112,7 @@ pub(crate) fn subtree_json(app: &App, roots: &[NodeId], offset: egui::Vec2) -> O
         let (from, to) = app.doc.mirror.link_ends(link);
         if from.is_some_and(|n| kept.contains(&n)) && to.is_some_and(|n| kept.contains(&n)) {
             if let Some(snap) = app.snapshot(link) {
-                nodes.push(store::json::node_json(&link.to_string(), &snap.ty, &snap.fields, None));
+                nodes.push(store::json::node_json(&link.to_string(), &snap.ty, &snap.fields, &snap.trees, None));
             }
         }
     }

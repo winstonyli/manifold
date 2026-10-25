@@ -19,7 +19,8 @@ impl App {
             seed_clears,
         } = outcome;
         let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
-        self.spawns.spawning.remove(&id);
+        // What the tab was started with, its trees included, is what it lands with (`seed_landing`).
+        let trees = self.spawns.spawning.remove(&id).map(|snap| snap.trees).unwrap_or_default();
         let remote = self.spawns.remote_in_flight.remove(&id);
         self.spawns.tab_spawns_in_flight = self.spawns.tab_spawns_in_flight.saturating_sub(1);
         if self.spawns.tab_spawns_in_flight == 0 {
@@ -111,7 +112,7 @@ impl App {
                 let view_kind = session_sync::view_code(kind);
                 let carried =
                     Carried::tab(Some(pos), color, pinned, (parent, group), url.clone(), view_kind, spawn_jar);
-                self.seed_landing(id, carried);
+                self.seed_landing(id, carried.with_trees(trees.clone()));
                 if !self.node_order.contains(&id) {
                     self.node_order.push(id);
                 }
@@ -255,7 +256,7 @@ impl App {
                     // it started (`edit_view_kind`); a new one lands on it here.
                     let view_kind = session_sync::view_code(kind);
                     let carried = Carried::tab(Some(pos), color, pinned, (parent, group), url, view_kind, spawn_jar);
-                    self.seed_landing(id, carried);
+                    self.seed_landing(id, carried.with_trees(trees.clone()));
                     if !self.node_order.contains(&id) {
                         self.node_order.push(id);
                     }

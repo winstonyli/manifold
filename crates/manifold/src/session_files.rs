@@ -7,7 +7,6 @@ use crate::local_state::LocalState;
 use crate::session_sync::{imported_fields, Snapshot};
 use crate::store::json::{Imported, JsonDoc};
 use crate::store::model::{Kind, NodeId};
-use crate::store::tree::Trees;
 
 impl App {
     /// Writes `settings.json`, unless another process (another
@@ -376,7 +375,7 @@ impl App {
             if let (true, Some(pos)) = (is_root, root_pos) {
                 fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
             }
-            let snap = Snapshot { ty: node.ty.clone(), group, fields, trees: Trees::new() };
+            let snap = Snapshot { ty: node.ty.clone(), group, fields, trees: node.trees.clone() };
             self.materialize(node.id, &snap, None);
         }
         self.end_content_pass(pass);

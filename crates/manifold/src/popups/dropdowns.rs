@@ -209,8 +209,13 @@ impl App {
                     .into_iter()
                     .filter_map(|(id, _)| {
                         let node = doc.nodes.get(&id)?;
-                        let json =
-                            store::json::node_json(&id.to_string(), node.ty(), &session_sync::fields_of(node), None);
+                        let json = store::json::node_json(
+                            &id.to_string(),
+                            node.ty(),
+                            &session_sync::fields_of(node),
+                            &node.trees(),
+                            None,
+                        );
                         let title = self.doc.hidden_local.get(&id).map(|l| l.title.clone()).filter(|t| !t.is_empty());
                         let members = (node.kind() == Kind::Group).then(|| {
                             let under = doc.with_descendants(std::collections::BTreeSet::from([id]));
