@@ -99,31 +99,38 @@ A node-level `Delete` still clears every register of the node, trees included, a
 ### 2.1 The mirror
 
 The mirror keeps the invariant it has: it equals the document except for edits still queued in `App::writes`. For
-trees it holds the **resolved** tree per node (`Mirror::props`, `Mirror::body`: a sorted map from path to
-(value, stamp), visible registers only; the stamp orders a set by when each member was added). A remote change
-recomputes the touched subtree from the document registers; a local edit applies to the resolved tree directly (a local
-write is the newest, so this equals what the document will compute).
+trees it holds each tree field's **live leaves** per `(node, field)` (`Mirror::tree`: `Tree`, a sorted map from `TreePath`
+to `Leaf`, the registers that count in the document; `Trees` is the per-field map a `Snapshot` and `Carried` carry).
+Readers call `tree::resolved`, which lets a child win over a scalar above it (plan 2 refined this from "the mirror holds
+the resolved tree"; the stamp is not mirrored, so label order reads the document, plan 3). A remote change replaces the
+tree with the document's and puts the edits still queued in `App::writes` back on top; a local edit applies to the tree
+directly (a local write is the newest, so this equals what the document will compute; `tree::edit`).
 
 Writers (the only way to change a tree): `App::edit_prop(node, field, path, Option<Value>)` queues the register and
-updates the mirror, as `edit_field` does; `App::edit_subtree_delete(node, field, path)` writes the tombstone. Readers go
-through `Mirror` accessors (`props(id)`, `labels_of(id)`, `body(id)`), never the document.
+updates the mirror, as `edit_field` does; `leaf == None` writes the tombstone, so a subtree delete is the same call.
+Readers go through `Mirror` accessors (`tree`, `trees_of`), never the document.
 
-Each tree has a **version counter** (`Mirror::tree_version(id, field)`), bumped by any change, so fingerprints and the
-JSON level's assembled `Value` are cached by version and never hash or rebuild from leaves.
+Each tree has a **version** (`Mirror::tree_version(id, field)`): a tick of one monotonic clock, set by any change and never
+reused (not even after a forget), 0 when the tree is empty, so fingerprints and the JSON level's assembled `Value` are
+cached by version and never hash or rebuild from leaves.
 
 ### 2.2 Undo
 
-One new `UndoKind::Props(Vec<(NodeId, u32, Path, Option<Value>, Option<Value>)>)`: path-level (before, after) pairs,
-replayed through `edit_prop` and skipped when the register no longer holds the value being left (the rule of
-`replay_revert`). It serves labels, properties and Json edits alike: one arm for the whole feature.
+One new `UndoKind::Props(Vec<PropEdit>)`, `PropEdit { node, field, path, before, after }`: the leaves at and under `path`
+before, and the leaf after. The caller of `edit_prop` records it. Replay goes through `edit_prop` (a tombstone at `path`
+and a write per arriving leaf) and is skipped when the mirror no longer shows exactly what is being left (the rule of
+`replay_revert`). It serves labels, properties and Json edits alike: one arm for the whole feature. `UndoKind::Revert`
+stays as it is (parked: unify it into register edits).
 
 ### 2.3 Copies, kind changes, export
 
-- A duplicated card copies its trees. `Carried` (the field map carried through a tab becoming content, as `color` was)
-  carries them.
+- A duplicated card copies its trees: `Snapshot.trees` and `Carried.trees` carry them (a tab duplicate sets them on its
+  spawning snapshot, which lands them in the mirror and creates them with the tab).
 - `store/json.rs`: a tree is exported as a nested JSON object (`"props"`, `"body"`). A `Ref` is `{"$ref": "<id>"}`; an
   id-keyed map's keys are the element ids' text. Import gives every node a fresh id, so ids inside a tree are remapped
-  through the file's id table like `parent` is.
+  through the file's id table like `parent` is. PROPS only (plan 2): `Id` segments are keys `@<id>` (a key starting with
+  `@` gets one more), empty containers are dropped and arrays refused; limits `MAX_DEPTH` 64 and `MAX_LEAVES` 10,000
+  (`store/tree_json.rs`).
 
 ## 3. Labels
 
@@ -172,7 +179,7 @@ replayed through `edit_prop` and skipped when the register no longer holds the v
 Each ends green and could be tagged on its own.
 
 1. **Store**: `RegKey`, paths, values, the merge rule, the file format, the tests in section 6. No UI.
-2. **App** (plan 2; plan 1 is this section 1 only, and `Kind::card()` moved to plan 3): mirror trees and version counter, `edit_prop`, `UndoKind::Props`, duplicate and `Carried`, export and import.
+2. **App** (plan 2, done; plan 1 is this section 1 only, and `Kind::card()` moved to plan 3): mirror trees and version counter, `edit_prop`, `UndoKind::Props`, duplicate and `Carried`, export and import.
 3. **Labels**: `Kind::card()` first (D7), then `Kind::Label`, the menu and bar, chips and border, find, suggest arm,
    color removal, the `labels` gate stage.
 4. **Inline Json**: `BODY`, the level reading it, the write path, detach and export, the cap.
@@ -204,7 +211,7 @@ label is not a link); `CHANGELOG.md` at the bump (user's call): **Breaking: Jour
 
 - **D1** A version 3 session is set aside by the new build, so export it first with the current build (`--import-json`
   brings it back). The new build does not read 3.
-- **D2** The mirror holds the resolved tree (an extra copy, as it does for every field); it keeps `App::default()` tests
+- **D2** The mirror holds the live leaves (an extra copy, as it does for every field; refined in plan 2: readers resolve); it keeps `App::default()` tests
   and the accessor rule.
 - **D3** Label order by when the membership was added (its stamp, no extra register), not by label id (arbitrary: ids
   order by a random actor first). An explicit order register can come later without rework.

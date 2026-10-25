@@ -1,8 +1,6 @@
 //! Tree values (spec 2026-10-24-properties-design.md, sections 1.1 and 1.2): the address of a register inside a
 //! node's tree, and the leaf values a register holds.
 
-#![allow(dead_code, reason = "the app reads trees from plan 2 on (mirror trees); remove this line there")]
-
 use std::collections::BTreeMap;
 
 use super::model::{decode_id, field, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};
@@ -48,6 +46,7 @@ impl TreePath {
         parse(&self.0).expect("a path built or checked by this module")
     }
 
+    #[cfg(test)]
     pub fn of(segments: &[Seg]) -> TreePath {
         segments.iter().fold(TreePath::default(), |path, seg| path.child(seg))
     }
@@ -73,13 +72,6 @@ impl TreePath {
             }
         }
         TreePath(bytes.into())
-    }
-
-    /// The path without its last segment; `None` for the root.
-    pub fn parent(&self) -> Option<TreePath> {
-        let mut segments = self.segments();
-        segments.pop()?;
-        Some(TreePath::of(&segments))
     }
 
     /// Whether `other` lies strictly below this path.
@@ -324,8 +316,6 @@ mod tests {
         assert_eq!(TreePath::of(&[]).segments(), []);
         let path = TreePath::of(&segments);
         assert_eq!(TreePath::from_bytes(path.as_bytes()), Ok(path.clone()));
-        assert_eq!(path.parent().unwrap().segments(), segments[..5]);
-        assert_eq!(TreePath::default().parent(), None);
     }
 
     #[test]

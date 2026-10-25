@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Properties 2: trees in the app (mirror, edits, undo, copies, export) — Implementation Plan
