@@ -48,6 +48,7 @@ fn view_of(kind: CardKind) -> NodeMenuView {
     NodeMenuView {
         kind,
         has_group: false,
+        inline_json: false,
         has_url: false,
         has_copy_url: false,
         pinned: false,
@@ -126,8 +127,14 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "json_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin{g} | --- | Delete")
+                format!("Open Containing Folder | Copy Path | Detach to inline | --- | Rename | Duplicate | Pin{g} | --- | Delete")
             )
+        );
+        let inline = menu_of(&NodeMenuView { has_group, inline_json: true, ..view_of(plain(TYPE_JSON)) }, false);
+        assert_eq!(
+            inline,
+            ("json_context_menu", 170.0, format!("Rename | Duplicate | Pin{g} | --- | Delete")),
+            "an inline JSON card has no file to open, copy, refetch or detach"
         );
         assert_eq!(
             menu(loaded_tab(), false),
@@ -185,7 +192,7 @@ fn node_menu_config_matches_each_kinds_menu() {
     );
     assert_eq!(
         menu_of(&with_url(plain(TYPE_JSON)), false).2,
-        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | --- | Delete"
+        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | Detach to inline | --- | Rename | Duplicate | Pin | --- | Delete"
     );
     // A download has no Open as Tab (it would download again), but can copy where it came from.
     let download = NodeMenuView { has_copy_url: true, ..view_of(plain(TYPE_DOWNLOAD)) };

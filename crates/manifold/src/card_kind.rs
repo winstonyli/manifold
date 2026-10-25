@@ -164,8 +164,7 @@ mod tests {
             completed: false,
             failed: false,
         });
-        let json =
-            Runtime::Json(JsonPayload { path: "a.json".into(), value: std::sync::Arc::new(1.into()), error: None });
+        let json = Runtime::Json(JsonPayload::file("a.json".into(), std::sync::Arc::new(1.into()), None));
         let image = Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         vec![
             (Kind::Tab, live, loaded_tab()),

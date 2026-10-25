@@ -298,7 +298,7 @@ impl App {
         }
         let Some(node) = self.nodes.get(&id) else { return };
         let path = match &node.runtime {
-            Runtime::Json(json) if json.error.is_some() => json.path.clone(),
+            Runtime::Json(json) if json.error.is_some() => json.path().to_owned(),
             _ => return,
         };
         let (group, parent) = (self.doc.mirror.group(id), self.doc.mirror.parent(id));
@@ -374,10 +374,9 @@ impl App {
                     Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
                 ),
                 K::Pdf => (Kind::Pdf, Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) })),
-                K::Json => (
-                    Kind::Json,
-                    Runtime::Json(JsonPayload { path, value: Default::default(), error: Some(error.clone()) }),
-                ),
+                K::Json => {
+                    (Kind::Json, Runtime::Json(JsonPayload::file(path, Default::default(), Some(error.clone()))))
+                }
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
                 _ => unreachable!("reload_fetched_node only reaches here for Image/Pdf/Json"),
@@ -428,11 +427,12 @@ impl App {
         let missing = |path: &str| !std::path::Path::new(path).exists();
         let name = match &mut node.runtime {
             Runtime::Image(p) if missing(&p.path) => return p.error = Some(error),
-            Runtime::Json(p) if missing(&p.path) => return p.error = Some(error),
+            Runtime::Json(p) if missing(p.path()) => return p.error = Some(error),
             Runtime::Pdf(p) if missing(&p.path) => return p.outcome = Some(Err(error)),
-            Runtime::Image(ImagePayload { path, .. })
-            | Runtime::Json(JsonPayload { path, .. })
-            | Runtime::Pdf(PdfPayload { path, .. }) => crate::json_file::file_name(std::path::Path::new(path)),
+            Runtime::Json(p) => crate::json_file::file_name(std::path::Path::new(p.path())),
+            Runtime::Image(ImagePayload { path, .. }) | Runtime::Pdf(PdfPayload { path, .. }) => {
+                crate::json_file::file_name(std::path::Path::new(path))
+            }
             _ => return,
         };
         self.queue_toast(format!("Couldn't refresh {name}"));
@@ -625,7 +625,7 @@ impl App {
                 return Err(err);
             }
         };
-        let payload = Runtime::Json(JsonPayload { path, value: value.into(), error: None });
+        let payload = Runtime::Json(JsonPayload::file(path, value.into(), None));
         self.place_node(Some(id), Kind::Json, payload, Placement { group, pos });
         Ok(())
     }

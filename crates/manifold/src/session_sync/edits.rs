@@ -23,6 +23,22 @@ impl App {
         Some(crate::undo::PropEdit { node: id, field, path, before, after: leaf })
     }
 
+    /// Replaces `id`'s BODY tree with `tree`: the mirror shows it at once and the next save commits the difference
+    /// (a `Set` per changed leaf, a tombstone per vanished one). The bulk twin of `edit_prop`, which clones the whole
+    /// tree per leaf. Returns the new `Mirror::tree_version`.
+    pub(crate) fn set_body(&mut self, id: NodeId, tree: crate::store::tree::Tree) -> u64 {
+        debug_assert!(self.doc.mirror.has(id), "a node the mirror knows");
+        let old = self.doc.mirror.tree(id, field::BODY).cloned().unwrap_or_default();
+        for path in old.keys().filter(|p| !tree.contains_key(*p)) {
+            self.doc.writes.queue_tree(id, field::BODY, path.clone(), Vec::new());
+        }
+        for (path, leaf) in tree.iter().filter(|(p, l)| old.get(*p) != Some(*l)) {
+            self.doc.writes.queue_tree(id, field::BODY, path.clone(), leaf.encode());
+        }
+        self.doc.mirror.set_tree(id, field::BODY, tree);
+        self.doc.mirror.tree_version(id, field::BODY)
+    }
+
     /// The one writer of mirrored fields (node model spec, 2b "Read model"): the mirror shows `value` at once, and
     /// the next save commits it as a `Set`. A value the mirror already shows queues nothing.
     pub(crate) fn edit_field(&mut self, id: NodeId, no: u32, value: FieldValue) {

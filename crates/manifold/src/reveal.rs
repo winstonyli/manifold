@@ -46,7 +46,7 @@ impl App {
             Runtime::Download(_) => self.windows_path_for_download(id),
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
-            Runtime::Json(json) => Some(json.path.clone()),
+            Runtime::Json(json) => Some(json.path().to_owned()),
             Runtime::Tab(_)
             | Runtime::Unloaded(_)
             | Runtime::Note(_)
@@ -64,8 +64,8 @@ impl App {
     /// with no file; a file node with no path (`node_file_path`) is toasted.
     pub(crate) fn reveal_node(&mut self, id: NodeId) {
         let Some(node) = self.nodes.get(&id) else { return };
-        let has_file =
-            matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_) | Runtime::Json(_));
+        let has_file = matches!(node.runtime, Runtime::Download(_) | Runtime::Image(_) | Runtime::Pdf(_))
+            || matches!(&node.runtime, Runtime::Json(p) if !p.is_inline());
         match self.node_file_path(id) {
             Some(path) => {
                 if let Err(e) = Self::reveal_in_explorer(&path) {

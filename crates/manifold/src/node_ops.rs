@@ -33,6 +33,51 @@ impl App {
         self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
+    /// A new inline Json card holding `{}` (`GraphAction::NewJson`, headless `NEWJSON`). Doesn't save; the caller does.
+    pub(crate) fn insert_inline_json_at(&mut self, id: NodeId, pos: Option<egui::Vec2>) {
+        let at = self.placement(id, pos);
+        self.place_node(
+            Some(id),
+            store::model::Kind::Json,
+            Runtime::Json(JsonPayload::inline(0, Default::default())),
+            at,
+        );
+        let tree = store::body::value_to_tree(&serde_json::json!({}), &mut || self.alloc_node_id())
+            .expect("an empty object is within the caps");
+        self.set_body(id, tree);
+        let fresh = self.inline_payload(id);
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.runtime = Runtime::Json(fresh);
+        }
+    }
+
+    /// Moves a file card's document into the synced document (`BODY`) and drops the path; the file stays on disk. A
+    /// document past the inline cap is refused with a toast and the card stays as it was.
+    pub(crate) fn detach_json(&mut self, id: NodeId) -> Result<(), String> {
+        let Some(Runtime::Json(p)) = self.nodes.get(&id).map(|n| &n.runtime) else {
+            return Err("not a JSON card".into());
+        };
+        if p.is_inline() || p.error.is_some() {
+            return Err("nothing to detach".into());
+        }
+        let value = p.value.clone();
+        let tree = match store::body::value_to_tree(&value, &mut || self.alloc_node_id()) {
+            Ok(tree) => tree,
+            Err(e) => {
+                let err = format!("Can't detach: {e}");
+                self.queue_toast(err.clone());
+                return Err(err);
+            }
+        };
+        self.set_body(id, tree);
+        self.edit_field(id, store::model::field::PATH, store::model::FieldValue::Str(String::new()));
+        let fresh = self.inline_payload(id);
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.runtime = Runtime::Json(fresh);
+        }
+        Ok(())
+    }
+
     /// Starts an unloaded tab's engine (`UnloadedTabPayload`) on `kind`, which becomes its engine (`edit_view_kind`).
     /// The card stays, showing a spinner, until the outcome replaces it:
     /// the live tab under the same id, or a failed card with the new

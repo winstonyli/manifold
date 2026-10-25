@@ -98,11 +98,16 @@ impl Runtime {
     /// The file a content card shows on this machine (an image, PDF, Json file, or download): its stored
     /// path resolved here (`ContentIndex::resolve`), or a reload's new file. `None` for other kinds. The stored path is
     /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
+    /// A Json card whose document lives in the synced document, not a file.
+    pub(crate) fn json_is_inline(&self) -> bool {
+        matches!(self, Runtime::Json(p) if p.is_inline())
+    }
+
     pub(crate) fn file_path(&self) -> Option<&str> {
         match self {
             Runtime::Image(p) => Some(&p.path),
             Runtime::Pdf(p) => Some(&p.path),
-            Runtime::Json(p) => Some(&p.path),
+            Runtime::Json(p) => (!p.is_inline()).then(|| p.path()),
             Runtime::Download(p) => Some(&p.path),
             Runtime::Tab(_)
             | Runtime::Unloaded(_)
@@ -240,7 +245,7 @@ pub(crate) struct PdfOutcome {
 /// bad/no-longer-JSON file just means that one node is skipped at restore
 /// rather than failing the whole session load.
 pub(crate) struct JsonPayload {
-    pub(crate) path: String,
+    pub(crate) source: JsonSource,
     /// Shared with an open `JsonLevel` (entering the node doesn't copy it).
     pub(crate) value: std::sync::Arc<serde_json::Value>,
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
@@ -250,14 +255,50 @@ pub(crate) struct JsonPayload {
     // state", `Mirror::view`) are the mirror's.
 }
 
+/// Where a Json card's document lives: a file on this machine, or the synced document itself (`field::BODY`,
+/// `store/body.rs`). `Inline::version` is the `Mirror::tree_version` the payload's value was assembled from.
+pub(crate) enum JsonSource {
+    File { path: String },
+    Inline { version: u64 },
+}
+
 impl JsonPayload {
+    pub(crate) fn file(path: String, value: std::sync::Arc<serde_json::Value>, error: Option<String>) -> Self {
+        JsonPayload { source: JsonSource::File { path }, value, error }
+    }
+
+    pub(crate) fn inline(version: u64, value: std::sync::Arc<serde_json::Value>) -> Self {
+        JsonPayload { source: JsonSource::Inline { version }, value, error: None }
+    }
+
+    /// The file's path; empty for an inline document.
+    pub(crate) fn path(&self) -> &str {
+        match &self.source {
+            JsonSource::File { path } => path,
+            JsonSource::Inline { .. } => "",
+        }
+    }
+
+    /// The `Mirror::tree_version` an inline value was assembled from.
+    pub(crate) fn version(&self) -> Option<u64> {
+        match self.source {
+            JsonSource::Inline { version } => Some(version),
+            JsonSource::File { .. } => None,
+        }
+    }
+
+    pub(crate) fn is_inline(&self) -> bool {
+        matches!(self.source, JsonSource::Inline { .. })
+    }
+
     /// Whether this node has a level to enter and a view to edit: a file's
     /// node whose value parsed. Not an error card (plan ruling
     /// 10), and not a refetch placeholder (`Null`, no error, its file not
     /// here yet), whose view must outlive the fetch. A file that really
     /// holds `null` is still on disk, so the stat runs only for `Null`.
     pub(crate) fn enterable(&self) -> bool {
-        self.error.is_none() && !(self.value.is_null() && !std::path::Path::new(&self.path).exists())
+        self.error.is_none()
+            && (self.is_inline() || !(self.value.is_null() && !std::path::Path::new(self.path()).exists()))
     }
 }
 
@@ -432,7 +473,7 @@ impl GraphNode {
             }
             Runtime::Image(p) => ("Image", source_or_file(&p.path)),
             Runtime::Pdf(p) => ("PDF", source_or_file(&p.path)),
-            Runtime::Json(p) => ("JSON", source_or_file(&p.path)),
+            Runtime::Json(p) => ("JSON", (!p.is_inline()).then(|| source_or_file(p.path())).flatten()),
         };
         match detail {
             Some(detail) => format!("{kind}: {detail}"),
@@ -483,6 +524,17 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_inline_json_has_no_path_and_is_enterable_even_when_null() {
+        use super::*;
+        let p = JsonPayload::inline(3, std::sync::Arc::new(serde_json::Value::Null));
+        assert_eq!(p.path(), "");
+        assert!(p.is_inline() && p.enterable());
+        assert!(Runtime::Json(p).file_path().is_none());
+        let missing = JsonPayload::file("no/such/file.json".into(), Default::default(), None);
+        assert!(!missing.enterable(), "a file card whose file is gone still isn't");
+    }
+
     use super::*;
 
     /// A card's screen-reader name is its kind, then its title (or the first line of a note).
@@ -526,8 +578,7 @@ second"
         let image =
             node(Runtime::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
         assert_eq!(image.accessible_name("", None), "Image: cat.png");
-        let json =
-            node(Runtime::Json(JsonPayload { path: r"D:\data\x.json".into(), value: Default::default(), error: None }));
+        let json = node(Runtime::Json(JsonPayload::file(r"D:\data\x.json".into(), Default::default(), None)));
         assert_eq!(json.accessible_name("", None), "JSON: x.json");
     }
 

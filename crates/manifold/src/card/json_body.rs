@@ -24,7 +24,7 @@ impl App {
         let mut body = CardBody { interact_rect: rect, tooltip: None };
         let error = self.nodes.get(&id).and_then(|n| n.as_json()).and_then(|j| j.error.clone());
         if let Some(error) = error {
-            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path.clone()) {
+            if let Some(path) = self.nodes.get(&id).and_then(|n| n.as_json()).map(|j| j.path().to_owned()) {
                 let text = file_header_text(&path, None);
                 self.paint_missing_file_card(ui, deferred_overlays, id, rect, 1.0 / zoom_scale, zoom_scale, text);
             }
@@ -54,10 +54,11 @@ impl App {
             rows,
             more: len - rows,
         };
-        let mut header = crate::json_level_ui::header_parts(&json.value, &card, download_filename(&json.path));
+        let root_name = self.json_root_name(id);
+        let mut header = crate::json_level_ui::header_parts(&json.value, &card, &root_name);
         if preview && text {
             // The folder, cut at the start so its last part stays visible, as a download's path is.
-            let folder = file_header_text(&json.path, None).1;
+            let folder = file_header_text(json.path(), None).1;
             let folder = folder.rsplit_once(['\\', '/']).map(|(dir, _)| dir.to_owned());
             // `paint_json_content`'s text width: the source starts at `HEADER_TEXT_X`.
             let width = (rect.width() - crate::json_level_ui::COUNT_WIDTH - crate::json_level_ui::PAD) * zoom_scale

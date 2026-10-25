@@ -391,11 +391,8 @@ fn a_refetch_placeholder_is_not_entered_and_keeps_its_view() {
     // What `materialize` inserts for a missing file with a known URL, its view already the mirror's.
     let view = JsonView::from_field(r#"{"/a":{"collapsed":true}}"#);
     app.edit_view(J, &view.to_field());
-    let payload = JsonPayload {
-        path: dir.join("not-fetched-yet.json").to_string_lossy().into_owned(),
-        value: Default::default(),
-        error: None,
-    };
+    let payload =
+        JsonPayload::file(dir.join("not-fetched-yet.json").to_string_lossy().into_owned(), Default::default(), None);
     app.insert_placeholder_node(J, egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));
     let url = crate::store::model::FieldValue::Str("https://x.test/j".into());
     app.doc.mirror.set(J, crate::store::model::field::URL, url);
@@ -737,4 +734,22 @@ fn a_card_of_another_json_node_with_the_same_pointer_gets_another_id() {
     let at = one.index["/a"];
     assert_eq!(two.index["/a"], at);
     assert_ne!(one.card_id(at), two.card_id(at));
+}
+
+/// Review focus 4: another replica changes the document while its level is open; the view state stays where it
+/// still applies and a running search restarts on the new value.
+#[test]
+fn a_remote_body_change_swaps_the_open_levels_value() {
+    let (mut app, j) = app_with_json("swap", r#"{"a": {"b": 1}, "c": [1, 2, 3]}"#);
+    app.switch_group_level(Some(j));
+    app.json_level.as_mut().unwrap().selected = Some("/a/b".to_owned());
+    app.set_json_search("1".into());
+    let before = app.json_level.as_ref().unwrap().search.generation.load(std::sync::atomic::Ordering::Relaxed);
+    app.swap_json_value(j, std::sync::Arc::new(serde_json::json!({"a": {"b": 5}, "c": [1]})));
+    let level = app.json_level.as_ref().unwrap();
+    assert_eq!(level.selected.as_deref(), Some("/a/b"), "still resolves, so kept");
+    assert!(level.search.generation.load(std::sync::atomic::Ordering::Relaxed) > before, "the search restarted");
+    assert_eq!(level.search.result.as_ref().map(|r| r.hits.len()), Some(1), "and ran on the new value: only /c/0");
+    app.swap_json_value(j, std::sync::Arc::new(serde_json::json!({"x": 1})));
+    assert_eq!(app.json_level.as_ref().unwrap().selected, None, "/a/b no longer exists");
 }

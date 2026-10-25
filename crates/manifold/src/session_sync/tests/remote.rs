@@ -86,14 +86,14 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
 #[test]
 fn a_remote_view_change_updates_the_node_in_place() {
     let (mut app, node) = app_with_json_file("json_view_remote");
-    let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path.clone())).unwrap();
+    let (value, path) = app.nodes[&node].as_json().map(|j| (j.value.clone(), j.path().to_owned())).unwrap();
     let mut fields = snapshots(&app)[&node].fields.clone();
     fields.insert(field::VIEW, FieldValue::Str(r#"{"":{"collapsed":true}}"#.into()));
     let snap = Snapshot { ty: crate::store::model::TYPE_JSON.into(), group: None, fields, trees: Default::default() };
     app.materialize(node, &snap, None);
     assert_eq!(app.doc.mirror.view(node).unwrap().get("").unwrap().collapsed, Some(true));
     let json = app.nodes[&node].as_json().unwrap();
-    assert_eq!((&json.value, &json.path), (&value, &path), "only the view changed");
+    assert_eq!((&json.value, &json.path().to_owned()), (&value, &path), "only the view changed");
 }
 
 /// `materialize` seeds the mirror's `type` with the stored string as written, and a snapshot carries it back to the
@@ -1263,4 +1263,33 @@ fn a_typeless_placeholder_gets_its_card_when_its_type_arrives() {
     let mut app = App::default();
     app.apply_remote(changes);
     assert!(matches!(app.nodes[&node].runtime, Runtime::Unknown));
+}
+
+/// A remote Json card holding `value` in its BODY (no file).
+fn inline_snapshot(value: serde_json::Value) -> Snapshot {
+    let mut n = 0;
+    let tree = crate::store::body::value_to_tree(&value, &mut || {
+        n += 1;
+        NodeId { actor: ActorId(9), counter: n }
+    })
+    .unwrap();
+    let mut s = shared(Kind::Json, None, &[]);
+    s.trees.insert(field::BODY, tree);
+    s
+}
+
+#[test]
+fn a_remote_inline_json_card_materializes_with_its_value() {
+    let app = app_with(&BTreeMap::from([(node(1), inline_snapshot(serde_json::json!({"k": [1, 2]})))]));
+    let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!("a json card") };
+    assert!(p.is_inline() && p.error.is_none());
+    assert_eq!(*p.value, serde_json::json!({"k": [1, 2]}));
+}
+
+#[test]
+fn a_remote_body_change_updates_the_open_cards_value() {
+    let mut app = app_with(&BTreeMap::from([(node(1), inline_snapshot(serde_json::json!({"k": 1})))]));
+    app.apply_remote(vec![(node(1), Remote::Shown(inline_snapshot(serde_json::json!({"k": 2}))))]);
+    let Runtime::Json(p) = &app.nodes[&node(1)].runtime else { panic!() };
+    assert_eq!(*p.value, serde_json::json!({"k": 2}));
 }

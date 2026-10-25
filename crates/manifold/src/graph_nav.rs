@@ -386,7 +386,7 @@ impl App {
                 // A group has no runtime of its own (2b-6 Ruling 8).
                 // name rule: drawn by display_name in toolbar_breadcrumb.
                 Runtime::None => self.doc.mirror.name(id).to_owned(),
-                Runtime::Json(json) => download_filename(&json.path).to_string(),
+                Runtime::Json(_) => self.json_root_name(id),
                 _ => String::new(),
             };
             chain.push((id, name));

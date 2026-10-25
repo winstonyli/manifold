@@ -4,7 +4,7 @@ use super::*;
 use crate::caps::JAR_EDGE;
 use crate::jar_defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
-use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_NOTE, TYPE_TAB};
+use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.
@@ -17,6 +17,8 @@ pub(crate) enum NodeAction {
     CopyText,
     Reveal,
     CopyPath,
+    /// A file Json card's document moves into the synced document (`App::detach_json`).
+    DetachJson,
     /// Fetches a node's source URL again, in place.
     Refresh,
     /// A new tab at the node's source URL, beside it.
@@ -538,8 +540,13 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         }
         // Image, Pdf and Json: the kinds with `Caps::file`, each with its own area id.
         _ if view.kind.caps().file => {
-            let mut items = url_items(true);
-            items.extend(file_items());
+            let mut items = if view.inline_json { Vec::new() } else { url_items(true) };
+            if !view.inline_json {
+                items.extend(file_items());
+            }
+            if view.kind.ty == TYPE_JSON && !view.inline_json {
+                items.push(Button("Detach to inline", A::DetachJson));
+            }
             finish(view.kind.caps().menu_area, 170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_TAB if view.kind.loaded() => {
@@ -613,6 +620,8 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
 pub(crate) struct NodeMenuView {
     kind: CardKind,
     has_group: bool,
+    /// A Json card holding its document in the synced document: no file rows, no Refresh.
+    inline_json: bool,
     /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
     /// (Image/Pdf/Json) and Open as Tab (any of the four).
     has_url: bool,
@@ -781,6 +790,7 @@ impl App {
         Some(NodeMenuView {
             kind: self.card_kind(id)?,
             has_group: self.doc.mirror.group(id).is_some(),
+            inline_json: node.runtime.json_is_inline(),
             has_url: self.source_url(id).is_some(),
             has_copy_url: self.copyable_url(id).is_some(),
             pinned: self.doc.mirror.pinned(id),
@@ -927,6 +937,9 @@ impl App {
                 if let Some(path) = self.node_file_path(id) {
                     ctx.copy_text(path);
                 }
+            }
+            NodeAction::DetachJson => {
+                let _ = self.detach_json(id); // a refusal is already toasted
             }
             NodeAction::Refresh => self.refresh_node(id),
             NodeAction::OpenAsTab => self.open_as_tab(id),

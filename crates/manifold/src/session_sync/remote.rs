@@ -63,6 +63,13 @@ impl App {
         self.insert_materialized(id, kind, fields, local);
     }
 
+    /// The payload of Json card `id` holding its BODY tree (an inline document).
+    pub(crate) fn inline_payload(&self, id: NodeId) -> JsonPayload {
+        let tree = self.doc.mirror.tree(id, field::BODY);
+        let value = tree.map_or(serde_json::Value::Null, crate::store::body::tree_to_value);
+        JsonPayload::inline(self.doc.mirror.tree_version(id, field::BODY), std::sync::Arc::new(value))
+    }
+
     /// Applies `fields` to the live node `id` in the fields `mirror_remote` found changed (`changed`); the ones it
     /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict (2b-3 Ruling 3),
     /// so a tab whose url edit is pending is not navigated away from it, and a card whose pos edit is pending is not
@@ -90,6 +97,10 @@ impl App {
             let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
             self.after_jar_ephemeral_changed(id, on);
         }
+        // A Json card whose BODY changed (or that another replica just made inline) takes the new document.
+        let body =
+            (changed(field::BODY) && self.doc.mirror.tree(id, field::BODY).is_some()).then(|| self.inline_payload(id));
+        let mut new_json_value = None;
         let Some(node) = self.nodes.get_mut(&id) else {
             return false;
         };
@@ -135,8 +146,16 @@ impl App {
             | Runtime::Unknown
             | Runtime::Download(_)
             | Runtime::Image(_)
-            | Runtime::Pdf(_)
-            | Runtime::Json(_) => {}
+            | Runtime::Pdf(_) => {}
+            Runtime::Json(p) => {
+                if let Some(fresh) = body.filter(|f| f.version() != p.version()) {
+                    new_json_value = Some(fresh.value.clone());
+                    *p = fresh;
+                }
+            }
+        }
+        if let Some(value) = new_json_value {
+            self.swap_json_value(id, value);
         }
         // Another replica changed the view of the level being shown:
         // relaid out on the next sync.
@@ -184,7 +203,8 @@ impl App {
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is
         // running (`content_index`), so a restore reads the dir once.
-        let content_path = matches!(kind, Kind::Image | Kind::Pdf | Kind::Json).then(|| {
+        let inline = kind == Kind::Json && self.doc.mirror.tree(id, field::BODY).is_some();
+        let content_path = (matches!(kind, Kind::Image | Kind::Pdf) || kind == Kind::Json && !inline).then(|| {
             let stored = str_of(fields, field::PATH);
             match &self.content_index {
                 Some(index) => index.resolve(id, &stored),
@@ -240,6 +260,10 @@ impl App {
                     self.insert_pdf_node_with_id(id, path, pos, None);
                 }
             }
+            Kind::Json if inline => {
+                let payload = self.inline_payload(id);
+                self.insert_placeholder_node(id, pos, kind, Runtime::Json(payload));
+            }
             Kind::Json => {
                 let path = content_path.clone().unwrap_or_default();
                 let error = if missing_with_url {
@@ -248,7 +272,7 @@ impl App {
                     self.insert_json_node_with_id(id, path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload { path, value: Default::default(), error };
+                    let payload = JsonPayload::file(path, Default::default(), error);
                     self.insert_placeholder_node(id, pos, kind, Runtime::Json(payload));
                 }
             }

@@ -198,7 +198,7 @@ fn a_reload_keeps_the_stored_path_and_duplicating_exports_the_resolved_one() {
     std::fs::write(&moved, b"[2]").unwrap();
     let moved = moved.to_string_lossy().into_owned();
     app.reload_fetched_node(id, WebBody::File { kind: crate::content::ContentKind::Json, path: moved.clone() });
-    assert_eq!(app.nodes[&id].as_json().unwrap().path, moved, "the payload reads the new file");
+    assert_eq!(app.nodes[&id].as_json().unwrap().path(), moved, "the payload reads the new file");
     assert_eq!(
         app.doc.mirror.get(id, field::PATH),
         FieldValue::Str(stored.clone()),
@@ -686,4 +686,92 @@ fn releasing_a_removed_jar_deletes_only_its_unheld_family_at_once() {
     assert!(jars.join(format!("{a}.json")).exists() && jars.join(format!("{c}.json")).exists(), "other jars untouched");
     let only = |file: &str| crate::content::stem(file) == a.to_string();
     assert_eq!(prune_unnamed(&jars, cutoff, keep, None, only), Some(0), "held");
+}
+
+#[test]
+fn inline_cards_do_no_file_work() {
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    let at = app.placement(id, None);
+    app.place_node(Some(id), Kind::Json, Runtime::Json(JsonPayload::inline(1, Arc::new(serde_json::json!({})))), at);
+    assert!(app.nodes[&id].runtime.file_path().is_none());
+    assert!(app.nodes[&id].runtime.json_is_inline());
+    app.retry_missing_file(id);
+    assert!(app.toasts.save_toast_queue.is_empty(), "no disk read, no toast");
+    assert!(matches!(&app.nodes[&id].runtime, Runtime::Json(p) if p.is_inline() && p.error.is_none()));
+    assert!(app.node_file_path(id).is_none(), "nothing to open in a folder");
+}
+
+fn json_file_card(app: &mut App, name: &str, body: &str) -> (NodeId, std::path::PathBuf) {
+    let dir = crate::store::testutil::temp_dir(name);
+    let file = dir.join("d.json");
+    std::fs::write(&file, body).unwrap();
+    let id = app.alloc_node_id();
+    app.insert_json_node_with_id(id, file.to_string_lossy().into_owned(), egui::Vec2::ZERO, None).unwrap();
+    (id, file)
+}
+
+fn reopened(app: &App, path: &std::path::Path) -> App {
+    let _ = app;
+    let mut back = crate::session_sync::tests::app_on(path, 2);
+    assert!(back.restore_session());
+    back
+}
+
+#[test]
+fn new_json_makes_an_empty_object_that_survives_a_save_and_reload() {
+    let path = crate::store::testutil::temp_dir("new-json").join("session.mnf");
+    let mut app = crate::session_sync::tests::app_on(&path, 1);
+    let id = app.alloc_node_id();
+    app.insert_inline_json_at(id, None);
+    assert!(app.save_session());
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(p.is_inline());
+    assert_eq!(*p.value, serde_json::json!({}));
+    drop(app);
+    let back = reopened(&App::default(), &path);
+    let Runtime::Json(q) = &back.nodes[&id].runtime else { panic!("a json card") };
+    assert!(q.is_inline() && *q.value == serde_json::json!({}));
+}
+
+#[test]
+fn detach_moves_a_file_cards_value_into_the_document() {
+    let path = crate::store::testutil::temp_dir("detach-doc").join("session.mnf");
+    let mut app = crate::session_sync::tests::app_on(&path, 1);
+    let (id, file) = json_file_card(&mut app, "detach", r#"{"k": [1, {"x": null}]}"#);
+    app.detach_json(id).unwrap();
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(p.is_inline());
+    assert_eq!(*p.value, serde_json::json!({"k": [1, {"x": null}]}));
+    assert_eq!(app.doc.mirror.get(id, store::model::field::PATH), store::model::FieldValue::Str(String::new()));
+    std::fs::remove_file(&file).unwrap();
+    assert!(app.save_session());
+    drop(app);
+    let back = reopened(&App::default(), &path);
+    let Runtime::Json(q) = &back.nodes[&id].runtime else { panic!() };
+    assert!(q.is_inline());
+    assert_eq!(*q.value, serde_json::json!({"k": [1, {"x": null}]}));
+}
+
+#[test]
+fn detach_over_the_cap_changes_nothing() {
+    let mut app = App::default();
+    let big: Vec<u32> = (0..20_000).collect();
+    let (id, _file) = json_file_card(&mut app, "detach-big", &serde_json::to_string(&big).unwrap());
+    let err = app.detach_json(id).unwrap_err();
+    assert!(err.contains("leaves"), "{err}");
+    assert!(matches!(&app.nodes[&id].runtime, Runtime::Json(p) if !p.is_inline()));
+    assert!(app.doc.mirror.tree(id, store::model::field::BODY).is_none());
+    assert_eq!(app.toasts.save_toast_queue.len(), 1, "refusal is toasted");
+}
+
+#[test]
+fn an_inline_cards_titles_use_its_name_and_a_file_cards_its_filename() {
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    app.insert_inline_json_at(id, None);
+    app.edit_field(id, store::model::field::NAME, store::model::FieldValue::Str("Config".into()));
+    assert_eq!(app.json_root_name(id), "Config");
+    let (file, _) = json_file_card(&mut app, "root-name", "{}");
+    assert_eq!(app.json_root_name(file), "d.json");
 }

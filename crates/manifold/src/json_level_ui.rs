@@ -513,8 +513,10 @@ impl App {
         zoom_scale: f32,
     ) {
         let Some(level) = self.json_level.as_ref() else { return };
-        let Some(json) = self.nodes.get(&level.node_id).and_then(|n| n.as_json()) else { return };
-        let root_name = download_filename(&json.path).to_string();
+        if self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_none() {
+            return;
+        }
+        let root_name = self.json_root_name(level.node_id);
         let view = self.doc.mirror.view(level.node_id); // the decoded cache: no parse per frame (2b-4 Ruling 8)
         let pal = palette(ui.visuals().dark_mode);
         let base_fill = ui.visuals().extreme_bg_color;
@@ -861,7 +863,7 @@ impl App {
     }
 
     fn json_outline_contents(&mut self, ui: &mut egui::Ui) {
-        let root_name = self.current_json_node().map(|j| download_filename(&j.path).to_string()).unwrap_or_default();
+        let root_name = self.current_group.map(|g| self.json_root_name(g)).unwrap_or_default();
         let Some(level) = self.json_level.as_mut() else { return };
         let mut query = level.search.query.clone();
         let search = toolbar_field(ui, |ui| {

@@ -220,7 +220,7 @@ impl App {
     ) {
         let Some(pos) = self.interaction.pending_new_node else { return };
         let screen_pos = project(egui::Pos2::new(pos.x, pos.y));
-        let (mut tab, mut note, mut group, mut file) = (false, false, false, false);
+        let (mut tab, mut note, mut group, mut json, mut file) = (false, false, false, false, false);
         let id = egui::Id::new("pending_new_node_menu");
         // The right-click that opens the menu is still this frame's click: it must not dismiss it.
         let opened_now = ui.ctx().memory(|m| m.area_rect(id)).is_none();
@@ -229,6 +229,7 @@ impl App {
             tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
             note = ui.button(format!("{} New Note", egui_phosphor::light::NOTE_PENCIL)).clicked();
             group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
+            json = ui.button(format!("{} New JSON", egui_phosphor::light::BRACKETS_CURLY)).clicked();
             // A real picker blocks on OS/human input, which headless mode has neither of.
             if !self.headless {
                 file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
@@ -240,10 +241,12 @@ impl App {
             actions.push(GraphAction::NewNote(pos));
         } else if group {
             actions.push(GraphAction::NewGroup(pos));
+        } else if json {
+            actions.push(GraphAction::NewJson(pos));
         } else if file {
             actions.push(GraphAction::NewFile(pos));
         }
-        if tab || note || group || file || !opened_now && clicked_outside_popup(ui, area.rect, None) {
+        if tab || note || group || json || file || !opened_now && clicked_outside_popup(ui, area.rect, None) {
             self.interaction.pending_new_node = None;
         }
     }

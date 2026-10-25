@@ -182,3 +182,30 @@ fn a_committed_tree_edit_survives_the_landing_of_a_parked_remote_change() {
     assert_eq!(app.doc.mirror.tree(tab, field::PROPS).unwrap()[&mine], Leaf::Int(1));
     assert_eq!(doc_trees(&app, tab), app.doc.mirror.trees_of(tab));
 }
+
+#[test]
+fn set_body_replaces_the_tree_and_queues_only_the_difference() {
+    let path = temp_dir("set-body").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let id = add(&mut app, Kind::Json, Runtime::Json(JsonPayload::inline(0, Default::default())));
+    let tree = |app: &mut App, v: serde_json::Value| {
+        let mut ids = Vec::new();
+        crate::store::body::value_to_tree(&v, &mut || {
+            let id = app.alloc_node_id();
+            ids.push(id);
+            id
+        })
+        .unwrap()
+    };
+    let a = tree(&mut app, serde_json::json!({"a": 1, "b": 2}));
+    let v1 = app.set_body(id, a);
+    let b = tree(&mut app, serde_json::json!({"a": 1, "c": 3}));
+    let v2 = app.set_body(id, b);
+    assert_ne!(v1, v2);
+    assert_eq!(app.doc.writes.tree_edits(id, field::BODY).count(), 3, "a once, b as a tombstone, c");
+    assert!(app.save_session());
+    assert_eq!(
+        crate::store::body::tree_to_value(&doc_trees(&app, id)[&field::BODY]),
+        serde_json::json!({"a": 1, "c": 3})
+    );
+}

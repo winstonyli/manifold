@@ -314,6 +314,13 @@ impl App {
         self.save_session();
     }
 
+    /// Headless `NEWJSON`: a new inline Json card.
+    pub(crate) fn new_json_shortcut(&mut self) {
+        let id = self.alloc_node_id();
+        self.insert_inline_json_at(id, None);
+        self.save_session();
+    }
+
     /// `Ctrl+G` / headless `TOGGLEVIEW` — switches to whichever of Tab/Graph
     /// view isn't currently showing. Tab -> Graph reuses `leave_to_graph`'s
     /// own shrink animation. Graph -> Tab jumps to `self.focused` directly

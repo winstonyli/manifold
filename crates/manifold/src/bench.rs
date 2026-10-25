@@ -116,7 +116,7 @@ pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
             3 => (Kind::Image, Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None })),
             4 => (Kind::Pdf, Runtime::Pdf(PdfPayload { path: "d.pdf".into(), outcome: None })),
             5 => {
-                let json = JsonPayload { path: "a.json".into(), value: Default::default(), error: None };
+                let json = JsonPayload::file("a.json".into(), Default::default(), None);
                 (Kind::Json, Runtime::Json(json))
             }
             _ => (Kind::Group, Runtime::None),

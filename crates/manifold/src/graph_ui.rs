@@ -112,6 +112,7 @@ pub(crate) enum GraphAction {
     /// right-clicked world position.
     NewNote(egui::Vec2),
     NewGroup(egui::Vec2),
+    NewJson(egui::Vec2),
     NewFile(egui::Vec2),
     EnterGroup(NodeId),
     LeaveGroup,
@@ -214,6 +215,10 @@ impl App {
             GraphAction::NewGroup(pos) => {
                 let id = self.alloc_node_id();
                 self.insert_group_at(id, Some(pos));
+            }
+            GraphAction::NewJson(pos) => {
+                let id = self.alloc_node_id();
+                self.insert_inline_json_at(id, Some(pos));
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
             GraphAction::PinSelected => self.pin_shortcut(),

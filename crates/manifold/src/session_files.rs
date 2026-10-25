@@ -204,15 +204,15 @@ impl App {
         // level here would rob them of the discovery the copy is pointing
         // at. Synthetic, not file-backed (`path` is a display-only label, not a
         // real path).
-        let json = Runtime::Json(JsonPayload {
-            path: "(demo).json".to_string(),
-            value: std::sync::Arc::new(serde_json::json!({
+        let json = Runtime::Json(JsonPayload::file(
+            "(demo).json".to_string(),
+            std::sync::Arc::new(serde_json::json!({
                 "project": "Manifold",
                 "tags": ["browser", "graph-ui"],
                 "version": {"major": 0, "minor": 1}
             })),
-            error: None,
-        });
+            None,
+        ));
         self.place_node(None, store::model::Kind::Json, json, Placement { group: None, pos: egui::vec2(0.0, -260.0) });
     }
 }

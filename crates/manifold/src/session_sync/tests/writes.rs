@@ -948,7 +948,7 @@ fn a_new_tab_whose_jar_is_deleted_after_its_create_dangles_to_the_default() {
 fn every_creation_path_seeds_the_node_type() {
     let ty = |kind: Kind| kind.type_str().unwrap();
     let mut app = App::default();
-    let json = Runtime::Json(JsonPayload { path: "d.json".into(), value: Default::default(), error: None });
+    let json = Runtime::Json(JsonPayload::file("d.json".into(), Default::default(), None));
     let placed = [
         (add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false })), Kind::Note),
         (add_group(&mut app, "G"), Kind::Group),

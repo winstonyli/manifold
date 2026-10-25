@@ -202,6 +202,18 @@ impl JsonLevel {
 }
 
 impl App {
+    /// The name a Json card's document goes by in titles and crumbs: its file's name, or the card's own name for an
+    /// inline one.
+    pub(crate) fn json_root_name(&self, id: NodeId) -> String {
+        match self.nodes.get(&id).and_then(|n| n.as_json()) {
+            Some(j) if j.is_inline() => {
+                crate::names::to_plain(&crate::names::display_name(self.doc.mirror.name(id), ""))
+            }
+            Some(j) => download_filename(j.path()).to_owned(),
+            None => String::new(),
+        }
+    }
+
     /// The Json node `current_group` names, if it does.
     pub(crate) fn current_json_node(&self) -> Option<&JsonPayload> {
         let node = self.nodes.get(self.current_group.as_ref()?)?;
@@ -254,6 +266,25 @@ impl App {
         // Here, not in the outline's build, so a worker's answer lands
         // while the outline is hidden (headless `JSONSEARCH`).
         self.receive_json_search();
+    }
+
+    /// A new document for the level shown for `id` (another replica changed it): the selection and the outline's open
+    /// rows stay where their pointers still resolve, a search restarts on the new value (cancelling a worker's), the
+    /// cards are laid out again. No level for `id` open: nothing to do.
+    pub(crate) fn swap_json_value(&mut self, id: NodeId, value: Arc<serde_json::Value>) {
+        let view = self.doc.mirror.view(id).unwrap_or(&json_view::NO_VIEW);
+        let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) else { return };
+        level.nodes = json_view::count_nodes(&value);
+        level.expanded = json_view::default_expanded(&value);
+        level.value = value;
+        if level.selected.as_ref().is_some_and(|p| level.value.pointer(p).is_none()) {
+            level.selected = None;
+        }
+        level.outline.open.retain(|p| p.is_empty() || level.value.pointer(p).is_some());
+        level.outline.dirty = true;
+        level.relayout(view);
+        let query = level.search.query.clone();
+        self.set_json_search(query);
     }
 
     /// Applies `edit` to the shown node's view, drops overrides that no

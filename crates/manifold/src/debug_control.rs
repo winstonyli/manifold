@@ -686,6 +686,15 @@ const VERBS: &[Verb] = &[
     row("GOBACK", "Back button on the focused tab", |_| go(Dir::Back)),
     row("GOFORWARD", "Forward button on the focused tab", |_| go(Dir::Forward)),
     row("NEWGROUP", "Ctrl+Shift+G -- new group", |_| job(|app, _| app.new_group_shortcut())),
+    row("NEWJSON", "A new inline JSON card (its document lives in the synced document)", |_| job(|app, _| app.new_json_shortcut())),
+    row("DETACHJSON id", "Move a file JSON card's document into the synced document", |rest| {
+        let (id, _) = split_id(rest)?;
+        job(move |app, _| {
+            if app.detach_json(id).is_ok() {
+                app.save_session();
+            }
+        })
+    }),
     row("NEWNOTE", "Graph toolbar's \"+ Note\" button", |_| job(|app, _| app.new_note_shortcut())),
     // With a point, placed like a real drop at that window point; no `save_session` there either -- same reasoning as
     // `WindowEvent::DroppedFile`, so a script sending several `ADDFILE`s with a point still gets one save per batch,
@@ -1369,6 +1378,8 @@ mod tests {
             "GOFORWARD",
             "NEWGROUP",
             "NEWNOTE",
+            "NEWJSON",
+            "DETACHJSON 0000000000000001-4",
             r"ADDFILE C:\x.json 10 20",
             r"ADDDOWNLOAD C:\x.zip",
             "WAITTABS 5",

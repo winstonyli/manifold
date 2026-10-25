@@ -636,7 +636,7 @@ fn node_card_size_matches_each_kinds_card() {
     assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
     assert_eq!(node_card_size(&Runtime::Unknown), UNKNOWN_NODE_SIZE);
     let json = |value: serde_json::Value, error: Option<&str>| {
-        Runtime::Json(JsonPayload { path: "a.json".into(), value: value.into(), error: error.map(Into::into) })
+        Runtime::Json(JsonPayload::file("a.json".into(), value.into(), error.map(Into::into)))
     };
     let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
     assert_eq!(node_card_size(&json(five.clone(), None)), crate::json_view::preview_size(&five));
@@ -697,11 +697,11 @@ fn card_filter_text_matches_each_kinds_filter_input() {
     assert_eq!(filter(&Runtime::Pdf(PdfPayload { path: "C:/docs/paper.pdf".into(), outcome: None })), ["paper.pdf"]);
     assert!(filter(&Runtime::Unknown).is_empty(), "matched by its stored name, which the caller pushes");
     assert_eq!(
-        filter(&Runtime::Json(JsonPayload {
-            path: "C:/data/x.json".into(),
-            value: std::sync::Arc::new(serde_json::json!(1)),
-            error: None,
-        })),
+        filter(&Runtime::Json(JsonPayload::file(
+            "C:/data/x.json".into(),
+            std::sync::Arc::new(serde_json::json!(1)),
+            None
+        ))),
         ["x.json"]
     );
     assert_eq!(filter(&Runtime::None), ["buy milk"], "a group (no runtime) matches on its name");
