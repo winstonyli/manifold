@@ -137,7 +137,7 @@ fn link_ends_among(node: &Node, ok: impl Fn(NodeId) -> bool) -> bool {
 
 /// Whether `id` is a shown node that a link can join (any card, a jar included; not a link).
 fn is_shown_card(doc: &Doc, id: NodeId) -> bool {
-    doc.nodes.get(&id).is_some_and(|n| n.kind() != Kind::Link) && doc.is_shown(id)
+    doc.nodes.get(&id).is_some_and(|n| n.kind().card()) && doc.is_shown(id)
 }
 
 /// `root` and its shown subtree, root first (a group export). The root
@@ -316,8 +316,7 @@ fn create_op(node: &Imported) -> OpBody {
 /// The `Create` ops that add `imported` to a document. A link whose end is not a card in `imported` is skipped
 /// (the same rule `materialize_imported` applies, there also accepting live cards).
 pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
-    let cards: std::collections::BTreeSet<NodeId> =
-        imported.iter().filter(|n| n.kind() != Kind::Link).map(|n| n.id).collect();
+    let cards: std::collections::BTreeSet<NodeId> = imported.iter().filter(|n| n.kind().card()).map(|n| n.id).collect();
     imported
         .iter()
         .filter(|n| !is_half_made_link(n, |id| cards.contains(&id)))

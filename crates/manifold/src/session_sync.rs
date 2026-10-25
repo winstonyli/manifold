@@ -351,7 +351,7 @@ impl App {
         for (id, s) in nodes.iter().filter(|(_, s)| s.kind() == Kind::Link) {
             self.materialize(*id, s, None);
         }
-        nodes.retain(|(_, s)| s.kind() != Kind::Link);
+        nodes.retain(|(_, s)| s.kind().card());
         // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
         if nodes.iter().all(|(_, s)| s.kind() == Kind::Jar) {
             for (id, s) in &nodes {

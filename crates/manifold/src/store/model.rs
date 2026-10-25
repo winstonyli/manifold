@@ -202,6 +202,11 @@ impl Kind {
     /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
     /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. `GENERIC` for
     /// `Unknown`.
+    /// Whether a node of this kind is a graph card; a stored-only kind (a link) never is.
+    pub fn card(self) -> bool {
+        !matches!(self, Kind::Link)
+    }
+
     pub fn fields(self) -> &'static [u32] {
         TYPES.iter().find(|t| t.0 == self).map_or(GENERIC, |t| t.2)
     }
@@ -825,6 +830,24 @@ mod tests {
     fn reg(counter: u64, ty: &str) -> Reg {
         let stamp = Stamp { hlc: Hlc { ms: counter, logical: 0 }, actor: ActorId(1) };
         Reg { stamp, enc: encode_field(field::TYPE, &FieldValue::Str(ty.into())) }
+    }
+
+    #[test]
+    fn only_stored_only_kinds_are_not_cards() {
+        for kind in [
+            Kind::Tab,
+            Kind::Group,
+            Kind::Note,
+            Kind::Image,
+            Kind::Pdf,
+            Kind::Json,
+            Kind::Download,
+            Kind::Jar,
+            Kind::Unknown,
+        ] {
+            assert!(kind.card(), "{kind:?}");
+        }
+        assert!(!Kind::Link.card());
     }
 
     #[test]

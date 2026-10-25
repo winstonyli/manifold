@@ -306,7 +306,7 @@ impl App {
             .with_descendants(touched)
             .into_iter()
             .filter_map(|id| {
-                let node = doc.nodes.get(&id).filter(|n| n.is_live() && n.kind() != Kind::Link)?;
+                let node = doc.nodes.get(&id).filter(|n| n.is_live() && n.kind().card())?;
                 // `here` is the graph's: a tab still spawning or waking has no `nodes` entry (or a hidden one's was
                 // dropped), and its landing reads the parked change (`remote_in_flight`), which a show replaces.
                 let here = self.nodes.contains_key(&id);
