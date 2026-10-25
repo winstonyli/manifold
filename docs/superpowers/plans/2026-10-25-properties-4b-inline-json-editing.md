@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Properties 4b: editing inline Json cards Implementation Plan
