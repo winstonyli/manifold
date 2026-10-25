@@ -3,7 +3,9 @@
 
 #![allow(dead_code, reason = "the app reads trees from plan 2 on (mirror trees); remove this line there")]
 
-use super::model::{decode_id, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};
+use std::collections::BTreeMap;
+
+use super::model::{decode_id, field, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};
 use super::tlv::{Reader, TlvError, Writer};
 use super::varint;
 
@@ -229,7 +231,63 @@ pub fn visible<'a>(regs: impl Iterator<Item = (&'a RegKey, &'a Reg)>) -> impl It
     })
 }
 
+/// The live leaves of one tree field, as `Node::tree` gives them without their stamps. A scalar and its descendants
+/// can both be here (a child written after the scalar); `resolved` is what a reader shows.
+pub type Tree = BTreeMap<TreePath, Leaf>;
+/// A node's trees by field number; a field with no leaves has no entry.
+pub type Trees = BTreeMap<u32, Tree>;
+
+/// The tree fields and their JSON keys (export, import). Plan 4 adds `BODY`.
+pub const TREE_FIELDS: [(u32, &str); 1] = [(field::PROPS, "props")];
+
+/// The leaves at `path` and under it, in path order.
+pub fn subtree(tree: &Tree, path: &TreePath) -> Vec<(TreePath, Leaf)> {
+    tree.range(path.clone()..path.subtree_end()).map(|(p, l)| (p.clone(), l.clone())).collect()
+}
+
+/// A local write of `leaf` (`None`: a tombstone) at `path`. It is newer than every register this replica has seen, so
+/// it hides the whole subtree at `path`; the leaf then stands alone there. Returns the leaves it replaced, `None`
+/// when the tree already shows exactly this.
+pub fn edit(tree: &mut Tree, path: &TreePath, leaf: Option<Leaf>) -> Option<Vec<(TreePath, Leaf)>> {
+    let before = subtree(tree, path);
+    let after: Vec<(TreePath, Leaf)> = leaf.iter().map(|l| (path.clone(), l.clone())).collect();
+    if before == after {
+        return None;
+    }
+    for (p, _) in &before {
+        tree.remove(p);
+    }
+    if let Some(leaf) = leaf {
+        tree.insert(path.clone(), leaf);
+    }
+    Some(before)
+}
+
+/// What a reader shows: a leaf with a descendant is overridden by it ("children win", spec 1.2). A subtree is one
+/// contiguous key range, so a leaf has a descendant exactly when the next key is one.
+pub fn resolved(tree: &Tree) -> impl Iterator<Item = (&TreePath, &Leaf)> {
+    let mut it = tree.iter().peekable();
+    std::iter::from_fn(move || loop {
+        let (path, leaf) = it.next()?;
+        if it.peek().is_some_and(|(next, _)| path.is_ancestor_of(next)) {
+            continue;
+        }
+        return Some((path, leaf));
+    })
+}
+
 impl Node {
+    /// Every tree field's live leaves (`tree`), stamps dropped, the empty fields left out.
+    pub fn trees(&self) -> Trees {
+        TREE_FIELDS
+            .iter()
+            .filter_map(|&(no, _)| {
+                let tree: Tree = self.tree(no).into_iter().map(|(path, leaf, _)| (path, leaf)).collect();
+                (!tree.is_empty()).then_some((no, tree))
+            })
+            .collect()
+    }
+
     /// The registers of a field's tree that count (see `visible`), tombstones included.
     pub fn visible_regs(&self) -> impl Iterator<Item = (&RegKey, &Reg)> {
         visible(self.fields.iter())
@@ -419,5 +477,56 @@ mod tests {
         node.fields.insert(at(2, &["a"]), reg(4, Some(Leaf::Int(2))));
         assert!(node.tree(1).is_empty());
         assert_eq!(node.tree(2).len(), 1);
+    }
+
+    fn p(segs: &[&str]) -> TreePath {
+        TreePath::of(&segs.iter().map(|s| key(s)).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn edit_replaces_a_subtree_and_reports_what_it_removed() {
+        let mut tree = Tree::new();
+        assert_eq!(edit(&mut tree, &p(&["a", "b"]), Some(Leaf::Int(1))), Some(vec![]));
+        assert_eq!(edit(&mut tree, &p(&["a", "c"]), Some(Leaf::Int(2))), Some(vec![]));
+        assert_eq!(edit(&mut tree, &p(&["z"]), Some(Leaf::Int(9))), Some(vec![]));
+        // The same value again is no change.
+        assert_eq!(edit(&mut tree, &p(&["z"]), Some(Leaf::Int(9))), None);
+        // A write at /a hides /a/b and /a/c.
+        let removed = edit(&mut tree, &p(&["a"]), Some(Leaf::Str("s".into()))).unwrap();
+        assert_eq!(removed, vec![(p(&["a", "b"]), Leaf::Int(1)), (p(&["a", "c"]), Leaf::Int(2))]);
+        assert_eq!(tree.keys().cloned().collect::<Vec<_>>(), vec![p(&["a"]), p(&["z"])]);
+        // A tombstone removes the subtree and inserts nothing; one over nothing is no change.
+        assert_eq!(edit(&mut tree, &p(&["a"]), None), Some(vec![(p(&["a"]), Leaf::Str("s".into()))]));
+        assert_eq!(edit(&mut tree, &p(&["a"]), None), None);
+    }
+
+    #[test]
+    fn a_key_that_is_a_text_prefix_of_another_is_not_its_ancestor() {
+        let mut tree = Tree::new();
+        edit(&mut tree, &p(&["ab"]), Some(Leaf::Int(1)));
+        edit(&mut tree, &p(&["a"]), None); // must not touch /ab
+        assert_eq!(subtree(&tree, &p(&["ab"])), vec![(p(&["ab"]), Leaf::Int(1))]);
+    }
+
+    #[test]
+    fn resolved_drops_a_leaf_that_has_a_descendant() {
+        let mut tree = Tree::new();
+        for (path, n) in [(p(&["a"]), 1), (p(&["a", "b"]), 2), (p(&["c"]), 3)] {
+            tree.insert(path, Leaf::Int(n));
+        }
+        let shown: Vec<_> = resolved(&tree).map(|(path, _)| path.clone()).collect();
+        assert_eq!(shown, vec![p(&["a", "b"]), p(&["c"])]);
+    }
+
+    #[test]
+    fn a_node_reports_its_live_leaves_per_tree_field() {
+        let mut node = Node::placeholder();
+        node.fields.insert(at(crate::store::model::field::PROPS, &["a"]), reg(1, Some(Leaf::Int(1))));
+        node.fields.insert(at(crate::store::model::field::PROPS, &["a", "b"]), reg(2, Some(Leaf::Int(2))));
+        node.fields.insert(at(crate::store::model::field::PROPS, &["gone"]), reg(3, None)); // a tombstone is no leaf
+        let trees = node.trees();
+        assert_eq!(trees.len(), 1);
+        assert_eq!(trees[&crate::store::model::field::PROPS].len(), 2);
+        assert!(Node::placeholder().trees().is_empty());
     }
 }
