@@ -250,8 +250,8 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
 
 /// `read_header`, refusing as `NotAJournal` a file older than
 /// `FORMAT_VERSION`: read as this format, version 1 would leave every node typeless (compacted away) and version 2
-/// would mis-decode `held`; version 3 would read correctly but is refused too (no migration, spec decision D1). The one rule for what this build reads: `load`, the
-/// set-aside check and `--check` all use it.
+/// would mis-decode `held`; version 3 would read correctly but is refused too (no migration, spec decision D1). The
+/// one rule for what this build reads: `load`, the set-aside check and `--check` all use it.
 pub fn read_readable_header(buf: &[u8]) -> Result<Header, JournalError> {
     let header = read_header(buf)?;
     if header.version < FORMAT_VERSION {
@@ -439,8 +439,8 @@ fn doc_actors(doc: &Doc) -> Actors {
 /// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 3:
 /// deleted, 4: group, 5: register*}` (2, the numeric kind, is retired: the
 /// kind is the `type` register since format 2) and a register `{1: field,
-/// 2: stamp, 3: value encoding}`. The actor table is sorted, and nodes and
-/// registers are in id and field order, so equal documents encode to
+/// 2: stamp, 3: value encoding, 4: path (absent at the root)}`. The actor table is sorted, and nodes and
+/// registers are in id and (field, path) order, so equal documents encode to
 /// equal bytes.
 fn snapshot_message(doc: &Doc) -> Vec<u8> {
     let actors = doc_actors(doc);

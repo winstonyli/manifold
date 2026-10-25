@@ -76,8 +76,9 @@ Properties this gives, each pinned by a test (section 6):
 - In `BODY`, removing the last child of an object or array writes `EmptyObj` or `EmptyArr` at its path, so the emptied
   container keeps its place in its parent. A concurrent add under it that carries a lower stamp is hidden by that
   write: documented, not fixed. In `PROPS` an emptied map is simply absent, which keeps concurrent adds.
-- Known quirk, documented not fixed: a child that a scalar overwrote and that was never seen can reappear if its parent
-  later becomes an object again.
+- Known quirk, documented not fixed: a scalar at `/a` whose replacement children were all tombstoned shows its old scalar
+  again (a hidden register never reappears, since stamps only rise). `Node::tree` returns the ancestor scalar beside
+  the visible children, so the reader (plan 2's resolver) applies "children win".
 
 A node-level `Delete` still clears every register of the node, trees included, and later sets are ignored.
 

@@ -1618,33 +1618,51 @@ fn compacted_bytes(doc: &Doc) -> Vec<u8> {
     snapshot_message(&doc)
 }
 
+/// A random path in the small key space the tree tests share, so writes collide and hide each other.
+fn random_tree_path(rng: &mut XorShift) -> TreePath {
+    let keys = ["a", "b", "c"];
+    let segs: Vec<Seg> = (0..rng.below(4))
+        .map(|_| match rng.below(5) {
+            3 => Seg::Id(NodeId { actor: ActorId(9), counter: 1 }),
+            4 => Seg::Id(NodeId { actor: ActorId(9), counter: 2 }),
+            n => Seg::Key(keys[n as usize].to_owned()),
+        })
+        .collect();
+    TreePath::of(&segs)
+}
+
+/// A `Create` of `node` and 1 to 14 PROPS writes by actors 1 to 3 (a quarter are tombstones). Their HLCs come from a
+/// small range, so equal HLCs from different actors occur; no two ops share a stamp.
+fn random_prop_ops(rng: &mut XorShift, node: NodeId) -> Vec<Op> {
+    let mut ops = vec![Op {
+        id: node,
+        hlc: Hlc { ms: 1, logical: 0 },
+        body: OpBody::create(node, "application/x-from-the-future", Vec::new()),
+    }];
+    let mut seen = std::collections::BTreeSet::new();
+    for i in 0..rng.below(14) + 1 {
+        let (actor, ms, logical) = loop {
+            let stamp = (1 + rng.below(3), 2 + rng.below(3), u32::try_from(rng.below(2)).unwrap());
+            if seen.insert(stamp) {
+                break stamp;
+            }
+        };
+        let enc = if rng.below(4) == 0 { Vec::new() } else { Leaf::Int(rng.below(100) as i64).encode() };
+        ops.push(Op {
+            id: NodeId { actor: ActorId(actor), counter: 100 + i },
+            hlc: Hlc { ms, logical },
+            body: OpBody::Set { node, field: field::PROPS, path: random_tree_path(rng), enc },
+        });
+    }
+    ops
+}
+
 #[test]
 fn replicas_converge_whatever_the_order_and_duplicates() {
     let node = NodeId { actor: ActorId(1), counter: 0 };
     let mut rng = XorShift(0xC0DE_0001);
-    let keys = ["a", "b", "c"];
     for round in 0..200 {
-        let mut ops = vec![Op {
-            id: node,
-            hlc: Hlc { ms: 1, logical: 0 },
-            body: OpBody::create(node, "application/x-from-the-future", Vec::new()),
-        }];
-        for i in 0..rng.below(14) + 1 {
-            let depth = rng.below(4) as usize;
-            let segs: Vec<Seg> = (0..depth)
-                .map(|_| match rng.below(5) {
-                    3 => Seg::Id(NodeId { actor: ActorId(9), counter: 1 }),
-                    4 => Seg::Id(NodeId { actor: ActorId(9), counter: 2 }),
-                    n => Seg::Key(keys[n as usize].to_owned()),
-                })
-                .collect();
-            let enc = if rng.below(4) == 0 { Vec::new() } else { Leaf::Int(rng.below(100) as i64).encode() };
-            ops.push(Op {
-                id: NodeId { actor: ActorId(1 + rng.below(3)), counter: 100 + i },
-                hlc: Hlc { ms: 2 + rng.below(6), logical: u32::try_from(i).unwrap() }, // distinct stamps: equal ones tie by arrival
-                body: OpBody::Set { node, field: field::PROPS, path: TreePath::of(&segs), enc },
-            });
-        }
+        let ops = random_prop_ops(&mut rng, node);
         let reference = apply_all(&ops);
         for _ in 0..4 {
             let mut shuffled = ops.clone();
@@ -1658,6 +1676,33 @@ fn replicas_converge_whatever_the_order_and_duplicates() {
             assert_eq!(doc.nodes[&node].tree(field::PROPS), reference.nodes[&node].tree(field::PROPS));
             assert_eq!(compacted_bytes(&doc), compacted_bytes(&reference), "compacted bytes, round {round}");
         }
+    }
+}
+
+#[test]
+fn pruning_never_changes_the_tree_now_or_after_a_late_write() {
+    let node = NodeId { actor: ActorId(1), counter: 0 };
+    let mut rng = XorShift(0xC0DE_0002);
+    for round in 0..300 {
+        let mut full = apply_all(&random_prop_ops(&mut rng, node));
+        let mut pruned = full.clone();
+        pruned.forget_moves();
+        pruned.prune();
+        assert_eq!(pruned.nodes[&node].tree(field::PROPS), full.nodes[&node].tree(field::PROPS), "round {round}");
+        // A replica that never saw the prune receives one more write, older or newer than any so far.
+        let late = Op {
+            id: NodeId { actor: ActorId(5), counter: 1 },
+            hlc: Hlc { ms: 1 + rng.below(6), logical: 0 },
+            body: OpBody::Set {
+                node,
+                field: field::PROPS,
+                path: random_tree_path(&mut rng),
+                enc: if rng.below(3) == 0 { Vec::new() } else { Leaf::Int(-1).encode() },
+            },
+        };
+        full.apply(&late);
+        pruned.apply(&late);
+        assert_eq!(pruned.nodes[&node].tree(field::PROPS), full.nodes[&node].tree(field::PROPS), "late, round {round}");
     }
 }
 
