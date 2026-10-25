@@ -44,9 +44,6 @@ pub(crate) enum NodeAction {
     CommitRename(String),
     /// Escape in the rename field.
     CancelRename,
-    SetColor(Option<egui::Color32>),
-    /// A card's color swatch: the next color in `TAG_COLOR_PALETTE`.
-    CycleColor,
     ToggleMute,
     RetryMissingFile,
     /// A failed tab's card: tries again on the default engine.
@@ -96,7 +93,6 @@ pub(crate) enum NodeAction {
 /// sections, so the menu itself stays short.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MenuPage {
-    Color,
     /// A tab's or group's jar list and its actions.
     Jar,
 }
@@ -153,8 +149,6 @@ pub(crate) struct EdgeMenuRow {
 #[derive(Debug, PartialEq)]
 pub(crate) enum NodeMenuItem {
     Button(&'static str, NodeAction),
-    /// The "Color" label and tag-color swatch row, ending in a "no color" ring: the Color page's body.
-    Colors,
     /// A row that opens a page of the menu.
     Page(&'static str, MenuPage),
     /// One "Move into <name>" button per `(group id, name)`: the sibling groups a card can join.
@@ -190,15 +184,13 @@ pub(crate) struct NodeMenuConfig {
 /// apply the action. `pos` stands in for a zero-size anchor rect, so the
 /// menu opens right at the pointer. `rename` is the name draft (with
 /// whether to focus it this frame, and the field's hint text) while a group
-/// is being renamed or a jar named: the menu then shows just that field. `color` rings the node's current
-/// swatch.
+/// is being renamed or a jar named: the menu then shows just that field.
 pub(crate) fn build_node_context_menu(
     ui: &mut egui::Ui,
     pos: egui::Pos2,
     fade: f32,
     interactable: bool,
     config: &NodeMenuConfig,
-    color: Option<egui::Color32>,
     rename: Option<(&mut String, bool, Option<&str>)>,
 ) -> (Option<NodeAction>, bool) {
     let mut action = None;
@@ -238,17 +230,16 @@ pub(crate) fn build_node_context_menu(
                 }
                 menu_separator(ui);
                 match page {
-                    MenuPage::Color => draw_menu_item(ui, &NodeMenuItem::Colors, color, &mut action),
                     MenuPage::Jar => {
                         for item in &config.jar_page {
-                            draw_menu_item(ui, item, color, &mut action);
+                            draw_menu_item(ui, item, &mut action);
                         }
                     }
                 }
                 return;
             }
             for item in &config.items {
-                draw_menu_item(ui, item, color, &mut action);
+                draw_menu_item(ui, item, &mut action);
             }
         },
     );
@@ -257,12 +248,7 @@ pub(crate) fn build_node_context_menu(
 }
 
 /// One item of a node menu (or of one of its pages), reporting a click in `action`.
-fn draw_menu_item(
-    ui: &mut egui::Ui,
-    item: &NodeMenuItem,
-    color: Option<egui::Color32>,
-    action: &mut Option<NodeAction>,
-) {
+fn draw_menu_item(ui: &mut egui::Ui, item: &NodeMenuItem, action: &mut Option<NodeAction>) {
     match item {
         NodeMenuItem::Button(label, item_action) => {
             let mut response = menu_button(ui, *label, item_action.key_hint());
@@ -334,11 +320,6 @@ fn draw_menu_item(
         NodeMenuItem::Page(label, page) => {
             if menu_button(ui, *label, None).clicked() {
                 *action = Some(NodeAction::OpenPage(*page));
-            }
-        }
-        NodeMenuItem::Colors => {
-            if let Some(picked) = color_swatch_row(ui, color) {
-                *action = Some(NodeAction::SetColor(picked));
             }
         }
         NodeMenuItem::Separator => {
@@ -431,6 +412,7 @@ fn menu_row(
 /// The "Color" label and one swatch per `TAG_COLOR_PALETTE` entry, then a
 /// "no color" ring; `current` gets a ring of its own. Returns the clicked
 /// choice (`Some(None)` for no color).
+#[allow(dead_code, reason = "the label menu's recolour row (Task 8)")]
 pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<Option<egui::Color32>> {
     let mut picked = None;
     menu_section(ui, "Color", |ui, grid| {
@@ -512,7 +494,6 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.push(Button("Duplicate", A::Duplicate));
         }
         items.push(Button(if view.pinned { "Unpin" } else { "Pin" }, A::TogglePin));
-        items.push(Page("Color...", MenuPage::Color));
         if !view.edges.is_empty() {
             items.push(NodeMenuItem::Edges(view.edges.clone()));
         }
@@ -633,7 +614,6 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
 pub(crate) struct NodeMenuView {
     kind: CardKind,
     has_group: bool,
-    color: Option<egui::Color32>,
     /// Image/Pdf/Json/Note: `node.source_url().is_some()`. Offers Refresh
     /// (Image/Pdf/Json) and Open as Tab (any of the four).
     has_url: bool,
@@ -753,7 +733,7 @@ impl App {
             _ => frozen_draft.as_mut().map(|draft| (draft, false, naming.then_some("Jar name"))),
         };
         config.page = self.menus.node_menu.page;
-        let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, view.color, rename);
+        let (action, clicked_outside) = build_node_context_menu(ui, pos, fade, live, &config, rename);
         match action {
             Some(NodeAction::OpenPage(page)) => self.menus.node_menu.page = Some(page),
             Some(NodeAction::MenuBack) => self.menus.node_menu.page = None,
@@ -802,7 +782,6 @@ impl App {
         Some(NodeMenuView {
             kind: self.card_kind(id)?,
             has_group: self.doc.mirror.group(id).is_some(),
-            color: self.doc.mirror.color(id),
             has_url: self.source_url(id).is_some(),
             has_copy_url: self.copyable_url(id).is_some(),
             pinned: self.doc.mirror.pinned(id),
@@ -983,17 +962,6 @@ impl App {
             }
             NodeAction::CommitRename(name) => self.commit_rename(id, &name),
             NodeAction::CancelRename => self.renaming_group = None,
-            NodeAction::SetColor(color) => {
-                if self.nodes.contains_key(&id) {
-                    self.edit_field(id, field::COLOR, session_sync::color_value(color));
-                }
-            }
-            NodeAction::CycleColor => {
-                if self.nodes.contains_key(&id) {
-                    let next = next_tag_color(self.doc.mirror.color(id));
-                    self.edit_field(id, field::COLOR, session_sync::color_value(next));
-                }
-            }
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),

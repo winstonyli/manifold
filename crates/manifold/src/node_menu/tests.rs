@@ -48,7 +48,6 @@ fn view_of(kind: CardKind) -> NodeMenuView {
     NodeMenuView {
         kind,
         has_group: false,
-        color: None,
         has_url: false,
         has_copy_url: false,
         pinned: false,
@@ -74,7 +73,6 @@ fn node_menu_config_matches_each_kinds_menu() {
             .iter()
             .map(|item| match item {
                 NodeMenuItem::Button(label, _) => *label,
-                NodeMenuItem::Colors => "<colors>",
                 NodeMenuItem::Page(label, _) => *label,
                 NodeMenuItem::MoveTo(_) => "<move>",
                 NodeMenuItem::Jars { .. } => "<jars>",
@@ -98,25 +96,21 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "download_context_menu",
                 170.0,
-                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Remove from List")
+                format!(
+                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin{g} | --- | Remove from List"
+                )
             )
         );
         assert_eq!(
             menu(plain(TYPE_NOTE), false),
-            (
-                "note_context_menu",
-                150.0,
-                format!("Copy Text | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete")
-            )
+            ("note_context_menu", 150.0, format!("Copy Text | --- | Rename | Duplicate | Pin{g} | --- | Delete"))
         );
         assert_eq!(
             menu(plain(TYPE_IMAGE), false),
             (
                 "image_context_menu",
                 170.0,
-                format!(
-                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
-                )
+                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin{g} | --- | Delete")
             )
         );
         assert_eq!(
@@ -124,9 +118,7 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "pdf_context_menu",
                 170.0,
-                format!(
-                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
-                )
+                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin{g} | --- | Delete")
             )
         );
         assert_eq!(
@@ -134,9 +126,7 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "json_context_menu",
                 170.0,
-                format!(
-                    "Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color...{g} | --- | Delete"
-                )
+                format!("Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin{g} | --- | Delete")
             )
         );
         assert_eq!(
@@ -144,12 +134,12 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "tab_context_menu",
                 150.0,
-                format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin | Color...{g} | --- | Close")
+                format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin{g} | --- | Close")
             )
         );
         assert_eq!(
             menu(loaded_tab(), true).2,
-            format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Unpin | Color...{g} | --- | Close")
+            format!("Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Unpin{g} | --- | Close")
         );
         assert_eq!(
             menu(plain(TYPE_GROUP), false),
@@ -157,7 +147,7 @@ fn node_menu_config_matches_each_kinds_menu() {
                 "group_context_menu",
                 150.0,
                 format!(
-                    "Sleep Tabs | Export Group... | --- | Rename | Duplicate | Pin | Color...{g} | --- | Dissolve Group | \
+                    "Sleep Tabs | Export Group... | --- | Rename | Duplicate | Pin{g} | --- | Dissolve Group | \
                          Close Group and Contents"
                 )
             )
@@ -167,7 +157,7 @@ fn node_menu_config_matches_each_kinds_menu() {
             (
                 "unloaded_tab_context_menu",
                 170.0,
-                format!("Open | Copy URL | --- | Rename | Duplicate | Pin | Color...{g} | --- | Close")
+                format!("Open | Copy URL | --- | Rename | Duplicate | Pin{g} | --- | Close")
             )
         );
     }
@@ -177,35 +167,35 @@ fn node_menu_config_matches_each_kinds_menu() {
     let failed = NodeMenuView { other_default_view_kind: true, failed: true, ..view_of(sleeping_tab()) };
     assert_eq!(
         menu_of(&failed, false).2,
-        "Retry | Open in Default Engine | Copy URL | --- | Rename | Pin | Color... | --- | Close"
+        "Retry | Open in Default Engine | Copy URL | --- | Rename | Pin | --- | Close"
     );
     let missing = NodeMenuView { failed: true, view_missing: true, ..view_of(sleeping_tab()) };
-    assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | --- | Rename | Pin | Color... | --- | Close");
+    assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | --- | Rename | Pin | --- | Close");
     // Export Group's file dialog can't run headless.
     assert_eq!(
         menu(plain(TYPE_GROUP), false, false, true).2,
-        "Sleep Tabs | --- | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | Close Group and Contents"
+        "Sleep Tabs | --- | Rename | Duplicate | Pin | --- | Dissolve Group | Close Group and Contents"
     );
     // A url on Image/Pdf/Json/Note offers Refresh (not Note) and Open as
     // Tab, ahead of the kind's own items.
     let with_url = |kind: CardKind| NodeMenuView { has_url: true, has_copy_url: true, ..view_of(kind) };
     assert_eq!(
         menu_of(&with_url(plain(TYPE_IMAGE)), false).2,
-        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | --- | Delete"
     );
     assert_eq!(
         menu_of(&with_url(plain(TYPE_JSON)), false).2,
-        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Refresh | Open as Tab | Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | --- | Delete"
     );
     // A download has no Open as Tab (it would download again), but can copy where it came from.
     let download = NodeMenuView { has_copy_url: true, ..view_of(plain(TYPE_DOWNLOAD)) };
     assert_eq!(
         menu_of(&download, false).2,
-        "Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | Color... | --- | Remove from List"
+        "Copy URL | Open Containing Folder | Copy Path | --- | Rename | Duplicate | Pin | --- | Remove from List"
     );
     assert_eq!(
         menu_of(&with_url(plain(TYPE_NOTE)), false).2,
-        "Open as Tab | Copy URL | Copy Text | --- | Rename | Duplicate | Pin | Color... | --- | Delete"
+        "Open as Tab | Copy URL | Copy Text | --- | Rename | Duplicate | Pin | --- | Delete"
     );
     // Jars: tabs and groups have a Jar row ahead of the colours; the jar list and its actions are the Jar page.
     let rows = vec![JarRow { id: None, name: built_in(), color: None, ticked: true }];
@@ -213,21 +203,18 @@ fn node_menu_config_matches_each_kinds_menu() {
     let tab = |j| NodeMenuView { jars: j, ..view_of(loaded_tab()) };
     assert_eq!(
         menu_of(&tab(jars(false)), false).2,
-        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
+        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | --- | Close"
     );
     assert_eq!(
         menu_of(&tab(jars(true)), false).2,
-        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
+        "Fit Subtree | Sleep | Copy URL | Jar... | --- | Rename | Duplicate | Pin | --- | Close"
     );
     let unloaded = NodeMenuView { jars: jars(true), ..view_of(sleeping_tab()) };
-    assert_eq!(
-        menu_of(&unloaded, false).2,
-        "Open | Copy URL | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Close"
-    );
+    assert_eq!(menu_of(&unloaded, false).2, "Open | Copy URL | Jar... | --- | Rename | Duplicate | Pin | --- | Close");
     let group = NodeMenuView { jars: jars(false), ..view_of(plain(TYPE_GROUP)) };
     assert_eq!(
         menu_of(&group, false).2,
-        "Sleep Tabs | Export Group... | Jar... | --- | Rename | Duplicate | Pin | Color... | --- | Dissolve Group | \
+        "Sleep Tabs | Export Group... | Jar... | --- | Rename | Duplicate | Pin | --- | Dissolve Group | \
              Close Group and Contents"
     );
     let page = |view: &NodeMenuView| -> Vec<&'static str> {
@@ -250,11 +237,11 @@ fn node_menu_config_matches_each_kinds_menu() {
     let linked = |kind| NodeMenuView { edges: vec![row.clone()], has_group: true, ..view_of(kind) };
     assert_eq!(
         menu_of(&linked(plain(TYPE_NOTE)), false).2,
-        "Copy Text | --- | Rename | Duplicate | Pin | Color... | <links> | --- | Remove from Group | --- | Delete"
+        "Copy Text | --- | Rename | Duplicate | Pin | <links> | --- | Remove from Group | --- | Delete"
     );
     assert_eq!(
         menu_of(&linked(loaded_tab()), false).2,
-        "Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin | Color... | <links> | --- | Remove from Group | --- | \
+        "Fit Subtree | Sleep | Copy URL | --- | Rename | Duplicate | Pin | <links> | --- | Remove from Group | --- | \
              Close"
     );
 }
@@ -484,7 +471,7 @@ fn menu_sections_share_one_left_margin() {
             };
             let config = NodeMenuConfig { page: Some(page), ..node_menu_config(&view, false) };
             let mut output = ctx.run_ui(input, |ui| {
-                build_node_context_menu(ui, egui::pos2(100.0, 100.0), 1.0, true, &config, None, None);
+                build_node_context_menu(ui, egui::pos2(100.0, 100.0), 1.0, true, &config, None);
             });
             output.textures_delta.clear();
             (circles, headings) = Default::default();
@@ -499,16 +486,12 @@ fn menu_sections_share_one_left_margin() {
         (circles, headings)
     };
     let (dots, jar_headings) = page_xs(MenuPage::Jar, 4.0, "Jar");
-    let (swatches, color_headings) = page_xs(MenuPage::Color, 7.0, "Color");
-    assert_eq!((dots.len(), jar_headings.len(), color_headings.len()), (2, 1, 1), "two jar dots, a heading each");
-    assert!(!swatches.is_empty());
+    assert_eq!((dots.len(), jar_headings.len()), (2, 1), "two jar dots, a heading");
     let half_slot = MenuGrid::MARKER_SLOT / 2.0;
-    // Both dots and the first swatch are centred in a slot that starts where the headings do.
-    for (centre, heading) in [(dots[0], jar_headings[0]), (dots[1], jar_headings[0]), (swatches[0], color_headings[0])]
-    {
-        assert!((centre - half_slot - heading).abs() < 0.6, "{centre} vs heading {heading}");
+    // Both dots are centred in a slot that starts where the heading does.
+    for centre in [dots[0], dots[1]] {
+        assert!((centre - half_slot - jar_headings[0]).abs() < 0.6, "{centre} vs heading {}", jar_headings[0]);
     }
-    assert!((jar_headings[0] - color_headings[0]).abs() < 0.01, "headings: {jar_headings:?} {color_headings:?}");
 }
 
 /// One frame of `build_node_menu` in an 800x600 window.
@@ -636,14 +619,18 @@ fn a_click_on_link_to_starts_pick_target_mode() {
     assert_eq!(app.menus.node_menu.open, None, "the menu closed");
 }
 
-/// "Color..." swaps the menu for the swatch page and keeps it open; "Back" returns to the items; a swatch applies and
-/// closes. Driven through `build_node_menu` with real egui input.
+/// "Jar..." swaps the menu for the jar page and keeps it open; "Back" returns to the items. Driven through
+/// `build_node_menu` with real egui input.
 #[test]
-fn the_color_row_opens_a_page_and_back_returns() {
+fn the_jar_row_opens_a_page_and_back_returns() {
     let ctx = crate::theme::testutil::ctx(true);
     let mut app = App::default();
-    let n = app.alloc_node_id();
-    app.insert_note_at(n, None);
+    app.ensure_default_jar();
+    let n = crate::session_sync::tests::add(
+        &mut app,
+        crate::store::model::Kind::Tab,
+        crate::session_sync::tests::sleeping_tab("https://a/", "A"),
+    );
     let pos = egui::pos2(100.0, 100.0);
     app.menus.node_menu.open(n, pos);
     let frame = |app: &mut App, events| {
@@ -659,9 +646,6 @@ fn the_color_row_opens_a_page_and_back_returns() {
             .into_iter()
             .filter_map(|s| match s.shape {
                 egui::Shape::Text(t) => Some((t.galley.text().to_string(), t.galley.rect.translate(t.pos.to_vec2()))),
-                egui::Shape::Circle(c) if c.radius == 7.0 => {
-                    Some(("swatch".to_string(), egui::Rect::from_center_size(c.center, egui::Vec2::splat(14.0))))
-                }
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -681,24 +665,15 @@ fn the_color_row_opens_a_page_and_back_returns() {
         texts.iter().find(|(t, _)| t.ends_with(what)).map(|t| t.1.center())
     };
     let texts = settle(&mut app);
-    assert!(find(&texts, "swatch").is_none(), "the swatches are not on the items page");
-    click(&mut app, find(&texts, "Color...").expect("a Color row"));
-    assert_eq!(app.menus.node_menu.page, Some(MenuPage::Color));
+    click(&mut app, find(&texts, "Jar...").expect("a Jar row"));
+    assert_eq!(app.menus.node_menu.page, Some(MenuPage::Jar));
     assert!(app.menus.node_menu.open.is_some(), "the menu stays open");
     let texts = settle(&mut app);
-    assert!(find(&texts, "swatch").is_some() && find(&texts, "Color...").is_none(), "the swatch page");
+    assert!(!texts.iter().any(|(t, _)| t == "Jar..."), "the jar page replaces the items");
     click(&mut app, find(&texts, "Back").expect("a Back row"));
     assert_eq!(app.menus.node_menu.page, None);
     let texts = settle(&mut app);
-    click(&mut app, find(&texts, "Color...").unwrap());
-    let texts = settle(&mut app);
-    click(&mut app, find(&texts, "swatch").unwrap());
-    assert_eq!(app.menus.node_menu.open, None, "a swatch closes the menu");
-    assert!(app.doc.mirror.color(n).is_some(), "and colours the card");
-    // A fresh menu on the same card starts on the items again.
-    app.menus.node_menu.open(n, egui::pos2(300.0, 300.0));
-    let texts = settle(&mut app);
-    assert!(find(&texts, "Color...").is_some());
+    assert!(texts.iter().any(|(t, _)| t == "Jar..."), "back on the items");
 }
 
 /// A left press, then its release a frame later, at (700, 500): outside a menu opened at (100, 100).

@@ -18,7 +18,7 @@ impl App {
             jar,
             seed_clears,
         } = outcome;
-        let TabCarry { pinned, color, zoom_factor, title, muted } = carry;
+        let TabCarry { pinned, zoom_factor, title, muted } = carry;
         // What the tab was started with, its trees included, is what it lands with (`seed_landing`).
         let trees = self.spawns.spawning.remove(&id).map(|snap| snap.trees).unwrap_or_default();
         let remote = self.spawns.remote_in_flight.remove(&id);
@@ -44,13 +44,13 @@ impl App {
         // same guard `reopen_node`'s placement applies for the same
         // reason, centralized here since every spawn path funnels through
         // this one function.
-        let (parent, group, color, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
+        let (parent, group, pinned, muted) = if self.spawns.wakes_in_flight.remove(&id) {
             match self.nodes.get(&id).and_then(|n| n.as_unloaded()) {
                 Some(tab) => {
                     let carried = self.doc.mirror.carried(id);
-                    let (color, pinned) = (carried.color(), carried.pinned());
+                    let pinned = carried.pinned();
                     let Carried { parent, group, .. } = carried;
-                    (parent, group, color, pinned, tab.muted)
+                    (parent, group, pinned, tab.muted)
                 }
                 // Closed while waking (see `wakes_in_flight`): `remove_tab`
                 // queued its delete, which this save commits -- without
@@ -61,7 +61,7 @@ impl App {
                 }
             }
         } else {
-            (parent, group, color, pinned, muted)
+            (parent, group, pinned, muted)
         };
         if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
             && self.spawns.pending_respawn_focus == Some(id)
@@ -110,8 +110,7 @@ impl App {
                     },
                 );
                 let view_kind = session_sync::view_code(kind);
-                let carried =
-                    Carried::tab(Some(pos), color, pinned, (parent, group), url.clone(), view_kind, spawn_jar);
+                let carried = Carried::tab(Some(pos), pinned, (parent, group), url.clone(), view_kind, spawn_jar);
                 self.seed_landing(id, carried.with_trees(trees.clone()));
                 if !self.node_order.contains(&id) {
                     self.node_order.push(id);
@@ -191,7 +190,7 @@ impl App {
                         view_label(kind),
                         view_label(fallback)
                     ));
-                    let carry = TabCarry { pinned, color, zoom_factor, title, muted };
+                    let carry = TabCarry { pinned, zoom_factor, title, muted };
                     let spawn = TabSpawn {
                         id,
                         url,
@@ -255,7 +254,7 @@ impl App {
                     // A tab the mirror holds already shows the engine that failed: a switch's target, written when
                     // it started (`edit_view_kind`); a new one lands on it here.
                     let view_kind = session_sync::view_code(kind);
-                    let carried = Carried::tab(Some(pos), color, pinned, (parent, group), url, view_kind, spawn_jar);
+                    let carried = Carried::tab(Some(pos), pinned, (parent, group), url, view_kind, spawn_jar);
                     self.seed_landing(id, carried.with_trees(trees.clone()));
                     if !self.node_order.contains(&id) {
                         self.node_order.push(id);

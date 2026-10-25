@@ -64,7 +64,6 @@ fn a_remote_jar_edit_updates_a_sleeping_tab_and_a_group() {
 
 #[test]
 fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
-    let red = color_value(Some(egui::Color32::from_rgb(200, 10, 10)));
     let nodes = BTreeMap::from([
         (
             node(0),
@@ -74,7 +73,7 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
                 &[
                     (field::TEXT, FieldValue::Str("hello".into())),
                     (field::POS, FieldValue::Pos(3.0, -4.0)),
-                    (field::COLOR, red),
+                    (field::NAME, FieldValue::Str("Hi".into())),
                 ],
             ),
         ),
@@ -250,14 +249,13 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     if let Runtime::Unloaded(t) = &mut app.nodes.get_mut(&tab).unwrap().runtime {
         t.url = "https://u1/".into();
     }
-    let red = color_value(Some(egui::Color32::RED));
-    remote_set(&mut other, note, field::COLOR, red.clone());
+    remote_set(&mut other, note, field::NAME, one());
     remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
 
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     let live = &app.nodes[&note];
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.get(note, field::NAME), one());
     assert!(matches!(&live.runtime, Runtime::Note(n) if n.text == "typing"));
     assert_eq!(stored(&app, note, field::TEXT), FieldValue::Str("typing".into()));
     assert!(app.doc.mirror.pinned(tab));
@@ -268,7 +266,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     remote_set(&mut other, note, field::TEXT, FieldValue::Str("theirs".into()));
     assert!(app.save_session());
     assert!(matches!(&app.nodes[&note].runtime, Runtime::Note(n) if n.text == "theirs"));
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.get(note, field::NAME), one());
 }
 
 /// Ruling 7: a remote text change that arrives while the note is typed in leaves the box alone and is held. At the
@@ -283,12 +281,12 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
         let mut other = Journal::open(&path, ActorId(2)).unwrap();
         type_into(&mut app, note, "v1");
         remote_set(&mut other, note, field::TEXT, FieldValue::Str("theirs".into()));
-        remote_set(&mut other, note, field::COLOR, red());
+        remote_set(&mut other, note, field::NAME, one());
         assert!(app.save_session());
         assert_eq!(buffer(&app, note), "v1", "the box is not overwritten");
         assert_eq!(app.doc.mirror.text(note), "v1", "held");
         assert_eq!(app.doc.writes.held_text.get(&note).map(String::as_str), Some("theirs"));
-        assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED), "their other field arrives");
+        assert_eq!(app.doc.mirror.get(note, field::NAME), one(), "their other field arrives");
         if typed {
             type_into(&mut app, note, "mine");
         }
@@ -412,13 +410,13 @@ fn a_local_pos_edit_wins_over_a_remote_one() {
     drag(&mut app, &[note], egui::vec2(80.0, 0.0));
     app.release_drag();
     remote_set(&mut other, note, field::POS, FieldValue::Pos(5.0, 6.0));
-    remote_set(&mut other, note, field::COLOR, red());
+    remote_set(&mut other, note, field::NAME, one());
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(90.0, 20.0)));
     assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(90.0, 20.0));
     assert_eq!(app.layout_pos(note), egui::vec2(90.0, 20.0), "not snapped to theirs");
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED), "their other field arrives");
+    assert_eq!(app.doc.mirror.get(note, field::NAME), one(), "their other field arrives");
 }
 
 /// Ruling 4: another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
@@ -703,30 +701,30 @@ fn a_remote_jar_delete_releases_its_file_unless_recently_closed_holds_it() {
 }
 
 #[test]
-fn a_remote_color_edit_reaches_the_mirror() {
+fn a_remote_name_edit_reaches_the_mirror() {
     let path = temp_dir("edit-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, note, field::COLOR, red());
+    remote_set(&mut other, note, field::NAME, one());
     assert!(app.save_session());
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.get(note, field::NAME), one());
 }
 
 #[test]
-fn a_pending_local_color_edit_wins_over_a_remote_edit_of_the_same_field() {
+fn a_pending_local_name_edit_wins_over_a_remote_edit_of_the_same_field() {
     let path = temp_dir("edit-conflict").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    app.edit_field(note, field::COLOR, blue());
-    remote_set(&mut other, note, field::COLOR, red());
+    app.edit_field(note, field::NAME, two());
+    remote_set(&mut other, note, field::NAME, one());
     // The remote round applies first, the next round commits the local edit over it.
     assert!(app.save_session());
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::BLUE));
-    assert_eq!(stored(&app, note, field::COLOR), blue());
+    assert_eq!(app.doc.mirror.get(note, field::NAME), two());
+    assert_eq!(stored(&app, note, field::NAME), two());
 }
 
 /// A remote colour parked for a waking tab (`remote_in_flight`) must not land over a local edit committed after it.
@@ -739,15 +737,15 @@ fn a_committed_local_edit_wins_over_a_remote_value_parked_for_a_waking_tab() {
     app.focus_tab(tab);
     assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, tab, field::COLOR, blue());
-    app.edit_field(tab, field::COLOR, red());
-    // The remote round parks blue, the next round commits red.
+    remote_set(&mut other, tab, field::NAME, two());
+    app.edit_field(tab, field::NAME, one());
+    // The remote round parks "two", the next round commits "one".
     assert!(app.save_session());
     assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote value is parked");
-    assert_eq!(stored(&app, tab, field::COLOR), red());
+    assert_eq!(stored(&app, tab, field::NAME), one());
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.color(tab), Some(egui::Color32::RED));
-    assert_eq!(stored(&app, tab, field::COLOR), red());
+    assert_eq!(app.doc.mirror.get(tab, field::NAME), one());
+    assert_eq!(stored(&app, tab, field::NAME), one());
 }
 
 /// An unsaved local parent beats another replica's edit to the same link; their other fields still arrive.

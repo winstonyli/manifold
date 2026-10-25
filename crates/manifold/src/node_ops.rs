@@ -39,7 +39,7 @@ impl App {
     /// error. Ignored while a wake is already in flight.
     pub(crate) fn wake_tab(&mut self, id: NodeId, kind: ViewKind) {
         let carried = self.doc.mirror.carried(id);
-        let (pos, color, pinned, jar) = (carried.pos(), carried.color(), carried.pinned(), carried.jar());
+        let (pos, pinned, jar) = (carried.pos(), carried.pinned(), carried.jar());
         let Carried { parent, group, .. } = carried;
         let pos = pos.unwrap_or_default(); // unused: the card's layout entry stays (`TabSpawn::pos`)
         let Some(node) = self.nodes.get_mut(&id) else { return };
@@ -49,7 +49,7 @@ impl App {
         }
         tab.state = UnloadedState::Waking;
         let (zoom_factor, title, muted) = (tab.zoom_factor, tab.title.clone(), tab.muted);
-        let carry = TabCarry { pinned, color, zoom_factor, title, muted };
+        let carry = TabCarry { pinned, zoom_factor, title, muted };
         let url = tab.url.clone();
         self.spawns.wakes_in_flight.insert(id);
         // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).

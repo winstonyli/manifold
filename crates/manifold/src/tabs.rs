@@ -203,14 +203,12 @@ pub(crate) struct TabSpawn {
 }
 
 /// What a tab keeps across a respawn (engine swap, crash recovery) or a
-/// wake. A new tab starts unpinned, untagged, at the default zoom, with no
+/// wake. A new tab starts unpinned, at the default zoom, with no
 /// title or mute of its own yet. A new attribute that must survive a
 /// respawn or wake is one more field here.
 pub(crate) struct TabCarry {
     /// See `Mirror::pinned`; seeds the mirror when the tab's id has no entry yet.
     pub(crate) pinned: bool,
-    /// See `Mirror::color`; seeds the mirror when the tab's id has no entry yet.
-    pub(crate) color: Option<egui::Color32>,
     /// See `TabPayload::zoom_factor`. A new tab takes
     /// `Settings::zoom_factor`, having no value of its own yet.
     pub(crate) zoom_factor: f64,
@@ -238,7 +236,7 @@ impl TabSpawn {
             jar: Default::default(),
             pos,
             purpose,
-            carry: TabCarry { pinned: false, color: None, zoom_factor, title: String::new(), muted: false },
+            carry: TabCarry { pinned: false, zoom_factor, title: String::new(), muted: false },
             fallback_kind: None,
         }
     }
@@ -258,7 +256,6 @@ impl TabSpawn {
             purpose: SpawnPurpose::Respawn,
             carry: TabCarry {
                 pinned: carried.pinned(),
-                color: carried.color(),
                 zoom_factor: tab.zoom_factor,
                 title: tab.title.clone(),
                 muted: tab.muted,

@@ -37,12 +37,11 @@ fn the_history_is_capped_and_serials_never_repeat() {
 }
 
 /// "Dissolve Group" closes the emptied group holding its members' ids: Undo (or the Recently Closed row) reopens
-/// the same group, with its name and color, around the members still at its level.
+/// the same group, with its name, around the members still at its level.
 #[test]
 fn dissolve_group_is_undone_by_reopening_the_same_group() {
     use crate::node_menu::NodeAction;
     let ctx = egui::Context::default();
-    let color = session_sync::color_value(Some(egui::Color32::from_rgb(1, 2, 3)));
     for from_toast in [true, false] {
         let path = store::testutil::temp_dir("dissolve-undo").join("session.mnf");
         let mut app = app_on(&path, 1);
@@ -50,7 +49,6 @@ fn dissolve_group_is_undone_by_reopening_the_same_group() {
         let moved_on = add_note(&mut app, "moved on");
         app.edit_group(moved_on, Some(g));
         app.edit_name(g, "Research");
-        app.edit_field(g, field::COLOR, color.clone());
         assert!(app.save_session());
         app.apply_node_action(&ctx, g, NodeAction::Dissolve);
         let (message, serial, _) = app.toasts.undo.clone().expect("the dissolve offers an undo");
@@ -66,7 +64,6 @@ fn dissolve_group_is_undone_by_reopening_the_same_group() {
         assert_eq!(app.doc.mirror.group(inner), Some(g), "back in the same group (toast: {from_toast})");
         assert_eq!(app.doc.mirror.group(moved_on), Some(elsewhere));
         assert_eq!(app.doc.mirror.name(g), "Research");
-        assert_eq!(app.doc.mirror.get(g, field::COLOR), color);
         assert!(closed_ids(&app).is_empty());
         assert_eq!(stored(&app, g, field::HELD), FieldValue::absent(FieldType::Held), "forgotten once restored");
     }

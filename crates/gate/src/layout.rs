@@ -63,7 +63,7 @@ enum Open {
     Settings(&'static str),
 }
 
-static SCENARIOS: [Scenario; 12] = [
+static SCENARIOS: [Scenario; 11] = [
     Scenario {
         name: "shortcuts-help",
         open: Open::Command("TOGGLESHORTCUTSHELP"),
@@ -81,7 +81,6 @@ static SCENARIOS: [Scenario; 12] = [
     Scenario { name: "note-menu", open: Open::CardMenu(NOTE, None), close: "ESCAPE", list_below: None },
     Scenario { name: "group-menu", open: Open::CardMenu(GROUP, None), close: "ESCAPE", list_below: None },
     Scenario { name: "tab-menu-jar", open: Open::CardMenu(TAB, Some("jar")), close: "ESCAPE", list_below: None },
-    Scenario { name: "tab-menu-color", open: Open::CardMenu(TAB, Some("color")), close: "ESCAPE", list_below: None },
     Scenario { name: "group-menu-jar", open: Open::CardMenu(GROUP, Some("jar")), close: "ESCAPE", list_below: None },
     Scenario {
         name: "bookmarks-popup",

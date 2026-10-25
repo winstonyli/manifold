@@ -13,7 +13,7 @@
 //! different case, or a type this build doesn't know, whose `type` is `TYPE_UNKNOWN`), `loaded` (true for a tab with a running engine only),
 //! `json_card` (true for a JSON level's card, which is no stored node:
 //! its keys are only `id`, `type` (`application/json`), `loaded` (false), `unresponsive` (false),
-//! `json_card`, `screen` and `rect`), `group`, `parent`, `color` (whether it has a tag color),
+//! `json_card`, `screen` and `rect`), `group`, `parent`,
 //! `pinned`, `editing` (a note being edited), `screen` (its center) and
 //! `rect` (`[left, top, right, bottom]`), in points, which are pixels
 //! headless. `gate` reads these for the probe
@@ -135,7 +135,6 @@ impl App {
                     "json_card": false,
                     "group": self.doc.mirror.group(id),
                     "parent": self.opened_from(id),
-                    "color": self.doc.mirror.color(id).is_some(),
                     "pinned": self.doc.mirror.pinned(id),
                     "name": self.doc.mirror.name(id), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
@@ -478,7 +477,6 @@ mod tests {
             for key in [
                 "group",
                 "parent",
-                "color",
                 "pinned",
                 "editing",
                 "world",

@@ -19,9 +19,9 @@
 //!   along a bar and print where anything other than the hovered widget moved (`shots_img::hover_report`);
 //!   `focus-graph` does the same for clicks
 //! - keyboard views: `graph-enter-group graph-enter-json graph-menu-key graph-select-key graph-pinned-dense json-keys tabview-split-key`
-//! - assertion views, which print `PASS:`/`FAIL:`: `mouse-regress` (drag, swatch click, middle-click close),
+//! - assertion views, which print `PASS:`/`FAIL:`: `mouse-regress` (drag, middle-click close),
 //!   `note-key`, `digit-jump`, `json-tab-offscreen`, `tabview-actions-click`
-//! - `graph-menu-jars graph-menu-chip graph-menu-color graph-menu-group-jars`: the menu's Jar and Color pages
+//! - `graph-menu-jars graph-menu-chip graph-menu-group-jars`: the menu's Jar page
 //!
 //! `engine-states-picker engine-states-settings engine-install-confirm` (any one runs the block) start more instances
 //! to shoot the CEF install states: a copy of the exe with no CEF host beside it, on its own profile, walks Not
@@ -654,14 +654,6 @@ impl Shots {
             s.shot("graph-menu-chip")?;
             s.reset()
         })?;
-        // The same menu's Color page.
-        self.view("graph-menu-color", |s| {
-            let (x, y) = s.center(TAB, "top", Some(true))?;
-            s.menu_at(x, y)?;
-            send!(s, "MENUPAGE color", "SLEEP 1")?;
-            s.shot("graph-menu-color")?;
-            s.reset()
-        })?;
         // The group's Default jar page with those jars: none chosen (so Default is the selected row).
         self.view("graph-menu-group-jars", |s| {
             let (x, y) = s.center(TAB, "top", Some(true))?;
@@ -852,18 +844,11 @@ impl Shots {
             s.shot("graph-menu-key-open")?;
             send!(s, "TABKEY", "SLEEP 0.5")?;
             s.shot("graph-menu-key-tab")?;
-            // Still open: Down to "Color...", Enter. The page opens on Back; Down goes to the swatch row (one stop), then wraps
-            // to Back.
+            // Still open: Down through the rows.
             // A shot after each Down: the frame it forces is what lets the next key see the new focus.
             for i in 1..=5 {
                 send!(s, "ARROWDOWN", "SLEEP 0.3")?;
                 s.shot(&format!("graph-menu-key-down{i}"))?;
-            }
-            send!(s, "ENTER", "SLEEP 1")?;
-            s.shot("graph-menu-key-color-back")?;
-            for name in ["swatch", "wrapped"] {
-                send!(s, "ARROWDOWN", "SLEEP 0.5")?;
-                s.shot(&format!("graph-menu-key-color-{name}"))?;
             }
             send!(s, "ESCAPE", "SLEEP 1")?;
             s.shot("graph-menu-key-closed")?;
@@ -982,7 +967,7 @@ impl Shots {
     }
 
     /// Mouse behaviour that the Tab-focus model must not disturb, asserted rather than shot: dragging a card moves
-    /// it, clicking its swatch tags it, middle-click closes it.
+    /// it, middle-click closes it.
     fn mouse_regress(&mut self) -> io::Result<()> {
         let note_rect = |s: &mut Self| -> io::Result<[i64; 4]> {
             let st = s.state()?;
@@ -1007,16 +992,6 @@ impl Shots {
         )?;
         let [n0, m0, n1, m1] = note_rect(self)?;
         check_eq("drag moves the card by the drag distance", "90,45".to_string(), format!("{},{}", n0 - x0, m0 - y0));
-        // The swatch sits on the bottom-right corner (hover reveals nothing extra; the click is what counts).
-        send!(self, format!("MOUSEMOVE {} {}", n0 + 20, m0 + 20), "SLEEP 0.5", format!("CLICK {n1} {m1}"), "SLEEP 1")?;
-        self.shot("mouse-regress-swatch")?;
-        let st = self.state()?;
-        let tagged = st
-            .all_cards()
-            .iter()
-            .find(|c| State::card_is(c, NOTE, None))
-            .is_some_and(|c| c["color"].as_bool() == Some(true));
-        check("swatch click tags the card", tagged);
         let before = self.card_count()?;
         let (mx, my) = ((n0 + n1) / 2, (m0 + m1) / 2);
         send!(

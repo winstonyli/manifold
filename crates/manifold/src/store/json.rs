@@ -362,7 +362,7 @@ mod tests {
     }
 
     const HAND_WRITTEN: &str = r##"{"nodes": [
-        {"id": "g", "type": "application/vnd.manifold.group", "name": "Reading", "color": "#000000"},
+        {"id": "g", "type": "application/vnd.manifold.group", "name": "Reading"},
         {"id": "t1", "type": "application/vnd.manifold.tab", "group": "g", "url": "https://a.example/", "pos": [10.5, -3], "view_kind": "cef", "pinned": true},
         {"id": "t2", "type": "application/vnd.manifold.tab", "group": "g", "parent": "t1", "url": "https://b.example/", "future_field": 7},
         {"id": "n", "type": "text/markdown", "text": "hi"}
@@ -416,9 +416,12 @@ mod tests {
 
     #[test]
     fn black_is_a_color_not_the_absence_of_one() {
-        let doc = doc_from(HAND_WRITTEN, 1);
-        let (_, group) = doc.live().find(|(_, n)| n.kind() == Kind::Group).unwrap();
-        assert_eq!(group.get(field::COLOR), FieldValue::Color(Some(0)));
+        let doc = doc_from(
+            r##"{"nodes": [{"id": "l", "type": "application/vnd.manifold.label", "name": "x", "color": "#000000"}]}"##,
+            1,
+        );
+        let (_, label) = doc.live().find(|(_, n)| n.kind() == Kind::Label).unwrap();
+        assert_eq!(label.get(field::COLOR), FieldValue::Color(Some(0)));
         let json = serde_json::to_value(doc_to_json(&doc)).unwrap();
         assert!(json["nodes"].as_array().unwrap().iter().any(|n| n["color"] == "#000000"));
     }
@@ -468,7 +471,7 @@ mod tests {
     fn bad_input_is_an_error() {
         let bad = |json: &str| import(&serde_json::from_str(json).unwrap(), ids(1), Trust::Own).unwrap_err();
         bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "view_kind": "gecko"}]}"#);
-        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab", "color": "red"}]}"#);
+        bad(r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.label", "color": "red"}]}"#);
         bad(
             r#"{"nodes": [{"id": "a", "type": "application/vnd.manifold.tab"}, {"id": "a", "type": "application/vnd.manifold.tab"}]}"#,
         );
@@ -524,7 +527,7 @@ mod tests {
         assert_eq!(imported[0].ty, "application/x-from-the-future");
         assert_eq!(imported[0].kind(), Kind::Unknown);
         let kept: Vec<u32> = imported[0].fields.keys().copied().collect();
-        assert_eq!(kept, [field::POS, field::COLOR, field::GROUP, field::NAME]);
+        assert_eq!(kept, [field::POS, field::GROUP, field::NAME]);
         assert_eq!(imported[0].fields[&field::GROUP], FieldValue::Id(Some(imported[1].id)));
         assert!(!imported[1].fields.contains_key(&field::PARENT), "a group has no `parent`");
         let made = creates(&imported);

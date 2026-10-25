@@ -166,67 +166,18 @@ fn closing_a_jar_leaves_the_tabs_that_named_it_on_the_default_jar() {
 }
 
 #[test]
-fn a_local_color_edit_is_committed_by_the_next_save() {
+fn a_local_name_edit_is_committed_by_the_next_save() {
     let path = temp_dir("edit-field").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    app.edit_field(note, field::COLOR, red());
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED), "the mirror shows it at once");
-    assert_eq!(stored(&app, note, field::COLOR), FieldValue::Color(None), "nothing is written before a save");
+    let name = FieldValue::Str("renamed".into());
+    app.edit_field(note, field::NAME, name.clone());
+    assert_eq!(app.doc.mirror.get(note, field::NAME), name, "the mirror shows it at once");
+    assert_ne!(stored(&app, note, field::NAME), name, "nothing is written before a save");
     assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), red());
+    assert_eq!(stored(&app, note, field::NAME), name);
     assert!(!app.doc.writes.has_fields(), "a commit clears what it wrote");
-}
-
-/// The node menu's colour actions (regression guards: they go through `edit_field`).
-#[test]
-fn the_set_color_action_edits_the_mirror_and_the_next_save_stores_it() {
-    let path = temp_dir("menu-set-color").join("session.mnf");
-    let mut app = app_on(&path, 1);
-    let ctx = egui::Context::default();
-    let note = a_note(&mut app);
-    assert!(app.save_session());
-    app.apply_node_action(&ctx, note, NodeAction::SetColor(Some(egui::Color32::RED)));
-    assert_eq!(app.doc.mirror.color(note), Some(egui::Color32::RED), "the mirror shows it at once");
-    assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), red());
-    app.apply_node_action(&ctx, note, NodeAction::SetColor(None));
-    assert_eq!(app.doc.mirror.color(note), None);
-    assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), FieldValue::Color(None));
-}
-
-#[test]
-fn the_cycle_color_action_steps_through_the_tag_colors() {
-    use crate::theme::next_tag_color;
-    let path = temp_dir("menu-cycle-color").join("session.mnf");
-    let mut app = app_on(&path, 1);
-    let ctx = egui::Context::default();
-    let note = a_note(&mut app);
-    assert!(app.save_session());
-    let first = next_tag_color(None);
-    assert!(first.is_some());
-    app.apply_node_action(&ctx, note, NodeAction::CycleColor);
-    assert_eq!(app.doc.mirror.color(note), first);
-    assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), color_value(first));
-    let second = next_tag_color(first);
-    app.apply_node_action(&ctx, note, NodeAction::CycleColor);
-    assert_eq!(app.doc.mirror.color(note), second);
-    assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), color_value(second));
-}
-
-#[test]
-fn a_color_action_on_an_unknown_node_changes_nothing() {
-    let mut app = App::default();
-    let ctx = egui::Context::default();
-    let ghost = node(99);
-    app.apply_node_action(&ctx, ghost, NodeAction::SetColor(Some(egui::Color32::RED)));
-    app.apply_node_action(&ctx, ghost, NodeAction::CycleColor);
-    assert_eq!(app.doc.mirror.color(ghost), None);
-    assert!(!app.doc.writes.has_fields());
 }
 
 #[test]

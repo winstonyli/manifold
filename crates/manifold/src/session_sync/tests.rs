@@ -309,8 +309,13 @@ fn red() -> FieldValue {
     color_value(Some(egui::Color32::RED))
 }
 
-fn blue() -> FieldValue {
-    color_value(Some(egui::Color32::BLUE))
+/// Two distinct values of a field every card has, for tests of how edits sync and merge.
+fn one() -> FieldValue {
+    FieldValue::Str("one".into())
+}
+
+fn two() -> FieldValue {
+    FieldValue::Str("two".into())
 }
 
 fn a_note(app: &mut App) -> NodeId {
@@ -330,7 +335,7 @@ fn start_respawn(app: &mut App, tab: NodeId) {
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.carry.color, spawn.carry.pinned) = (carried.color(), carried.pinned());
+    spawn.carry.pinned = carried.pinned();
     (spawn.jar, spawn.parent, spawn.group) = (carried.jar(), carried.parent, carried.group);
     app.respawn_tab(spawn);
     assert!(app.spawns.spawning.contains_key(&tab) && !app.nodes.contains_key(&tab), "respawning");

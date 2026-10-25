@@ -286,14 +286,14 @@ pub(crate) fn spawn_snapshot(
     jar: Option<NodeId>,
 ) -> Snapshot {
     let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
-    let mut fields = Fields::from([(field::POS, pos), (field::COLOR, color_value(spawn.carry.color))]);
+    let mut fields = Fields::from([(field::POS, pos)]);
     let (pinned, parent) = (spawn.carry.pinned, spawn.parent);
     let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
     let ty = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
     Snapshot { ty: ty.to_owned(), group: spawn.group, fields, trees: Trees::new() }
 }
 
-/// A tab's fields beyond `pos` and `color`, live or failed. `url`, `view_kind` and `jar` are the shared ones
+/// A tab's fields beyond `pos`, live or failed. `url`, `view_kind` and `jar` are the shared ones
 /// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar`).
 fn tab_fields(
     fields: &mut Fields,

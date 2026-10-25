@@ -12,7 +12,7 @@ use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
 use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;
-use crate::session_sync::{color_of, color_value, pos_value, view_kind_of, Fields};
+use crate::session_sync::{color_of, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 use crate::store::tree::{self, Leaf, Seg, Tree, TreePath, Trees, TREE_FIELDS};
 
@@ -417,7 +417,7 @@ fn jar_in(fields: &Fields) -> Option<NodeId> {
 
 /// What a tab carries across a respawn or lands with: the mirror's values for it, as a field map (no absent value
 /// is held) and the two links. `place_node` seeds a new node's links, pos, type and stored path with it too. Read
-/// the fields a respawn needs through `pos`, `color`, `pinned` and `jar`.
+/// the fields a respawn needs through `pos`, `pinned` and `jar`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
     fields: Fields,
@@ -457,7 +457,6 @@ impl Carried {
     /// A tab landing or respawning: where it sits, what it keeps, the url it opens and its engine's stored code.
     pub(crate) fn tab(
         pos: Option<egui::Vec2>,
-        color: Option<egui::Color32>,
         pinned: bool,
         (parent, group): (Option<NodeId>, Option<NodeId>),
         url: String,
@@ -467,7 +466,6 @@ impl Carried {
         let carried = Carried { parent, group, ..Carried::default() };
         let carried = pos.map_or(carried.clone(), |pos| carried.with(field::POS, pos_value(pos)));
         carried
-            .with(field::COLOR, color_value(color))
             .with(field::PINNED, FieldValue::Bool(pinned))
             .with_str(field::URL, url)
             .with(field::VIEW_KIND, FieldValue::ViewCode(view_kind))
@@ -476,10 +474,6 @@ impl Carried {
 
     pub(crate) fn pos(&self) -> Option<egui::Vec2> {
         pos_in(&self.fields)
-    }
-
-    pub(crate) fn color(&self) -> Option<egui::Color32> {
-        color_in(&self.fields)
     }
 
     pub(crate) fn pinned(&self) -> bool {
@@ -495,6 +489,7 @@ impl Carried {
 mod tests {
     use super::*;
     use crate::card_id::testutil::node;
+    use crate::session_sync::color_value;
 
     #[test]
     fn the_default_index_follows_is_default_writes_and_retain() {

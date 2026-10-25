@@ -173,7 +173,7 @@ fn a_committed_tree_edit_survives_the_landing_of_a_parked_remote_change() {
     app.focus_tab(tab);
     assert!(app.spawns.spawning.contains_key(&tab), "waking");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, tab, field::COLOR, blue());
+    remote_set(&mut other, tab, field::NAME, two());
     let mine = key_path(&["mine"]);
     app.edit_prop(tab, field::PROPS, mine.clone(), Some(Leaf::Int(1))).unwrap();
     assert!(app.save_session());

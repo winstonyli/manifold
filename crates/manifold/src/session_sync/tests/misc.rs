@@ -5,11 +5,12 @@ use super::*;
 #[test]
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
-    assert_eq!(Kind::Tab.fields(), &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]);
-    assert_eq!(Kind::Group.fields(), &[POS, COLOR, NAME, JAR, CLOSED, HELD]);
+    assert_eq!(Kind::Tab.fields(), &[POS, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]);
+    assert_eq!(Kind::Group.fields(), &[POS, NAME, JAR, CLOSED, HELD]);
     assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]);
+    assert!(!Kind::Note.fields().contains(&COLOR), "a card has no colour of its own; labels give it one");
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO, CLOSED]);
-    assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME, CLOSED]);
+    assert_eq!(Kind::Unknown.fields(), &[POS, PARENT, NAME, CLOSED]);
 }
 
 #[test]
@@ -361,4 +362,17 @@ fn a_refused_drag_reparent_leaves_the_parent_alone() {
         Some((crate::card::DropEffect::Reparent, Some(crate::card_id::CardId::from(b)))),
     );
     assert_eq!(app.doc.mirror.parent(a), None, "a cycle");
+}
+
+#[test]
+fn a_stored_card_colour_from_an_old_session_is_ignored() {
+    let path = temp_dir("old-color").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note(&mut app);
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, note, field::COLOR, red());
+    assert!(app.save_session());
+    assert_eq!(app.doc.mirror.color(note), None, "a card no longer lists a colour, so none is mirrored");
+    assert_eq!(app.doc.mirror.get(note, field::COLOR), FieldValue::Color(None));
 }

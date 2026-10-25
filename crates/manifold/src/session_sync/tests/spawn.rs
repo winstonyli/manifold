@@ -457,7 +457,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     let path = temp_dir("edit-respawn").join("session.mnf");
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
-    app.edit_field(tab, field::COLOR, red());
+    app.edit_field(tab, field::NAME, FieldValue::Str("one".into()));
     app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
     assert!(app.save_session());
     // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
@@ -470,16 +470,16 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
         SpawnPurpose::Respawn,
         1.0,
     );
-    (spawn.carry.color, spawn.carry.pinned) = (app.doc.mirror.color(tab), app.doc.mirror.pinned(tab));
+    spawn.carry.pinned = app.doc.mirror.pinned(tab);
     app.respawn_tab(spawn);
     assert!(app.save_session());
-    assert!(app.doc.mirror.pinned(tab) && app.doc.mirror.color(tab) == Some(egui::Color32::RED), "kept while parked");
-    app.edit_field(tab, field::COLOR, blue());
+    assert!(app.doc.mirror.pinned(tab) && app.doc.mirror.name(tab) == "one", "kept while parked");
+    app.edit_field(tab, field::NAME, FieldValue::Str("two".into()));
     assert!(app.save_session());
     fail_spawns(&mut app);
-    assert_eq!(app.doc.mirror.color(tab), Some(egui::Color32::BLUE));
+    assert_eq!(app.doc.mirror.name(tab), "two");
     assert!(app.doc.mirror.pinned(tab));
-    assert_eq!(stored(&app, tab, field::COLOR), blue());
+    assert_eq!(stored(&app, tab, field::NAME), FieldValue::Str("two".into()));
     assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
 }
 
@@ -647,7 +647,6 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
         1.0,
     );
     (spawn.group, spawn.jar) = (Some(g), Some(work));
-    spawn.carry.color = Some(egui::Color32::RED);
     app.spawn_tab_async(spawn);
     assert!(app.save_session());
     assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "created with its jar");
@@ -656,7 +655,6 @@ fn a_spawning_tab_is_created_and_lands_with_its_jar() {
     assert!(!app.doc.mirror.has(t), "no partial entry");
     fail_spawns(&mut app);
     assert_eq!(app.doc.mirror.jar(t), Some(work), "lands with it");
-    assert_eq!(app.doc.mirror.color(t), Some(egui::Color32::RED), "the landing seeded the whole entry");
     assert!(app.save_session());
     assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)));
 }

@@ -361,7 +361,6 @@ pub(crate) fn card_border(view: &CardView, style: &CardStyle, hover_t: f32) -> (
 /// pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum CardControl {
-    Swatch,
     Audio,
     Eject,
     Close,
@@ -378,7 +377,6 @@ impl CardControl {
     /// "Dissolve Group" menu row and the toolbar's Ungroup All.
     pub(crate) fn action(self) -> NodeAction {
         match self {
-            CardControl::Swatch => NodeAction::CycleColor,
             CardControl::Audio => NodeAction::ToggleMute,
             CardControl::Eject => NodeAction::RemoveFromGroup,
             CardControl::Close => NodeAction::Delete,
@@ -388,7 +386,6 @@ impl CardControl {
     /// Its hover text, so an icon-only control says what a click does.
     pub(crate) fn tip(self, view: &CardView) -> &'static str {
         match self {
-            CardControl::Swatch => "Next color (right-click to pick)",
             CardControl::Audio if view.muted => "Unmute",
             CardControl::Audio => "Mute",
             CardControl::Eject => "Remove from group",
@@ -403,7 +400,6 @@ impl CardControl {
     /// Its hit and paint rect, centered on one of the card's corners.
     pub(crate) fn rect(self, card: egui::Rect, inv_zoom: f32) -> egui::Rect {
         let (anchor, size) = match self {
-            CardControl::Swatch => (card.right_bottom(), 16.0),
             CardControl::Audio => (card.right_top() + egui::vec2(-8.0, 8.0) * inv_zoom, 16.0),
             CardControl::Eject => (card.left_top(), 18.0),
             CardControl::Close => (card.right_top(), 18.0),
@@ -434,14 +430,14 @@ pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
 }
 
 /// The buttons `view`'s card shows, in registration order (see
-/// `CardControl`): the swatch on every card, and a live tab's audio indicator while playing or muted, eject on
+/// `CardControl`): a live tab's audio indicator while playing or muted, eject on
 /// a grouped one, and a closable card's ✕ last, so it wins over anything under it.
 pub(crate) fn card_controls(view: &CardView) -> Vec<CardControl> {
     // A virtual kind has no node to colour, pin, eject or close.
     if !view.kind.caps().stored_controls {
         return Vec::new();
     }
-    let mut controls = vec![CardControl::Swatch];
+    let mut controls = Vec::new();
     if view.kind.ty == TYPE_TAB {
         // Also while muted after audio stops, so a mute can always be
         // seen and undone from Graph view. An unloaded card has no engine
@@ -623,31 +619,6 @@ pub(crate) fn paint_card_control(
         .interact(rect, egui::Id::new(("graph_card_control", control, card)), egui::Sense::CLICK)
         .on_hover_cursor(egui::CursorIcon::PointingHand);
     match control {
-        // A simple card is a few pixels across: a plain square says the same as a tessellated circle.
-        CardControl::Swatch if !detail.content() => {
-            let color = view.color.map_or(style.border_idle, |c| tag_shown(c, style.dark));
-            ui.painter().rect_filled(
-                egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(12.0 * inv_zoom)),
-                0.0,
-                color,
-            );
-        }
-        CardControl::Swatch => {
-            match view.color {
-                Some(color) => {
-                    ui.painter().circle_filled(rect.center(), 6.0 * inv_zoom, tag_shown(color, style.dark));
-                }
-                // A faint ring, so an uncolored card still shows where to
-                // click.
-                None => {
-                    ui.painter().circle_stroke(
-                        rect.center(),
-                        6.0 * inv_zoom,
-                        egui::Stroke::new(1.5 * inv_zoom, style.border_idle),
-                    );
-                }
-            }
-        }
         // Audio-playing/muted indicator: shown while playing so audio
         // isn't a surprise, and kept showing while muted (even after
         // audio stops) so a mute can always be seen and undone from
@@ -934,7 +905,7 @@ impl App {
         let tab = node.as_tab();
         Some(CardView {
             kind,
-            color: self.doc.mirror.color(id),
+            color: None,
             in_group: self.doc.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
@@ -1208,14 +1179,6 @@ impl App {
             );
             let control_response = control_response.on_hover_text(card_control.tip(&view));
             control_hovered |= control_response.hovered();
-            // A right-click on the swatch opens the menu (the right-press already did) on its Color page.
-            if card_control == CardControl::Swatch
-                && control_response.secondary_clicked()
-                && self.menus.node_menu.open.as_ref().is_some_and(|(menu_id, _)| Some(*menu_id) == node)
-            {
-                self.menus.node_menu.show_page(Some(crate::node_menu::MenuPage::Color));
-                ui.ctx().request_repaint();
-            }
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action());
             }

@@ -180,13 +180,13 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
-        (Kind::Group, TYPE_GROUP, &[POS, COLOR, NAME, JAR, CLOSED, HELD]),
-        (Kind::Note, TYPE_NOTE, &[POS, COLOR, PARENT, URL, TEXT, NAME, CLOSED]),
-        (Kind::Image, TYPE_IMAGE, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Pdf, TYPE_PDF, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Json, TYPE_JSON, &[POS, COLOR, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
-        (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Tab, TYPE_TAB, &[POS, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
+        (Kind::Group, TYPE_GROUP, &[POS, NAME, JAR, CLOSED, HELD]),
+        (Kind::Note, TYPE_NOTE, &[POS, PARENT, URL, TEXT, NAME, CLOSED]),
+        (Kind::Image, TYPE_IMAGE, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Pdf, TYPE_PDF, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Json, TYPE_JSON, &[POS, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
         (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO, CLOSED]),
         (Kind::Label, TYPE_LABEL, &[NAME, COLOR, CLOSED]),
@@ -195,7 +195,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
 
 /// The fields every card carries whatever its type: all the app reads, mirrors and copies of a node of a type this
 /// build doesn't know (`Kind::Unknown`, spec decision 3). Its other fields stay raw in the document.
-pub(crate) const GENERIC: &[u32] = &[field::POS, field::COLOR, field::PARENT, field::NAME, field::CLOSED];
+pub(crate) const GENERIC: &[u32] = &[field::POS, field::PARENT, field::NAME, field::CLOSED];
 
 impl Kind {
     /// The type string a created node of this kind is stored under.
@@ -910,7 +910,7 @@ mod tests {
     #[test]
     fn an_unknown_kind_carries_the_generic_fields() {
         use field::*;
-        assert_eq!(Kind::Unknown.fields(), &[POS, COLOR, PARENT, NAME, CLOSED]);
+        assert_eq!(Kind::Unknown.fields(), &[POS, PARENT, NAME, CLOSED]);
         assert_eq!(Node::with_type("application/x-from-the-future").ty(), "application/x-from-the-future");
         assert_eq!(Node::with_type("Text/Markdown").ty(), "Text/Markdown", "kept as written, case and all");
         assert_eq!(Node::placeholder().ty(), "");

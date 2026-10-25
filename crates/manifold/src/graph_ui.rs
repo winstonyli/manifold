@@ -412,13 +412,6 @@ mod tests {
         right_click(&mut app, card.center());
         assert_eq!(app.menus.node_menu.open.as_ref().map(|(id, _)| *id), Some(note_id), "the card's menu opens");
         assert!(app.menus.node_menu.page.is_none(), "on its items");
-        app.menus.node_menu.close();
-        right_click(&mut app, card.right_bottom() - egui::vec2(1.0, 1.0));
-        assert_eq!(
-            app.menus.node_menu.page,
-            Some(crate::node_menu::MenuPage::Color),
-            "the swatch opens the Color page"
-        );
     }
 
     /// Wave 2 (H2 / P2): whole `build_graph_ui` frames over the 2000-node fixture spread on a grid: idle at the top

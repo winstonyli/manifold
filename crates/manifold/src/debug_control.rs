@@ -704,9 +704,8 @@ const VERBS: &[Verb] = &[
             _ => None,
         }
     }),
-    row("MENUPAGE name", "Show the open card menu's color|jar page, or its items for none", |rest| {
+    row("MENUPAGE name", "Show the open card menu's jar page, or its items for none", |rest| {
         let page = match rest {
-            "color" => Some(crate::node_menu::MenuPage::Color),
             "jar" => Some(crate::node_menu::MenuPage::Jar),
             "none" => None,
             _ => return None,

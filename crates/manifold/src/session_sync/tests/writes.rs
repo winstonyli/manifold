@@ -624,13 +624,13 @@ fn the_mirror_matches_the_store_after_every_save() {
 }
 
 #[test]
-fn a_color_set_before_the_first_save_rides_the_create() {
+fn a_name_set_before_the_first_save_rides_the_create() {
     let path = temp_dir("edit-create").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
-    app.edit_field(note, field::COLOR, red());
+    app.edit_field(note, field::NAME, one());
     assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::COLOR), red());
+    assert_eq!(stored(&app, note, field::NAME), one());
     assert!(!app.doc.writes.has_fields());
 }
 
@@ -641,7 +641,7 @@ fn an_edit_to_a_node_the_store_dropped_is_not_written_back() {
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    app.edit_field(note, field::COLOR, red());
+    app.edit_field(note, field::NAME, one());
     app.remove_node(note);
     assert!(app.save_session());
     let doc = app.doc.journal.as_ref().unwrap().doc();
@@ -656,11 +656,11 @@ fn a_save_that_deletes_a_node_writes_no_set_for_it() {
     let note = a_note(&mut app);
     assert!(app.save_session());
     let ops_before = app.doc.journal.as_ref().unwrap().doc().version[&ActorId(1)];
-    app.edit_field(note, field::COLOR, red());
+    app.edit_field(note, field::NAME, one());
     app.remove_node(note);
     assert!(app.save_session());
     assert_eq!(app.doc.journal.as_ref().unwrap().doc().version[&ActorId(1)], ops_before + 1, "one op: the Delete");
-    assert_eq!(stored(&app, note, field::COLOR), FieldValue::Color(None));
+    assert_eq!(stored(&app, note, field::NAME), FieldValue::Str(String::new()));
 }
 
 /// A node never saved, edited and removed before the first save: no `Set` reaches the store, so no placeholder.
@@ -669,7 +669,7 @@ fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
     let path = temp_dir("edit-unsaved-removed").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
-    app.edit_field(note, field::COLOR, red());
+    app.edit_field(note, field::NAME, one());
     app.remove_node(note);
     assert!(app.save_session());
     let doc = app.doc.journal.as_ref().unwrap().doc();
@@ -697,7 +697,7 @@ fn an_unchanged_edit_queues_nothing() {
     let path = temp_dir("edit-noop").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
-    app.edit_field(note, field::COLOR, FieldValue::Color(None));
+    app.edit_field(note, field::NAME, FieldValue::Str(String::new()));
     assert!(!app.doc.writes.has_fields());
 }
 
@@ -707,12 +707,12 @@ fn an_existing_nodes_fields_reach_the_document_only_through_pending() {
     let mut app = app_on(&temp_dir("node-fields-pending-only").join("session.mnf"), 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    app.doc.mirror.set(note, field::COLOR, red());
+    app.doc.mirror.set(note, field::NAME, one());
     app.doc.mirror.set(note, field::URL, FieldValue::Str("https://elsewhere/".into()));
     let ops = ops_of(&app);
     assert!(app.save_session());
     assert_eq!(ops_of(&app), ops, "nothing written");
-    assert_eq!(stored(&app, note, field::COLOR), FieldValue::Color(None));
+    assert_eq!(stored(&app, note, field::NAME), FieldValue::Str(String::new()));
 }
 
 #[test]
@@ -721,7 +721,7 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     let mut app = app_on(&path, 1);
     let note = a_note(&mut app);
     assert!(app.save_session());
-    app.edit_field(note, field::COLOR, red());
+    app.edit_field(note, field::NAME, one());
     let set_readonly = |readonly: bool| {
         let mut perms = std::fs::metadata(&path).unwrap().permissions();
         #[allow(
@@ -736,12 +736,12 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     set_readonly(false);
     assert!(!saved);
     assert!(app.doc.writes.has_fields(), "kept for the next save");
-    assert_eq!(stored(&app, note, field::COLOR), FieldValue::Color(None));
+    assert_eq!(stored(&app, note, field::NAME), FieldValue::Str(String::new()));
     app.doc.writes.save_retry_at = Some(std::time::Instant::now());
     app.poll_store();
     assert!(app.doc.writes.save_retry_at.is_none());
     assert!(!app.doc.writes.has_fields());
-    assert_eq!(stored(&app, note, field::COLOR), red());
+    assert_eq!(stored(&app, note, field::NAME), one());
 }
 
 /// A parent that is deleted in the same commit is written as none (spec section 6 item 4).

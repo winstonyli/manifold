@@ -127,7 +127,7 @@ pub(crate) struct Caps {
     pub(crate) drop_target: bool,
     /// Has a node menu.
     pub(crate) menu: bool,
-    /// Swatch, Pin, Close and Eject act on a stored node.
+    /// Pin, Close and Eject act on a stored node.
     pub(crate) stored_controls: bool,
     /// Counts toward the level-of-detail count (how many cards are on screen); the trail strip's pages, which are
     /// not cards in the graph, turn it off.
