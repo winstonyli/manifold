@@ -168,8 +168,8 @@ stays as it is (parked: unify it into register edits).
   inline** copies a file-backed card's value into `BODY` and drops `PATH` (one way; there is no write-back to the file).
   An **Export** action writes a file. Detach refuses a document over `INLINE_MAX_LEAVES` (10,000, decision D4) with a
   message.
-- **Editing** (the level has no write path today): edit a scalar in place, add a key, delete a key or element, insert
-  and reorder array elements, change a value's type. Each edit is one `edit_prop` call and one undo step.
+- **Editing** (built in 4b): edit a scalar in place, add a key, delete a key or element, insert
+  and reorder array elements, change a value's type. Each edit is one undo step (one or more `edit_prop` calls).
 - **Search**: the level's own worker search runs over the assembled `Value` as now. The global index gets the `PROPS`
   scalar text (capped at 4 KiB a card) but not `BODY` (parked).
 - A tree's `Ref` leaf shows as a card chip that opens its target; a dangling `Ref` is shown as "missing" and kept.

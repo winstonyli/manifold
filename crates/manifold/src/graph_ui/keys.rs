@@ -244,13 +244,12 @@ impl App {
                     }
                     Some(CardEntry { origin: Origin::Json, .. }) => {
                         self.interaction.rect_select_start = None;
-                        if let Some(level) = self.json_level.as_mut() {
-                            if let Some(i) = level.card_at(world_pos) {
-                                let target =
-                                    level.row_at(i, world_pos).unwrap_or_else(|| level.cards[i].pointer.clone());
-                                level.selected = Some(target.clone());
-                                level.menu = Some((target, pos));
-                            }
+                        let target = self.json_level.as_ref().and_then(|level| {
+                            let i = level.card_at(world_pos)?;
+                            Some(level.row_at(i, world_pos).unwrap_or_else(|| level.cards[i].pointer.clone()))
+                        });
+                        if let Some(target) = target {
+                            self.open_json_menu(target, pos);
                         }
                     }
                     None => {

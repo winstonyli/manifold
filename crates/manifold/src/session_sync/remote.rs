@@ -170,7 +170,11 @@ impl App {
             | Runtime::Pdf(_) => {}
             Runtime::Json(_) => {}
         }
-        if body_changed {
+        // A detach undone elsewhere empties BODY and restores PATH: the card is that file's again.
+        let path = str_of(fields, field::PATH);
+        if body_changed && !path.is_empty() && !self.is_inline_card(id, fields) {
+            self.rebuild_file_json(id, path);
+        } else if body_changed {
             self.refresh_inline(id);
         }
         // Another replica changed the view of the level being shown:

@@ -859,7 +859,7 @@ impl App {
     /// Closes on a click elsewhere or Escape.
     pub(crate) fn build_json_menu(&mut self, ui: &mut egui::Ui) {
         let Some(level) = self.json_level.as_ref() else { return };
-        let Some((pointer, pos)) = level.menu.clone() else { return };
+        let Some((pointer, pos, _)) = level.menu.clone() else { return };
         let card = level.index.get(&pointer).map(|&i| &level.cards[i]);
         let is_card = card.is_some();
         // Only a card with entries collapses, as with a header double-click:

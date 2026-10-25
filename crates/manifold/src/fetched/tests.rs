@@ -856,3 +856,16 @@ fn an_undo_is_skipped_when_the_body_changed_since() {
     assert!(p.is_inline(), "the later edit stands; the detach is not undone under it");
     assert_eq!(*p.value, serde_json::json!({"k": [2]}));
 }
+
+#[test]
+fn another_replica_follows_an_undone_detach_back_to_the_file_card() {
+    let (mut a, id, file) = detached("undo-detach-remote");
+    let dir = crate::store::testutil::temp_dir("undo-detach-remote-b");
+    let mut b = crate::session_sync::tests::app_on(&dir.join("b.mnf"), 2);
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    assert!(matches!(&b.nodes[&id].runtime, Runtime::Json(p) if p.is_inline()));
+    a.step_history(None, false);
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    let Runtime::Json(p) = &b.nodes[&id].runtime else { panic!() };
+    assert!(!p.is_inline() && p.path() == file, "b shows the file card again, not an inline null");
+}

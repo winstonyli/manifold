@@ -137,7 +137,8 @@ impl App {
         if !json.is_inline() || self.doc.mirror.tree(node, field::BODY) != Some(body) {
             return false;
         }
-        self.set_body(node, tree::Tree::new());
+        // One tombstone at the root, so a leaf another replica wrote meanwhile is hidden too.
+        self.edit_prop(node, field::BODY, crate::store::body::root(), None);
         self.edit_field(node, field::PATH, FieldValue::Str(path.to_owned()));
         self.rebuild_file_json(node, path.to_owned());
         true

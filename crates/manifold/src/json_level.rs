@@ -37,7 +37,7 @@ pub(crate) struct JsonLevel {
     pub(crate) outline: Outline,
     pub(crate) search: Search,
     /// A context menu: the pointer it acts on and where it opened (screen).
-    pub(crate) menu: Option<(String, egui::Pos2)>,
+    pub(crate) menu: Option<(String, egui::Pos2, Option<crate::store::tree::TreePath>)>,
     /// The text box open over a row (inline levels only).
     pub(crate) edit: Option<RowEdit>,
     /// Pointers whose entry is a `Ref` chip, with its target (the node's `JsonPayload::refs`).
@@ -314,11 +314,22 @@ impl App {
         }
         level.outline.open.retain(|p| p.is_empty() || level.value.pointer(p).is_some());
         // A text box or menu aimed at an entry that moved or changed would act on the wrong one.
-        let cancelled = level.edit.as_ref().is_some_and(|e| level.value.pointer(&e.pointer) != Some(&e.original));
+        let (tree, edit_anchor, menu_anchor) = (
+            self.doc.mirror.tree(id, crate::store::model::field::BODY),
+            level.edit.as_ref().map(|e| (e.pointer.clone(), e.anchor.clone())),
+            level.menu.as_ref().map(|(p, _, a)| (p.clone(), a.clone())),
+        );
+        let moved = |(p, a): &(String, Option<crate::store::tree::TreePath>)| {
+            tree.and_then(|t| crate::store::body::pointer_path(t, p)) != *a
+        };
+        let cancelled = level.edit.as_ref().is_some_and(|e| level.value.pointer(&e.pointer) != Some(&e.original))
+            || edit_anchor.as_ref().is_some_and(moved);
         if cancelled {
             level.edit = None;
         }
-        if level.menu.as_ref().is_some_and(|(p, _)| level.value.pointer(p).is_none()) {
+        if level.menu.as_ref().is_some_and(|(p, _, _)| level.value.pointer(p).is_none())
+            || menu_anchor.as_ref().is_some_and(moved)
+        {
             level.menu = None;
         }
         level.outline.dirty = true;

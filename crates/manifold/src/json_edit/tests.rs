@@ -549,3 +549,22 @@ fn export_inline_json_matches_the_document_and_round_trips_through_a_file_card()
     assert_eq!(*app.nodes[&imported].as_json().unwrap().value, source);
     assert_eq!(app.export_inline_json(imported), None, "a file card has no inline document");
 }
+
+#[test]
+fn a_box_over_a_repeated_value_is_cancelled_when_the_array_shifts() {
+    let (mut app, id) = card(json!({"a": [null, null, null]}));
+    open_level(&mut app, id);
+    app.apply_json_edit(JsonEdit::Begin(s("/a/1"), EditWhat::Value));
+    app.edit_json(id, insert("/a", 0, json!(null))).unwrap();
+    assert_eq!(edit_of(&app), None, "/a/1 still reads null but is another element");
+}
+
+#[test]
+fn a_menu_is_closed_when_the_array_shifts_under_it() {
+    let (mut app, id) = card(json!({"a": [10, 11, 12]}));
+    open_level(&mut app, id);
+    app.open_json_menu(s("/a/2"), egui::Pos2::ZERO);
+    assert!(app.json_level.as_ref().unwrap().menu.is_some());
+    app.edit_json(id, insert("/a", 0, json!(9))).unwrap();
+    assert!(app.json_level.as_ref().unwrap().menu.is_none(), "/a/2 is now the old /a/1");
+}

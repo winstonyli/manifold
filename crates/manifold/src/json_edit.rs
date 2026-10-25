@@ -56,6 +56,9 @@ pub(crate) struct RowEdit {
     pub(crate) on: EditWhat,
     pub(crate) buffer: String,
     pub(crate) original: Value,
+    /// Where the entry sits in the BODY tree (element ids, not indexes): an array shift that leaves an equal value at
+    /// `pointer` still cancels the edit.
+    pub(crate) anchor: Option<TreePath>,
     /// The box has not yet taken the keyboard focus (and the text selection) it opens with.
     pub(crate) focus: bool,
 }
@@ -382,6 +385,21 @@ impl App {
         }
     }
 
+    /// Where `pointer` sits in card `id`'s BODY tree (`body::pointer_path`); `None` when it holds nothing.
+    pub(crate) fn entry_anchor(&self, id: NodeId, pointer: &str) -> Option<TreePath> {
+        pointer_path(self.doc.mirror.tree(id, field::BODY)?, pointer)
+    }
+
+    /// Opens the context menu over the entry at `pointer` and selects it.
+    pub(crate) fn open_json_menu(&mut self, pointer: String, pos: egui::Pos2) {
+        let Some(id) = self.json_level.as_ref().map(|l| l.node_id) else { return };
+        let anchor = self.entry_anchor(id, &pointer);
+        if let Some(level) = self.json_level.as_mut() {
+            level.selected = Some(pointer.clone());
+            level.menu = Some((pointer, pos, anchor));
+        }
+    }
+
     /// Opens a text box over the entry at `pointer` on the open level: its key, or its scalar value. Nothing opens on
     /// a file level, a container's value, an array element's key or the root's.
     pub(crate) fn begin_json_edit(&mut self, pointer: String, on: EditWhat) {
@@ -398,7 +416,8 @@ impl App {
             EditWhat::Key => None,
         };
         let Some(buffer) = text else { return };
-        let edit = RowEdit { pointer, on, buffer, original: value.clone(), focus: true };
+        let anchor = self.entry_anchor(level.node_id, &pointer);
+        let edit = RowEdit { pointer, on, buffer, original: value.clone(), anchor, focus: true };
         if let Some(level) = self.json_level.as_mut() {
             level.edit = Some(edit);
         }
@@ -410,7 +429,9 @@ impl App {
         let Some(level) = self.json_level.as_mut() else { return };
         let Some(edit) = level.edit.take() else { return };
         let id = level.node_id;
-        if level.value.pointer(&edit.pointer) != Some(&edit.original) {
+        if level.value.pointer(&edit.pointer) != Some(&edit.original)
+            || self.entry_anchor(id, &edit.pointer) != edit.anchor
+        {
             return self.queue_toast(EDIT_CHANGED.to_owned());
         }
         let op = match edit.on {
