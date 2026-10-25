@@ -65,7 +65,7 @@ pub fn field_from_json(
     mint: &mut dyn FnMut() -> NodeId,
 ) -> Result<Tree, String> {
     if no == super::model::field::BODY {
-        super::body::value_to_tree(value, mint)
+        super::body::value_to_tree(value, &mut |_| mint())
     } else {
         tree_from_json(value, resolve)
     }

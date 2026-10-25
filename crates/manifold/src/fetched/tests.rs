@@ -793,3 +793,18 @@ fn detach_refuses_a_card_whose_file_has_not_arrived() {
     assert!(app.doc.mirror.tree(id, store::model::field::BODY).is_none(), "no null body is written");
     assert_eq!(app.toasts.save_toast_queue.len(), 1, "the refusal is toasted");
 }
+
+#[test]
+fn two_replicas_detaching_one_file_write_identical_registers() {
+    // Equal trees merge to themselves, so a synced array cannot double (PARKED "Concurrent detach", plan 4b D4).
+    let body = r#"{"list": [1, 2, [3]]}"#;
+    let mut trees = Vec::new();
+    for actor in [1, 2] {
+        let path = crate::store::testutil::temp_dir("detach-twin").join("session.mnf");
+        let mut app = crate::session_sync::tests::app_on(&path, actor);
+        let (id, _file) = json_file_card(&mut app, "detach-twin-file", body);
+        app.detach_json(id).unwrap();
+        trees.push(app.doc.mirror.tree(id, store::model::field::BODY).cloned().unwrap());
+    }
+    assert_eq!(trees[0], trees[1]);
+}

@@ -1268,7 +1268,7 @@ fn a_typeless_placeholder_gets_its_card_when_its_type_arrives() {
 /// A remote Json card holding `value` in its BODY (no file).
 fn inline_snapshot(value: serde_json::Value) -> Snapshot {
     let mut n = 0;
-    let tree = crate::store::body::value_to_tree(&value, &mut || {
+    let tree = crate::store::body::value_to_tree(&value, &mut |_| {
         n += 1;
         NodeId { actor: ActorId(9), counter: n }
     })

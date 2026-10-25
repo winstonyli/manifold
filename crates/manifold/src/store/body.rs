@@ -7,9 +7,10 @@
 
 use serde_json::{Map, Value};
 
-use super::model::NodeId;
+use super::model::{ActorId, NodeId};
 use super::tree::{resolved, Leaf, Seg, Tree, TreePath};
 use super::tree_json::{leaf_json, number_leaf, MAX_DEPTH};
+use crate::json_view::{child_pointer, pointer_tokens};
 
 pub const INLINE_MAX_LEAVES: usize = 10_000;
 
@@ -140,18 +141,32 @@ fn build(entries: &Entries, depth: usize) -> Value {
     Value::Object(map)
 }
 
-/// `value` as a BODY tree, minting an id per array element. Refused past `MAX_DEPTH` or `INLINE_MAX_LEAVES`.
-pub fn value_to_tree(value: &Value, mint: &mut dyn FnMut() -> NodeId) -> Result<Tree, String> {
+/// `value` as a BODY tree, minting an id per array element; `mint` gets the element's JSON pointer. Refused past
+/// `MAX_DEPTH` or `INLINE_MAX_LEAVES`.
+pub fn value_to_tree(value: &Value, mint: &mut dyn FnMut(&str) -> NodeId) -> Result<Tree, String> {
+    value_to_tree_at(value, &root(), "", 1, mint)
+}
+
+/// `value` as the subtree at `at`, which is the entry at `pointer`, `base_depth` levels below the document root (the
+/// pointer's token count plus 1): `MAX_DEPTH` counts from the root.
+pub fn value_to_tree_at(
+    value: &Value,
+    at: &TreePath,
+    pointer: &str,
+    base_depth: usize,
+    mint: &mut dyn FnMut(&str) -> NodeId,
+) -> Result<Tree, String> {
     let mut tree = Tree::new();
-    put(value, &root(), 1, mint, &mut tree)?;
+    put(value, at, pointer, base_depth, mint, &mut tree)?;
     Ok(tree)
 }
 
 fn put(
     value: &Value,
     at: &TreePath,
+    pointer: &str,
     depth: usize,
-    mint: &mut dyn FnMut() -> NodeId,
+    mint: &mut dyn FnMut(&str) -> NodeId,
     tree: &mut Tree,
 ) -> Result<(), String> {
     if depth > MAX_DEPTH + 1 {
@@ -160,14 +175,15 @@ fn put(
     match value {
         Value::Object(m) if !m.is_empty() => {
             for (k, v) in m {
-                put(v, &at.child(&key(k)), depth + 1, mint, tree)?;
+                put(v, &at.child(&key(k)), &child_pointer(pointer, k), depth + 1, mint, tree)?;
             }
         }
         Value::Array(a) if !a.is_empty() => {
             for (i, v) in a.iter().enumerate() {
-                let el = at.child(&Seg::Id(mint()));
+                let child = child_pointer(pointer, &i.to_string());
+                let el = at.child(&Seg::Id(mint(&child)));
                 tree.insert(el.child(&key("o")), Leaf::Str(initial_order(i)));
-                put(v, &el.child(&key("v")), depth + 1, mint, tree)?;
+                put(v, &el.child(&key("v")), &child, depth + 1, mint, tree)?;
             }
         }
         scalar => {
@@ -188,6 +204,67 @@ fn put(
     Ok(())
 }
 
+/// An id that depends only on the element's JSON pointer, so two replicas detaching one file write the same
+/// registers and an array does not double (actor 0 is never a launch's actor).
+pub fn det_id(pointer: &str) -> NodeId {
+    let hash =
+        pointer.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+    NodeId { actor: ActorId(0), counter: hash }
+}
+
+/// One element of a BODY array: its id, order key and the `Id(e)` path.
+pub struct Element {
+    pub id: NodeId,
+    pub order: String,
+    pub at: TreePath,
+}
+
+/// The elements of the array at `array` that have a value, in the order `tree_to_value` reads them.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
+)]
+pub fn elements(tree: &Tree, array: &TreePath) -> Vec<Element> {
+    let depth = array.segments().len();
+    let mut found: std::collections::BTreeMap<NodeId, (String, bool)> = std::collections::BTreeMap::new();
+    for (path, leaf) in tree.range(array.clone()..array.subtree_end()) {
+        let segs = path.segments();
+        let (Some(Seg::Id(e)), Some(Seg::Key(k))) = (segs.get(depth), segs.get(depth + 1)) else { continue };
+        let slot = found.entry(*e).or_default();
+        match (k.as_str(), leaf) {
+            ("o", Leaf::Str(order)) if segs.len() == depth + 2 => slot.0.clone_from(order),
+            ("v", _) => slot.1 = true,
+            _ => {}
+        }
+    }
+    let mut out: Vec<Element> = found
+        .into_iter()
+        .filter(|(_, (_, has_value))| *has_value)
+        .map(|(id, (order, _))| Element { id, order, at: array.child(&Seg::Id(id)) })
+        .collect();
+    out.sort_by(|a, b| (&a.order, a.id).cmp(&(&b.order, b.id)));
+    out
+}
+
+/// The path of the entry at JSON `pointer` of the document `tree` holds, or `None` when it does not resolve. An
+/// array index resolves through the element to its `v` path.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
+)]
+pub fn pointer_path(tree: &Tree, pointer: &str) -> Option<TreePath> {
+    let mut at = root();
+    for token in pointer_tokens(pointer) {
+        let els = elements(tree, &at);
+        at = if els.is_empty() {
+            at.child(&key(&token))
+        } else {
+            els.get(token.parse::<usize>().ok()?)?.at.child(&key("v"))
+        };
+    }
+    tree.range(at.clone()..at.subtree_end()).next().is_some().then_some(at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,9 +276,9 @@ mod tests {
         NodeId { actor: crate::store::model::ActorId(1), counter: n }
     }
 
-    fn mint_from(start: u64) -> impl FnMut() -> NodeId {
+    fn mint_from(start: u64) -> impl FnMut(&str) -> NodeId {
         let mut n = start;
-        move || {
+        move |_| {
             n += 1;
             id(n)
         }
@@ -350,5 +427,50 @@ mod tests {
             tail.push(k);
         }
         assert!(tail.iter().all(|k| k.len() == 8), "appends step, they don't grow");
+    }
+
+    #[test]
+    fn pointer_path_resolves_keys_and_array_indexes() {
+        let tree = value_to_tree(&json!({"a": [10, 20], "/x": 1}), &mut mint_from(0)).unwrap();
+        let key = |k: &str| Seg::Key(k.to_owned());
+        assert_eq!(pointer_path(&tree, ""), Some(root()));
+        assert_eq!(pointer_path(&tree, "/a"), Some(root().child(&key("a"))));
+        assert_eq!(pointer_path(&tree, "/~1x"), Some(root().child(&key("/x"))));
+        let second = pointer_path(&tree, "/a/1").unwrap();
+        assert_eq!(tree.get(&second), Some(&Leaf::Int(20)));
+        assert_eq!(pointer_path(&tree, "/a/2"), None);
+        assert_eq!(pointer_path(&tree, "/nope"), None);
+    }
+
+    #[test]
+    fn elements_come_in_document_order() {
+        let a = root().child(&Seg::Key("a".into()));
+        let mut tree = Tree::new();
+        for (n, o) in [(7, "b"), (3, "b"), (9, "a")] {
+            let el = a.child(&Seg::Id(id(n)));
+            tree.insert(el.child(&Seg::Key("o".into())), Leaf::Str(o.into()));
+            tree.insert(el.child(&Seg::Key("v".into())), Leaf::Int(n as i64));
+        }
+        tree.insert(a.child(&Seg::Id(id(4))).child(&Seg::Key("o".into())), Leaf::Str("0".into())); // no value
+        let order: Vec<u64> = elements(&tree, &a).iter().map(|e| e.id.counter).collect();
+        assert_eq!(order, [9, 3, 7]);
+        assert_eq!(tree_to_value(&tree), json!({"a": [9, 3, 7]}));
+    }
+
+    #[test]
+    fn detach_ids_depend_only_on_the_pointer() {
+        assert_eq!(det_id("/a/0"), det_id("/a/0"));
+        assert_ne!(det_id("/a/0"), det_id("/a/1"));
+    }
+
+    #[test]
+    fn mint_sees_each_elements_pointer() {
+        let mut seen = Vec::new();
+        value_to_tree(&json!([1, [2], {"k": [3]}]), &mut |p| {
+            seen.push(p.to_owned());
+            id(seen.len() as u64)
+        })
+        .unwrap();
+        assert_eq!(seen, ["/0", "/1", "/1/0", "/2", "/2/k/0"]);
     }
 }

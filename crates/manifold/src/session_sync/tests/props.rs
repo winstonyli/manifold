@@ -190,7 +190,7 @@ fn set_body_replaces_the_tree_and_queues_only_the_difference() {
     let id = add(&mut app, Kind::Json, Runtime::Json(JsonPayload::inline(0, Default::default())));
     let tree = |app: &mut App, v: serde_json::Value| {
         let mut ids = Vec::new();
-        crate::store::body::value_to_tree(&v, &mut || {
+        crate::store::body::value_to_tree(&v, &mut |_| {
             let id = app.alloc_node_id();
             ids.push(id);
             id
@@ -217,7 +217,7 @@ fn duplicating_an_inline_json_card_copies_the_body_with_fresh_element_ids() {
     let a = app.alloc_node_id();
     app.insert_inline_json_at(a, None);
     let tree =
-        crate::store::body::value_to_tree(&serde_json::json!({"list": [1, 2]}), &mut || app.alloc_node_id()).unwrap();
+        crate::store::body::value_to_tree(&serde_json::json!({"list": [1, 2]}), &mut |_| app.alloc_node_id()).unwrap();
     app.set_body(a, tree);
     assert!(app.save_session());
     app.duplicate_nodes(&[a]);

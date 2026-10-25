@@ -42,7 +42,7 @@ impl App {
             Runtime::Json(JsonPayload::inline(0, Default::default())),
             at,
         );
-        let tree = store::body::value_to_tree(&serde_json::json!({}), &mut || self.alloc_node_id())
+        let tree = store::body::value_to_tree(&serde_json::json!({}), &mut |_| self.alloc_node_id())
             .expect("an empty object is within the caps");
         self.set_body(id, tree);
         let fresh = self.inline_payload(id);
@@ -67,7 +67,7 @@ impl App {
             return Err(err);
         }
         let value = p.value.clone();
-        let tree = match store::body::value_to_tree(&value, &mut || self.alloc_node_id()) {
+        let tree = match store::body::value_to_tree(&value, &mut store::body::det_id) {
             Ok(tree) => tree,
             Err(e) => {
                 let err = format!("Can't detach: {e}");
