@@ -129,7 +129,7 @@ stays as it is (parked: unify it into register edits).
 - `store/json.rs`: a tree is exported as a nested JSON object (`"props"`, `"body"`). A `Ref` is `{"$ref": "<id>"}`; an
   id-keyed map's keys are the element ids' text. Import gives every node a fresh id, so ids inside a tree are remapped
   through the file's id table like `parent` is. PROPS only (plan 2): `Id` segments are keys `@<id>` (a key starting with
-  `@` gets one more), empty containers are dropped and arrays refused; limits `MAX_DEPTH` 64 and `MAX_LEAVES` 10,000
+  `@` gets one more, and so does `$ref` or `$$ref`), deeper leaves are not exported, empty containers are dropped and arrays refused; limits `MAX_DEPTH` 64 and `MAX_LEAVES` 10,000
   (`store/tree_json.rs`).
 
 ## 3. Labels

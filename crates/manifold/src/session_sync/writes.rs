@@ -501,6 +501,12 @@ impl App {
                 snap.group = self.doc.mirror.group(node);
             }
         }
+        let tree_nodes: Vec<NodeId> = self.doc.writes.tree_sets().map(|(n, ..)| n).collect();
+        for node in tree_nodes {
+            if let Some(Remote::Shown(snap)) = self.spawns.remote_in_flight.get_mut(&node) {
+                snap.trees = self.doc.mirror.trees_of(node);
+            }
+        }
         // Text committed here is newer than another replica's held before it: the held text is dropped.
         let texts: Vec<NodeId> =
             self.doc.writes.fields().filter(|&(_, no, _)| no == field::TEXT).map(|(n, ..)| n).collect();

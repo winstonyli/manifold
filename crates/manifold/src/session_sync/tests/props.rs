@@ -161,3 +161,24 @@ fn a_tab_duplicate_keeps_the_tree() {
     assert!(app.save_session());
     assert_eq!(doc_trees(&app, copy), app.doc.mirror.trees_of(copy), "and the save commits it");
 }
+
+/// Final review I1: a remote change parked for a waking tab predates a tree edit committed after it; the landing
+/// must not drop that edit from the mirror.
+#[test]
+fn a_committed_tree_edit_survives_the_landing_of_a_parked_remote_change() {
+    let path = temp_dir("props-parked").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+    assert!(app.save_session());
+    app.focus_tab(tab);
+    assert!(app.spawns.spawning.contains_key(&tab), "waking");
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set(&mut other, tab, field::COLOR, blue());
+    let mine = key_path(&["mine"]);
+    app.edit_prop(tab, field::PROPS, mine.clone(), Some(Leaf::Int(1))).unwrap();
+    assert!(app.save_session());
+    assert!(app.spawns.remote_in_flight.contains_key(&tab), "the remote change is parked");
+    fail_spawns(&mut app);
+    assert_eq!(app.doc.mirror.tree(tab, field::PROPS).unwrap()[&mine], Leaf::Int(1));
+    assert_eq!(doc_trees(&app, tab), app.doc.mirror.trees_of(tab));
+}

@@ -213,7 +213,7 @@ impl App {
                             &id.to_string(),
                             node.ty(),
                             &session_sync::fields_of(node),
-                            &node.trees(),
+                            &store::tree::Trees::new(), // the label reads no props
                             None,
                         );
                         let title = self.doc.hidden_local.get(&id).map(|l| l.title.clone()).filter(|t| !t.is_empty());

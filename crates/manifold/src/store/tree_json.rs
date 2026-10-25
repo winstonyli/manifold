@@ -10,9 +10,14 @@ use super::tree::{resolved, Leaf, Seg, Tree, TreePath};
 pub const MAX_DEPTH: usize = 64;
 pub const MAX_LEAVES: usize = 10_000;
 
+/// `$ref`, `$$ref`, ...: keys that would read as a Ref object, so export adds a `$` and import takes one off.
+fn is_ref_like(key: &str) -> bool {
+    key.starts_with('$') && key.trim_start_matches('$') == "ref"
+}
+
 fn seg_text(seg: &Seg) -> String {
     match seg {
-        Seg::Key(k) if k.starts_with('@') => format!("@{k}"),
+        Seg::Key(k) if k.starts_with('@') || is_ref_like(k) => format!("{}{k}", &k[..1]),
         Seg::Key(k) => k.clone(),
         Seg::Id(id) => format!("@{id}"),
     }
@@ -35,11 +40,15 @@ fn leaf_json(leaf: &Leaf) -> Value {
     }
 }
 
-/// The resolved leaves as nested objects.
+/// The resolved leaves as nested objects. A leaf nested deeper than `MAX_DEPTH` is left out: import refuses it,
+/// and the nested `Value` could overflow the stack when dropped.
 pub fn tree_to_json(tree: &Tree) -> Value {
     let mut root = Map::new();
     for (path, leaf) in resolved(tree) {
         let segs = path.segments();
+        if segs.len() > MAX_DEPTH {
+            continue;
+        }
         let Some((last, parents)) = segs.split_last() else { continue };
         let mut at = &mut root;
         for seg in parents {
@@ -77,6 +86,7 @@ fn walk(
                 Some(id) => Seg::Id(id),
                 None => continue,
             },
+            None if is_ref_like(name) && name.len() > 4 => Seg::Key(name[1..].to_owned()),
             None => Seg::Key(name.clone()),
         };
         let path = at.child(&seg);
@@ -173,5 +183,32 @@ mod tests {
         assert!(tree_from_json(&serde_json::json!({"a": [1, 2]}), &same_ids).is_err());
         assert!(tree_from_json(&serde_json::json!([1]), &same_ids).is_err());
         assert!(tree_from_json(&serde_json::json!({"a": {}, "b": []}), &same_ids).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_key_named_ref_survives_a_round_trip() {
+        let mut tree = Tree::new();
+        for (parent, name, leaf) in [
+            ("x", "$ref", Leaf::Str("hello".into())),
+            ("y", "$ref", Leaf::Int(3)),
+            ("z", "$$ref", Leaf::Int(3)),
+            ("w", "$refx", Leaf::Int(4)),
+        ] {
+            tree.insert(at(&[key(parent), key(name)]), leaf);
+        }
+        tree.insert(at(&[key("$ref")]), Leaf::Int(5));
+        let json = tree_to_json(&tree);
+        assert_eq!(tree_from_json(&json, &same_ids).unwrap(), tree);
+    }
+
+    #[test]
+    fn export_leaves_out_what_import_would_refuse() {
+        let mut tree = Tree::new();
+        let long = |tag: &str, n: usize| at(&(0..n).map(|i| key(&format!("{tag}{i}"))).collect::<Vec<_>>());
+        tree.insert(long("a", MAX_DEPTH), Leaf::Int(1));
+        tree.insert(long("b", MAX_DEPTH + 1), Leaf::Int(2));
+        tree.insert(long("c", 5000), Leaf::Int(3));
+        let json = tree_to_json(&tree);
+        assert_eq!(tree_from_json(&json, &same_ids).unwrap().len(), 1, "only the 64-deep leaf is exported");
     }
 }

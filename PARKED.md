@@ -95,3 +95,10 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 - **In-place `Mirror::edit_tree`.** *What:* the edit clones the whole tree and writes it back (`set_tree`), so one edit costs O(leaves). *Why parked:* fine for PROPS (a handful of leaves). *Trigger:* plan 4's per-keystroke body edits, or a profile showing it. *Evidence:* `mirror.rs` `edit_tree`, 2026-10-24. *Status:* parked.
 - **`Ref` leaves to deleted or closed cards.** *What:* nothing removes a `Ref` when its card goes, so a reader meets a dangling one. *Why parked:* no reader exists yet. *Trigger:* plan 3's labels UI (it must treat a dangling `Ref` as absent). *Evidence:* `tree_json.rs` keeps refs to any real id under `Trust::Own`, 2026-10-24. *Status:* parked.
 - **`props` on non-cards.** *What:* import and the mirror accept `props` on any known kind (links, jars, groups included). *Why parked:* `Kind::card()` (D7) arrives in plan 3. *Trigger:* plan 3. *Evidence:* `store/json.rs` `import`, 2026-10-24. *Status:* parked.
+
+## Plan 2 final-review minors
+
+- **What:** (M1) a `Num` wider than f64 reads back as a float through JSON (needs serde_json `arbitrary_precision`, plan 4's BODY); (M2) `edit_prop` and the document impose no depth/leaf limit, so Duplicate or re-import of an oversized tree fails; (M3) stale `build_ops` doc comments at `session_sync/writes.rs` ("Creates, Moves, Sets") and two more; (M4) spec 2.1 shows `edit_prop(.., Option<Value>)`, code takes `Option<Leaf>`; (M5) `an_undo_of_a_closed_card_does_nothing` deletes rather than closes, so the `nodes.contains_key` guard in `replay_props` is untested; (M6) no mixed-shape local==document test (the reviewer's throwaway passed); (M7) R5 (no root edits) is only a `debug_assert`.
+- **Why parked:** minor, found by the plan 2 final review (2026-10-24); no user-visible effect today.
+- **Trigger:** plan 4 for M1/M2; plan 3 for M5; any touch of `build_ops` for M3.
+- **Status:** parked.
