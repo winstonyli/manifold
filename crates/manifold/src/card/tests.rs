@@ -873,3 +873,32 @@ fn chips_are_not_drawn_in_dense_views() {
     assert!(chips_drawn(crate::graph_ui::Detail::Full));
     assert!(!chips_drawn(crate::graph_ui::Detail::Simple));
 }
+
+/// Long label names are cut to the card: every chip rect stays inside the card's width and clear of the pin mark.
+#[test]
+fn long_label_chips_stay_on_a_narrow_card() {
+    let ctx = crate::theme::testutil::ctx(true);
+    let mut view = test_view(plain(TYPE_NOTE));
+    let long = "a very long label name that cannot fit".repeat(2);
+    view.labels = (0..2).map(|_| LabelChip { text: long.clone(), color: egui::Color32::RED }).collect();
+    view.labels_more = 3;
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(150.0, 100.0));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut overlays: DeferredOverlays = DeferredOverlays::default();
+        paint_label_chips(&mut overlays, rect, &view, 1.0, crate::graph_ui::Detail::Full, true);
+        overlays.play(ui.painter(), &|p| p);
+    });
+    output.textures_delta.clear();
+    let rects: Vec<egui::Rect> = output
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Rect(r) => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert!(!rects.is_empty());
+    for r in rects {
+        assert!(r.left() >= 24.0 && r.right() <= rect.right(), "{r:?}");
+    }
+}

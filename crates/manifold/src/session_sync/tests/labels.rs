@@ -218,3 +218,46 @@ fn the_menu_renames_recolours_and_deletes_a_label() {
     act(&mut app, GraphAction::DeleteLabel(a));
     assert!(labels_of(&app, card).is_empty(), "a deleted label leaves its card without a chip");
 }
+
+#[test]
+fn a_jar_card_keeps_its_own_colour_for_its_border() {
+    let mut app = App::default();
+    let jar = add_jar(&mut app, "Work");
+    app.edit_field(jar, field::COLOR, super::super::color_value(Some(egui::Color32::GREEN)));
+    let entry = crate::level::CardEntry {
+        id: jar.into(),
+        kind: app.card_kind(jar).unwrap(),
+        origin: crate::level::Origin::Stored,
+        rect: egui::Rect::ZERO,
+    };
+    let view = app.card_view(&entry, &HashMap::new()).unwrap();
+    assert_eq!(view.color, Some(egui::Color32::GREEN));
+}
+
+#[test]
+fn a_labelled_card_keeps_its_labels_through_close_and_reopen() {
+    let path = temp_dir("label-close").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n");
+    let a = app.create_label("a", None).unwrap();
+    app.set_label(&[card], a, true);
+    app.close_node(card);
+    app.reopen_node(card);
+    assert_eq!(labels_of(&app, card), vec![a]);
+    assert!(app.save_session());
+    assert_eq!(snapshots(&app)[&card].trees, super::props::doc_trees(&app, card));
+}
+
+#[test]
+fn a_remote_remove_and_a_local_add_of_one_label_converge_to_the_document() {
+    let path = temp_dir("label-add-remove").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n");
+    let a = app.create_label("a", None).unwrap();
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    remote_set_tree(&mut other, card, field::PROPS, labels_path(a), None);
+    app.set_label(&[card], a, true);
+    assert!(app.save_session());
+    assert_eq!(snapshots(&app)[&card].trees, super::props::doc_trees(&app, card));
+}

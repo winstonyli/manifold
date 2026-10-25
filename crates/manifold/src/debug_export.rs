@@ -137,6 +137,8 @@ impl App {
                     "parent": self.opened_from(id),
                     "pinned": self.doc.mirror.pinned(id),
                     "labels": self.label_names(id), // name rule: reported as stored
+                    // Whether the card draws a tag colour on its border (a jar's own colour, or its first label's).
+                    "tag_color": self.card_view(&item, &HashMap::new()).is_some_and(|v| v.color.is_some()),
                     "name": self.doc.mirror.name(id), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
                     "jar": self.doc.mirror.jar(id),
@@ -489,6 +491,7 @@ mod tests {
                 "parent",
                 "pinned",
                 "labels",
+                "tag_color",
                 "editing",
                 "world",
                 "screen",

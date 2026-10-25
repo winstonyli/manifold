@@ -637,6 +637,7 @@ pub(crate) fn paint_label_chips(
         return;
     }
     let right_bottom = card_rect.right_bottom() - egui::vec2(8.0, 8.0) * inv_zoom;
+    let left_bottom = card_rect.left_bottom();
     let chips: Vec<(String, egui::Color32)> = view
         .labels
         .iter()
@@ -647,16 +648,35 @@ pub(crate) fn paint_label_chips(
         let font = egui::FontId::proportional(11.0);
         let mut right = project(right_bottom).x;
         let bottom = project(right_bottom).y;
+        // The row stays on the card: it ends where the pin mark (bottom-left) begins.
+        let left_edge = project(left_bottom).x + CHIP_ROW_LEFT_MARGIN;
         for (name, color) in chips.into_iter().rev() {
-            let galley = overlay_painter.layout_no_wrap(name, font.clone(), egui::Color32::WHITE);
-            let size = galley.size() + egui::vec2(10.0, 2.0);
+            let room = right - left_edge - CHIP_PAD.x;
+            if room < CHIP_MIN_TEXT {
+                break;
+            }
+            let mut job = egui::text::LayoutJob::simple_singleline(name, font.clone(), egui::Color32::WHITE);
+            job.wrap = egui::text::TextWrapping {
+                max_width: room,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            let galley = overlay_painter.layout_job(job);
+            let size = galley.size() + CHIP_PAD;
             let rect = egui::Rect::from_min_size(egui::pos2(right - size.x, bottom - size.y), size);
             overlay_painter.rect_filled(rect, size.y / 2.0, color);
-            overlay_painter.galley(rect.min + egui::vec2(5.0, 1.0), galley, egui::Color32::WHITE);
+            overlay_painter.galley(rect.min + CHIP_PAD / 2.0, galley, egui::Color32::WHITE);
             right = rect.left() - 3.0;
         }
     }));
 }
+
+/// A chip's padding around its text, and the narrowest text worth drawing (screen points).
+const CHIP_PAD: egui::Vec2 = egui::vec2(10.0, 2.0);
+const CHIP_MIN_TEXT: f32 = 12.0;
+/// Room the chip row leaves at the card's bottom-left for the pin mark.
+const CHIP_ROW_LEFT_MARGIN: f32 = 28.0;
 
 /// Returns its response: the frame turns a click into
 /// `control.action()` and counts its hover as the card's. Icons are
@@ -971,6 +991,8 @@ impl App {
         let tab = node.as_tab();
         let (labels, total) = self.card_label_chips(id, kind);
         let (shown, labels_more, color) = label_display(&labels, total);
+        // A jar keeps a colour of its own (it shows no labels); every other card takes its first label's.
+        let color = if kind.ty == TYPE_JAR { self.doc.mirror.color(id) } else { color };
         Some(CardView {
             kind,
             color,

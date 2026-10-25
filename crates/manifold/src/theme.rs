@@ -14,12 +14,10 @@ use super::*;
 /// was dropped as redundant with the address bar's URL.
 pub(crate) const CHROME_HEIGHT_POINTS: f32 = 38.0;
 
-/// Fixed tag-color choices a group or tab card's color swatch cycles
-/// through (see `next_tag_color`) -- vermillion/orange/yellow/bluish
+/// Fixed tag-color choices for a label's colour (see `free_tag_color`) -- vermillion/orange/yellow/bluish
 /// green/sky blue/reddish purple, chosen for mutual distinguishability
 /// against this app's dark chrome rather than any particular meaning.
-/// Used via `Mirror::color`, for both `Tab` and
-/// `Group`. These are the Okabe-Ito colorblind-safe palette values
+/// Used via `Mirror::color` for `Label` and jar nodes. These are the Okabe-Ito colorblind-safe palette values
 /// (Okabe & Ito, 2008) -- every swatch here is rendered as a plain
 /// filled circle with no secondary encoding (shape, letter, pattern) to
 /// distinguish them, confirmed live: the original arbitrary red/orange/

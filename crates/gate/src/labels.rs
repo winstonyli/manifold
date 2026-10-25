@@ -53,7 +53,7 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         let mut inst = Instance::launch(&exe, &profile, &work, "labels.log")?;
         inst.send("WAITIDLE")?;
         let start = inst.export_state("start")?;
-        let old_colour_ignored = start.cards().iter().all(|c| c.get("color").is_none());
+        let old_colour_ignored = start.cards().iter().all(|c| c["tag_color"] == false);
         inst.send("SUGGEST")?;
         inst.send("WAITIDLE")?;
         inst.send("ACCEPTSUGGESTIONLABEL 0")?;

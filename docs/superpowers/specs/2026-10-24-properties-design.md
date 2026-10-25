@@ -102,7 +102,7 @@ The mirror keeps the invariant it has: it equals the document except for edits s
 trees it holds each tree field's **live leaves** per `(node, field)` (`Mirror::tree`: `Tree`, a sorted map from `TreePath`
 to `Leaf`, the registers that count in the document; `Trees` is the per-field map a `Snapshot` and `Carried` carry).
 Readers call `tree::resolved`, which lets a child win over a scalar above it (plan 2 refined this from "the mirror holds
-the resolved tree"; the stamp is not mirrored, so label order reads the document, plan 3). A remote change replaces the
+the resolved tree"; label order reads the membership leaf `added_at_ms`, L2). A remote change replaces the
 tree with the document's and puts the edits still queued in `App::writes` back on top; a local edit applies to the tree
 directly (a local write is the newest, so this equals what the document will compute; `tree::edit`).
 
@@ -147,7 +147,7 @@ stays as it is (parked: unify it into register edits).
   rule "a label that is not live is not shown".
 - **Order**: by the leaf `added_at_ms` (a monotonic ms source), then the label id, so a card's first label is the
   one added first (decision D3). Re-adding a removed label puts it last.
-- **Show**: the card border takes the first label's color; at normal zoom the header shows up to two chips and "+N";
+- **Show**: the card border takes the first label's color; at normal zoom the bottom edge shows up to two chips, right-aligned and clipped to the card, and "+N";
   chips drop in dense views (above `LOD_SIMPLIFY_COUNT`), as the pin mark does. The per-card color cycle
   (`next_tag_color`, `carried.color()`) is removed.
 - **Find**: the label names join `card_filter_text` and the index text (so the filter box and the omnibar match them),
