@@ -155,7 +155,7 @@ fn a_labelled_cards_view_carries_the_first_labels_colour_and_a_deleted_label_dis
     };
     let view = app.card_view(&entry, &HashMap::new()).unwrap();
     assert_eq!(view.color, Some(red));
-    assert_eq!(view.labels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    assert_eq!(view.labels.iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), ["a", "b"]);
     app.delete_label(a);
     let view = app.card_view(&entry, &HashMap::new()).unwrap();
     assert_eq!((view.color, view.labels.len(), view.labels_more), (Some(blue), 1, 0));

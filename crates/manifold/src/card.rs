@@ -343,10 +343,10 @@ pub(crate) struct CardView {
     pub(crate) closable: bool,
 }
 
-/// A label as a card shows it: its name and colour.
+/// A label as a card shows it: its name as displayed (`names::display_name`) and its colour.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LabelChip {
-    pub(crate) name: String,
+    pub(crate) text: String,
     pub(crate) color: egui::Color32,
 }
 
@@ -640,7 +640,7 @@ pub(crate) fn paint_label_chips(
     let chips: Vec<(String, egui::Color32)> = view
         .labels
         .iter()
-        .map(|l| (l.name.clone(), tag_shown(l.color, dark)))
+        .map(|l| (l.text.clone(), tag_shown(l.color, dark)))
         .chain((view.labels_more > 0).then(|| (format!("+{}", view.labels_more), egui::Color32::DARK_GRAY)))
         .collect();
     deferred_overlays.push(Box::new(move |overlay_painter, project| {
@@ -999,7 +999,10 @@ impl App {
             .take(LABEL_LOOKUP_CAP)
             .map(|l| {
                 let def = self.doc.mirror.label_def(*l);
-                LabelChip { name: def.name, color: def.color.unwrap_or(egui::Color32::GRAY) }
+                LabelChip {
+                    text: crate::names::to_plain(&crate::names::display_name(&def.name, "?")),
+                    color: def.color.unwrap_or(egui::Color32::GRAY),
+                }
             })
             .collect();
         (chips, all.len())

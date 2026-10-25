@@ -850,7 +850,7 @@ fn card_glow_shapes_keeps_two_shapes_and_offsets_downward() {
 }
 
 fn chip(name: &str, color: egui::Color32) -> LabelChip {
-    LabelChip { name: name.into(), color }
+    LabelChip { text: name.into(), color }
 }
 
 #[test]
