@@ -105,7 +105,7 @@ impl Mirror {
 
     /// 0 when there is no tree; otherwise a number that changes whenever the tree does and is never reused for this
     /// `(id, no)`, so a cache keyed on it needs no content hash.
-    #[allow(dead_code, reason = "read by edit_prop and the Props view (plan 2 T4)")]
+    #[allow(dead_code, reason = "the render cache key of plans 3 and 4")]
     pub(crate) fn tree_version(&self, id: NodeId, no: u32) -> u64 {
         self.trees.get(&(id, no)).map_or(0, |(_, version)| *version)
     }
@@ -134,7 +134,6 @@ impl Mirror {
     }
 
     /// A local write at `path` (`store::tree::edit`); returns the leaves it replaced, `None` for no change.
-    #[allow(dead_code, reason = "called by edit_prop (plan 2 T4)")]
     pub(crate) fn edit_tree(
         &mut self,
         id: NodeId,

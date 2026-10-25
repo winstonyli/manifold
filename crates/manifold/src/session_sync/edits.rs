@@ -3,6 +3,27 @@
 use super::*;
 
 impl App {
+    /// The one writer of a node's tree fields: the leaf at `path` becomes `leaf`, or, for `None`, `path` and
+    /// everything under it is deleted (one tombstone hides the subtree, so a subtree delete is the same call). The
+    /// mirror shows it at once; the next save commits it as a `Set` at `path`. Returns what an undo needs, or `None`
+    /// when the mirror already showed exactly this. The caller records the step (`record_undo(.., UndoKind::Props)`).
+    #[allow(dead_code, reason = "no caller outside tests until the labels (plan 3) and the Json cards (plan 4)")]
+    pub(crate) fn edit_prop(
+        &mut self,
+        id: NodeId,
+        field: u32,
+        path: TreePath,
+        leaf: Option<Leaf>,
+    ) -> Option<crate::undo::PropEdit> {
+        debug_assert!(TREE_FIELDS.iter().any(|&(no, _)| no == field), "a tree field");
+        debug_assert!(!path.is_root(), "a leaf has a path");
+        debug_assert!(self.doc.mirror.has(id), "a node the mirror knows");
+        let before = self.doc.mirror.edit_tree(id, field, &path, leaf.clone())?;
+        let enc = leaf.as_ref().map_or_else(Vec::new, Leaf::encode);
+        self.doc.writes.queue_tree(id, field, path.clone(), enc);
+        Some(crate::undo::PropEdit { node: id, field, path, before, after: leaf })
+    }
+
     /// The one writer of mirrored fields (node model spec, 2b "Read model"): the mirror shows `value` at once, and
     /// the next save commits it as a `Set`. A value the mirror already shows queues nothing.
     pub(crate) fn edit_field(&mut self, id: NodeId, no: u32, value: FieldValue) {

@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::store::model::NodeId;
+use crate::store::tree::{Leaf, TreePath};
 
 /// How many steps the history keeps, each way.
 pub(crate) const UNDO_DEPTH: usize = 10;
@@ -15,6 +16,17 @@ pub(crate) struct Moved {
     pub(crate) group: (Option<NodeId>, Option<NodeId>),
     pub(crate) parent: (Option<NodeId>, Option<NodeId>),
     pub(crate) pos: (Option<egui::Vec2>, Option<egui::Vec2>),
+}
+
+/// One write to a tree field (`App::edit_prop`): `path` held `before` (every leaf at or under it) and now holds
+/// `after` (`None`: deleted). Undo and redo replay it as a further edit.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct PropEdit {
+    pub(crate) node: NodeId,
+    pub(crate) field: u32,
+    pub(crate) path: TreePath,
+    pub(crate) before: Vec<(TreePath, Leaf)>,
+    pub(crate) after: Option<Leaf>,
 }
 
 pub(crate) enum UndoKind {

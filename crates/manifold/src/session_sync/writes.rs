@@ -115,7 +115,6 @@ impl PendingWrites {
 
     /// Queues a write of `enc` (empty: a tombstone) at `path` in `node`'s tree field `field`, dropping the queued
     /// writes under `path`: it is newer and hides them.
-    #[allow(dead_code, reason = "called by edit_prop (plan 2 T4)")]
     pub(crate) fn queue_tree(&mut self, node: NodeId, field: u32, path: TreePath, enc: Vec<u8>) {
         let trees = &mut self.record(node).trees;
         let hidden: Vec<_> =
@@ -136,12 +135,10 @@ impl PendingWrites {
         })
     }
 
-    #[allow(dead_code, reason = "read by the debug invariant and edit_prop (plan 2 T3/T4)")]
     pub(crate) fn tree_queued(&self, node: NodeId, field: u32) -> bool {
         self.tree_edits(node, field).next().is_some()
     }
 
-    #[allow(dead_code, reason = "read by build_ops (plan 2 T4)")]
     pub(crate) fn tree_sets(&self) -> impl Iterator<Item = (NodeId, u32, &TreePath, &Vec<u8>)> + '_ {
         self.nodes.iter().flat_map(|(&n, w)| w.trees.iter().map(move |((f, path), enc)| (n, *f, path, enc)))
     }
@@ -287,6 +284,15 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
         writes.deletes().filter(|id| doc.nodes.get(id).is_some_and(Node::is_live)).collect();
     let mut ops = create_ops(doc, &new, &deleted);
     let created: BTreeSet<NodeId> = new.keys().copied().collect();
+    // A created node's tree rides with its `Create`: the snapshot holds the mirror's tree as of this save, edits
+    // included, so the queued edits of a created node are dropped below like its scalar ones.
+    for (id, snap) in new.iter().filter(|(id, _)| !deleted.contains(id)) {
+        for (&field, tree) in &snap.trees {
+            for (path, leaf) in tree {
+                ops.push(OpBody::Set { node: *id, field, path: path.clone(), enc: leaf.encode() });
+            }
+        }
+    }
     let resolve = |target: Option<NodeId>| resolve_id(doc, &created, &deleted, target);
     // Edits to mirrored fields and moves. A node this commit creates carries its values in the `Create`,
     // and one it deletes needs none; one the document doesn't show live would get a placeholder from a
@@ -326,6 +332,11 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
             enc.clone()
         };
         ops.push(OpBody::set(node, no, enc));
+    }
+    for (node, field, path, enc) in writes.tree_sets() {
+        if editable(&node) {
+            ops.push(OpBody::Set { node, field, path: path.clone(), enc: enc.clone() });
+        }
     }
     for (node, closer) in writes.closed() {
         if editable(&node) {

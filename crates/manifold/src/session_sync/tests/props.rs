@@ -58,3 +58,62 @@ fn a_queued_ancestor_edit_evicts_queued_descendants() {
     assert_eq!(writes.tree_edits(card, field::PROPS).map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![a, ab]);
     assert!(writes.tree_queued(card, field::PROPS) && !writes.tree_queued(node(2), field::PROPS));
 }
+
+#[test]
+fn an_edit_shows_at_once_and_commits_as_a_path_set() {
+    let path = temp_dir("props-edit").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n");
+    assert!(app.save_session());
+    let p = key_path(&["a", "b"]);
+    app.edit_prop(card, field::PROPS, p.clone(), Some(Leaf::Int(1))).unwrap();
+    assert_eq!(app.doc.mirror.tree(card, field::PROPS).unwrap().len(), 1);
+    assert!(app.edit_prop(card, field::PROPS, p, Some(Leaf::Int(1))).is_none(), "a repeat queues nothing");
+    assert!(app.doc.writes.tree_queued(card, field::PROPS));
+    assert!(app.save_session());
+    assert_eq!(doc_trees(&app, card), app.doc.mirror.trees_of(card));
+    assert!(!app.doc.writes.tree_queued(card, field::PROPS), "the commit clears the queue");
+}
+
+#[test]
+fn a_subtree_delete_is_one_tombstone() {
+    let path = temp_dir("props-subtree").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n");
+    for segs in [&["a", "b"][..], &["a", "c"]] {
+        app.edit_prop(card, field::PROPS, key_path(segs), Some(Leaf::Int(1)));
+    }
+    assert!(app.save_session());
+    assert_eq!(doc_trees(&app, card)[&field::PROPS].len(), 2);
+    let edit = app.edit_prop(card, field::PROPS, key_path(&["a"]), None).unwrap();
+    assert_eq!(edit.before.len(), 2, "both leaves are reported for undo");
+    assert!(app.doc.mirror.tree(card, field::PROPS).is_none());
+    assert!(app.save_session());
+    assert!(doc_trees(&app, card).is_empty());
+}
+
+#[test]
+fn a_card_created_with_a_tree_commits_it_in_the_same_save() {
+    let path = temp_dir("props-create").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n"); // queued Create, not committed
+    app.edit_prop(card, field::PROPS, key_path(&["label"]), Some(Leaf::Str("x".into()))).unwrap();
+    assert!(app.save_session());
+    assert_eq!(doc_trees(&app, card)[&field::PROPS].len(), 1);
+    assert_eq!(snapshots(&app)[&card].trees, doc_trees(&app, card));
+}
+
+#[test]
+fn a_queued_edit_on_a_node_deleted_in_the_same_save_is_dropped() {
+    let path = temp_dir("props-deleted").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let card = add_note(&mut app, "n");
+    assert!(app.save_session());
+    app.edit_prop(card, field::PROPS, key_path(&["k"]), Some(Leaf::Int(1))).unwrap();
+    app.remove_node(card);
+    let before = ops_of(&app);
+    assert!(app.save_session());
+    assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&card].is_live());
+    assert!(!app.doc.writes.tree_queued(card, field::PROPS));
+    assert_eq!(ops_of(&app) - before, 1, "only the Delete is committed");
+}
