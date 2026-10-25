@@ -45,6 +45,9 @@ pub fn between(a: Option<&str>, b: Option<&str>) -> Option<String> {
         _ => {}
     }
     let (a, b) = (a.unwrap_or("").as_bytes(), b.map(str::as_bytes));
+    if !a.iter().chain(b.unwrap_or_default()).all(u8::is_ascii_digit) {
+        return None; // a key from elsewhere that is not a digit string: the caller renumbers
+    }
     let digit = |c: Option<&u8>| c.map_or(0, |c| i32::from(c.wrapping_sub(b'0')));
     let (mut out, mut open) = (Vec::new(), b.is_none());
     for i in 0..a.len().max(b.map_or(0, <[u8]>::len)) + 2 {
@@ -461,6 +464,13 @@ mod tests {
             tail.push(k);
         }
         assert!(tail.iter().all(|k| k.len() == 8), "appends step, they don't grow");
+    }
+
+    #[test]
+    fn between_refuses_a_key_that_is_not_digits() {
+        assert_eq!(between(Some("-1"), Some("5")), None);
+        assert_eq!(between(Some("1"), Some("a")), None);
+        assert_eq!(between(Some("é"), None), None);
     }
 
     #[test]
