@@ -42,6 +42,104 @@ impl JsonOp {
     }
 }
 
+/// How one structural edit moved the entries a view, selection or outline row names by JSON pointer.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PointerMap {
+    /// The entry at the pointer and everything under it is gone.
+    Drop(String),
+    /// Elements of the array at `parent` from index `from` on moved by `delta`.
+    Shift { parent: String, from: usize, delta: isize },
+    /// The element at `from` of the array at `parent` moved to `to`; those between slid one place.
+    Permute { parent: String, from: usize, to: usize },
+    /// The entry at `old` and everything under it is now at `new`.
+    Prefix { old: String, new: String },
+}
+
+/// Where in `tokens` an array index under `parent` sits, and that index.
+fn index_under(tokens: &[String], parent: &str) -> Option<(usize, usize)> {
+    let parent = pointer_tokens(parent);
+    if !tokens.starts_with(&parent) {
+        return None;
+    }
+    Some((parent.len(), tokens.get(parent.len())?.parse().ok()?))
+}
+
+fn join(tokens: &[String]) -> String {
+    tokens.iter().fold(String::new(), |p, t| child_pointer(&p, t))
+}
+
+impl PointerMap {
+    fn apply(&self, pointer: &str) -> Option<String> {
+        let mut tokens = pointer_tokens(pointer);
+        match self {
+            PointerMap::Drop(gone) => (!tokens.starts_with(&pointer_tokens(gone))).then(|| pointer.to_owned()),
+            PointerMap::Shift { parent, from, delta } => {
+                if let Some((at, i)) = index_under(&tokens, parent).filter(|(_, i)| i >= from) {
+                    tokens[at] = i.checked_add_signed(*delta)?.to_string();
+                }
+                Some(join(&tokens))
+            }
+            PointerMap::Permute { parent, from, to } => {
+                if let Some((at, i)) = index_under(&tokens, parent) {
+                    let moved = match i {
+                        i if i == *from => *to,
+                        i if from < to && i > *from && i <= *to => i - 1,
+                        i if to < from && i >= *to && i < *from => i + 1,
+                        i => i,
+                    };
+                    tokens[at] = moved.to_string();
+                }
+                Some(join(&tokens))
+            }
+            PointerMap::Prefix { old, new } => {
+                let old = pointer_tokens(old);
+                if !tokens.starts_with(&old) {
+                    return Some(pointer.to_owned());
+                }
+                let mut moved = pointer_tokens(new);
+                moved.extend(tokens.drain(old.len()..));
+                Some(join(&moved))
+            }
+        }
+    }
+}
+
+/// Where `pointer` went after `maps`, applied in order; `None` when an edit removed it.
+pub(crate) fn remap_pointer(maps: &[PointerMap], pointer: &str) -> Option<String> {
+    maps.iter().try_fold(pointer.to_owned(), |p, map| map.apply(&p))
+}
+
+/// What `op` did to pointers, given the document it was planned against.
+fn pointer_maps(op: &JsonOp, doc: &Value) -> Vec<PointerMap> {
+    match op {
+        JsonOp::Set { .. } | JsonOp::AddKey { .. } => Vec::new(),
+        JsonOp::Insert { pointer, index, .. } => {
+            vec![PointerMap::Shift { parent: pointer.clone(), from: *index, delta: 1 }]
+        }
+        JsonOp::Remove { pointer } => {
+            let mut maps = vec![PointerMap::Drop(pointer.clone())];
+            if let Ok((parent, token)) = split(pointer) {
+                if let (Some(Value::Array(_)), Ok(i)) = (doc.pointer(parent), token.parse::<usize>()) {
+                    maps.push(PointerMap::Shift { parent: parent.to_owned(), from: i + 1, delta: -1 });
+                }
+            }
+            maps
+        }
+        JsonOp::Move { pointer, to } => match split(pointer) {
+            Ok((parent, token)) => token
+                .parse()
+                .map(|from| PointerMap::Permute { parent: parent.to_owned(), from, to: *to })
+                .into_iter()
+                .collect(),
+            Err(_) => Vec::new(),
+        },
+        JsonOp::Rename { pointer, to } => match split(pointer) {
+            Ok((parent, _)) => vec![PointerMap::Prefix { old: pointer.clone(), new: child_pointer(parent, to) }],
+            Err(_) => Vec::new(),
+        },
+    }
+}
+
 const GONE: &str = "That entry is gone";
 
 /// One write: `path` and everything under it become `leaves` (none: deleted).
@@ -76,9 +174,10 @@ impl App {
     /// `INLINE_MAX_LEAVES` or `MAX_DEPTH`. An op that changes nothing records no step.
     pub(crate) fn edit_json(&mut self, id: NodeId, op: JsonOp) -> Result<(), String> {
         match self.write_json_op(id, &op) {
-            Ok(edits) => {
+            Ok((edits, maps)) => {
                 if !edits.is_empty() {
                     self.record_undo(op.label().to_owned(), UndoKind::Props(edits));
+                    self.remap_view_state(id, &maps);
                     self.refresh_inline(id);
                 }
                 Ok(())
@@ -90,14 +189,32 @@ impl App {
         }
     }
 
-    fn write_json_op(&mut self, id: NodeId, op: &JsonOp) -> Result<Vec<PropEdit>, String> {
+    /// Moves the saved view's overrides, the open level's selection and its outline rows to where `maps` put them.
+    /// Runs before `refresh_inline`, whose prune drops whatever no longer resolves.
+    fn remap_view_state(&mut self, id: NodeId, maps: &[PointerMap]) {
+        let f = |p: &str| remap_pointer(maps, p);
+        let mut view = self.doc.mirror.view(id).filter(|v| !v.is_opaque()).cloned();
+        if let Some(view) = view.as_mut() {
+            view.remap(&f);
+        }
+        if let Some(view) = view.filter(|v| Some(v) != self.doc.mirror.view(id)) {
+            self.edit_view(id, &view.to_field());
+        }
+        if let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) {
+            level.selected = level.selected.take().and_then(|p| f(&p));
+            level.outline.open = level.outline.open.drain().filter_map(|p| f(&p)).collect();
+        }
+    }
+
+    fn write_json_op(&mut self, id: NodeId, op: &JsonOp) -> Result<(Vec<PropEdit>, Vec<PointerMap>), String> {
         let editable =
             self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline() && p.error.is_none());
         if !editable || !self.doc.mirror.has(id) {
             return Err("Only an inline JSON card can be edited".to_owned());
         }
         let tree = self.doc.mirror.tree(id, field::BODY).cloned().unwrap_or_default();
-        let steps = self.plan_json_op(op, &tree)?;
+        let doc = tree_to_value(&tree);
+        let steps = self.plan_json_op(op, &tree, &doc)?;
         let removed: usize = steps.iter().map(|(path, _)| subtree(&tree, path).len()).sum();
         let added: usize = steps.iter().map(|(_, leaves)| leaves.len()).sum();
         if (tree.len() + added).saturating_sub(removed) >= INLINE_MAX_LEAVES {
@@ -120,7 +237,7 @@ impl App {
                 edits.extend(self.edit_prop(id, field::BODY, leaf_path, Some(leaf)));
             }
         }
-        Ok(edits)
+        Ok((edits, pointer_maps(op, &doc)))
     }
 
     /// `value` as the leaves of the subtree at `at` (the entry at `pointer`), minting element ids.
@@ -130,8 +247,7 @@ impl App {
         Ok(value_to_tree_at(value, at, pointer, depth, &mut mint)?.into_iter().collect())
     }
 
-    fn plan_json_op(&mut self, op: &JsonOp, tree: &Tree) -> Result<Vec<Step>, String> {
-        let doc = tree_to_value(tree);
+    fn plan_json_op(&mut self, op: &JsonOp, tree: &Tree, doc: &Value) -> Result<Vec<Step>, String> {
         match op {
             JsonOp::Set { pointer, value } => {
                 let path = resolve(tree, pointer)?;

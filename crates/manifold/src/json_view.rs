@@ -215,6 +215,20 @@ impl JsonView {
         self.1.extra.retain(|pointer, _| root.pointer(pointer).is_some());
     }
 
+    /// Renames every override's pointer by `f` (`None`: the entry is gone and its override goes). Opaque text is left
+    /// alone.
+    pub(crate) fn remap(&mut self, f: &dyn Fn(&str) -> Option<String>) {
+        if self.is_opaque() {
+            return;
+        }
+        fn rekey<V>(map: &mut BTreeMap<String, V>, f: &dyn Fn(&str) -> Option<String>) {
+            *map = std::mem::take(map).into_iter().filter_map(|(p, v)| Some((f(&p)?, v))).collect();
+        }
+        rekey(&mut self.0, f);
+        rekey(&mut self.1.entries, f);
+        rekey(&mut self.1.extra, f);
+    }
+
     /// Relayout: every saved position goes, the rest stays.
     pub(crate) fn clear_positions(&mut self) {
         for o in self.0.values_mut() {

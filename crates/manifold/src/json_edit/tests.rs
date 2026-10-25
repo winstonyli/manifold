@@ -222,3 +222,77 @@ fn two_replicas_inserting_into_one_slot_converge() {
     assert!(items.contains(&json!("from a")) && items.contains(&json!("from b")));
     assert_eq!((&items[0], &items[3]), (&json!(1), &json!(3)));
 }
+
+fn s(text: &str) -> String {
+    text.to_owned()
+}
+
+#[test]
+fn remap_pointer_follows_each_structural_edit() {
+    use PointerMap::*;
+    let remove = [Drop(s("/a/1")), Shift { parent: s("/a"), from: 2, delta: -1 }];
+    assert_eq!(remap_pointer(&remove, "/a/1/b"), None);
+    assert_eq!(remap_pointer(&remove, "/a/0"), Some(s("/a/0")));
+    assert_eq!(remap_pointer(&remove, "/a/3/b"), Some(s("/a/2/b")));
+    assert_eq!(remap_pointer(&remove, "/c/3"), Some(s("/c/3")));
+    let insert = [Shift { parent: s("/a"), from: 3, delta: 1 }];
+    assert_eq!(remap_pointer(&insert, "/a/3/b"), Some(s("/a/4/b")));
+    assert_eq!(remap_pointer(&insert, "/a/2"), Some(s("/a/2")));
+    assert_eq!(remap_pointer(&insert, "/a"), Some(s("/a")));
+    assert_eq!(remap_pointer(&insert, ""), Some(s("")));
+    let down = [Permute { parent: s("/a"), from: 1, to: 3 }];
+    let seen: Vec<_> = (0..5).map(|i| remap_pointer(&down, &format!("/a/{i}")).unwrap()).collect();
+    assert_eq!(seen, ["/a/0", "/a/3", "/a/1", "/a/2", "/a/4"]);
+    let up = [Permute { parent: s("/a"), from: 3, to: 1 }];
+    let seen: Vec<_> = (0..5).map(|i| remap_pointer(&up, &format!("/a/{i}")).unwrap()).collect();
+    assert_eq!(seen, ["/a/0", "/a/2", "/a/3", "/a/1", "/a/4"]);
+    let rename = [Prefix { old: s("/a"), new: s("/c/d") }];
+    assert_eq!(remap_pointer(&rename, "/a"), Some(s("/c/d")));
+    assert_eq!(remap_pointer(&rename, "/a/x"), Some(s("/c/d/x")));
+    assert_eq!(remap_pointer(&rename, "/ab"), Some(s("/ab")));
+    let escaped = [Shift { parent: s("/a~1b"), from: 0, delta: 1 }];
+    assert_eq!(remap_pointer(&escaped, "/a~1b/0/x~0y"), Some(s("/a~1b/1/x~0y")));
+}
+
+fn view_of(app: &App, id: NodeId, pointer: &str) -> Option<bool> {
+    app.doc.mirror.view(id)?.get(pointer)?.collapsed
+}
+
+#[test]
+fn inserting_an_element_keeps_a_later_cards_position() {
+    let (mut app, id) = card(json!({"a": [{"k": 1}, {"k": 2}, {"k": 3}]}));
+    app.edit_view(id, r#"{"/a/2":{"collapsed":true}}"#);
+    app.edit_json(id, insert("/a", 0, json!({"k": 0}))).unwrap();
+    assert_eq!(view_of(&app, id, "/a/3"), Some(true));
+    assert_eq!(view_of(&app, id, "/a/2"), None);
+}
+
+#[test]
+fn deleting_an_element_drops_its_card_override_and_selection() {
+    let (mut app, id) = card(json!({"a": [1, 2, 3]}));
+    app.edit_view(id, r#"{"/a/1":{"collapsed":true},"/a/2":{"collapsed":true}}"#);
+    app.current_group = Some(id);
+    app.sync_json_level();
+    app.json_level.as_mut().unwrap().selected = Some(s("/a/1"));
+    app.json_level.as_mut().unwrap().outline.open.insert(s("/a/2"));
+    app.edit_json(id, remove("/a/1")).unwrap();
+    assert_eq!(view_of(&app, id, "/a/1"), Some(true), "the old /a/2 is now /a/1");
+    assert_eq!(view_of(&app, id, "/a/2"), None);
+    let level = app.json_level.as_ref().unwrap();
+    assert_eq!(level.selected, None);
+    assert!(level.outline.open.contains("/a/1") && !level.outline.open.contains("/a/2"));
+}
+
+#[test]
+fn rename_and_move_carry_the_view_and_the_selection() {
+    let (mut app, id) = card(json!({"a": {"x": 1}, "l": [1, 2, 3]}));
+    app.edit_view(id, r#"{"/a":{"collapsed":true},"/l/0":{"collapsed":true}}"#);
+    app.current_group = Some(id);
+    app.sync_json_level();
+    app.json_level.as_mut().unwrap().selected = Some(s("/a/x"));
+    app.edit_json(id, JsonOp::Rename { pointer: s("/a"), to: s("c") }).unwrap();
+    assert_eq!(view_of(&app, id, "/c"), Some(true));
+    assert_eq!(app.json_level.as_ref().unwrap().selected.as_deref(), Some("/c/x"));
+    app.edit_json(id, JsonOp::Move { pointer: s("/l/0"), to: 2 }).unwrap();
+    assert_eq!(view_of(&app, id, "/l/2"), Some(true));
+}
