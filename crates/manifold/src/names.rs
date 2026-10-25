@@ -151,6 +151,12 @@ fn is_clean(s: &str) -> bool {
 /// data be older than `is_pict`'s, it could end a cluster at a joiner that `classify` keeps).
 const CUT_TRIM: [char; 2] = [' ', ZWJ];
 
+/// What makes two names the same name (jar and label names): their clean forms (name rules: trimmed, hidden
+/// characters dropped, spaces collapsed), any case.
+pub(crate) fn name_key(name: &str) -> String {
+    clean_name(name).to_lowercase()
+}
+
 /// The input rule: `s` without hidden characters (`classify`: emoji sequences keep theirs), with each whitespace run
 /// as one plain space, trimmed, and cut to `NAME_CAP` grapheme clusters and `NAME_MAX_CHARS` characters
 /// (`take_units`). It borrows `s` when `s` is already clean, and is idempotent.

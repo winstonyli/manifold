@@ -70,9 +70,7 @@ impl App {
     /// `save_session` creates it.
     pub(crate) fn create_jar(&mut self, name: &str, at: crate::fetched::Placement) -> NodeId {
         let defs = self.jar_defs();
-        let shown = |c: &egui::Color32| defs.values().any(|d| d.color.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
-        let free = TAG_COLOR_PALETTE.iter().find(|c| !shown(c));
-        let color = *free.unwrap_or(&TAG_COLOR_PALETTE[defs.len() % TAG_COLOR_PALETTE.len()]);
+        let color = crate::theme::free_tag_color(&defs.values().map(|d| d.color).collect::<Vec<_>>());
         let key = self.place_node(None, Kind::Jar, Runtime::Jar, at);
         self.edit_field(key, field::NAME, FieldValue::Str(crate::names::clean_name(name).into_owned()));
         self.edit_field(key, field::COLOR, color_value(Some(color)));

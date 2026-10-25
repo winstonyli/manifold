@@ -419,7 +419,7 @@ fn the_placeholder_characters_are_in_the_monospace_font() {
 /// rule (the line calls one of `RULE_MARKS`) or marked raw with `// name rule: <why>`, on the same line or as a
 /// comment on the line just above (`ruled`). A new file that reads `.name` must be added here, after deciding
 /// which rule its site gets.
-const ALLOWED: [&str; 20] = [
+const ALLOWED: [&str; 21] = [
     "card.rs",
     "card/group_body.rs",
     "card/jar_chip.rs",
@@ -430,6 +430,7 @@ const ALLOWED: [&str; 20] = [
     "groups.rs",
     "jar_defs/label.rs",
     "jar_defs/lifecycle.rs",
+    "labels.rs",
     "main.rs",
     "mirror.rs",
     "node.rs",

@@ -74,21 +74,18 @@ pub(super) fn id_digest(id: NodeId) -> String {
     sha2::Sha256::digest(id.to_string().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// What makes two jar names the same name (jar name labels): their clean forms (name rules: trimmed, hidden
-/// characters dropped, spaces collapsed), any case.
-fn name_key(name: &str) -> String {
-    crate::names::clean_name(name).to_lowercase()
-}
-
 /// The marker fragment that tells jar `id` apart from the other jars with its name; `None` when no other jar has it
 /// (or there is no jar `id`). It is the start of `id_digest(id)`: 4 characters, or as many more as it takes to differ
 /// from every same-named jar's. It derives from the id alone, so it never changes for the jar's life, except to grow
 /// on the rare collision with a same-named jar that arrives later. Not a hex prefix of the id itself: jars made on one
 /// device share the id's actor half and differ only in its decimal counter.
 pub(crate) fn jar_fragment(id: NodeId, defs: &BTreeMap<NodeId, JarDef>) -> Option<String> {
-    let key = name_key(&defs.get(&id)?.name);
-    let twins: Vec<String> =
-        defs.iter().filter(|(o, d)| **o != id && name_key(&d.name) == key).map(|(o, _)| id_digest(*o)).collect();
+    let key = crate::names::name_key(&defs.get(&id)?.name);
+    let twins: Vec<String> = defs
+        .iter()
+        .filter(|(o, d)| **o != id && crate::names::name_key(&d.name) == key)
+        .map(|(o, _)| id_digest(*o))
+        .collect();
     if twins.is_empty() {
         return None;
     }

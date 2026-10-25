@@ -335,6 +335,17 @@ pub(crate) fn next_tag_color(current: Option<egui::Color32>) -> Option<egui::Col
     }
 }
 
+/// The first `TAG_COLOR_PALETTE` entry that none of `used` has, else the entry the `used.len()`th wraps to: what a new
+/// jar or label takes, so the first few differ.
+pub(crate) fn free_tag_color(used: &[Option<egui::Color32>]) -> egui::Color32 {
+    let has = |c: &egui::Color32| used.iter().any(|u| u.unwrap_or(TAG_COLOR_PALETTE[0]) == *c);
+    TAG_COLOR_PALETTE
+        .iter()
+        .copied()
+        .find(|c| !has(c))
+        .unwrap_or(TAG_COLOR_PALETTE[used.len() % TAG_COLOR_PALETTE.len()])
+}
+
 /// A `manifold_pages::palette` entry as an egui color: the palette is defined once, there, and shared with the
 /// `manifold://` pages.
 const fn color([r, g, b]: [u8; 3]) -> egui::Color32 {
