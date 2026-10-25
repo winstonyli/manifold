@@ -1,5 +1,5 @@
 //! Suggested groups on the canvas: a coloured ring round each member and, above the lot, a chip with the label and
-//! Accept and Dismiss (`App::suggest_groups`).
+//! Accept (group), Label and Dismiss (`App::suggest_groups`).
 
 use super::App;
 use crate::theme::{bar_frame, chip_icon_button, NamedTip};
@@ -35,6 +35,7 @@ impl App {
             .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("suggestion_rings")))
             .with_clip_rect(panel);
         let mut accept = None;
+        let mut label = None;
         let mut dismiss = None;
         for (i, suggestion) in shown.iter().enumerate() {
             let color = suggestion_color(i);
@@ -74,6 +75,11 @@ impl App {
                             if ok.named_tip("Group these cards").clicked() {
                                 accept = Some(i);
                             }
+                            let tag =
+                                chip_icon_button(ui, egui::Id::new(("suggestion_label", i)), egui_phosphor::light::TAG);
+                            if tag.named_tip("Label these cards").clicked() {
+                                label = Some(i);
+                            }
                             let no =
                                 chip_icon_button(ui, egui::Id::new(("suggestion_dismiss", i)), egui_phosphor::light::X);
                             if no.named_tip("Dismiss").clicked() {
@@ -85,6 +91,8 @@ impl App {
         }
         if let Some(i) = accept {
             self.accept_suggestion(i);
+        } else if let Some(i) = label {
+            self.accept_suggestion_as_label(i);
         } else if let Some(i) = dismiss {
             self.dismiss_suggestion(i);
         }

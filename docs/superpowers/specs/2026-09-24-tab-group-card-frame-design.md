@@ -31,7 +31,7 @@ This is README survey item 7 (2026-09-24).
   (Tab's current look). The five frame kinds gain it. The previous
   spec's "no hover brightening" consistency rule is superseded: all
   seven now brighten.
-- **Eject and swatch on every kind.** Every card inside a group gets the
+- **Eject and swatch on every kind.** (*Swatch and Colors row superseded 2026-10-24: a card has no colour of its own; labels give it one, see the properties spec.*) Every card inside a group gets the
   hover eject button. Every card gets the color swatch, always visible
   (a faint ring when uncolored). Every node menu gets the Colors row.
 - **One drop table** for every kind (see Drag and drop). Tabs can join a
@@ -141,7 +141,7 @@ in_group, overloaded, selected }` is cloned per card.
 |---|---|---|---|---|
 | Close | all | hover | top-right | Group: `Dissolve`; others: `Delete` |
 | Eject | all, when `in_group` | hover | top-left | `RemoveFromGroup` |
-| Swatch | all | always | bottom-right | `CycleColor` |
+| Swatch | all | always | bottom-right | `CycleColor` (*removed 2026-10-24, labels replace it*) |
 | Pin | Tab | always | bottom-left | `TogglePin` |
 | Audio | Tab, when playing or muted | always | where it is today | `ToggleMute` |
 

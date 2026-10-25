@@ -634,6 +634,10 @@ const VERBS: &[Verb] = &[
     }),
     row("PRINTTOPDF path", "Print the focused tab to a PDF at `path`", |rest| with_text(rest, |app, path| app.start_print_to_pdf(path))),
     row("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one", |_| job(|app, _| app.pin_shortcut())),
+    row("SELECTCARDS [id...]", "Select exactly these cards (none: clear the selection)", |rest| {
+        let ids: Vec<crate::card_id::CardId> = rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?;
+        job(move |app, _| app.interaction.selected = ids.into_iter().collect())
+    }),
     row("LABELMENU", "Open or close the selection bar's Label menu", |_| {
         job(|app, _| {
             let ctx = app.egui_ctx.clone();
@@ -728,6 +732,10 @@ const VERBS: &[Verb] = &[
     row("ACCEPTSUGGESTION n", "Accept the n-th (from 0) suggested group", |rest| {
         let index: usize = rest.parse().ok()?;
         job(move |app, _| app.accept_suggestion(index))
+    }),
+    row("ACCEPTSUGGESTIONLABEL n", "Accept the n-th (from 0) suggestion as a label on its cards instead of a group", |rest| {
+        let index: usize = rest.parse().ok()?;
+        job(move |app, _| app.accept_suggestion_as_label(index))
     }),
     row("WAITINDEX [secs]", "Hold later commands until the page-text index has caught up with the loaded pages (default 60 s max)", |rest| {
         wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIndex(timeout)))
@@ -1350,6 +1358,7 @@ mod tests {
             "DUPLICATENODE 0000000000000001-1",
             r"PRINTTOPDF C:\x.pdf",
             "TOGGLEPIN",
+            "SELECTCARDS 0000000000000001-1 0000000000000001-2",
             "LABELMENU",
             "LABEL urgent",
             "LABELSELECTED urgent on",
@@ -1368,6 +1377,7 @@ mod tests {
             "SUGGEST",
             "ARRANGE",
             "ACCEPTSUGGESTION 0",
+            "ACCEPTSUGGESTIONLABEL 0",
             "SLEEP 0.5",
             "TOGGLESHORTCUTSHELP",
             "TOGGLEPOPUP history",

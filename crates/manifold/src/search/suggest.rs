@@ -97,8 +97,24 @@ impl App {
             let message = format!("Grouped {} cards as {}", moved.len(), suggestion.label);
             self.record_undo(message, crate::undo::UndoKind::Revert { moved, created: Some(group) });
         }
+        self.finish_suggestion(&suggestion);
+    }
+
+    /// Puts a label named by suggestion `index`'s words on its cards instead of grouping them, as one undo step.
+    pub(crate) fn accept_suggestion_as_label(&mut self, index: usize) {
+        let Some(suggestion) = self.suggestions().get(index).cloned() else { return };
+        if let Some(label) = self.create_label(&suggestion.label, None) {
+            let edits = self.set_label(&suggestion.cards, label, true);
+            let message = format!("Labelled {} cards as {}", edits.len(), suggestion.label);
+            self.record_label_undo(&message, edits);
+        }
+        self.finish_suggestion(&suggestion);
+    }
+
+    /// Removes an accepted `suggestion` from the standing ones and saves.
+    fn finish_suggestion(&mut self, suggestion: &Suggestion) {
         if let Some(s) = &mut self.search.suggestions {
-            s.items.retain(|i| *i != suggestion);
+            s.items.retain(|i| i != suggestion);
         }
         self.save_session();
     }
@@ -168,6 +184,21 @@ mod tests {
         app.step_history(None, false);
         assert!(cats.iter().all(|&c| app.doc.mirror.group(c).is_none()));
         assert!(!app.nodes.contains_key(&group), "the empty group is closed");
+    }
+
+    #[test]
+    fn accepting_a_suggestion_as_a_label_labels_its_cards_only_and_undoes_in_one_step() {
+        let (mut app, cats, rust) = two_topic_app();
+        app.suggest_groups();
+        let index = app.suggestions().iter().position(|s| s.cards == sorted(cats.clone())).unwrap();
+        app.accept_suggestion_as_label(index);
+        let label = *app.label_defs().keys().next().expect("the label was made");
+        assert!(cats.iter().all(|&c| app.doc.mirror.card_labels(c) == vec![label]));
+        assert!(rust.iter().all(|&c| app.doc.mirror.card_labels(c).is_empty()));
+        assert!(cats.iter().all(|&c| app.doc.mirror.group(c).is_none()), "no group was made");
+        assert_eq!(app.suggestions().len(), 1, "the accepted suggestion is gone");
+        app.step_history(None, false);
+        assert!(cats.iter().all(|&c| app.doc.mirror.card_labels(c).is_empty()), "one undo clears every card");
     }
 
     #[test]

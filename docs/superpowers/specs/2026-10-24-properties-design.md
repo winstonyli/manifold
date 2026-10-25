@@ -50,7 +50,7 @@ replaces them (below).
 - **Object**: a path with visible `Key` children. **Id-keyed map**: a path with visible `Id` children.
 - **Array**: an id-keyed map whose elements are objects `{o, v}`: `o` is a fractional-index string that orders the
   element, `v` is its value. Concurrent reorders converge; two inserts at one slot order by id. A **set** (labels) is an
-  id-keyed map whose elements are plain `Bool(true)` leaves and have no `o`; it sorts by id.
+  id-keyed map whose elements are plain `Int(added_at_ms)` leaves (ruling L2, plan 3) and have no `o`; it sorts by `(added_at_ms, id)`.
 - Mixed `Key` and `Id` children under one path show as an object with the ids as text. It is not an error.
 
 ### 1.4 Merge rule
@@ -106,7 +106,7 @@ the resolved tree"; the stamp is not mirrored, so label order reads the document
 tree with the document's and puts the edits still queued in `App::writes` back on top; a local edit applies to the tree
 directly (a local write is the newest, so this equals what the document will compute; `tree::edit`).
 
-Writers (the only way to change a tree): `App::edit_prop(node, field, path, Option<Value>)` queues the register and
+Writers (the only way to change a tree): `App::edit_prop(node, field, path, Option<Leaf>)` queues the register and
 updates the mirror, as `edit_field` does; `leaf == None` writes the tombstone, so a subtree delete is the same call.
 Readers go through `Mirror` accessors (`tree`, `trees_of`), never the document.
 
@@ -142,10 +142,10 @@ stays as it is (parked: unify it into register edits).
   test, so first add `Kind::card()` (false for `Link` and `Label`) and use it at those sites; the tests that mean a
   link's own ends (`link_ends_among`, `links.rs`) stay link-specific. A registry node holding definitions in a tree was
   rejected: it needs a singleton every document must create and agree on.
-- **Membership**: `PROPS / labels / Id(label) = Bool(true)` on the card. Adding is a set, removing a tombstone, a rename
+- **Membership**: `PROPS / labels / Id(label) = Int(added_at_ms)` on the card (L2). Adding is a set, removing a tombstone, a rename
   is one edit of the label's `name`, and a delete of the label node leaves memberships that are hidden by the derived
   rule "a label that is not live is not shown".
-- **Order**: by when the membership was added (the register's stamp, then the label id), so a card's first label is the
+- **Order**: by the leaf `added_at_ms` (a monotonic ms source), then the label id, so a card's first label is the
   one added first (decision D3). Re-adding a removed label puts it last.
 - **Show**: the card border takes the first label's color; at normal zoom the header shows up to two chips and "+N";
   chips drop in dense views (above `LOD_SIMPLIFY_COUNT`), as the pin mark does. The per-card color cycle

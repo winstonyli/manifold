@@ -40,7 +40,7 @@ A node's identity is its MIME type, a common field replacing `kind`. Manifold's 
 | images | real `image/*` |
 | other files | sniffed MIME (existing `content.rs` table), else `application/octet-stream` |
 
-- Common data fields, on every node: `type`, `pos`, `color`, `name`, `pinned`, `closed`. (*Superseded by `2026-10-14-closed-field-design.md` where it differs: a closed node stays in `live()`; display and export read `Doc::shown`.*) (The per-kind carve-outs
+- Common data fields, on every node: `type`, `pos`, `name`, `pinned`, `closed`. (*`color` is no longer common: a card has none of its own, labels give it one; Label and jar nodes keep it, 2026-10-24.*) (*Superseded by `2026-10-14-closed-field-design.md` where it differs: a closed node stays in `live()`; display and export read `Doc::shown`.*) (The per-kind carve-outs
   today, `pinned` only on tabs and `name` only on groups and jars, go away.) Lifecycle is live, closed, deleted: `closed` is a
   reversible boolean (section 5); `deleted` is the store's final tombstone (`store/ops.rs`: fields cleared, later Sets
   and re-Creates ignored). Only `closed` is writable by a verb; history eviction turns closed into deleted. The single

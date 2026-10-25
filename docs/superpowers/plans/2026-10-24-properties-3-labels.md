@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Properties, plan 3: labels

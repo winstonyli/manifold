@@ -32,6 +32,7 @@ mod iframe_typing;
 mod instance;
 #[cfg(windows)]
 mod jar;
+mod labels;
 #[cfg(windows)]
 #[cfg(windows)]
 mod launch_forms;
@@ -168,6 +169,7 @@ mod windows_main {
             usage: Some("[WORKDIR_PARENT]"),
             run: Run::Parent(crate::suggest_groups::suggest_groups),
         },
+        Stage { name: "labels", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::labels::labels) },
         Stage { name: "arrange", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::arrange::arrange) },
         Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
         Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
