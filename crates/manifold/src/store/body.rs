@@ -24,10 +24,6 @@ pub fn initial_order(i: usize) -> String {
 /// digit strings. A neighbour that is an 8-digit multiple of 1000 (what `initial_order` writes) gets the next step of
 /// 1000 on the open side, so appending or prepending never lengthens keys; anything else gets the midpoint digit at
 /// the first position where the bounds leave room, which never ends in `'0'` (so a lower key always exists).
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
-)]
 pub fn between(a: Option<&str>, b: Option<&str>) -> Option<String> {
     let step =
         |s: &str| (s.len() == 8 && s.bytes().all(|c| c.is_ascii_digit())).then(|| s.parse::<u64>().ok()).flatten();
@@ -66,7 +62,8 @@ fn key(name: &str) -> Seg {
     Seg::Key(name.to_owned())
 }
 
-fn root() -> TreePath {
+/// The path of the document itself.
+pub fn root() -> TreePath {
     TreePath::default().child(&key("v"))
 }
 
@@ -220,10 +217,6 @@ pub struct Element {
 }
 
 /// The elements of the array at `array` that have a value, in the order `tree_to_value` reads them.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
-)]
 pub fn elements(tree: &Tree, array: &TreePath) -> Vec<Element> {
     let depth = array.segments().len();
     let mut found: std::collections::BTreeMap<NodeId, (String, bool)> = std::collections::BTreeMap::new();
@@ -248,10 +241,6 @@ pub fn elements(tree: &Tree, array: &TreePath) -> Vec<Element> {
 
 /// The path of the entry at JSON `pointer` of the document `tree` holds, or `None` when it does not resolve. An
 /// array index resolves through the element to its `v` path.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
-)]
 pub fn pointer_path(tree: &Tree, pointer: &str) -> Option<TreePath> {
     let mut at = root();
     for token in pointer_tokens(pointer) {
