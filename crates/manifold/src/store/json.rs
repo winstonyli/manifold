@@ -18,7 +18,7 @@ use super::model::{
 };
 use super::ops::OpBody;
 use super::tree::{resolved, Trees, TREE_FIELDS};
-use super::tree_json::{tree_from_json, tree_to_json};
+use super::tree_json::{field_from_json, field_to_json};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct JsonDoc {
@@ -88,7 +88,7 @@ pub fn node_json(
     put(field::GROUP, &FieldValue::Id(group));
     for &(no, name) in &TREE_FIELDS {
         if let Some(tree) = trees.get(&no).filter(|tree| resolved(tree).next().is_some()) {
-            out.insert(name.into(), tree_to_json(tree));
+            out.insert(name.into(), field_to_json(no, tree));
         }
     }
     out.insert("type".into(), Value::String(ty.to_owned()));
@@ -289,8 +289,8 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
             };
             for &(no, name) in &TREE_FIELDS {
                 let Some(value) = node.fields.get(name) else { continue };
-                let tree =
-                    tree_from_json(value, &resolve).map_err(|e| format!("node {:?}: bad {name}: {e}", node.id))?;
+                let tree = field_from_json(no, value, &resolve, &mut next_id)
+                    .map_err(|e| format!("node {:?}: bad {name}: {e}", node.id))?;
                 if !tree.is_empty() {
                     trees.insert(no, tree);
                 }
@@ -554,6 +554,29 @@ mod tests {
         assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
         assert!(!json.fields.contains_key("color"), "defaults are left out");
         assert!(!json.fields.contains_key("group"));
+    }
+
+    #[test]
+    fn a_body_exports_as_plain_json_and_imports_with_fresh_element_ids() {
+        let json = r##"{"nodes": [{"id": "a", "type": "application/json",
+            "body": {"k": [1, {"x": true}, []], "e": {}, "$ref": "plain"}}]}"##;
+        let doc: JsonDoc = serde_json::from_str(json).unwrap();
+        let imported = import(&doc, ids(7), Trust::Own).unwrap();
+        let tree = &imported[0].trees[&field::BODY];
+        // The ids are the importer's (`ids(7)` mints under actor 7), not the file's.
+        assert!(tree.keys().flat_map(|p| p.segments()).any(|s| matches!(s, Seg::Id(id) if id.actor.0 == 7)));
+        let back = node_json("a", "application/json", &Default::default(), &imported[0].trees, None);
+        assert_eq!(back.fields["body"], doc.nodes[0].fields["body"], "export is the document, arrays and all");
+    }
+
+    #[test]
+    fn an_inline_card_exports_without_a_path_and_round_trips_foreign() {
+        let json = r##"{"nodes": [{"id": "a", "type": "application/json", "body": {"k": [1, 2]}}]}"##;
+        let doc: JsonDoc = serde_json::from_str(json).unwrap();
+        let imported = import(&doc, ids(7), Trust::Foreign).unwrap();
+        let out = node_json("a", "application/json", &imported[0].fields, &imported[0].trees, None);
+        assert_eq!(out.fields["body"], serde_json::json!({"k": [1, 2]}));
+        assert!(!out.fields.contains_key("path"), "no path field for an inline card");
     }
 
     #[test]

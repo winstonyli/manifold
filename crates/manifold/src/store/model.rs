@@ -297,7 +297,6 @@ pub mod field {
     /// Tree fields (no `FieldDef`: `Doc::apply` keeps them raw, paths included). PROPS: a card's properties; BODY: an
     /// inline Json card's document.
     pub const PROPS: u32 = 25;
-    #[allow(dead_code, reason = "read by the app in plan 4; remove this attribute there")]
     pub const BODY: u32 = 26;
 }
 

@@ -229,8 +229,8 @@ pub type Tree = BTreeMap<TreePath, Leaf>;
 /// A node's trees by field number; a field with no leaves has no entry.
 pub type Trees = BTreeMap<u32, Tree>;
 
-/// The tree fields and their JSON keys (export, import). Plan 4 adds `BODY`.
-pub const TREE_FIELDS: [(u32, &str); 1] = [(field::PROPS, "props")];
+/// The tree fields and their JSON keys (export, import).
+pub const TREE_FIELDS: [(u32, &str); 2] = [(field::PROPS, "props"), (field::BODY, "body")];
 
 /// The leaves at `path` and under it, in path order.
 pub fn subtree(tree: &Tree, path: &TreePath) -> Vec<(TreePath, Leaf)> {

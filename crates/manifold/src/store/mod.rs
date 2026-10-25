@@ -3,6 +3,7 @@
 //! graph. See docs/superpowers/specs/2026-09-25-session-op-log-design.md.
 
 pub mod atomic;
+pub mod body;
 pub mod crc32c;
 pub mod journal;
 pub mod json;

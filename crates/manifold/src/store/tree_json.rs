@@ -1,4 +1,4 @@
-//! JSON for a node's tree fields (spec 2026-10-24-properties-design.md section 2.3). Dialect of PROPS; plan 4 adds
+//! JSON for a node's tree fields (spec 2026-10-24-properties-design.md section 2.3). Dialect of PROPS; `body.rs` is
 //! BODY's (empty containers and arrays are values there, and `$ref` is plain data).
 
 use serde_json::{Map, Number, Value};
@@ -23,7 +23,7 @@ fn seg_text(seg: &Seg) -> String {
     }
 }
 
-fn leaf_json(leaf: &Leaf) -> Value {
+pub(super) fn leaf_json(leaf: &Leaf) -> Value {
     match leaf {
         Leaf::Null => Value::Null,
         Leaf::Bool(b) => Value::Bool(*b),
@@ -37,6 +37,37 @@ fn leaf_json(leaf: &Leaf) -> Value {
         Leaf::Ref(id) => serde_json::json!({ "$ref": id.to_string() }),
         Leaf::EmptyObj => Value::Object(Map::new()),
         Leaf::EmptyArr => Value::Array(Vec::new()),
+    }
+}
+
+pub(super) fn number_leaf(n: &Number) -> Leaf {
+    match (n.as_i64(), n.as_f64()) {
+        (Some(i), _) => Leaf::Int(i),
+        (None, Some(f)) if f.is_finite() && !n.is_u64() => Leaf::Float(f),
+        _ => Leaf::Num(n.to_string()),
+    }
+}
+
+/// `tree` in field `no`'s dialect: PROPS nested objects with `@id` keys; BODY the plain document.
+pub fn field_to_json(no: u32, tree: &Tree) -> Value {
+    if no == super::model::field::BODY {
+        super::body::tree_to_value(tree)
+    } else {
+        tree_to_json(tree)
+    }
+}
+
+/// The inverse; `mint` supplies fresh ids for BODY's array elements.
+pub fn field_from_json(
+    no: u32,
+    value: &Value,
+    resolve: &dyn Fn(&str) -> Option<NodeId>,
+    mint: &mut dyn FnMut() -> NodeId,
+) -> Result<Tree, String> {
+    if no == super::model::field::BODY {
+        super::body::value_to_tree(value, mint)
+    } else {
+        tree_from_json(value, resolve)
     }
 }
 
@@ -93,11 +124,7 @@ fn walk(
         let leaf = match value {
             Value::Null => Leaf::Null,
             Value::Bool(b) => Leaf::Bool(*b),
-            Value::Number(n) => match (n.as_i64(), n.as_f64()) {
-                (Some(i), _) => Leaf::Int(i),
-                (None, Some(f)) if f.is_finite() && !n.is_u64() => Leaf::Float(f),
-                _ => Leaf::Num(n.to_string()),
-            },
+            Value::Number(n) => number_leaf(n),
             Value::String(s) => Leaf::Str(s.clone()),
             Value::Object(m) if m.len() == 1 && m.contains_key("$ref") => match m["$ref"].as_str().and_then(resolve) {
                 Some(id) => Leaf::Ref(id),
