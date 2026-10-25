@@ -110,7 +110,7 @@ impl Corpus for AppCorpus<'_> {
             .filter_map(|&id| {
                 let (label, url) = (app.listed_tab_label(id)?, app.listed_tab_url(id)?);
                 let jar = app.effective_jar(id).map(|(jar, _)| app.doc.mirror.name(jar).to_owned()); // name rule: stored
-                Some(CardInfo { id, label, url, jar, closed: false })
+                Some(CardInfo { id, label, url, jar, labels: app.label_names(id), closed: false })
             })
             .collect()
     }
@@ -158,9 +158,15 @@ impl App {
     /// Graph view dims by, over every node and uncapped (the dropdown's rows are capped).
     pub(crate) fn node_matches(&self, text: &str, id: NodeId) -> bool {
         let Some(node) = self.nodes.get(&id) else { return false };
+        let labels = self.label_names(id);
+        let (tags, plain) = rows::split_query(text);
+        if !rows::labels_match(&tags, &labels) {
+            return false;
+        }
         let mut needles = crate::card::card_filter_text(&node.runtime, self.own_text(id));
         needles.push(self.doc.mirror.name(id)); // name rule: the filter matches the stored text (a rename; a group is matched twice)
-        crate::text::filter_matches(text, &needles) || self.search.hits(text).set.contains(&id)
+        needles.extend(labels.iter().map(String::as_str));
+        crate::text::filter_matches(&plain, &needles) || self.search.hits(&plain).set.contains(&id)
     }
 
     /// The text the Graph view dims by: the inline omnibar's while it is the Graph's, else none (all match).
@@ -427,6 +433,28 @@ mod tests {
         assert!(app.menus.omni_popup.open.is_some(), "the first Escape only clears");
         assert!(app.omni_escape(Host::Popup));
         assert!(app.menus.omni_popup.open.is_none());
+    }
+
+    #[test]
+    fn a_cards_label_names_match_the_filter_and_a_hash_word_selects_by_label() {
+        let mut app = App::default();
+        let (a, b) = (tab(&mut app, "https://a.test/", "alpha"), tab(&mut app, "https://b.test/", "beta"));
+        let urgent = app.create_label("Urgent", None).unwrap();
+        app.set_label(&[a], urgent, true);
+        assert!(app.node_matches("urgent", a) && !app.node_matches("urgent", b));
+        assert!(app.node_matches("#urg", a) && !app.node_matches("#urg", b));
+        assert!(!app.node_matches("#zzz", a));
+        assert!(app.node_matches("#urg alp", a) && !app.node_matches("#urg bet", a), "a plain word still filters");
+        assert!(app.node_matches("#", a) && !app.node_matches("#", b), "a bare # selects the labelled cards");
+        let card_rows = |app: &App| app.omni_rows(Host::Graph).iter().filter(|r| matches!(r, Row::Card { .. })).count();
+        app.omni.text = "#urg".into();
+        assert_eq!(card_rows(&app), 1);
+        app.omni.text = "#zzz".into();
+        assert_eq!(card_rows(&app), 0);
+        app.omni.text = "urg".into();
+        assert_eq!(card_rows(&app), 1, "the label text matches without the hash");
+        app.delete_label(urgent);
+        assert!(!app.node_matches("urgent", a), "a deleted label no longer matches");
     }
 
     #[test]

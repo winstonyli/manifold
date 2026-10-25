@@ -32,6 +32,12 @@ impl App {
         self.doc.mirror.stored_ids(Kind::Label).map(|id| (id, self.doc.mirror.label_def(id))).collect()
     }
 
+    /// The names of `card`'s live labels, oldest first.
+    pub(crate) fn label_names(&self, card: NodeId) -> Vec<String> {
+        // name rule: the stored names, for matching (the filter and the index hold stored text)
+        self.doc.mirror.card_labels(card).into_iter().map(|l| self.doc.mirror.label_def(l).name).collect()
+    }
+
     /// The live label whose name has the same key as `name` (`names::name_key`), other than `except`.
     fn label_named(&self, name: &str, except: Option<NodeId>) -> Option<NodeId> {
         let key = name_key(name);

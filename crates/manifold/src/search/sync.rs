@@ -44,6 +44,7 @@ impl App {
                 if let Some(node) = self.nodes.get(&id) {
                     card_filter_text(&node.runtime, self.own_text(id)).hash(&mut h);
                     self.doc.mirror.name(id).hash(&mut h); // name rule: the index holds the stored text, as the filter does
+                    self.label_names(id).hash(&mut h);
                 } else {
                     let rec = rec?;
                     (&rec.title, &rec.url).hash(&mut h);
@@ -66,10 +67,12 @@ impl App {
         match key {
             DocKey::Node(id) => {
                 let rec = self.search.texts.get(id);
+                let labels = self.label_names(id);
                 let mut parts: Vec<&str> = Vec::new();
                 if let Some(node) = self.nodes.get(&id) {
                     parts.extend(card_filter_text(&node.runtime, self.own_text(id)));
                     parts.push(self.doc.mirror.name(id)); // name rule: the index holds the stored text, as the filter does
+                    parts.extend(labels.iter().map(String::as_str));
                 } else if let Some(rec) = rec {
                     parts.extend([rec.title.as_str(), rec.url.as_str()]);
                 }
@@ -145,6 +148,22 @@ mod tests {
         let tab = app.nodes.get(&id).and_then(|n| n.as_tab()).unwrap();
         let rec = TextRecord { id, url: tab.url.clone(), title: tab.title.clone(), text: text.into(), at: 1 };
         app.search.texts.put(rec);
+    }
+
+    #[test]
+    fn renaming_a_label_reindexes_its_cards_only() {
+        let mut app = app_on(&crate::store::testutil::temp_dir("label-index").join("session.mnf"), 1);
+        let (c1, c2) = (add_note(&mut app, "x"), add_note(&mut app, "y"));
+        let (a, b) = (app.create_label("a", None).unwrap(), app.create_label("b", None).unwrap());
+        let before = (app.index_print(DocKey::Node(c1)), app.index_print(DocKey::Node(c2)));
+        app.set_label(&[c1], a, true);
+        app.set_label(&[c2], b, true);
+        let (p1, p2) = (app.index_print(DocKey::Node(c1)), app.index_print(DocKey::Node(c2)));
+        assert_ne!(p1, before.0, "gaining a label changes the print");
+        app.rename_label(a, "renamed");
+        assert_ne!(app.index_print(DocKey::Node(c1)), p1);
+        assert_eq!(app.index_print(DocKey::Node(c2)), p2);
+        assert!(app.index_text(DocKey::Node(c1)).contains("renamed"));
     }
 
     #[test]

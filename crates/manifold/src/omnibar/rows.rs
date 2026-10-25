@@ -65,6 +65,8 @@ pub(crate) struct CardInfo {
     pub(crate) label: String,
     pub(crate) url: String,
     pub(crate) jar: Option<String>,
+    /// The names of the card's live labels.
+    pub(crate) labels: Vec<String>,
     pub(crate) closed: bool,
 }
 
@@ -86,31 +88,59 @@ fn contains(text: &str, haystacks: &[&str]) -> bool {
     haystacks.iter().any(|h| h.to_lowercase().contains(&text))
 }
 
+/// `text` split into its `#label` words (each as the `name_key` of what follows the `#`) and the rest, the plain words
+/// joined by a space.
+pub(crate) fn split_query(text: &str) -> (Vec<String>, String) {
+    let (mut tags, mut plain) = (Vec::new(), Vec::new());
+    for word in text.split_whitespace() {
+        match word.strip_prefix('#') {
+            Some(rest) => tags.push(crate::names::name_key(rest)),
+            None => plain.push(word),
+        }
+    }
+    (tags, plain.join(" "))
+}
+
+/// Whether a card with label `names` has, for every one of `tags`, a label whose key starts with it (a bare `#` asks
+/// for any label).
+pub(crate) fn labels_match(tags: &[String], names: &[String]) -> bool {
+    tags.iter().all(|tag| names.iter().any(|n| crate::names::name_key(n).starts_with(tag.as_str())))
+}
+
 /// The rows for `text`: open cards, history, settings, the typed text, then search `suggestions`, each section at
 /// most `ROW_CAP`. An empty text offers the first open cards and nothing else (the Ctrl+K list before a keystroke).
 pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> Vec<Row> {
     let text = text.trim();
+    let (tags, plain) = split_query(text);
     let cards = corpus.cards();
     let mut out: Vec<Row> = cards
         .iter()
-        .filter(|c| !c.closed && contains(text, &[&c.label, &c.url]))
+        .filter(|c| !c.closed && labels_match(&tags, &c.labels))
+        .filter(|c| {
+            let mut haystacks: Vec<&str> = vec![&c.label, &c.url];
+            haystacks.extend(c.labels.iter().map(String::as_str));
+            contains(&plain, &haystacks)
+        })
         .take(ROW_CAP)
         .map(|c| Row::Card { id: c.id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet: None })
         .collect();
-    if !text.is_empty() {
-        for id in corpus.text_hits(text) {
+    if !plain.is_empty() {
+        for id in corpus.text_hits(&plain) {
             if out.len() >= ROW_CAP {
                 break;
             }
-            let Some(c) = cards.iter().find(|c| c.id == id && !c.closed) else { continue };
+            let Some(c) = cards.iter().find(|c| c.id == id && !c.closed && labels_match(&tags, &c.labels)) else {
+                continue;
+            };
             if out.iter().any(|r| matches!(r, Row::Card { id: seen, .. } if *seen == id)) {
                 continue;
             }
-            let snippet = corpus.snippet(id, text);
+            let snippet = corpus.snippet(id, &plain);
             out.push(Row::Card { id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet });
         }
     }
-    if text.is_empty() {
+    // Only `#label` words: the cards with those labels, and nothing else to offer.
+    if plain.is_empty() {
         return out;
     }
     out.extend(
@@ -167,6 +197,7 @@ mod tests {
                     label: label.into(),
                     url: url.into(),
                     jar: None,
+                    labels: Vec::new(),
                     closed,
                 })
                 .collect()
