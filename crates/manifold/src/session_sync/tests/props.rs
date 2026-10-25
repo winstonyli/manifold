@@ -209,3 +209,29 @@ fn set_body_replaces_the_tree_and_queues_only_the_difference() {
         serde_json::json!({"a": 1, "c": 3})
     );
 }
+
+#[test]
+fn duplicating_an_inline_json_card_copies_the_body_with_fresh_element_ids() {
+    let path = temp_dir("body-duplicate").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let a = app.alloc_node_id();
+    app.insert_inline_json_at(a, None);
+    let tree =
+        crate::store::body::value_to_tree(&serde_json::json!({"list": [1, 2]}), &mut || app.alloc_node_id()).unwrap();
+    app.set_body(a, tree);
+    assert!(app.save_session());
+    app.duplicate_nodes(&[a]);
+    let b = *app.nodes.keys().find(|&&id| id != a && app.doc.mirror.tree(id, field::BODY).is_some()).expect("a copy");
+    let (ta, tb) = (app.doc.mirror.tree(a, field::BODY).unwrap(), app.doc.mirror.tree(b, field::BODY).unwrap());
+    assert_eq!(crate::store::body::tree_to_value(ta), crate::store::body::tree_to_value(tb));
+    let ids = |t: &crate::store::tree::Tree| {
+        t.keys()
+            .flat_map(|p| p.segments())
+            .filter_map(|s| if let Seg::Id(i) = s { Some(i) } else { None })
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    assert!(ids(ta).is_disjoint(&ids(tb)), "the copy's elements are new ids");
+    assert!(
+        matches!(&app.nodes[&b].runtime, Runtime::Json(p) if p.is_inline() && p.value["list"] == serde_json::json!([1, 2]))
+    );
+}

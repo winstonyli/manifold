@@ -351,6 +351,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_inline_card_exports_without_a_path_and_round_trips() {
+        let json = r##"{"nodes": [{"id": "a", "type": "application/json", "body": {"k": [1, 2]}}]}"##;
+        let doc: JsonDoc = serde_json::from_str(json).unwrap();
+        let imported = import(&doc, ids(7), Trust::Foreign).unwrap();
+        let out = node_json("a", "application/json", &imported[0].fields, &imported[0].trees, None);
+        assert_eq!(out.fields["body"], serde_json::json!({"k": [1, 2]}));
+        assert!(!out.fields.contains_key("path"), "no path field for an inline card");
+    }
+
     fn doc_from(json: &str, actor: u64) -> Doc {
         let parsed: JsonDoc = serde_json::from_str(json).unwrap();
         let mut doc = Doc::new(DocId([0; 16]));
