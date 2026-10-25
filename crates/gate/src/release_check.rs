@@ -1,6 +1,7 @@
 //! `gate release-check vX.Y.Z`: the tag a release workflow was triggered by is one it can build. HEAD is the tag's
 //! commit, the tag is annotated, its message is `manifold vX.Y.Z`, a blank line and the `CHANGELOG.md` entry's body,
 //! and the workspace version is X.Y.Z.
+//! `gate release-tag vX.Y.Z` tags HEAD from the CHANGELOG.md entry (nothing is pushed), so the tag passes this check.
 //! `gate release-notes vX.Y.Z [HOST_PINS]` prints the draft release's notes: that body and, when the release carries
 //! downloadable hosts, the SHA-256 of their pin manifest (the file the exe was built with).
 
@@ -25,6 +26,17 @@ pub(crate) fn changelog_body(changelog: &str, tag: &str) -> Option<String> {
     let start = lines.iter().position(|l| is_heading(l))?;
     let end = lines[start + 1..].iter().position(|l| l.starts_with("## ")).map_or(lines.len(), |i| start + 1 + i);
     Some(lines[start + 1..end].join("\n").trim().to_owned())
+}
+
+/// The message `release-check` accepts: `manifold vX.Y.Z`, a blank line and the changelog entry's body. The one place
+/// a tag message is built, so `release-tag` and the check cannot disagree.
+pub(crate) fn tag_message(tag: &str, body: &str) -> String {
+    format!(
+        "manifold {tag}
+
+{body}
+"
+    )
 }
 
 pub(crate) fn tag_message_matches(message: &str, tag: &str, body: &str) -> bool {
@@ -76,6 +88,48 @@ pub fn release_check(args: &[String]) -> ExitCode {
         &format!("the workspace version is {}", tag.trim_start_matches('v')),
         workspace_version(&toml).as_deref() == Some(tag.trim_start_matches('v')),
     );
+    exit_code()
+}
+
+/// `gate release-tag vX.Y.Z`: tags HEAD from `CHANGELOG.md` so the tag passes `release-check` (nothing is pushed).
+/// Refuses unless the tree is clean, the workspace version is X.Y.Z and the changelog has an entry, and removes the
+/// tag again if the message it wrote does not read back as the entry.
+pub fn release_tag(args: &[String]) -> ExitCode {
+    let Some(tag) = only_tag(args, "release-tag") else { return ExitCode::from(2) };
+    let root = repo();
+    let version = tag.trim_start_matches('v');
+    let log = std::fs::read_to_string(root.join("CHANGELOG.md")).unwrap_or_default();
+    let toml = std::fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
+    let body = changelog_body(&log, &tag).filter(|b| !b.is_empty());
+    let clean = git(&root, &["status", "--porcelain"]).is_some_and(|s| s.trim().is_empty());
+    let exists = git(&root, &["rev-parse", "-q", "--verify", &format!("refs/tags/{tag}")]).is_some();
+    check("the working tree is clean", clean);
+    check(&format!("the workspace version is {version}"), workspace_version(&toml).as_deref() == Some(version));
+    check(&format!("CHANGELOG.md has an entry for {tag}"), body.is_some());
+    check(&format!("{tag} does not exist yet"), !exists);
+    let (true, Some(body)) = (clean && !exists && workspace_version(&toml).as_deref() == Some(version), body) else {
+        return exit_code();
+    };
+    let file = std::env::temp_dir().join(format!("release-tag-{tag}.txt"));
+    let made = std::fs::write(&file, tag_message(&tag, &body)).is_ok()
+        && Command::new("git")
+            .args(["tag", "-a", "--cleanup=verbatim", "-F"])
+            .arg(&file)
+            .arg(&tag)
+            .current_dir(&root)
+            .stdin(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+    let _ = std::fs::remove_file(&file);
+    check(&format!("{tag} is created"), made);
+    if made {
+        let message = git(&root, &["tag", "-l", "--format=%(contents)", &tag]).unwrap_or_default();
+        let ok = tag_message_matches(&message, &tag, &body);
+        check(&format!("{tag}'s message reads back as the CHANGELOG.md entry"), ok);
+        if !ok {
+            git(&root, &["tag", "-d", &tag]);
+        }
+    }
     exit_code()
 }
 
@@ -137,6 +191,31 @@ mod tests {
         assert!(tag_message_matches("manifold v0.6.0\n\n### Features\n\n- one\n", "v0.6.0", body));
         assert!(!tag_message_matches("manifold v0.6.0\n\n### Features\n\n- two\n", "v0.6.0", body));
         assert!(!tag_message_matches("manifold v0.5.9\n\n### Features\n\n- one\n", "v0.6.0", body));
+    }
+
+    #[test]
+    fn a_built_tag_message_passes_the_check_for_every_entry_shape() {
+        for log in [
+            LOG,
+            "## 0.9.0 - 2026-10-25
+
+*Note.*
+
+### Added
+
+- x
+
+## 0.8.0 - 2026-10-23
+
+- y
+",
+        ] {
+            let tag = if log == LOG { "v0.6.0" } else { "v0.9.0" };
+            let body = changelog_body(log, tag).unwrap();
+            let message = tag_message(tag, &body);
+            assert!(tag_message_matches(&message, tag, &body), "{message:?}");
+            assert!(!message.lines().any(|l| l.starts_with("## ")), "the heading is not part of the message");
+        }
     }
 
     #[test]

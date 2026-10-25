@@ -180,6 +180,7 @@ mod windows_main {
             run: Run::Args(crate::release_verify::release_verify),
         },
         Stage { name: "release-check", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_check) },
+        Stage { name: "release-tag", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_tag) },
         Stage { name: "release-notes", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_notes) },
         Stage { name: "sync-runtime-deps", usage: Some(""), run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
         Stage { name: "cef-pin", usage: Some("[--platform ID] PREFIX"), run: Run::Args(crate::cef_pin::cef_pin_main) },
