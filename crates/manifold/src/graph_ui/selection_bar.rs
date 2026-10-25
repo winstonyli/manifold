@@ -1,4 +1,4 @@
-//! The selection bar: Pin, Group and Close for the selected cards, floating above their bounding box.
+//! The selection bar: Pin, Group, Label and Close for the selected cards, floating above their bounding box.
 
 use super::{App, GraphAction};
 use crate::card_id::CardId;
@@ -131,6 +131,12 @@ impl App {
                         if group.named_tip("Group").clicked() {
                             actions.push(GraphAction::GroupSelected);
                         }
+                        // Opens the Label menu, which hangs from this button.
+                        let label = chip_icon_button(ui, egui::Id::new("selection_label"), egui_phosphor::light::TAG);
+                        ui.ctx().data_mut(|d| d.insert_temp(super::label_menu::anchor_id(), label.rect));
+                        if label.named_tip("Label").clicked() {
+                            actions.push(GraphAction::LabelSelected);
+                        }
                         let close = chip_icon_button(ui, egui::Id::new("selection_close"), egui_phosphor::light::X);
                         let close_rect = close.rect;
                         let tip = match inside {
@@ -185,5 +191,34 @@ mod tests {
         assert_eq!(app.unselected_members_of_selection(), 3, "inner, b and c; a is selected itself");
         app.interaction.selected.insert(CardId::from(c));
         assert_eq!(app.unselected_members_of_selection(), 2, "c is selected too");
+    }
+
+    /// The bar draws its Label button and, once `LabelSelected` opened it, the menu under it; a frame with nothing
+    /// selected closes the menu again.
+    #[test]
+    fn the_label_button_opens_a_menu_that_closes_with_the_selection() {
+        let mut app = App::default();
+        let card = crate::session_sync::tests::add_note(&mut app, "n");
+        app.create_label("urgent", None).unwrap();
+        app.interaction.selected.insert(CardId::from(card));
+        app.apply_graph_action(&egui::Context::default(), GraphAction::LabelSelected);
+        assert!(app.interaction.label_menu.is_some());
+        let ctx = crate::theme::testutil::ctx(true);
+        let frame = |app: &mut App| {
+            let mut actions = Vec::new();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.draw_selection_bar(ui, &mut actions, screen, &|p| p);
+                app.draw_label_menu(ui, &mut actions);
+            });
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+        };
+        frame(&mut app);
+        frame(&mut app);
+        assert!(app.interaction.label_menu.is_some(), "the menu stays open while cards are selected");
+        app.interaction.selected.clear();
+        frame(&mut app);
+        assert!(app.interaction.label_menu.is_none(), "and closes once nothing is selected");
     }
 }

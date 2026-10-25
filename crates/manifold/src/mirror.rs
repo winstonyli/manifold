@@ -204,7 +204,6 @@ impl Mirror {
     }
 
     /// A label's definition, decoded from its mirrored fields.
-    #[allow(dead_code, reason = "read by the label lifecycle (Task 3)")]
     pub(crate) fn label_def(&self, id: NodeId) -> LabelDef {
         LabelDef {
             name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `LabelDef` holds it

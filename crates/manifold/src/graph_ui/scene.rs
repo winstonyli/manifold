@@ -322,6 +322,7 @@ impl App {
         let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
         deferred_overlays.play(&overlay_painter, &project);
         self.draw_selection_bar(ui, &mut actions, scene_outer_rect, &project);
+        self.draw_label_menu(ui, &mut actions);
         self.draw_suggestions(ui, scene_outer_rect, &project);
         if scene_rect != scene_rect_before_pan_zoom {
             self.interaction.pending_new_node = None;

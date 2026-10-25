@@ -634,6 +634,50 @@ const VERBS: &[Verb] = &[
     }),
     row("PRINTTOPDF path", "Print the focused tab to a PDF at `path`", |rest| with_text(rest, |app, path| app.start_print_to_pdf(path))),
     row("TOGGLEPIN", "Ctrl+P -- pin/unpin the selected cards, or the focused one", |_| job(|app, _| app.pin_shortcut())),
+    row("LABELMENU", "Open or close the selection bar's Label menu", |_| {
+        job(|app, _| {
+            let ctx = app.egui_ctx.clone();
+            app.apply_graph_action(&ctx, GraphAction::LabelSelected);
+        })
+    }),
+    row("LABEL name", "Make a label (or find the one with that name) and put it on the selected cards", |rest| {
+        with_text(rest, |app, name| {
+            let ctx = app.egui_ctx.clone();
+            app.apply_graph_action(&ctx, GraphAction::NewLabel(name));
+        })
+    }),
+    row("LABELSELECTED name on|off", "Put the named label on the selected cards, or take it off", |rest| {
+        let (name, on) = rest.rsplit_once(' ')?;
+        let on = match on {
+            "on" => true,
+            "off" => false,
+            _ => return None,
+        };
+        with_text(name.trim(), move |app, name| {
+            if let Some(label) = app.label_named(&name, None) {
+                let ctx = app.egui_ctx.clone();
+                app.apply_graph_action(&ctx, GraphAction::ToggleLabel { label, on });
+            }
+        })
+    }),
+    row("LABELRENAME old new", "Rename the label `old` (one word) to `new`", |rest| {
+        let (old, new) = rest.split_once(' ')?;
+        let (old, new) = (old.to_owned(), new.trim().to_owned());
+        job(move |app, _| {
+            if let Some(label) = app.label_named(&old, None) {
+                let ctx = app.egui_ctx.clone();
+                app.apply_graph_action(&ctx, GraphAction::RenameLabel { label, name: new });
+            }
+        })
+    }),
+    row("LABELDELETE name", "Delete the named label", |rest| {
+        with_text(rest, |app, name| {
+            if let Some(label) = app.label_named(&name, None) {
+                let ctx = app.egui_ctx.clone();
+                app.apply_graph_action(&ctx, GraphAction::DeleteLabel(label));
+            }
+        })
+    }),
     row("RELOAD", "Ctrl+R/F5 -- reload the focused tab", |_| job(|app, _| app.reload_focused_tab_shortcut())),
     row("GOBACK", "Back button on the focused tab", |_| go(Dir::Back)),
     row("GOFORWARD", "Forward button on the focused tab", |_| go(Dir::Forward)),
@@ -1306,6 +1350,11 @@ mod tests {
             "DUPLICATENODE 0000000000000001-1",
             r"PRINTTOPDF C:\x.pdf",
             "TOGGLEPIN",
+            "LABELMENU",
+            "LABEL urgent",
+            "LABELSELECTED urgent on",
+            "LABELRENAME urgent now",
+            "LABELDELETE now",
             "RELOAD",
             "GOBACK",
             "GOFORWARD",

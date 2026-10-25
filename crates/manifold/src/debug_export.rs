@@ -136,6 +136,7 @@ impl App {
                     "group": self.doc.mirror.group(id),
                     "parent": self.opened_from(id),
                     "pinned": self.doc.mirror.pinned(id),
+                    "labels": self.label_names(id), // name rule: reported as stored
                     "name": self.doc.mirror.name(id), // name rule: reported as stored
                     // The tab's or group's own jar edge, the jar it resolves to, and whether a jar card is the Default.
                     "jar": self.doc.mirror.jar(id),
@@ -170,6 +171,12 @@ impl App {
         let mirror_pos: std::collections::BTreeMap<NodeId, Option<[f32; 2]>> =
             self.linked_ids().map(|id| (id, self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
         // Sorted by text, as when ids were text, so the export's order is the one the gate has always read.
+        // Every live label: its id, stored name and whether it has a colour.
+        let labels: Vec<_> = self
+            .label_defs()
+            .into_iter()
+            .map(|(id, d)| serde_json::json!({"id": id, "name": d.name, "color": d.color.is_some()})) // name rule: reported as stored
+            .collect();
         let mut selected: Vec<String> = self.interaction.selected.iter().map(|id| id.to_string()).collect();
         selected.sort();
         // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
@@ -237,7 +244,7 @@ impl App {
                 (item.id.to_string(), serde_json::Value::Object(sides))
             })
             .collect();
-        serde_json::json!({
+        let mut state = serde_json::json!({
             "tab_view": self.showing_tab_view(),
             "transition": self.transition.is_some(),
             "focused_url": focused_url,
@@ -289,7 +296,10 @@ impl App {
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
             "trail": self.trail_state(),
-        })
+        });
+        // Apart from the literal above, which is at the macro recursion limit.
+        state["labels"] = labels.into();
+        state
     }
 
     /// `export_state`'s `trail`: each tab with a trail, by id, as `NavHistory::export` plus `back` and `forward`, the
@@ -478,6 +488,7 @@ mod tests {
                 "group",
                 "parent",
                 "pinned",
+                "labels",
                 "editing",
                 "world",
                 "screen",

@@ -160,3 +160,61 @@ fn a_labelled_cards_view_carries_the_first_labels_colour_and_a_deleted_label_dis
     let view = app.card_view(&entry, &HashMap::new()).unwrap();
     assert_eq!((view.color, view.labels.len(), view.labels_more), (Some(blue), 1, 0));
 }
+
+fn select(app: &mut App, ids: &[NodeId]) {
+    app.interaction.selected = ids.iter().map(|&id| crate::card_id::CardId::from(id)).collect();
+}
+
+fn act(app: &mut App, action: crate::graph_ui::GraphAction) {
+    app.apply_graph_action(&egui::Context::default(), action);
+}
+
+#[test]
+fn applying_a_label_to_the_selection_is_one_undo_step() {
+    use crate::graph_ui::GraphAction;
+    let mut app = app_on(&temp_dir("label-bar").join("session.mnf"), 1);
+    let ids: Vec<NodeId> = (0..3).map(|i| add_note(&mut app, &i.to_string())).collect();
+    select(&mut app, &ids);
+    act(&mut app, GraphAction::NewLabel("urgent".into()));
+    let a = *app.label_defs().keys().next().unwrap();
+    assert!(ids.iter().all(|&c| labels_of(&app, c) == vec![a]), "a new label applies to the selection");
+    app.step_history(None, false);
+    assert!(ids.iter().all(|&c| labels_of(&app, c).is_empty()), "one undo clears all three");
+    assert!(app.label_defs().contains_key(&a), "and leaves the label");
+    app.step_history(None, true);
+    assert!(ids.iter().all(|&c| labels_of(&app, c) == vec![a]), "one redo puts it back");
+    let toast = app.toasts.undo.as_ref().map(|(m, ..)| m.clone());
+    act(&mut app, GraphAction::ToggleLabel { label: a, on: true });
+    assert_eq!(app.toasts.undo.as_ref().map(|(m, ..)| m.clone()), toast, "a no-op records nothing");
+}
+
+#[test]
+fn the_menu_row_state_is_all_some_or_none_of_the_selection() {
+    use crate::labels::LabelState;
+    let mut app = app_on(&temp_dir("label-state").join("session.mnf"), 1);
+    let (c1, c2) = (add_note(&mut app, "1"), add_note(&mut app, "2"));
+    let a = app.create_label("a", None).unwrap();
+    select(&mut app, &[c1, c2]);
+    assert_eq!(app.label_state(a), LabelState::None);
+    app.set_label(&[c1], a, true);
+    assert_eq!(app.label_state(a), LabelState::Some);
+    app.set_label(&[c2], a, true);
+    assert_eq!(app.label_state(a), LabelState::All);
+    select(&mut app, &[]);
+    assert_eq!(app.label_state(a), LabelState::None, "nothing selected: nothing is checked");
+}
+
+#[test]
+fn the_menu_renames_recolours_and_deletes_a_label() {
+    use crate::graph_ui::GraphAction;
+    let mut app = app_on(&temp_dir("label-menu-edit").join("session.mnf"), 1);
+    let card = add_note(&mut app, "n");
+    let a = app.create_label("a", Some(egui::Color32::RED)).unwrap();
+    app.set_label(&[card], a, true);
+    act(&mut app, GraphAction::RenameLabel { label: a, name: "renamed".into() });
+    act(&mut app, GraphAction::RecolorLabel { label: a, color: Some(egui::Color32::BLUE) });
+    let def = app.doc.mirror.label_def(a);
+    assert_eq!((def.name.as_str(), def.color), ("renamed", Some(egui::Color32::BLUE)));
+    act(&mut app, GraphAction::DeleteLabel(a));
+    assert!(labels_of(&app, card).is_empty(), "a deleted label leaves its card without a chip");
+}

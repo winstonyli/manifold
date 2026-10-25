@@ -17,6 +17,22 @@ pub(crate) struct LabelDef {
     pub(crate) color: Option<egui::Color32>,
 }
 
+/// The selection bar's Label menu while it is open: the name being typed for a new label, and the label whose row is
+/// being edited (its draft name).
+#[derive(Debug, Default)]
+pub(crate) struct LabelMenu {
+    pub(crate) draft: String,
+    pub(crate) editing: Option<(NodeId, String)>,
+}
+
+/// How much of the selection carries a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LabelState {
+    All,
+    Some,
+    None,
+}
+
 /// The key under `PROPS` that holds a card's label memberships: `PROPS/labels/@<label id>` is `Int(added_at_ms)`.
 pub(crate) const LABELS_KEY: &str = "labels";
 
@@ -25,7 +41,6 @@ pub(crate) fn labels_path(label: NodeId) -> TreePath {
     TreePath::default().child(&Seg::Key(LABELS_KEY.to_owned())).child(&Seg::Id(label))
 }
 
-#[allow(dead_code, reason = "used by the selection bar menu (Task 8)")]
 impl App {
     /// The live labels, by id.
     pub(crate) fn label_defs(&self) -> BTreeMap<NodeId, LabelDef> {
@@ -38,8 +53,40 @@ impl App {
         self.doc.mirror.card_labels(card).into_iter().map(|l| self.doc.mirror.label_def(l).name).collect()
     }
 
+    /// The selected stored cards, in id order.
+    fn selected_cards(&self) -> Vec<NodeId> {
+        let mut cards: Vec<NodeId> = self.interaction.selected.iter().filter_map(|c| c.node()).collect();
+        cards.sort_unstable();
+        cards
+    }
+
+    /// Whether all, some or none of the selected cards carry `label`; none when nothing is selected.
+    pub(crate) fn label_state(&self, label: NodeId) -> LabelState {
+        let cards = self.selected_cards();
+        let with = cards.iter().filter(|&&c| self.doc.mirror.card_labels(c).contains(&label)).count();
+        match (with, cards.len()) {
+            (0, _) => LabelState::None,
+            (w, n) if w == n => LabelState::All,
+            _ => LabelState::Some,
+        }
+    }
+
+    /// Puts `label` on the selected cards (`on`) or takes it off, as one undo step; nothing when none would change.
+    pub(crate) fn label_selection(&mut self, label: NodeId, on: bool) {
+        let edits = self.set_label(&self.selected_cards(), label, on);
+        let (verb, n) = (if on { "Label" } else { "Unlabel" }, edits.len());
+        self.record_label_undo(&format!("{verb} {n} card{}", if n == 1 { "" } else { "s" }), edits);
+    }
+
+    /// The Label menu's name field: makes (or finds) the label and puts it on the selection.
+    pub(crate) fn new_label_on_selection(&mut self, name: &str) {
+        if let Some(label) = self.create_label(name, None) {
+            self.label_selection(label, true);
+        }
+    }
+
     /// The live label whose name has the same key as `name` (`names::name_key`), other than `except`.
-    fn label_named(&self, name: &str, except: Option<NodeId>) -> Option<NodeId> {
+    pub(crate) fn label_named(&self, name: &str, except: Option<NodeId>) -> Option<NodeId> {
         let key = name_key(name);
         self.label_defs().into_iter().find(|(id, d)| Some(*id) != except && name_key(&d.name) == key).map(|(id, _)| id)
     }
@@ -74,6 +121,12 @@ impl App {
         }
         self.edit_field(id, field::NAME, FieldValue::Str(name));
         true
+    }
+
+    /// The Label menu's open state, toggled by the bar's button.
+    pub(crate) fn toggle_label_menu(&mut self) {
+        self.interaction.label_menu =
+            if self.interaction.label_menu.is_some() { None } else { Some(LabelMenu::default()) };
     }
 
     pub(crate) fn recolor_label(&mut self, id: NodeId, color: Option<egui::Color32>) {

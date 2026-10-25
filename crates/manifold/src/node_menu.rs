@@ -412,7 +412,6 @@ fn menu_row(
 /// The "Color" label and one swatch per `TAG_COLOR_PALETTE` entry, then a
 /// "no color" ring; `current` gets a ring of its own. Returns the clicked
 /// choice (`Some(None)` for no color).
-#[allow(dead_code, reason = "the label menu's recolour row (Task 8)")]
 pub(crate) fn color_swatch_row(ui: &mut egui::Ui, current: Option<egui::Color32>) -> Option<Option<egui::Color32>> {
     let mut picked = None;
     menu_section(ui, "Color", |ui, grid| {

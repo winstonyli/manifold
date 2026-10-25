@@ -44,6 +44,8 @@ pub(crate) struct GraphInteraction {
     /// (a plain click on empty background, or Escape).
     pub(crate) rect_select_start: Option<egui::Pos2>,
     pub(crate) selected: HashSet<CardId>,
+    /// The selection bar's Label menu, open while `Some`.
+    pub(crate) label_menu: Option<crate::labels::LabelMenu>,
     /// World position of the small "New Tab/Note/Group/File" card shown
     /// after a plain right-click (no real drag) on empty Graph-view
     /// background -- see the marquee-release logic below for where this
