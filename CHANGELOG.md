@@ -2,6 +2,37 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## 0.9.0 - 2026-10-25
+
+*Session store format 3 -> 4 (journal), view protocol 5 -> 6: older sessions may not load. Export a 0.8.0 session with that build first; `--import-json` brings it back.*
+
+### Changed
+
+- **Breaking:** Journal format 3 -> 4: every field is a path-keyed register, so a card can carry a nested property tree that merges per key ([353113d](https://github.com/winstonyli/manifold/commit/353113d), [a9768fc](https://github.com/winstonyli/manifold/commit/a9768fc)).
+- **Breaking:** View protocol 5 -> 6: hosts answer `QueryPageText`, and the app asks for a page's text after load and before sleep ([1290094](https://github.com/winstonyli/manifold/commit/1290094)).
+- **Breaking:** Remove the per-card colour and its swatch; a card takes its border colour from its first label, and a jar keeps its own ([2bc810a](https://github.com/winstonyli/manifold/commit/2bc810a)).
+- Merge the Graph, Item and Settings search fields into one omnibar, also on Ctrl+K ([67704dd](https://github.com/winstonyli/manifold/commit/67704dd)).
+- Ease the camera to a reopened card the layout put out of view ([6035413](https://github.com/winstonyli/manifold/commit/6035413)).
+- Start the WebKit host natively on Linux, and describe each engine host by an OS, a runtime and a link ([954773f](https://github.com/winstonyli/manifold/commit/954773f), [1d7959c](https://github.com/winstonyli/manifold/commit/1d7959c)).
+- Rename the web view host binaries from `manifold-engine-*` to `manifold-view-*` ([d626db8](https://github.com/winstonyli/manifold/commit/d626db8)).
+
+### Added
+
+- Label cards: create, rename, recolour and delete labels from the selection bar, see up to two chips and "+N" on a card's bottom edge, and undo a label edit in one step ([069ab32](https://github.com/winstonyli/manifold/commit/069ab32), [eeba81d](https://github.com/winstonyli/manifold/commit/eeba81d), [83002d0](https://github.com/winstonyli/manifold/commit/83002d0)).
+- Find cards by label name, and with `#label` in the omnibar ([e8727b3](https://github.com/winstonyli/manifold/commit/e8727b3)).
+- Search the text of the pages you visit from the omnibar, with a local BM25 index ([bb18709](https://github.com/winstonyli/manifold/commit/bb18709), [4658939](https://github.com/winstonyli/manifold/commit/4658939)).
+- Suggest groups from page text, and accept a suggestion as a group or as a label ([eccb3ed](https://github.com/winstonyli/manifold/commit/eccb3ed), [9d97f9e](https://github.com/winstonyli/manifold/commit/9d97f9e)).
+- Arrange the graph by topic ([bc07f7d](https://github.com/winstonyli/manifold/commit/bc07f7d)).
+- Carry property trees through Duplicate, session export and import ([04294c4](https://github.com/winstonyli/manifold/commit/04294c4)).
+
+### Fixed
+
+- Make WAITIDLE wait for camera motion and an in-flight suggestion, so headless runs stop stalling after NEWTAB ([29d1f78](https://github.com/winstonyli/manifold/commit/29d1f78), [2d24baa](https://github.com/winstonyli/manifold/commit/2d24baa)).
+
+### Internal
+
+- Add the `labels`, `search`, `page-text`, `suggest-groups` and `arrange` gate stages to `gate all`, drive the gate by control name, and table-drive its steps ([9d97f9e](https://github.com/winstonyli/manifold/commit/9d97f9e), [e0e3e07](https://github.com/winstonyli/manifold/commit/e0e3e07), [1fd5493](https://github.com/winstonyli/manifold/commit/1fd5493)).
+
 ## 0.8.0 - 2026-10-23
 
 *Session store format 2 -> 3 (journal), view protocol 4 -> 5: older sessions may not load.*
