@@ -16,7 +16,7 @@ use crate::node::{
 use crate::process_manager::ViewKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::model::{
-    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_LINK, TYPE_TAB,
+    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_TAB,
 };
 use crate::store::ops::OpBody;
 use crate::store::tree::{self, Leaf, TreePath, Trees, TREE_FIELDS};
@@ -347,8 +347,8 @@ impl App {
         }
         let local = local_from(read);
         let toasts = self.toasts.save_toast_queue.len();
-        // Links ride along: stored, never graph nodes.
-        for (id, s) in nodes.iter().filter(|(_, s)| s.kind() == Kind::Link) {
+        // Links and labels ride along: stored, never graph nodes.
+        for (id, s) in nodes.iter().filter(|(_, s)| !s.kind().card()) {
             self.materialize(*id, s, None);
         }
         nodes.retain(|(_, s)| s.kind().card());

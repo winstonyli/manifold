@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
+use crate::labels::LabelDef;
 use crate::process_manager::ViewKind;
 use crate::session_sync::{color_of, color_value, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
@@ -37,8 +38,9 @@ pub(crate) struct Mirror {
     /// The ids of the nodes whose `IS_DEFAULT` is true (`default_jar_ids`), kept by `set` and `retain` like `views`. It may hold
     /// a removed jar until the next `retain`; `App::default_jar` checks liveness.
     defaults: BTreeSet<NodeId>,
-    /// Every `Kind::Link` node this replica knows (`link_ids`); their ends are plain fields of `nodes` (`link_ends`).
-    link_nodes: BTreeSet<NodeId>,
+    /// Every stored-only node (a link, a label) this replica knows (`stored_ids`). A link's ends are plain fields of
+    /// `nodes` (`link_ends`).
+    stored_nodes: BTreeSet<NodeId>,
     /// Each tree field's live leaves (`store::tree`) with the version they were last changed at, by `(node, field)`.
     /// Only non-empty trees have an entry. A version is a tick of `tree_clock`, which no forget rewinds.
     trees: HashMap<(NodeId, u32), (Tree, u64)>,
@@ -85,17 +87,18 @@ impl Mirror {
         self.nodes.entry(id).or_default().insert(no, value);
     }
 
-    /// Makes `id` a link this replica knows, and seeds its type. A link is never a graph node.
-    pub(crate) fn add_link(&mut self, id: NodeId) {
-        if self.link_nodes.insert(id) {
-            let ty = Kind::Link.type_str().expect("a link type").to_owned();
+    /// Makes `id` a stored-only node of `kind` (not a card) this replica knows, and seeds its type. Never a graph node.
+    pub(crate) fn add_stored(&mut self, id: NodeId, kind: Kind) {
+        debug_assert!(!kind.card(), "{kind:?} is a card");
+        if self.stored_nodes.insert(id) {
+            let ty = kind.type_str().expect("a stored-only kind has a type").to_owned();
             self.init_field(id, field::TYPE, FieldValue::Str(ty));
         }
     }
 
-    /// Drops link `id` and its fields (a local or remote delete).
-    pub(crate) fn forget_link(&mut self, id: NodeId) {
-        self.link_nodes.remove(&id);
+    /// Drops stored-only node `id` and its fields (a local or remote delete).
+    pub(crate) fn forget_stored(&mut self, id: NodeId) {
+        self.stored_nodes.remove(&id);
         self.forget_node(id);
     }
 
@@ -148,7 +151,7 @@ impl Mirror {
     }
 
     /// Drops every entry of node `id` (fields, edges, view, Default index): it left the graph without being deleted
-    /// (`App::hide_node`), or, for a link, was forgotten (`forget_link`).
+    /// (`App::hide_node`), or, for a stored-only node, was forgotten (`forget_stored`).
     pub(crate) fn forget_node(&mut self, id: NodeId) {
         self.nodes.remove(&id);
         self.links.remove(&id);
@@ -159,14 +162,38 @@ impl Mirror {
         }
     }
 
+    /// Every stored-only node of `kind` this replica knows, by id.
+    pub(crate) fn stored_ids(&self, kind: Kind) -> impl Iterator<Item = NodeId> + '_ {
+        self.stored_nodes.iter().copied().filter(move |&id| self.kind_of(id) == kind)
+    }
+
     /// Every link this replica knows, by id.
     pub(crate) fn link_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
-        self.link_nodes.iter().copied()
+        self.stored_ids(Kind::Link)
+    }
+
+    /// Whether `id` is a stored-only node this replica knows.
+    pub(crate) fn is_stored(&self, id: NodeId) -> bool {
+        self.stored_nodes.contains(&id)
     }
 
     /// Whether `id` is a link this replica knows.
     pub(crate) fn is_link(&self, id: NodeId) -> bool {
-        self.link_nodes.contains(&id)
+        self.is_stored(id) && self.kind_of(id) == Kind::Link
+    }
+
+    /// The kind of `id` by its mirrored type string (`Unknown` when it has none).
+    pub(crate) fn kind_of(&self, id: NodeId) -> Kind {
+        Kind::from_type(self.str_field(id, field::TYPE))
+    }
+
+    /// A label's definition, decoded from its mirrored fields.
+    #[allow(dead_code, reason = "read by the label lifecycle (Task 3)")]
+    pub(crate) fn label_def(&self, id: NodeId) -> LabelDef {
+        LabelDef {
+            name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `LabelDef` holds it
+            color: self.color(id),
+        }
     }
 
     /// A link's `from` and `to` (`field::FROM`, `field::TO`), read through the plain field map as `default_jar` is.
@@ -229,10 +256,10 @@ impl Mirror {
         self.links.entry(id).or_default().group = group;
     }
 
-    /// Drops the entries `keep` rejects, except a link's: a link is not a graph node, and only `forget_link` drops it.
+    /// Drops the entries `keep` rejects, except a stored-only node's: it is not a graph node, and only `forget_stored` drops it.
     pub(crate) fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
-        let link_nodes = &self.link_nodes;
-        let keep = |id: NodeId| keep(id) || link_nodes.contains(&id);
+        let stored_nodes = &self.stored_nodes;
+        let keep = |id: NodeId| keep(id) || stored_nodes.contains(&id);
         self.nodes.retain(|&id, _| keep(id));
         self.links.retain(|&id, _| keep(id));
         self.views.retain(|&id, _| keep(id));

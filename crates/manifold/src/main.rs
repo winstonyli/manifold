@@ -45,6 +45,7 @@ mod json_file;
 mod json_level;
 mod json_level_ui;
 mod json_view;
+mod labels;
 mod level;
 mod link_gestures;
 mod links;

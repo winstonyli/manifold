@@ -352,7 +352,7 @@ impl App {
         let (dest, root_pos) = root.map_or((None, None), |r| (r.group, r.pos));
         imported.sort_by_key(|i| match i.kind() {
             Kind::Group => 1,
-            Kind::Link => 3, // after the cards it joins
+            Kind::Link | Kind::Label => 3, // after the cards they name or join
             _ => 2,
         });
         let toasts = self.toasts.save_toast_queue.len();

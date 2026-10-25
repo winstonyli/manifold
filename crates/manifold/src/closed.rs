@@ -310,6 +310,7 @@ mod tests {
             (Kind::Download, &none, false),
             (Kind::Jar, &none, true),
             (Kind::Link, &none, false),
+            (Kind::Label, &none, false),
             (Kind::Note, &text("hi"), true),
             (Kind::Note, &text("  \n"), false),
             (Kind::Note, &none, false),

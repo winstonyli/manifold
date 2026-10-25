@@ -133,6 +133,7 @@ pub const TYPE_TAB: &str = "application/vnd.manifold.tab";
 pub const TYPE_GROUP: &str = "application/vnd.manifold.group";
 pub const TYPE_JAR: &str = "application/vnd.manifold.jar";
 pub const TYPE_LINK: &str = "application/vnd.manifold.link";
+pub const TYPE_LABEL: &str = "application/vnd.manifold.label";
 pub const TYPE_NOTE: &str = "text/markdown";
 pub const TYPE_PDF: &str = "application/pdf";
 pub const TYPE_JSON: &str = "application/json";
@@ -163,6 +164,8 @@ pub enum Kind {
     Jar,
     /// A connection between two cards: a stored node, never a graph card, with `from` and `to` ends.
     Link,
+    /// A name and a colour cards can carry (`PROPS/labels`): a stored node, never a graph card.
+    Label,
     /// No `type` yet (an op named the node before its `Create` arrived), or a type a newer build wrote. The node
     /// keeps its type string (`Node::ty`); the app reads only its generic fields (`GENERIC`).
     Unknown,
@@ -174,7 +177,7 @@ pub enum Kind {
 /// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
 /// untouched (2b-5 Ruling 2).
 #[rustfmt::skip]
-pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
+pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, COLOR, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
@@ -186,6 +189,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 9] = {
         (Kind::Download, TYPE_DOWNLOAD, &[POS, COLOR, PARENT, URL, PATH, NAME, CLOSED]),
         (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO, CLOSED]),
+        (Kind::Label, TYPE_LABEL, &[NAME, COLOR, CLOSED]),
     ]
 };
 
@@ -202,9 +206,9 @@ impl Kind {
     /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
     /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. `GENERIC` for
     /// `Unknown`.
-    /// Whether a node of this kind is a graph card; a stored-only kind (a link) never is.
+    /// Whether a node of this kind is a graph card; a stored-only kind (a link, a label) never is.
     pub fn card(self) -> bool {
-        !matches!(self, Kind::Link)
+        !matches!(self, Kind::Link | Kind::Label)
     }
 
     pub fn fields(self) -> &'static [u32] {
@@ -688,7 +692,7 @@ impl Doc {
     /// (plan D2): the mirror keeps every one, and drawing asks for both ends.
     pub fn is_shown(&self, id: NodeId) -> bool {
         let Some(node) = self.nodes.get(&id).filter(|n| n.is_live()) else { return false };
-        node.kind() == Kind::Link || (!node.closed() && self.placement(id) != Placement::Hidden)
+        !node.kind().card() || (!node.closed() && self.placement(id) != Placement::Hidden)
     }
 
     /// The shown nodes, in id order: what the graph and an export show. `live()` stays the commit gate.
@@ -847,7 +851,14 @@ mod tests {
         ] {
             assert!(kind.card(), "{kind:?}");
         }
-        assert!(!Kind::Link.card());
+        assert!(!Kind::Link.card() && !Kind::Label.card());
+    }
+
+    #[test]
+    fn a_label_is_a_stored_node_with_a_name_and_a_colour() {
+        assert_eq!(Kind::Label.type_str(), Some(TYPE_LABEL));
+        assert_eq!(Kind::from_type(TYPE_LABEL), Kind::Label);
+        assert_eq!(Kind::Label.fields(), &[field::NAME, field::COLOR, field::CLOSED]);
     }
 
     #[test]
@@ -862,6 +873,7 @@ mod tests {
             Kind::Download,
             Kind::Jar,
             Kind::Link,
+            Kind::Label,
         ] {
             let ty = kind.type_str().expect("a known kind has a type");
             assert_eq!(Kind::from_type(ty), kind, "{ty}");

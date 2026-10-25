@@ -13,6 +13,7 @@ use crate::NodeAction;
 mod costs;
 mod edits;
 mod files;
+mod labels;
 mod links;
 mod local_state;
 mod misc;

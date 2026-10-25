@@ -119,11 +119,11 @@ mod tests {
     use crate::process_manager::{ViewKind, ViewTab};
     use crate::store::model::FieldValue;
 
-    /// The fixture lists one card per node type (a link is never a card) and the loaded tab, in draw order.
+    /// The fixture lists one card per node type (a link or a label is never a card) and the loaded tab, in draw order.
     #[test]
     fn kinds_cover_every_node_type() {
-        use crate::store::model::{TYPES, TYPE_LINK};
-        let mut types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| ty != TYPE_LINK).collect();
+        use crate::store::model::{Kind, TYPES};
+        let mut types: Vec<&str> = TYPES.iter().map(|t| t.1).filter(|&ty| Kind::from_type(ty).card()).collect();
         types.push(TYPE_UNKNOWN);
         let listed: Vec<&str> = kinds().iter().filter(|kind| !kind.loaded()).map(|kind| kind.ty).collect();
         for ty in &types {

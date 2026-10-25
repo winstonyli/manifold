@@ -40,9 +40,9 @@ impl App {
         if self.doc.writes.life(id) == Some(Life::Delete) {
             return;
         }
-        // A link is stored and mirrored, and is never a graph node.
-        if kind == Kind::Link {
-            self.doc.mirror.add_link(id);
+        // A link or a label is stored and mirrored, and is never a graph node.
+        if !kind.card() {
+            self.doc.mirror.add_stored(id, kind);
             self.queue_create(id);
             self.mirror_remote(id, fields, &Trees::new(), None);
             return;
@@ -273,7 +273,7 @@ impl App {
                 }
             }
             Kind::Unknown => self.insert_placeholder_node(id, pos, kind, Runtime::Unknown),
-            Kind::Link => return,
+            Kind::Link | Kind::Label => return,
         }
         // A content node's url, its stored path and a Json node's view are already the mirror's (`mirror_remote`).
         // The placeholder just inserted above (see `missing_with_url`)
@@ -389,8 +389,8 @@ impl App {
         for link in self.links_naming(id) {
             self.delete_link(link);
         }
-        if self.doc.mirror.is_link(id) {
-            self.doc.mirror.forget_link(id);
+        if self.doc.mirror.is_stored(id) {
+            self.doc.mirror.forget_stored(id);
             return;
         }
         if !self.nodes.contains_key(&id) {

@@ -383,9 +383,11 @@ impl App {
                 trees: self.doc.mirror.trees_of(id),
             });
         }
-        if self.doc.mirror.is_link(id) {
-            let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(id, no))).collect();
-            return Some(Snapshot { ty: TYPE_LINK.to_owned(), group: None, fields, trees: Trees::new() });
+        if self.doc.mirror.is_stored(id) {
+            let kind = self.doc.mirror.kind_of(id);
+            let fields = kind.fields().iter().map(|&no| (no, self.doc.mirror.get(id, no))).collect();
+            let ty = kind.type_str().expect("a stored-only kind has a type").to_owned();
+            return Some(Snapshot { ty, group: None, fields, trees: Trees::new() });
         }
         self.spawns.spawning.get(&id).cloned()
     }
@@ -638,8 +640,8 @@ impl App {
                 );
             }
         }
-        for id in self.doc.mirror.link_ids() {
-            assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");
+        for id in self.doc.mirror.stored_ids(Kind::Link).chain(self.doc.mirror.stored_ids(Kind::Label)) {
+            assert!(live(&id), "stored node {id} is shown but not live in the document: a create funnel was missed");
         }
         for id in self.spawns.spawning.keys() {
             assert!(
@@ -649,7 +651,7 @@ impl App {
         }
         for (id, _) in doc.shown() {
             let shown =
-                self.nodes.contains_key(&id) || self.spawns.spawning.contains_key(&id) || self.doc.mirror.is_link(id);
+                self.nodes.contains_key(&id) || self.spawns.spawning.contains_key(&id) || self.doc.mirror.is_stored(id);
             assert!(shown, "node {id} is live in the document but not shown: a delete funnel was missed");
         }
     }

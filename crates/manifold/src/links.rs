@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use crate::caps::{Scope, Storage, LINK, OPENED_FROM};
 use crate::link_gestures::{DragEnd, LinkRetarget};
-use crate::store::model::{field, FieldValue, NodeId};
+use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::App;
 
 /// The link gestures' state (`App::link`): pick-target mode and the connect-drag and retarget that run as it.
@@ -404,7 +404,7 @@ impl App {
     /// Makes a link from `from` to `to`, both card ids, and returns the new Link node's id. Queued for the next save.
     pub(crate) fn create_link(&mut self, from: NodeId, to: NodeId) -> NodeId {
         let key = self.alloc_node_id();
-        self.doc.mirror.add_link(key);
+        self.doc.mirror.add_stored(key, Kind::Link);
         self.queue_create(key);
         self.edit_field(key, field::FROM, FieldValue::Id(Some(from)));
         self.edit_field(key, field::TO, FieldValue::Id(Some(to)));
@@ -413,7 +413,7 @@ impl App {
 
     /// Forgets link `id` and queues its delete.
     pub(crate) fn delete_link(&mut self, id: NodeId) {
-        self.doc.mirror.forget_link(id);
+        self.doc.mirror.forget_stored(id);
         self.queue_delete(id);
     }
 
