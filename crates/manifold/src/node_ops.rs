@@ -60,6 +60,12 @@ impl App {
         if p.is_inline() || p.error.is_some() {
             return Err("nothing to detach".into());
         }
+        if !p.enterable() {
+            // A placeholder awaiting its fetch holds `null`: detaching it would sync a null body over the real one.
+            let err = "Can't detach: the file isn't here yet".to_string();
+            self.queue_toast(err.clone());
+            return Err(err);
+        }
         let value = p.value.clone();
         let tree = match store::body::value_to_tree(&value, &mut || self.alloc_node_id()) {
             Ok(tree) => tree,

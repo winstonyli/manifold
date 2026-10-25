@@ -775,3 +775,21 @@ fn an_inline_cards_titles_use_its_name_and_a_file_cards_its_filename() {
     let (file, _) = json_file_card(&mut app, "root-name", "{}");
     assert_eq!(app.json_root_name(file), "d.json");
 }
+
+#[test]
+fn detach_refuses_a_card_whose_file_has_not_arrived() {
+    let mut app = App::default();
+    let id = app.alloc_node_id();
+    let at = app.placement(id, None);
+    let missing = r"C:\no\such\dir\gone.json".to_string();
+    app.place_node(
+        Some(id),
+        Kind::Json,
+        Runtime::Json(JsonPayload::file(missing, Arc::new(serde_json::Value::Null), None)),
+        at,
+    );
+    assert!(app.detach_json(id).is_err());
+    assert!(matches!(&app.nodes[&id].runtime, Runtime::Json(p) if !p.is_inline()));
+    assert!(app.doc.mirror.tree(id, store::model::field::BODY).is_none(), "no null body is written");
+    assert_eq!(app.toasts.save_toast_queue.len(), 1, "the refusal is toasted");
+}

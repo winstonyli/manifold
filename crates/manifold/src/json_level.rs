@@ -207,7 +207,7 @@ impl App {
     pub(crate) fn json_root_name(&self, id: NodeId) -> String {
         match self.nodes.get(&id).and_then(|n| n.as_json()) {
             Some(j) if j.is_inline() => {
-                crate::names::to_plain(&crate::names::display_name(self.doc.mirror.name(id), ""))
+                crate::names::to_plain(&crate::names::display_name(self.doc.mirror.name(id), crate::names::UNTITLED))
             }
             Some(j) => download_filename(j.path()).to_owned(),
             None => String::new(),
