@@ -1183,14 +1183,19 @@ fn moving_an_unknown_card_writes_one_set_and_keeps_its_raw_fields() {
     let (mut app, node, _path) = restored_unknown();
     let key = node;
     assert!(app.save_session());
-    let raw = app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields[&40].enc.clone();
+    let raw =
+        app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields[&crate::store::model::RegKey::of(40)].enc.clone();
     let before = ops_of(&app);
     app.edit_pos(key, Some(egui::vec2(50.0, 60.0)));
     assert!(app.save_session());
     assert_eq!(ops_of(&app), before + 1, "one Set");
     assert_eq!(stored(&app, key, field::POS), FieldValue::Pos(50.0, 60.0));
     let doc = app.doc.journal.as_ref().unwrap().doc();
-    assert_eq!(doc.nodes[&node].fields[&40].enc, raw, "a newer build's field is untouched");
+    assert_eq!(
+        doc.nodes[&node].fields[&crate::store::model::RegKey::of(40)].enc,
+        raw,
+        "a newer build's field is untouched"
+    );
     assert_eq!(doc.nodes[&node].get(field::URL), FieldValue::Str("https://x/".into()), "so is an off-list one");
 }
 

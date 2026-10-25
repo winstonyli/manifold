@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::crc32c::{crc32c, crc32c_append};
 use super::local;
-use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Node, NodeId, Reg, Stamp};
+use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Node, NodeId, Reg, RegKey, Stamp};
 use super::ops::{Op, OpBody};
 use super::tlv::{Reader, TlvError, Writer};
 use super::varint;
@@ -454,9 +454,9 @@ fn snapshot_message(doc: &Doc) -> Vec<u8> {
         if let Some(group) = node.group {
             n.message(4, &id_message(group, actors));
         }
-        for (no, reg) in &node.fields {
+        for (key, reg) in &node.fields {
             let mut r = Writer::new();
-            r.varint(1, u64::from(*no));
+            r.varint(1, u64::from(key.field));
             r.message(2, &stamp_message(reg.stamp, actors));
             if !reg.enc.is_empty() {
                 r.bytes(3, &reg.enc);
@@ -517,7 +517,7 @@ fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
                             }
                             let stamp =
                                 stamp.ok_or_else(|| JournalError::Corrupt("register without a stamp".into()))?;
-                            node.fields.insert(no, Reg { stamp, enc });
+                            node.fields.insert(RegKey::of(no), Reg { stamp, enc });
                         }
                         _ => {}
                     }

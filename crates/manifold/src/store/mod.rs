@@ -19,7 +19,7 @@ pub(crate) mod testutil {
 
     use std::collections::BTreeMap;
 
-    use super::model::{Doc, NodeId, Reg};
+    use super::model::{Doc, NodeId, Reg, RegKey};
 
     /// Seeded xorshift64*, so randomized tests repeat without a dependency.
     pub struct XorShift(pub u64);
@@ -77,7 +77,7 @@ pub(crate) mod testutil {
 
     /// What a document shows: its shown nodes, with their fields and the
     /// group each is shown in.
-    pub fn shown(doc: &Doc) -> Vec<(NodeId, BTreeMap<u32, Reg>, Option<NodeId>)> {
+    pub fn shown(doc: &Doc) -> Vec<(NodeId, BTreeMap<RegKey, Reg>, Option<NodeId>)> {
         doc.shown().map(|(id, node)| (id, node.fields.clone(), doc.effective_group(id))).collect()
     }
 

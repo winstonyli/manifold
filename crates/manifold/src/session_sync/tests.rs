@@ -475,5 +475,5 @@ pub(crate) fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
 
 /// The fields `node` holds in `app`'s document, by number.
 fn doc_fields(app: &App, node: NodeId) -> Vec<u32> {
-    app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields.keys().copied().collect()
+    app.doc.journal.as_ref().unwrap().doc().nodes[&node].fields.keys().map(|k| k.field).collect()
 }

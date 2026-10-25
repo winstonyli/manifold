@@ -7,6 +7,7 @@ use std::fmt;
 
 use super::ops::MoveRec;
 use super::tlv::{Reader, TlvError, Writer};
+use super::tree::TreePath;
 
 /// A replica's id for one launch: random, never persisted or reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -284,6 +285,12 @@ pub mod field {
     /// On a group closed by Ungroup or Dissolve Group: the ids of the members it had, space separated, so reopening
     /// it puts them back (`App::regroup_held`); "" otherwise.
     pub const HELD: u32 = 24;
+    /// Tree fields (no `FieldDef`: `Doc::apply` keeps them raw, paths included). PROPS: a card's properties; BODY: an
+    /// inline Json card's document.
+    #[allow(dead_code, reason = "read by the app in plan 2; remove this attribute there")]
+    pub const PROPS: u32 = 25;
+    #[allow(dead_code, reason = "read by the app in plan 4; remove this attribute there")]
+    pub const BODY: u32 = 26;
 }
 
 pub static FIELDS: [FieldDef; 19] = [
@@ -486,11 +493,25 @@ pub struct Reg {
     pub enc: Vec<u8>,
 }
 
+/// Where a register lives in a node: a field and a path inside that field's tree. Every scalar field sits at the
+/// root path; only tree fields (`field::PROPS`, `field::BODY`, and numbers this build doesn't know) have deeper ones.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RegKey {
+    pub field: u32,
+    pub path: TreePath,
+}
+
+impl RegKey {
+    pub fn of(no: u32) -> RegKey {
+        RegKey { field: no, path: TreePath::default() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
-    /// Every field but `group`, by number, `type` included, and numbers this
+    /// Every field but `group`, by field and path, `type` included, and numbers this
     /// build doesn't know (kept raw so compaction writes them back).
-    pub fields: BTreeMap<u32, Reg>,
+    pub fields: BTreeMap<RegKey, Reg>,
     /// The tree edge, owned by the move log (`ops.rs`). It may name a
     /// deleted group; see `Doc::effective_group`.
     pub group: Option<NodeId>,
@@ -503,15 +524,20 @@ impl Node {
         Node { fields: BTreeMap::new(), group: None, deleted: false }
     }
 
+    /// Field `no`'s register at the root path: every scalar field's only one.
+    pub fn reg(&self, no: u32) -> Option<&Reg> {
+        self.fields.get(&RegKey::of(no))
+    }
+
     /// Created: an op wrote its `type`.
     pub fn has_type(&self) -> bool {
-        self.fields.contains_key(&field::TYPE)
+        self.reg(field::TYPE).is_some()
     }
 
     /// Its stored `type` string as written ("" before its `Create` arrives): the last occurrence in the register,
     /// as `decode_field` reads it.
     pub fn ty(&self) -> &str {
-        let Some(reg) = self.fields.get(&field::TYPE) else { return "" };
+        let Some(reg) = self.reg(field::TYPE) else { return "" };
         let mut ty = "";
         for f in Reader::new(&reg.enc).map_while(Result::ok) {
             if let Ok(s) = f.value.str() {
@@ -561,16 +587,13 @@ impl Node {
     pub fn with_type(ty: &str) -> Node {
         let stamp = Stamp { hlc: Hlc::default(), actor: ActorId(0) };
         let reg = Reg { stamp, enc: encode_field(field::TYPE, &FieldValue::Str(ty.to_owned())) };
-        Node { fields: BTreeMap::from([(field::TYPE, reg)]), group: None, deleted: false }
+        Node { fields: BTreeMap::from([(RegKey::of(field::TYPE), reg)]), group: None, deleted: false }
     }
 
     /// Field `no`'s value; its default when unset or undecodable.
     pub fn get(&self, no: u32) -> FieldValue {
         let def = field_def(no).expect("a field number from `field`");
-        self.fields
-            .get(&no)
-            .and_then(|reg| decode_field(def, &reg.enc).ok())
-            .unwrap_or_else(|| FieldValue::absent(def.ty))
+        self.reg(no).and_then(|reg| decode_field(def, &reg.enc).ok()).unwrap_or_else(|| FieldValue::absent(def.ty))
     }
 
     /// This node as a plain node message, `group` included: what a
@@ -580,8 +603,8 @@ impl Node {
         let mut w = Writer::new();
         let group = encode_field(field::GROUP, &FieldValue::Id(self.group));
         let mut group_written = false;
-        for (&no, reg) in &self.fields {
-            if no > field::GROUP && !group_written {
+        for (key, reg) in self.fields.iter().filter(|(k, _)| k.path.is_root()) {
+            if key.field > field::GROUP && !group_written {
                 w.raw(&group);
                 group_written = true;
             }
@@ -689,7 +712,7 @@ impl Doc {
         let mut roots: Vec<(NodeId, Stamp)> = self
             .live()
             .filter(|&(id, n)| n.closed() && self.placement(id) != Placement::Hidden)
-            .filter_map(|(id, n)| Some((id, n.fields.get(&field::CLOSED)?.stamp)))
+            .filter_map(|(id, n)| Some((id, n.reg(field::CLOSED)?.stamp)))
             .collect();
         roots.sort_by_key(|&(id, stamp)| std::cmp::Reverse((stamp, id)));
         roots
@@ -840,11 +863,11 @@ mod tests {
         let mut node = Node::placeholder();
         assert_eq!(node.kind(), Kind::Unknown, "no type yet");
         assert!(!node.has_type() && !node.is_live());
-        node.fields.insert(field::TYPE, reg(1, "application/vnd.manifold.jar"));
+        node.fields.insert(RegKey::of(field::TYPE), reg(1, "application/vnd.manifold.jar"));
         assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Jar, true, true));
-        node.fields.insert(field::TYPE, reg(2, "application/x-from-the-future"));
+        node.fields.insert(RegKey::of(field::TYPE), reg(2, "application/x-from-the-future"));
         assert_eq!((node.kind(), node.has_type(), node.is_live()), (Kind::Unknown, true, true), "a card of its own");
-        node.fields.insert(field::TYPE, reg(3, ""));
+        node.fields.insert(RegKey::of(field::TYPE), reg(3, ""));
         assert!(node.has_type() && !node.is_live(), "an empty type is no type");
     }
 
@@ -910,7 +933,7 @@ mod tests {
             if closed {
                 let stamp = Stamp { hlc: Hlc { ms: c, logical: 0 }, actor: ActorId(1) };
                 let enc = encode_field(field::CLOSED, &FieldValue::Replica(7));
-                node.fields.insert(field::CLOSED, Reg { stamp, enc });
+                node.fields.insert(RegKey::of(field::CLOSED), Reg { stamp, enc });
             }
             doc.nodes.insert(id(c), node);
         }
@@ -985,7 +1008,7 @@ mod tests {
         let ids = |doc: &Doc| doc.closed_roots().into_iter().map(|(n, _)| n).collect::<Vec<_>>();
         assert_eq!(ids(&doc), [id(4), id(2), id(1)]);
         doc.nodes.get_mut(&id(4)).unwrap().deleted = true;
-        let reg = doc.nodes.get_mut(&id(2)).unwrap().fields.get_mut(&field::CLOSED).unwrap();
+        let reg = doc.nodes.get_mut(&id(2)).unwrap().fields.get_mut(&RegKey::of(field::CLOSED)).unwrap();
         reg.enc = encode_field(field::CLOSED, &FieldValue::Replica(0));
         assert_eq!(ids(&doc), [id(3), id(1)], "clearing the outer one makes the nested one an entry");
     }

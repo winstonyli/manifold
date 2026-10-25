@@ -4,7 +4,9 @@
 
 use std::collections::BTreeSet;
 
-use super::model::{decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Node, NodeId, Reg, Stamp};
+use super::model::{
+    decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Node, NodeId, Reg, RegKey, Stamp,
+};
 use super::tlv::Reader;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,7 +77,7 @@ impl Doc {
                             group = g;
                         }
                     } else if !entry.deleted {
-                        set_reg(entry, field.no, stamp, field.raw.to_vec());
+                        set_reg(entry, RegKey::of(field.no), stamp, field.raw.to_vec());
                     }
                 }
                 // The initial group is a move at the create's own time.
@@ -91,7 +93,7 @@ impl Doc {
                 if entry.deleted {
                     return Vec::new();
                 }
-                set_reg(entry, *no, stamp, enc.clone());
+                set_reg(entry, RegKey::of(*no), stamp, enc.clone());
                 vec![*node]
             }
             OpBody::Move { node, group } => {
@@ -179,9 +181,9 @@ impl Doc {
     }
 }
 
-fn set_reg(node: &mut Node, no: u32, stamp: Stamp, enc: Vec<u8>) {
-    if node.fields.get(&no).is_none_or(|reg| reg.stamp < stamp) {
-        node.fields.insert(no, Reg { stamp, enc });
+fn set_reg(node: &mut Node, key: RegKey, stamp: Stamp, enc: Vec<u8>) {
+    if node.fields.get(&key).is_none_or(|reg| reg.stamp < stamp) {
+        node.fields.insert(key, Reg { stamp, enc });
     }
 }
 
@@ -248,11 +250,11 @@ mod tests {
         fields.extend(encode_field(field::GROUP, &FieldValue::Id(None)));
         let mut doc = Doc::new(DocId([0; 16]));
         doc.apply(&op(1, 0, 1, OpBody::create(t, "application/x-from-the-future", fields)));
-        let raw = doc.nodes[&t].fields[&40].enc.clone();
+        let raw = doc.nodes[&t].fields[&RegKey::of(40)].enc.clone();
         doc.apply(&op(1, 1, 2, name(t, "renamed")));
         let pos = encode_field(field::POS, &FieldValue::Pos(5.0, 6.0));
         doc.apply(&op(1, 2, 3, OpBody::Set { node: t, field: field::POS, enc: pos }));
-        assert_eq!(doc.nodes[&t].fields[&40].enc, raw);
+        assert_eq!(doc.nodes[&t].fields[&RegKey::of(40)].enc, raw);
         assert_eq!(doc.nodes[&t].get(field::NAME), FieldValue::Str("renamed".into()));
         assert_eq!(doc.nodes[&t].get(field::POS), FieldValue::Pos(5.0, 6.0));
     }

@@ -87,8 +87,8 @@ fn node_to_json(id: NodeId, node: &Node, group: Option<NodeId>) -> JsonNode {
     let fields = node
         .fields
         .keys()
-        .filter(|&&no| no != field::TYPE && field_def(no).is_some())
-        .map(|&no| (no, node.get(no)))
+        .filter(|k| k.field != field::TYPE && field_def(k.field).is_some())
+        .map(|k| (k.field, node.get(k.field)))
         .collect();
     node_json(&id.to_string(), node.ty(), &fields, group)
 }
@@ -566,7 +566,10 @@ mod tests {
         let mut doc = Doc::new(DocId([0; 16]));
         let mut group = Node::typed(Kind::Group);
         let stamp = Stamp { hlc: Hlc { ms: 1, logical: 0 }, actor: ActorId(1) };
-        group.fields.insert(field::CLOSED, Reg { stamp, enc: encode_field(field::CLOSED, &FieldValue::Replica(7)) });
+        group.fields.insert(
+            crate::store::model::RegKey::of(field::CLOSED),
+            Reg { stamp, enc: encode_field(field::CLOSED, &FieldValue::Replica(7)) },
+        );
         doc.nodes.insert(id(1), group);
         let mut inside = Node::typed(Kind::Note);
         inside.group = Some(id(1));

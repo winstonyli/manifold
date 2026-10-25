@@ -137,7 +137,7 @@ impl App {
             .filter(|&d| d != id && directly_under(d))
             .filter_map(|d| {
                 let n = doc.nodes.get(&d).filter(|n| n.is_live() && n.closed())?;
-                Some((n.fields.get(&field::CLOSED)?.stamp, d, n.closer()))
+                Some((n.reg(field::CLOSED)?.stamp, d, n.closer()))
             })
             .collect();
         nested.sort();

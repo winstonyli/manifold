@@ -429,7 +429,7 @@ fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
     app.layout.insert(note, crate::Layout { pos: egui::vec2(12.0, 22.0), vel: egui::vec2(3.0, 4.0) });
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, note, field::POS, FieldValue::Pos(5.0, 6.0));
-    let pos_stamp = |doc: &Doc| doc.nodes[&note].fields[&field::POS].stamp;
+    let pos_stamp = |doc: &Doc| doc.nodes[&note].fields[&crate::store::model::RegKey::of(field::POS)].stamp;
     let theirs = pos_stamp(other.doc());
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(5.0, 6.0)));
@@ -1015,7 +1015,7 @@ fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
     assert!(app.save_session());
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, tab, field::URL, FieldValue::Str("https://moved/".into()));
-    let url_stamp = |doc: &Doc| doc.nodes[&tab].fields[&field::URL].stamp;
+    let url_stamp = |doc: &Doc| doc.nodes[&tab].fields[&crate::store::model::RegKey::of(field::URL)].stamp;
     let theirs = url_stamp(other.doc());
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.url(tab), "https://moved/");

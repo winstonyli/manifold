@@ -273,7 +273,10 @@ mod tests {
         let doc = app.doc.journal.as_ref().unwrap().doc();
         let shell = &doc.nodes[&new_unknown];
         assert_eq!(shell.ty(), FUTURE);
-        assert!(shell.fields.keys().all(|no| *no == field::TYPE || *no == field::GROUP || GENERIC.contains(no)));
+        assert!(shell
+            .fields
+            .keys()
+            .all(|k| k.field == field::TYPE || k.field == field::GROUP || GENERIC.contains(&k.field)));
         assert_ne!(doc.nodes[&new_jar].get(field::IS_DEFAULT), FieldValue::Bool(true));
         // Links: the one inside the group is copied between the copies; the one leaving it is not.
         assert_eq!(app.links_naming(new_note).len(), 1, "only the inside link");

@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::model::{encode_field, field, FieldValue, Kind, Node, FIELDS};
+use crate::store::model::{encode_field, field, FieldValue, Kind, Node, RegKey, FIELDS};
 use crate::store::testutil::{shown, temp_dir, version_one_file, XorShift};
 
 fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
@@ -246,7 +246,7 @@ fn a_newer_builds_frames_and_fields_survive() {
     journal.close().unwrap(); // compacts: the unknown field is written back
 
     let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(doc.nodes[&tab].fields[&99].enc, future);
+    assert_eq!(doc.nodes[&tab].fields[&RegKey::of(99)].enc, future);
 
     // A frame type from the future: kept, and the file never compacts.
     let mut frame = Vec::new();
@@ -279,7 +279,7 @@ fn a_type_this_build_does_not_know_survives_snapshots_and_compaction() {
     journal.close().unwrap(); // compacts
 
     let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(doc.nodes[&node].fields[&field::TYPE].enc, ty, "the raw `type` register is kept");
+    assert_eq!(doc.nodes[&node].fields[&RegKey::of(field::TYPE)].enc, ty, "the raw `type` register is kept");
     assert_eq!(doc.nodes[&node].kind(), Kind::Unknown);
     assert!(doc.nodes[&node].is_live(), "a type this build doesn't know is a card");
 }
