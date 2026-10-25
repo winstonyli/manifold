@@ -3,6 +3,7 @@ use crate::card_id::testutil::node;
 use crate::card_id::CardId;
 use crate::session_sync::tests::{add_group, add_note, app_on, closed_ids, group_with_note, stored};
 use crate::store::model::{field, FieldType, FieldValue};
+use crate::store::tree::{self, Leaf, TreePath};
 
 fn fold(tag: NodeId) -> UndoKind {
     UndoKind::Fold(vec![(tag, None)])
@@ -320,4 +321,67 @@ fn a_join_onto_a_group_closed_remotely_does_nothing() {
     assert!(app.nodes.contains_key(&n));
     app.apply_drop(CardId::from(other_group), Some((DropEffect::Merge, Some(CardId::from(g)))));
     assert!(app.nodes.contains_key(&other_group), "the merge into a hidden group is refused");
+}
+
+fn path_of(segs: &[&str]) -> TreePath {
+    TreePath::of(&segs.iter().map(|s| tree::Seg::Key((*s).to_owned())).collect::<Vec<_>>())
+}
+
+fn app_with_card() -> (App, NodeId) {
+    let mut app = app_on(&store::testutil::temp_dir("props-undo").join("session.mnf"), 1);
+    let card = add_note(&mut app, "n");
+    assert!(app.save_session());
+    (app, card)
+}
+
+fn prop(app: &mut App, card: NodeId, segs: &[&str], leaf: Option<Leaf>) -> PropEdit {
+    app.edit_prop(card, field::PROPS, path_of(segs), leaf).expect("a change")
+}
+
+#[test]
+fn a_property_edit_is_undone_and_redone() {
+    let (mut app, card) = app_with_card();
+    let edit = prop(&mut app, card, &["a"], Some(Leaf::Int(1)));
+    app.record_undo("Set a".into(), UndoKind::Props(vec![edit]));
+    app.step_history(None, false);
+    assert!(app.doc.mirror.tree(card, field::PROPS).is_none());
+    app.step_history(None, true);
+    assert_eq!(app.doc.mirror.tree(card, field::PROPS).unwrap().len(), 1);
+}
+
+#[test]
+fn undoing_a_subtree_delete_restores_every_nested_leaf() {
+    let (mut app, card) = app_with_card();
+    prop(&mut app, card, &["a", "b"], Some(Leaf::Int(1)));
+    prop(&mut app, card, &["a", "c", "d"], Some(Leaf::Str("x".into())));
+    let before = app.doc.mirror.trees_of(card);
+    let edit = prop(&mut app, card, &["a"], None);
+    assert!(app.doc.mirror.tree(card, field::PROPS).is_none());
+    app.record_undo("Delete a".into(), UndoKind::Props(vec![edit]));
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.trees_of(card), before);
+    app.step_history(None, true);
+    assert!(app.doc.mirror.tree(card, field::PROPS).is_none());
+}
+
+#[test]
+fn an_undo_skips_an_edit_whose_register_changed_since() {
+    let (mut app, card) = app_with_card();
+    let edit = prop(&mut app, card, &["a"], Some(Leaf::Int(1)));
+    app.record_undo("Set a".into(), UndoKind::Props(vec![edit]));
+    prop(&mut app, card, &["a"], Some(Leaf::Int(2))); // changed again (or by another replica)
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.tree(card, field::PROPS).unwrap()[&path_of(&["a"])], Leaf::Int(2));
+    assert!(app.undo.take(None, false).is_none(), "an entry that restored nothing is dropped");
+}
+
+#[test]
+fn an_undo_of_a_closed_card_does_nothing() {
+    let (mut app, card) = app_with_card();
+    let edit = prop(&mut app, card, &["a"], Some(Leaf::Int(1)));
+    app.record_undo("Set a".into(), UndoKind::Props(vec![edit]));
+    app.remove_node(card);
+    app.step_history(None, false);
+    assert!(app.undo.take(None, false).is_none(), "nothing was restored, so the entry is dropped");
+    assert!(!app.doc.writes.tree_queued(card, field::PROPS));
 }

@@ -1,10 +1,10 @@
-//! Session-local undo and redo of drops and folds. Docs: `docs/superpowers/specs/2026-10-19-move-undo-design.md`.
+//! Session-local undo and redo of drops, folds and property edits. Docs: `docs/superpowers/specs/2026-10-19-move-undo-design.md`.
 //! In memory only: not saved, not synced. A revert is an ordinary edit through `edit_group`, `edit_parent` and
 //! `edit_pos`, so other devices see it as one.
 
 use super::*;
 use crate::store::model::NodeId;
-use crate::store::tree::{Leaf, TreePath};
+use crate::store::tree::{self, Leaf, TreePath};
 
 /// How many steps the history keeps, each way.
 pub(crate) const UNDO_DEPTH: usize = 10;
@@ -35,6 +35,10 @@ pub(crate) enum UndoKind {
     /// Dissolve, Ungroup All, Merge: each group and where `fold_group` sent its members. Undo reopens the groups,
     /// redo folds them again.
     Fold(Vec<(NodeId, Option<NodeId>)>),
+    /// Tree edits (`App::edit_prop`): labels, properties, Json. Each part changed the leaves at `path` and under it
+    /// from `before` to `after`; undo reverses them newest first, redo repeats them.
+    #[allow(dead_code, reason = "recorded by the labels (plan 3) and the Json cards (plan 4); tests build it")]
+    Props(Vec<PropEdit>),
 }
 
 pub(crate) struct UndoEntry {
@@ -115,7 +119,31 @@ impl App {
         match kind {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
+            UndoKind::Props(edits) => self.replay_props(edits, redo),
         }
+    }
+
+    /// Puts each edit's leaves back (undo) or forward (redo), but only where the mirror still shows exactly what is
+    /// being left (the rule of `replay_revert`): a register edited again here or by another replica is skipped, as
+    /// is a card closed since. The restore is a tombstone at `path` and a write per arriving leaf, ancestors first,
+    /// which commits as the same registers the edit had.
+    fn replay_props(&mut self, edits: &[PropEdit], redo: bool) -> (usize, usize) {
+        let mut done = 0;
+        let ordered: Vec<&PropEdit> = if redo { edits.iter().collect() } else { edits.iter().rev().collect() };
+        for e in ordered {
+            let after: Vec<(TreePath, Leaf)> = e.after.iter().map(|l| (e.path.clone(), l.clone())).collect();
+            let (leaving, arriving) = if redo { (&e.before, &after) } else { (&after, &e.before) };
+            let now = self.doc.mirror.tree(e.node, e.field).map(|t| tree::subtree(t, &e.path)).unwrap_or_default();
+            if now != *leaving || !self.nodes.contains_key(&e.node) {
+                continue;
+            }
+            self.edit_prop(e.node, e.field, e.path.clone(), None);
+            for (path, leaf) in arriving {
+                self.edit_prop(e.node, e.field, path.clone(), Some(leaf.clone()));
+            }
+            done += 1;
+        }
+        (done, edits.len())
     }
 
     /// Undo puts each card back to its before values, redo to its after values, but only a card that still holds
