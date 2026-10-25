@@ -10,6 +10,7 @@ pub mod local;
 pub mod model;
 pub mod ops;
 pub mod tlv;
+pub mod tree;
 pub mod varint;
 
 #[cfg(test)]

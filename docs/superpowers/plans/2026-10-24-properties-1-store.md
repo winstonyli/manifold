@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Properties 1: path-keyed registers in the store — Implementation Plan

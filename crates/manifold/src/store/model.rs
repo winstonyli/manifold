@@ -407,7 +407,7 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
     *out = w.into_bytes();
 }
 
-fn id_message(id: NodeId) -> Writer {
+pub(super) fn id_message(id: NodeId) -> Writer {
     let mut m = Writer::new();
     if id.actor.0 != 0 {
         m.fixed64(1, id.actor.0);
@@ -418,7 +418,7 @@ fn id_message(id: NodeId) -> Writer {
     m
 }
 
-fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError> {
+pub(super) fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError> {
     let mut id = NodeId { actor: ActorId(0), counter: 0 };
     for field in Reader::new(buf) {
         let field = field?;
