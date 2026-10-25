@@ -869,3 +869,18 @@ fn another_replica_follows_an_undone_detach_back_to_the_file_card() {
     let Runtime::Json(p) = &b.nodes[&id].runtime else { panic!() };
     assert!(!p.is_inline() && p.path() == file, "b shows the file card again, not an inline null");
 }
+
+#[test]
+fn another_replica_follows_a_detach_to_an_inline_card() {
+    let (mut a, id, file) = detached("detach-remote");
+    a.step_history(None, false); // back to the file card, as b first sees it
+    let dir = crate::store::testutil::temp_dir("detach-remote-b");
+    let mut b = crate::session_sync::tests::app_on(&dir.join("b.mnf"), 2);
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    assert!(matches!(&b.nodes[&id].runtime, Runtime::Json(p) if !p.is_inline() && p.path() == file));
+    a.step_history(None, true); // detach again
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    let Runtime::Json(p) = &b.nodes[&id].runtime else { panic!() };
+    assert!(p.is_inline(), "b follows the detach");
+    assert_eq!(*p.value, serde_json::json!({"k": [1]}));
+}

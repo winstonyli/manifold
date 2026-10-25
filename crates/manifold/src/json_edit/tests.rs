@@ -568,3 +568,15 @@ fn a_menu_is_closed_when_the_array_shifts_under_it() {
     app.edit_json(id, insert("/a", 0, json!(9))).unwrap();
     assert!(app.json_level.as_ref().unwrap().menu.is_none(), "/a/2 is now the old /a/1");
 }
+
+#[test]
+fn a_remote_body_change_swaps_the_value_of_the_open_level() {
+    let (mut a, id) = card(json!({"a": 1}));
+    let dir = crate::store::testutil::temp_dir("json-open-level-remote");
+    let mut b = crate::session_sync::tests::app_on(&dir.join("b.manifold"), 2);
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    open_level(&mut b, id);
+    a.edit_json(id, set("/a", json!(2))).unwrap();
+    b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
+    assert_eq!(*b.json_level.as_ref().unwrap().value, json!({"a": 2}));
+}
