@@ -9,7 +9,7 @@ fn key_path(segs: &[&str]) -> TreePath {
 }
 
 /// What the document shows for `card`'s trees.
-fn doc_trees(app: &App, card: NodeId) -> Trees {
+pub(super) fn doc_trees(app: &App, card: NodeId) -> Trees {
     shown(app.doc.journal.as_ref().unwrap().doc())[&card].trees.clone()
 }
 

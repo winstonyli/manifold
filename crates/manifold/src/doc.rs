@@ -29,6 +29,8 @@ pub(crate) struct Doc {
     /// Set once the store reports a repair (`take_store_recovery`): what
     /// was loaded may be missing nodes, so `prune_backing_dirs` doesn't run.
     pub(crate) store_recovered: bool,
+    /// The last millisecond stamp `App::set_label` handed out; keeps stamps strictly increasing.
+    pub(crate) label_ms: u64,
 }
 
 impl Default for Doc {
@@ -42,6 +44,7 @@ impl Default for Doc {
             hidden_local: HashMap::new(),
             local_persist: local_state::LocalPersist::default(),
             store_recovered: false,
+            label_ms: 0,
         }
     }
 }

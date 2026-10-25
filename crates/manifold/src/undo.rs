@@ -37,7 +37,6 @@ pub(crate) enum UndoKind {
     Fold(Vec<(NodeId, Option<NodeId>)>),
     /// Tree edits (`App::edit_prop`): labels, properties, Json. Each part changed the leaves at `path` and under it
     /// from `before` to `after`; undo reverses them newest first, redo repeats them.
-    #[allow(dead_code, reason = "recorded by the labels (plan 3) and the Json cards (plan 4); tests build it")]
     Props(Vec<PropEdit>),
 }
 

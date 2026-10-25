@@ -10,11 +10,11 @@ use std::collections::{BTreeSet, HashMap};
 
 use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
-use crate::labels::LabelDef;
+use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;
 use crate::session_sync::{color_of, color_value, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
-use crate::store::tree::{self, Leaf, Tree, TreePath, Trees, TREE_FIELDS};
+use crate::store::tree::{self, Leaf, Seg, Tree, TreePath, Trees, TREE_FIELDS};
 
 /// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
@@ -165,6 +165,23 @@ impl Mirror {
     /// Every stored-only node of `kind` this replica knows, by id.
     pub(crate) fn stored_ids(&self, kind: Kind) -> impl Iterator<Item = NodeId> + '_ {
         self.stored_nodes.iter().copied().filter(move |&id| self.kind_of(id) == kind)
+    }
+
+    /// The live labels `card` carries, oldest first by `(added_at_ms, label id)`. A membership whose label is gone
+    /// (deleted, or not yet received) shows nothing, and a value that is not an `Int` is ignored.
+    #[allow(dead_code, reason = "drawn as border and chips in Task 6")]
+    pub(crate) fn card_labels(&self, card: NodeId) -> Vec<NodeId> {
+        let Some(tree) = self.tree(card, field::PROPS) else { return Vec::new() };
+        let mut found: Vec<(i64, NodeId)> = tree
+            .iter()
+            .filter_map(|(path, leaf)| match (path.segments().as_slice(), leaf) {
+                ([Seg::Key(k), Seg::Id(label)], Leaf::Int(at)) if k == LABELS_KEY => Some((*at, *label)),
+                _ => None,
+            })
+            .filter(|(_, label)| self.is_stored(*label) && self.kind_of(*label) == Kind::Label)
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|(_, label)| label).collect()
     }
 
     /// Every link this replica knows, by id.

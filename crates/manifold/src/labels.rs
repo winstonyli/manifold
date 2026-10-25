@@ -6,6 +6,8 @@ use std::collections::BTreeMap;
 use crate::names::{clean_name, name_key};
 use crate::session_sync::color_value;
 use crate::store::model::{field, FieldValue, Kind, NodeId};
+use crate::store::tree::{Leaf, Seg, TreePath};
+use crate::undo::{PropEdit, UndoKind};
 use crate::App;
 
 /// A label's synced definition, decoded from its mirrored fields (`Mirror::label_def`).
@@ -15,7 +17,15 @@ pub(crate) struct LabelDef {
     pub(crate) color: Option<egui::Color32>,
 }
 
-#[allow(dead_code, reason = "used by the membership API and the selection bar menu (Tasks 4 and 8)")]
+/// The key under `PROPS` that holds a card's label memberships: `PROPS/labels/@<label id>` is `Int(added_at_ms)`.
+pub(crate) const LABELS_KEY: &str = "labels";
+
+/// Where `card` records that it carries `label`.
+pub(crate) fn labels_path(label: NodeId) -> TreePath {
+    TreePath::default().child(&Seg::Key(LABELS_KEY.to_owned())).child(&Seg::Id(label))
+}
+
+#[allow(dead_code, reason = "used by the selection bar menu (Task 8)")]
 impl App {
     /// The live labels, by id.
     pub(crate) fn label_defs(&self) -> BTreeMap<NodeId, LabelDef> {
@@ -62,6 +72,41 @@ impl App {
 
     pub(crate) fn recolor_label(&mut self, id: NodeId, color: Option<egui::Color32>) {
         self.edit_field(id, field::COLOR, color_value(color));
+    }
+
+    /// A millisecond stamp for a new membership: the wall clock, but always past the last one handed out, so two adds
+    /// in one millisecond still order (`Mirror::card_labels`).
+    fn next_label_ms(&mut self) -> u64 {
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        self.doc.label_ms = now.max(self.doc.label_ms + 1);
+        self.doc.label_ms
+    }
+
+    /// Puts `label` on each of `cards` (`on`) or takes it off. A card already in that state writes nothing. Returns
+    /// the edits made; the caller records the undo step (`record_label_undo`).
+    pub(crate) fn set_label(&mut self, cards: &[NodeId], label: NodeId, on: bool) -> Vec<PropEdit> {
+        if !self.doc.mirror.is_stored(label) {
+            return Vec::new();
+        }
+        let path = labels_path(label);
+        let mut edits = Vec::new();
+        for &card in cards {
+            let has = self.doc.mirror.tree(card, field::PROPS).is_some_and(|t| t.contains_key(&path));
+            if has == on || !self.doc.mirror.has(card) {
+                continue;
+            }
+            let leaf = on.then(|| Leaf::Int(self.next_label_ms() as i64));
+            edits.extend(self.edit_prop(card, field::PROPS, path.clone(), leaf));
+        }
+        edits
+    }
+
+    /// One undo step for `edits` from `set_label`; nothing for none.
+    pub(crate) fn record_label_undo(&mut self, message: &str, edits: Vec<PropEdit>) {
+        if !edits.is_empty() {
+            self.record_undo(message.to_owned(), UndoKind::Props(edits));
+        }
     }
 
     /// Forgets label `id` and queues its delete. Cards keep their membership entries, which show nothing once the

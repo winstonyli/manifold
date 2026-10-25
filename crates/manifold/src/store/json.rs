@@ -341,7 +341,7 @@ mod tests {
     use super::*;
     use crate::store::model::{ActorId, DocId, Hlc, TYPE_GROUP};
     use crate::store::ops::Op;
-    use crate::store::tree::Leaf;
+    use crate::store::tree::{Leaf, Seg};
 
     fn ids(actor: u64) -> impl FnMut() -> NodeId {
         let mut counter = 0;
@@ -673,6 +673,30 @@ mod tests {
         let tree = &second.nodes[&new_a].trees()[&field::PROPS];
         assert_eq!(tree.len(), 3);
         assert!(tree.values().any(|leaf| *leaf == Leaf::Ref(new_b)), "the ref names the copy of b");
+    }
+
+    #[test]
+    fn a_labelled_note_and_its_label_node_round_trip_with_the_membership_following_the_new_id() {
+        let json = r##"{"nodes": [
+            {"id": "a", "type": "text/markdown", "text": "a", "props": {"labels": {"@l": 5}}},
+            {"id": "l", "type": "application/vnd.manifold.label", "name": "urgent"}
+        ]}"##;
+        let first = doc_from(json, 1);
+        let exported = doc_to_json(&first);
+        let imported = import(&exported, ids(2), Trust::Own).unwrap();
+        let mut second = Doc::new(DocId([0; 16]));
+        let mut op_ids = ids(200);
+        for (i, body) in creates(&imported).into_iter().enumerate() {
+            second.apply(&Op { id: op_ids(), hlc: Hlc { ms: 1, logical: i as u32 }, body });
+        }
+        let note =
+            imported.iter().find(|n| n.fields.get(&field::TEXT) == Some(&FieldValue::Str("a".into()))).unwrap().id;
+        let label =
+            imported.iter().find(|n| n.fields.get(&field::NAME) == Some(&FieldValue::Str("urgent".into()))).unwrap().id;
+        let tree = &second.nodes[&note].trees()[&field::PROPS];
+        assert_eq!(tree.len(), 1);
+        let (path, leaf) = tree.iter().next().unwrap();
+        assert_eq!((leaf, path.segments().last()), (&Leaf::Int(5), Some(&Seg::Id(label))), "keyed by the new label id");
     }
 
     #[test]

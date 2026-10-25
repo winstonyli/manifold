@@ -7,7 +7,6 @@ impl App {
     /// everything under it is deleted (one tombstone hides the subtree, so a subtree delete is the same call). The
     /// mirror shows it at once; the next save commits it as a `Set` at `path`. Returns what an undo needs, or `None`
     /// when the mirror already showed exactly this. The caller records the step (`record_undo(.., UndoKind::Props)`).
-    #[allow(dead_code, reason = "no caller outside tests until the labels (plan 3) and the Json cards (plan 4)")]
     pub(crate) fn edit_prop(
         &mut self,
         id: NodeId,
