@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Soft theme (Heptabase-style light and dark) Implementation Plan
