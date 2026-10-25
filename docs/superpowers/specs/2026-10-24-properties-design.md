@@ -199,19 +199,21 @@ Each ends green and could be tagged on its own.
 README (store, keys, selection bar, Json cards); the frame spec's "tag color"; the node-model spec's edge table (a
 label is not a link); `CHANGELOG.md` at the bump (user's call): **Breaking: Journal format 3 -> 4**.
 
-## 8. Decisions to confirm
+## 8. Decisions (settled 2026-10-24)
 
 - **D1** A version 3 session is set aside by the new build, so export it first with the current build (`--import-json`
-  brings it back). Or the new build also reads 3 (a one-line range, since 3 is a subset of 4). Recommend the first, by
-  your no-migration rule.
-- **D2** The mirror holds the resolved tree (an extra copy, as it does for every field), against reading through the
-  document. Recommend the mirror: it keeps `App::default()` tests and the accessor rule.
-- **D3** Label order by when the membership was added (its stamp, no extra register), against by label id (arbitrary:
-  ids order by a random actor first) or an explicit order register. Recommend the stamp.
+  brings it back). The new build does not read 3.
+- **D2** The mirror holds the resolved tree (an extra copy, as it does for every field); it keeps `App::default()` tests
+  and the accessor rule.
+- **D3** Label order by when the membership was added (its stamp, no extra register), not by label id (arbitrary: ids
+  order by a random actor first). An explicit order register can come later without rework.
 - **D4** `INLINE_MAX_LEAVES` = 10,000. The store would allow 100,000 (about 15 MiB); the limit is the viewer's cost, to be
-  measured in phase 4.
-- **D5** The earlier defaults: global labels; all stored cards except jars; border from the first label; two chips and
-  "+N". These were presented on 2026-10-24 and not yet answered.
+  re-measured in phase 4.
+- **D5** Global labels; all stored cards except jars; border from the first label; two chips and "+N". Jars keep their own
+  `COLOR` and get no implicit chip.
 - **D6** "Add File..." keeps making file-backed cards; inline comes from "New JSON" and Detach.
-- **D7** Add `Kind::card()` and move the "not a card" tests onto it before adding `Label` (section 3), against copying
-  `Link`'s tests for `Label`. Recommend the predicate: a second copy is the third item of one shape.
+- **D7** Add `Kind::card()` and move the "not a card" tests onto it before adding `Label` (section 3): a second copy would
+  be the third item of one shape.
+
+Not in this spec: inherited context (a value climbing `group`); parked with the group rework (PARKED.md "Inherited
+context helper").
