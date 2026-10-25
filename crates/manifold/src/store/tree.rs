@@ -3,7 +3,7 @@
 
 #![allow(dead_code, reason = "the app reads trees from plan 2 on (mirror trees); remove this line there")]
 
-use super::model::{decode_id, id_message, ActorId, NodeId};
+use super::model::{decode_id, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};
 use super::tlv::{Reader, TlvError, Writer};
 use super::varint;
 
@@ -209,12 +209,46 @@ impl Leaf {
     }
 }
 
+/// The registers no ancestor register overrides, in key order (tombstones included). A register is hidden when a
+/// register at a proper-prefix path has a higher stamp; hidden registers still hide, but whatever they hide their hider
+/// hides too, so a stack of cumulative newest stamps decides each one in a single pass.
+pub fn visible<'a>(regs: impl Iterator<Item = (&'a RegKey, &'a Reg)>) -> impl Iterator<Item = (&'a RegKey, &'a Reg)> {
+    let mut field = None;
+    let mut above: Vec<(&'a TreePath, Stamp)> = Vec::new();
+    regs.filter(move |(key, reg)| {
+        if field != Some(key.field) {
+            field = Some(key.field);
+            above.clear();
+        }
+        while above.last().is_some_and(|(p, _)| !p.is_ancestor_of(&key.path)) {
+            above.pop();
+        }
+        let newest = above.last().map(|(_, s)| *s);
+        above.push((&key.path, newest.map_or(reg.stamp, |s| s.max(reg.stamp))));
+        newest.is_none_or(|s| s <= reg.stamp)
+    })
+}
+
+impl Node {
+    /// The registers of a field's tree that count (see `visible`), tombstones included.
+    pub fn visible_regs(&self) -> impl Iterator<Item = (&RegKey, &Reg)> {
+        visible(self.fields.iter())
+    }
+
+    /// A tree field's live leaves in path order with their stamps: visible, not a tombstone.
+    pub fn tree(&self, no: u32) -> Vec<(TreePath, Leaf, Stamp)> {
+        let own = self.fields.range(RegKey::of(no)..).take_while(|(k, _)| k.field == no);
+        visible(own).filter_map(|(k, r)| Some((k.path.clone(), Leaf::decode(&r.enc).ok()??, r.stamp))).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
     use std::ops::Bound::Excluded;
 
     use super::*;
+    use crate::store::model::Hlc;
     use crate::store::testutil::XorShift;
 
     fn id(actor: u64, counter: u64) -> NodeId {
@@ -311,5 +345,79 @@ mod tests {
         let mut two = Leaf::Int(1).encode();
         two.extend(Leaf::Str("x".into()).encode());
         assert_eq!(Leaf::decode(&two), Ok(Some(Leaf::Str("x".into()))), "the last field wins");
+    }
+
+    fn stamp(n: u64) -> Stamp {
+        Stamp { hlc: Hlc { ms: n, logical: 0 }, actor: ActorId(1) }
+    }
+
+    fn reg(n: u64, leaf: Option<Leaf>) -> Reg {
+        Reg { stamp: stamp(n), enc: leaf.map(|l| l.encode()).unwrap_or_default() }
+    }
+
+    fn at(field: u32, segs: &[&str]) -> RegKey {
+        let segs: Vec<Seg> = segs.iter().map(|s| Seg::Key((*s).to_owned())).collect();
+        RegKey { field, path: TreePath::of(&segs) }
+    }
+
+    fn brute(node: &Node) -> Vec<RegKey> {
+        node.fields
+            .iter()
+            .filter(|(k, r)| {
+                !node
+                    .fields
+                    .iter()
+                    .any(|(a, ar)| a.field == k.field && a.path.is_ancestor_of(&k.path) && ar.stamp > r.stamp)
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
+    #[test]
+    fn visibility_matches_the_definition_on_random_trees() {
+        let mut rng = XorShift(0xA11CE);
+        let names = ["a", "b", "c"];
+        for _ in 0..500 {
+            let mut node = Node::placeholder();
+            for _ in 0..rng.below(14) {
+                let depth = rng.below(4) as usize;
+                let segs: Vec<&str> = (0..depth).map(|_| names[rng.below(3) as usize]).collect();
+                let leaf = if rng.below(4) == 0 { None } else { Some(Leaf::Int(rng.below(9) as i64)) };
+                node.fields.insert(at(1 + rng.below(2) as u32, &segs), reg(1 + rng.below(6), leaf));
+            }
+            let got: Vec<RegKey> = node.visible_regs().map(|(k, _)| k.clone()).collect();
+            assert_eq!(got, brute(&node), "{:?}", node.fields);
+        }
+    }
+
+    #[test]
+    fn a_newer_ancestor_hides_and_an_older_one_does_not() {
+        let mut node = Node::placeholder();
+        node.fields.insert(at(1, &["a"]), reg(5, None)); // tombstone
+        node.fields.insert(at(1, &["a", "b"]), reg(3, Some(Leaf::Int(1)))); // older: hidden
+        node.fields.insert(at(1, &["a", "c"]), reg(7, Some(Leaf::Int(2)))); // newer: shows
+        node.fields.insert(at(1, &["a", "b", "d"]), reg(6, Some(Leaf::Int(3)))); // under a hidden one, newer than /a
+        node.fields.insert(at(1, &["z"]), reg(1, Some(Leaf::Str("s".into()))));
+        let tree = node.tree(1);
+        let shown: Vec<(Vec<Seg>, Leaf)> = tree.into_iter().map(|(p, l, _)| (p.segments(), l)).collect();
+        assert_eq!(
+            shown,
+            vec![
+                (vec![Seg::Key("a".into()), Seg::Key("b".into()), Seg::Key("d".into())], Leaf::Int(3)),
+                (vec![Seg::Key("a".into()), Seg::Key("c".into())], Leaf::Int(2)),
+                (vec![Seg::Key("z".into())], Leaf::Str("s".into())),
+            ]
+        );
+        assert_eq!(node.visible_regs().count(), 4, "the hidden /a/b is dropped, the /a tombstone stays");
+    }
+
+    #[test]
+    fn a_root_tombstone_hides_older_registers_of_its_field_only() {
+        let mut node = Node::placeholder();
+        node.fields.insert(at(1, &[]), reg(9, None));
+        node.fields.insert(at(1, &["a"]), reg(4, Some(Leaf::Int(1))));
+        node.fields.insert(at(2, &["a"]), reg(4, Some(Leaf::Int(2))));
+        assert!(node.tree(1).is_empty());
+        assert_eq!(node.tree(2).len(), 1);
     }
 }
