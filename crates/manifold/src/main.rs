@@ -41,10 +41,6 @@ mod image_view;
 mod input;
 mod jar;
 mod jar_defs;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "first used by the JSONEDIT verb (plan 4b task 6), which removes this")
-)]
 mod json_edit;
 mod json_file;
 mod json_level;

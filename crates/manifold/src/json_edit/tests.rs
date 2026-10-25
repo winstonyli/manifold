@@ -296,3 +296,28 @@ fn rename_and_move_carry_the_view_and_the_selection() {
     app.edit_json(id, JsonOp::Move { pointer: s("/l/0"), to: 2 }).unwrap();
     assert_eq!(view_of(&app, id, "/l/2"), Some(true));
 }
+
+#[test]
+fn json_edit_verb_parses_every_form() {
+    let ok = |line: &str| parse_json_edit(line);
+    assert_eq!(ok(r#"set /a/0 {"x": [1, 2]}"#), Ok(set("/a/0", json!({"x": [1, 2]}))));
+    assert_eq!(ok("set root 5"), Ok(set("", json!(5))));
+    assert_eq!(ok(r#"add root k "v w""#), Ok(JsonOp::AddKey { pointer: s(""), key: s("k"), value: json!("v w") }));
+    assert_eq!(ok("insert /b 2 null"), Ok(insert("/b", 2, Value::Null)));
+    assert_eq!(ok("remove /a/b"), Ok(remove("/a/b")));
+    assert_eq!(ok("rename /a c"), Ok(JsonOp::Rename { pointer: s("/a"), to: s("c") }));
+    assert_eq!(ok("move /l/1 0"), Ok(JsonOp::Move { pointer: s("/l/1"), to: 0 }));
+    for bad in
+        ["", "set", "set /a", "set /a {nope", "insert /b x 1", "move /l/1 -1", "add root k", "frobnicate /a", "remove"]
+    {
+        assert!(ok(bad).is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn the_level_export_says_whether_it_is_editable() {
+    let (mut app, id) = card(json!({"a": 1}));
+    app.current_group = Some(id);
+    app.sync_json_level();
+    assert_eq!(app.json_level_state()["editable"], json!(true));
+}

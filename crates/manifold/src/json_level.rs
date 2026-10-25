@@ -538,6 +538,7 @@ impl App {
         serde_json::json!({
             "root": level.node_id.to_string(),
             "inline": self.nodes.get(&level.node_id).is_some_and(|n| n.runtime.json_is_inline()),
+            "editable": self.json_editable(level.node_id),
             "keys": level.value.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()),
             "cards": cards,
             "selected": level.selected,

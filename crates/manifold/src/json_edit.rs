@@ -140,6 +140,45 @@ fn pointer_maps(op: &JsonOp, doc: &Value) -> Vec<PointerMap> {
     }
 }
 
+/// The first word of `text` and the trimmed rest.
+fn word(text: &str) -> (&str, &str) {
+    let (head, rest) = text.trim().split_once(char::is_whitespace).unwrap_or((text.trim(), ""));
+    (head, rest.trim())
+}
+
+/// `text`, or an error naming `what` when it is empty.
+fn need<'a>(text: &'a str, what: &str) -> Result<&'a str, String> {
+    (!text.is_empty()).then_some(text).ok_or_else(|| format!("missing {what}"))
+}
+
+/// A `JSONEDIT` line: `set <ptr> <json>`, `add <ptr> <key> <json>`, `insert <ptr> <index> <json>`, `remove <ptr>`,
+/// `rename <ptr> <to>`, `move <ptr> <to>`. `root` stands for the root pointer; `<json>` is the rest of the line.
+pub(crate) fn parse_json_edit(line: &str) -> Result<JsonOp, String> {
+    let (verb, rest) = word(line);
+    let (pointer, rest) = word(rest);
+    if pointer.is_empty() {
+        return Err("missing a pointer".into());
+    }
+    let pointer = if pointer == "root" { String::new() } else { pointer.to_owned() };
+    let json = |text: &str| serde_json::from_str::<Value>(need(text, "a JSON value")?).map_err(|e| e.to_string());
+    let index = |text: &str| need(text, "an index")?.parse::<usize>().map_err(|e| e.to_string());
+    match verb {
+        "set" => Ok(JsonOp::Set { pointer, value: json(rest)? }),
+        "add" => {
+            let (key, value) = word(rest);
+            Ok(JsonOp::AddKey { pointer, key: need(key, "a key")?.to_owned(), value: json(value)? })
+        }
+        "insert" => {
+            let (at, value) = word(rest);
+            Ok(JsonOp::Insert { pointer, index: index(at)?, value: json(value)? })
+        }
+        "remove" => Ok(JsonOp::Remove { pointer }),
+        "rename" => Ok(JsonOp::Rename { pointer, to: need(rest, "a new key")?.to_owned() }),
+        "move" => Ok(JsonOp::Move { pointer, to: index(rest)? }),
+        other => Err(format!("unknown edit {other:?}")),
+    }
+}
+
 const GONE: &str = "That entry is gone";
 
 /// One write: `path` and everything under it become `leaves` (none: deleted).
@@ -206,10 +245,14 @@ impl App {
         }
     }
 
+    /// Whether `id` is a card `edit_json` accepts: inline, and not an error card.
+    pub(crate) fn json_editable(&self, id: NodeId) -> bool {
+        self.doc.mirror.has(id)
+            && self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline() && p.error.is_none())
+    }
+
     fn write_json_op(&mut self, id: NodeId, op: &JsonOp) -> Result<(Vec<PropEdit>, Vec<PointerMap>), String> {
-        let editable =
-            self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|p| p.is_inline() && p.error.is_none());
-        if !editable || !self.doc.mirror.has(id) {
+        if !self.json_editable(id) {
             return Err("Only an inline JSON card can be edited".to_owned());
         }
         let tree = self.doc.mirror.tree(id, field::BODY).cloned().unwrap_or_default();

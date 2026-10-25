@@ -702,6 +702,22 @@ const VERBS: &[Verb] = &[
             }
         })
     }),
+    row("JSONEDIT op pointer [args]", "Edit the open inline JSON level: set <ptr> <json>, add <ptr> <key> <json>, insert <ptr> <index> <json>, remove <ptr>, rename <ptr> <to>, move <ptr> <to>; `root` is the root pointer", |rest| {
+        match crate::json_edit::parse_json_edit(rest) {
+            Ok(op) => job(move |app, _| {
+                let Some(id) = app.json_level.as_ref().map(|level| level.node_id) else {
+                    return eprintln!("JSONEDIT: no JSON level is open");
+                };
+                if app.edit_json(id, op).is_ok() {
+                    app.save_session();
+                }
+            }),
+            Err(message) => {
+                eprintln!("JSONEDIT: {message}");
+                None
+            }
+        }
+    }),
     row("NEWNOTE", "Graph toolbar's \"+ Note\" button", |_| job(|app, _| app.new_note_shortcut())),
     // With a point, placed like a real drop at that window point; no `save_session` there either -- same reasoning as
     // `WindowEvent::DroppedFile`, so a script sending several `ADDFILE`s with a point still gets one save per batch,
@@ -1388,6 +1404,7 @@ mod tests {
             "NEWJSON",
             "NEWJSON 10 20",
             "DETACHJSON 0000000000000001-4",
+            "JSONEDIT insert /list 0 [1,2]",
             r"ADDFILE C:\x.json 10 20",
             r"ADDDOWNLOAD C:\x.zip",
             "WAITTABS 5",
