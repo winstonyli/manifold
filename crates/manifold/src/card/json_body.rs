@@ -69,12 +69,14 @@ impl App {
             });
         }
         let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);
+        let chips = self.ref_chips(&json.refs, &json.value, &card);
         let look = crate::json_level_ui::CardLook {
             palette: &pal,
             text_color: ui.visuals().text_color(),
             inv_zoom,
             text,
             selected_row: None,
+            chips: &chips,
             hit_rows: &[],
             visible: egui::Rect::EVERYTHING,
             // No child cards or edges at the parent level: a port dot here

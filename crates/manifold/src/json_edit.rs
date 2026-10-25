@@ -387,6 +387,10 @@ impl App {
     pub(crate) fn begin_json_edit(&mut self, pointer: String, on: EditWhat) {
         let Some(level) = self.json_level.as_ref().filter(|l| self.json_editable(l.node_id)) else { return };
         let Some(value) = level.value.pointer(&pointer) else { return };
+        // A Ref row is a link, not text: its value is replaced by deleting or retyping the entry, not by typing.
+        if on == EditWhat::Value && level.refs.contains_key(&pointer) {
+            return;
+        }
         let in_object = parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_object);
         let text = match on {
             EditWhat::Key if in_object => last_key(&pointer),

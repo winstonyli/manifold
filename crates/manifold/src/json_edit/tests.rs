@@ -480,3 +480,59 @@ fn menu_rows_become_ops_with_the_edit_to_open_next() {
     assert_eq!(row("Delete", "/a").unwrap().0, JsonOp::Remove { pointer: "/a".into() });
     assert!(row("Add key", "/a").is_none(), "a scalar takes no key");
 }
+
+/// An inline card `{"x": 0, "l": [0]}` whose `/x` and `/l/0` hold `Ref`s to `targets`, shown as a level.
+fn card_with_refs(targets: [NodeId; 2]) -> (App, NodeId) {
+    let (mut app, id) = card(json!({"x": 0, "l": [0]}));
+    for (pointer, target) in ["/x", "/l/0"].into_iter().zip(targets) {
+        let tree = app.doc.mirror.tree(id, field::BODY).cloned().unwrap();
+        let path = crate::store::body::pointer_path(&tree, pointer).unwrap();
+        app.edit_prop(id, field::BODY, path, Some(crate::store::tree::Leaf::Ref(target)));
+    }
+    app.refresh_inline(id);
+    app.current_group = Some(id);
+    app.sync_json_level();
+    (app, id)
+}
+
+#[test]
+fn chips_show_the_target_title_or_missing() {
+    let probe = card(json!(null)).0;
+    let gone = NodeId { actor: crate::store::model::ActorId(9), counter: 9 };
+    assert!(!probe.nodes.contains_key(&gone));
+    let (mut app, _) = card_with_refs([gone, gone]);
+    let note = crate::session_sync::tests::add_note(&mut app, "n");
+    app.edit_field(note, field::NAME, crate::store::model::FieldValue::Str("N".into()));
+    let id = app.json_level.as_ref().unwrap().node_id;
+    let tree = app.doc.mirror.tree(id, field::BODY).cloned().unwrap();
+    let path = crate::store::body::pointer_path(&tree, "/l/0").unwrap();
+    app.edit_prop(id, field::BODY, path, Some(crate::store::tree::Leaf::Ref(note)));
+    app.refresh_inline(id);
+    let level = app.json_level.as_ref().unwrap();
+    assert_eq!(level.value["x"], json!(gone.to_string()), "the level shows the id string");
+    let root = &level.cards[0];
+    let chips = app.ref_chips(&level.refs, &level.value, root);
+    let shown: Vec<(usize, &str, bool)> = chips.iter().map(|(r, c)| (*r, c.text.as_str(), c.missing)).collect();
+    assert_eq!(shown.len(), 1, "only the root card's own rows: {shown:?}");
+    assert_eq!(shown[0], (1, "missing", true), "/x is entry 1 of the root ({{\"l\", \"x\"}} sorted)");
+    let l = level.cards.iter().find(|c| c.pointer == "/l").unwrap();
+    let chips = app.ref_chips(&level.refs, level.value.pointer("/l").unwrap(), l);
+    assert_eq!((chips[0].0, chips[0].1.text.as_str(), chips[0].1.missing), (0, "N", false));
+}
+
+#[test]
+fn a_ref_row_does_not_open_a_value_edit_and_a_chip_opens_its_target() {
+    let target = NodeId { actor: crate::store::model::ActorId(1), counter: 77 };
+    let (mut app, _) = card_with_refs([target, target]);
+    app.begin_json_edit("/x".into(), EditWhat::Value);
+    assert!(app.json_level.as_ref().unwrap().edit.is_none(), "a link is not typed over");
+    app.begin_json_edit("/x".into(), EditWhat::Key);
+    assert!(app.json_level.as_ref().unwrap().edit.is_some(), "its key still renames");
+    // A click on a chip whose target is gone does nothing; on a live one it leaves the level and selects it.
+    app.apply_json_edit(JsonEdit::OpenRef(target));
+    assert!(app.json_level.is_some());
+    let note = crate::session_sync::tests::add_note(&mut app, "n");
+    app.apply_json_edit(JsonEdit::OpenRef(note));
+    assert!(app.json_level.is_none());
+    assert!(app.interaction.selected.contains(&crate::card_id::CardId::from(note)));
+}

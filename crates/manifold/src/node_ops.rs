@@ -39,7 +39,7 @@ impl App {
         self.place_node(
             Some(id),
             store::model::Kind::Json,
-            Runtime::Json(JsonPayload::inline(0, Default::default())),
+            Runtime::Json(JsonPayload::inline(0, Default::default(), Default::default())),
             at,
         );
         let tree = store::body::value_to_tree(&serde_json::json!({}), &mut |_| self.alloc_node_id())

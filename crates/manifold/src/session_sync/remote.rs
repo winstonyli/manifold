@@ -65,9 +65,9 @@ impl App {
 
     /// The payload of Json card `id` holding its BODY tree (an inline document).
     pub(crate) fn inline_payload(&self, id: NodeId) -> JsonPayload {
-        let tree = self.doc.mirror.tree(id, field::BODY);
-        let value = tree.map_or(serde_json::Value::Null, crate::store::body::tree_to_value);
-        JsonPayload::inline(self.doc.mirror.tree_version(id, field::BODY), std::sync::Arc::new(value))
+        let (value, refs) =
+            self.doc.mirror.tree(id, field::BODY).map_or_else(Default::default, crate::store::body::tree_to_value_refs);
+        JsonPayload::inline(self.doc.mirror.tree_version(id, field::BODY), std::sync::Arc::new(value), refs)
     }
 
     /// Whether the Json card `id` (stored as `fields`) holds its document in BODY: it has a tree, or it has neither a

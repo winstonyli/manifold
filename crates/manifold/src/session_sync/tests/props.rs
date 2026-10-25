@@ -187,7 +187,7 @@ fn a_committed_tree_edit_survives_the_landing_of_a_parked_remote_change() {
 fn set_body_replaces_the_tree_and_queues_only_the_difference() {
     let path = temp_dir("set-body").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let id = add(&mut app, Kind::Json, Runtime::Json(JsonPayload::inline(0, Default::default())));
+    let id = add(&mut app, Kind::Json, Runtime::Json(JsonPayload::inline(0, Default::default(), Default::default())));
     let tree = |app: &mut App, v: serde_json::Value| {
         let mut ids = Vec::new();
         crate::store::body::value_to_tree(&v, &mut |_| {

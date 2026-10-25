@@ -40,6 +40,8 @@ pub(crate) struct JsonLevel {
     pub(crate) menu: Option<(String, egui::Pos2)>,
     /// The text box open over a row (inline levels only).
     pub(crate) edit: Option<RowEdit>,
+    /// Pointers whose entry is a `Ref` chip, with its target (the node's `JsonPayload::refs`).
+    pub(crate) refs: Arc<std::collections::BTreeMap<String, NodeId>>,
 }
 
 /// The outline's own state (spec "Outline"): not saved, separate from
@@ -105,6 +107,8 @@ pub(crate) enum JsonEdit {
     Commit,
     /// Escape in the text box.
     CancelEdit,
+    /// A click on a `Ref` row: shows the target card, if it is still there.
+    OpenRef(NodeId),
     /// A structural or type edit; the second part opens a text box once the edit has landed.
     Op(JsonOp, Option<(String, EditWhat)>),
 }
@@ -135,6 +139,7 @@ impl JsonLevel {
             search: Search::default(),
             menu: None,
             edit: None,
+            refs: Arc::default(),
         };
         level.relayout(view);
         level
@@ -273,11 +278,24 @@ impl App {
                     level.relayout(view);
                 }
             }
-            _ => self.json_level = Some(JsonLevel::new(id, json.value.clone(), view)),
+            _ => {
+                let mut level = JsonLevel::new(id, json.value.clone(), view);
+                level.refs = json.refs.clone();
+                self.json_level = Some(level);
+            }
         }
         // Here, not in the outline's build, so a worker's answer lands
         // while the outline is hidden (headless `JSONSEARCH`).
         self.receive_json_search();
+    }
+
+    /// Leaves the level for the one `target` is on and selects it; nothing when it is gone.
+    pub(crate) fn open_ref(&mut self, target: NodeId) {
+        if !self.nodes.contains_key(&target) {
+            return;
+        }
+        self.show_level_of(target);
+        self.interaction.selected.insert(CardId::from(target));
     }
 
     /// A new document for the level shown for `id` (another replica changed it): the selection and the outline's open
@@ -285,7 +303,9 @@ impl App {
     /// cards are laid out again. No level for `id` open: nothing to do.
     pub(crate) fn swap_json_value(&mut self, id: NodeId, value: Arc<serde_json::Value>) {
         let view = self.doc.mirror.view(id).unwrap_or(&json_view::NO_VIEW);
+        let refs = self.nodes.get(&id).and_then(|n| n.as_json()).map(|p| p.refs.clone()).unwrap_or_default();
         let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) else { return };
+        level.refs = refs;
         level.nodes = json_view::count_nodes(&value);
         level.expanded = json_view::default_expanded(&value);
         level.value = value;
@@ -362,6 +382,7 @@ impl App {
             }
             JsonEdit::Relayout => self.edit_json_view(|view, _, _| view.clear_positions()),
             JsonEdit::Color(pointer, color) => self.edit_json_view(|view, _, _| view.entry(&pointer).color = color),
+            JsonEdit::OpenRef(target) => self.open_ref(target),
             JsonEdit::Begin(pointer, what) => self.begin_json_edit(pointer, what),
             JsonEdit::Commit => self.commit_json_edit(),
             JsonEdit::CancelEdit => {

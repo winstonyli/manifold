@@ -236,6 +236,12 @@ fn push_card_text(deferred_overlays: &mut DeferredOverlays, items: Vec<TextItem>
     }));
 }
 
+/// A `Ref` row's value as a chip: the target card's name, or "missing" when it is gone.
+pub(crate) struct Chip {
+    pub(crate) text: String,
+    pub(crate) missing: bool,
+}
+
 /// How one card looks this frame.
 pub(crate) struct CardLook<'a> {
     pub(crate) palette: &'a Palette,
@@ -244,6 +250,8 @@ pub(crate) struct CardLook<'a> {
     /// Text, or gray bars (level of detail).
     pub(crate) text: bool,
     pub(crate) selected_row: Option<usize>,
+    /// Entry rows (as `selected_row`) whose value is a `Ref`, drawn as chips.
+    pub(crate) chips: &'a [(usize, Chip)],
     /// Sorted entry rows that match the search.
     pub(crate) hit_rows: &'a [usize],
     /// The world rect shown (the camera's): only entry rows intersecting it are painted. `Rect::EVERYTHING`
@@ -467,11 +475,17 @@ pub(crate) fn paint_json_content(
                 size: TEXT_SIZE,
             });
         }
+        let chip = look.chips.iter().find(|(entry, _)| *entry == skip + row - lead).map(|(_, chip)| chip);
+        let (value_text, value_color) = match chip {
+            Some(chip) if chip.missing => (chip.text.clone(), pal.muted),
+            Some(chip) => (chip.text.clone(), accent(&painter.ctx().global_style().visuals)),
+            None => (parts.value, pal.of(parts.kind)),
+        };
         text.push(TextItem {
             pos: egui::pos2(right, y),
             align: egui::Align2::RIGHT_CENTER,
-            text: parts.value,
-            color: pal.of(parts.kind),
+            text: value_text,
+            color: value_color,
             max_width: value_width,
             size: TEXT_SIZE,
         });
@@ -556,6 +570,24 @@ fn draw_row_edit(ui: &mut egui::Ui, node: NodeId, edit: &mut RowEdit, rect: egui
 }
 
 impl App {
+    /// The chips of `card`'s shown rows: each `refs` pointer that is one of them, with its target's name.
+    pub(crate) fn ref_chips(
+        &self,
+        refs: &std::collections::BTreeMap<String, NodeId>,
+        value: &Value,
+        card: &json_view::Card,
+    ) -> Vec<(usize, Chip)> {
+        refs.iter()
+            .filter_map(|(pointer, &target)| {
+                let row = json_view::row_of(value, &card.pointer, pointer, card.skip..card.skip + card.rows)?;
+                let missing = !self.nodes.contains_key(&target);
+                let name = crate::names::display_name(self.doc.mirror.name(target), crate::names::UNTITLED);
+                let text = if missing { "missing".to_owned() } else { crate::names::to_plain(&name) };
+                Some((row, Chip { text, missing }))
+            })
+            .collect()
+    }
+
     /// The JSON level's cards, inside `build_graph_ui`'s Scene: painted,
     /// culled to the viewport, and their clicks and drags turned into
     /// `edits`, applied once the Scene closure returns. A drag moves the
@@ -644,12 +676,14 @@ impl App {
             let fill = if value.is_array() { base_fill.lerp_to_gamma(ARRAY_TINT, 0.12) } else { base_fill };
             let tint = view.and_then(|v| v.get(&card.pointer)).and_then(|o| o.color).map(rgb);
             paint_json_frame(ui.painter(), rect, fill, tint, border, inv_zoom);
+            let chips = self.ref_chips(&level.refs, value, card);
             let look = CardLook {
                 palette: &pal,
                 text_color,
                 inv_zoom,
                 text: zoom_scale >= LOD_TEXT_ZOOM,
                 selected_row,
+                chips: &chips,
                 hit_rows,
                 visible: self.camera.rect,
                 ports: true,
@@ -703,7 +737,11 @@ impl App {
                     } else if level.more_row_at(i, p) {
                         edits.push(JsonEdit::More(card.pointer.clone()));
                     } else {
-                        edits.push(JsonEdit::Select(level.row_at(i, p).unwrap_or_else(|| card.pointer.clone())));
+                        let row = level.row_at(i, p);
+                        if let Some(&target) = row.as_ref().and_then(|r| level.refs.get(r)) {
+                            edits.push(JsonEdit::OpenRef(target));
+                        }
+                        edits.push(JsonEdit::Select(row.unwrap_or_else(|| card.pointer.clone())));
                     }
                 }
             }
@@ -1138,6 +1176,7 @@ mod tests {
                 inv_zoom: 1.0,
                 text: true,
                 selected_row,
+                chips: &[],
                 hit_rows,
                 visible,
                 ports: true,

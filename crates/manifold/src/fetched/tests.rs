@@ -693,7 +693,12 @@ fn inline_cards_do_no_file_work() {
     let mut app = App::default();
     let id = app.alloc_node_id();
     let at = app.placement(id, None);
-    app.place_node(Some(id), Kind::Json, Runtime::Json(JsonPayload::inline(1, Arc::new(serde_json::json!({})))), at);
+    app.place_node(
+        Some(id),
+        Kind::Json,
+        Runtime::Json(JsonPayload::inline(1, Arc::new(serde_json::json!({})), Default::default())),
+        at,
+    );
     assert!(app.nodes[&id].runtime.file_path().is_none());
     assert!(app.nodes[&id].runtime.json_is_inline());
     app.retry_missing_file(id);

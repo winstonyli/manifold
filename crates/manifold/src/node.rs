@@ -251,6 +251,9 @@ pub(crate) struct JsonPayload {
     /// Same as `ImagePayload::error`: a restored card whose file couldn't
     /// be loaded (`value` is `Null`).
     pub(crate) error: Option<String>,
+    /// Pointers whose entry is a `Ref` to another card, in `value` as that card's id string (inline documents only;
+    /// `store::body::tree_to_value_refs`).
+    pub(crate) refs: std::sync::Arc<std::collections::BTreeMap<String, crate::store::model::NodeId>>,
     // Where it came from on the web (`Mirror::url`) and what the user changed about its level (spec "Saved view
     // state", `Mirror::view`) are the mirror's.
 }
@@ -264,11 +267,15 @@ pub(crate) enum JsonSource {
 
 impl JsonPayload {
     pub(crate) fn file(path: String, value: std::sync::Arc<serde_json::Value>, error: Option<String>) -> Self {
-        JsonPayload { source: JsonSource::File { path }, value, error }
+        JsonPayload { source: JsonSource::File { path }, value, error, refs: Default::default() }
     }
 
-    pub(crate) fn inline(version: u64, value: std::sync::Arc<serde_json::Value>) -> Self {
-        JsonPayload { source: JsonSource::Inline { version }, value, error: None }
+    pub(crate) fn inline(
+        version: u64,
+        value: std::sync::Arc<serde_json::Value>,
+        refs: std::collections::BTreeMap<String, crate::store::model::NodeId>,
+    ) -> Self {
+        JsonPayload { source: JsonSource::Inline { version }, value, error: None, refs: refs.into() }
     }
 
     /// The file's path; empty for an inline document.
@@ -527,7 +534,7 @@ mod tests {
     #[test]
     fn an_inline_json_has_no_path_and_is_enterable_even_when_null() {
         use super::*;
-        let p = JsonPayload::inline(3, std::sync::Arc::new(serde_json::Value::Null));
+        let p = JsonPayload::inline(3, std::sync::Arc::new(serde_json::Value::Null), Default::default());
         assert_eq!(p.path(), "");
         assert!(p.is_inline() && p.enterable());
         assert!(Runtime::Json(p).file_path().is_none());

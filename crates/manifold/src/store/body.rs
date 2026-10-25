@@ -5,6 +5,8 @@
 //! and `Key("v")` = the element. A container with any `Id` child reads as an array (its `Key` children are ignored);
 //! elements sort by `(o, id)`; an element with no `v` is skipped and one with no `o` sorts first.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use super::model::{ActorId, NodeId};
@@ -69,8 +71,20 @@ pub fn root() -> TreePath {
 
 type Entries<'a> = [(Vec<Seg>, &'a Leaf)];
 
-/// The document `tree` holds; `Null` for an empty tree.
+/// The document `tree` holds; `Null` for an empty tree. A `Ref` leaf reads as `{"$ref": "<id>"}`.
 pub fn tree_to_value(tree: &Tree) -> Value {
+    document(tree, &mut None)
+}
+
+/// The document as a level shows it: a `Ref` leaf is its id as a string and its pointer is recorded in the map, so a
+/// typed `{"$ref": "5"}` object (no `Ref` leaf) stays plain data.
+pub fn tree_to_value_refs(tree: &Tree) -> (Value, BTreeMap<String, NodeId>) {
+    let mut refs = Some(BTreeMap::new());
+    let value = document(tree, &mut refs);
+    (value, refs.unwrap_or_default())
+}
+
+fn document(tree: &Tree, refs: &mut Option<BTreeMap<String, NodeId>>) -> Value {
     let entries: Vec<(Vec<Seg>, &Leaf)> = resolved(tree)
         .map(|(p, l)| (p.segments(), l))
         .filter(|(segs, _)| matches!(segs.first(), Some(Seg::Key(k)) if k == "v"))
@@ -78,7 +92,7 @@ pub fn tree_to_value(tree: &Tree) -> Value {
     if entries.is_empty() {
         Value::Null
     } else {
-        build(&entries, 1)
+        build(&entries, 1, "", refs)
     }
 }
 
@@ -90,14 +104,19 @@ fn child_run<'a>(entries: &'a Entries<'a>, depth: usize, name: &str) -> &'a Entr
     &entries[start..start + len]
 }
 
-/// `entries` all share their first `depth` segments and are in path order, which groups children together.
-fn build(entries: &Entries, depth: usize) -> Value {
+/// `entries` all share their first `depth` segments and are in path order, which groups children together. `pointer`
+/// is where they sit in the document; with `refs` a `Ref` leaf is recorded there and read as its id string.
+fn build(entries: &Entries, depth: usize, pointer: &str, refs: &mut Option<BTreeMap<String, NodeId>>) -> Value {
     // Another replica could send a tree nested past what `value_to_tree` writes; stop before the stack does.
     if depth > 2 * MAX_DEPTH + 2 {
         return Value::Null;
     }
     if let [(segs, leaf)] = entries {
         if segs.len() == depth {
+            if let (Leaf::Ref(id), Some(refs)) = (leaf, refs.as_mut()) {
+                refs.insert(pointer.to_owned(), *id);
+                return Value::String(id.to_string());
+            }
             return leaf_json(leaf);
         }
     }
@@ -113,7 +132,7 @@ fn build(entries: &Entries, depth: usize) -> Value {
         start += len;
     }
     if groups.iter().any(|(seg, _)| matches!(seg, Seg::Id(_))) {
-        let mut elements: Vec<(String, NodeId, Value)> = Vec::new();
+        let mut elements: Vec<(String, NodeId, &Entries)> = Vec::new();
         for (seg, group) in &groups {
             let Seg::Id(id) = seg else { continue };
             let value = child_run(group, depth + 1, "v");
@@ -124,15 +143,21 @@ fn build(entries: &Entries, depth: usize) -> Value {
                 Some((_, Leaf::Str(s))) => s.clone(),
                 _ => String::new(),
             };
-            elements.push((order, *id, build(value, depth + 2)));
+            elements.push((order, *id, value));
         }
         elements.sort_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
-        return Value::Array(elements.into_iter().map(|(_, _, v)| v).collect());
+        return Value::Array(
+            elements
+                .into_iter()
+                .enumerate()
+                .map(|(i, (_, _, run))| build(run, depth + 2, &child_pointer(pointer, &i.to_string()), refs))
+                .collect(),
+        );
     }
     let mut map = Map::new();
     for (seg, group) in groups {
         if let Seg::Key(k) = seg {
-            map.insert(k.clone(), build(group, depth + 1));
+            map.insert(k.clone(), build(group, depth + 1, &child_pointer(pointer, k), refs));
         }
     }
     Value::Object(map)
@@ -329,6 +354,26 @@ mod tests {
         tree.insert(key(&el(9), "v"), Leaf::Int(9));
         tree.insert(key(&el(4), "o"), Leaf::Str("a".into()));
         assert_eq!(tree_to_value(&tree), json!([9, 5, 7]), "no order first, then order, then id");
+    }
+
+    #[test]
+    fn a_ref_leaf_is_an_id_string_plus_a_marked_pointer() {
+        let mut tree = value_to_tree(&json!({"x": 0, "l": [0, 1]}), &mut mint_from(0)).unwrap();
+        for (pointer, target) in [("/x", 5), ("/l/1", 6)] {
+            tree.insert(pointer_path(&tree, pointer).unwrap(), Leaf::Ref(id(target)));
+        }
+        let (value, refs) = tree_to_value_refs(&tree);
+        assert_eq!(value, json!({"x": id(5).to_string(), "l": [0, id(6).to_string()]}));
+        assert_eq!(refs, BTreeMap::from([("/x".to_owned(), id(5)), ("/l/1".to_owned(), id(6))]));
+        assert_eq!(tree_to_value(&tree)["x"], json!({"$ref": id(5).to_string()}), "the export form is unchanged");
+    }
+
+    #[test]
+    fn a_typed_dollar_ref_string_is_not_a_chip() {
+        let tree = value_to_tree(&json!({"x": {"$ref": "5"}}), &mut mint_from(0)).unwrap();
+        let (value, refs) = tree_to_value_refs(&tree);
+        assert_eq!(value, json!({"x": {"$ref": "5"}}));
+        assert!(refs.is_empty());
     }
 
     #[test]
