@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Card properties, labels and inline Json cards (design, 2026-10-24)
@@ -24,7 +24,7 @@ string, write-back to files.
 ### 1.1 Register keys
 
 `Node.fields` changes from `BTreeMap<u32, Reg>` to `BTreeMap<RegKey, Reg>`, where
-`RegKey { field: u32, path: Box<[u8]> }`. Every existing field has an empty `path`, so each is a one-segment path and
+`RegKey { field: u32, path: TreePath }` (`store/tree.rs`; the bytes of 1.3). Every existing field has an empty `path`, so each is a one-segment path and
 behaves as before (`Node::get(no)` reads the empty path). Two new fields hold trees: `PROPS = 25` (annotations on any
 card) and `BODY = 26` (an inline Json card's document). A non-empty path on any other *known* field is ignored by
 `apply`; on a field number this build does not know it is kept raw, as unknown fields are now.
@@ -39,7 +39,7 @@ escaped inside text), so a subtree is one key range and a sorted scan visits par
 
 A register's `enc` holds one value, or is empty (a tombstone, as now):
 
-`Null | Bool | Int(i64) | Float(f64) | Num(text) | Str | Ref(NodeId) | EmptyObj | EmptyArr`
+`Null | Bool | Int(i64) | Float(f64) | Num(text) | Str | Ref(NodeId) | EmptyObj | EmptyArr` (the Rust type is `Leaf`)
 
 `Num` keeps a number that is neither an `i64` nor a finite `f64` as its source text, so a JSON number round-trips.
 `EmptyObj` and `EmptyArr` are leaf values: they are how `{}` and `[]` are stored, and any child written below them
@@ -70,7 +70,7 @@ Properties this gives, each pinned by a test (section 6):
   the same ops give the same tree.
 - A register at a path only ever gains stamp, so what it hides only grows (no container markers, which would break
   this: replacing a scalar by a marker would un-hide children that arrived earlier).
-- A snapshot omits the registers a prefix register hides (they can never become visible again), so equal documents still
+- Compaction (`Doc::prune`) drops the registers a prefix register hides (they can never become visible again), so equal documents still
   encode to equal bytes. Tombstones are kept (an older op that arrives late must still be hidden), one per deleted
   subtree root, bounded by deletes.
 - In `BODY`, removing the last child of an object or array writes `EmptyObj` or `EmptyArr` at its path, so the emptied
@@ -83,7 +83,7 @@ A node-level `Delete` still clears every register of the node, trees included, a
 
 ### 1.5 Operations and the file
 
-- `OpBody::Set { node, field, path, enc }` gains `path: Box<[u8]>` (empty for all current uses). The Set body
+- `OpBody::Set { node, field, path, enc }` gains `path: TreePath` (root for all current uses). The Set body
   (`{1: node, 2: field, 3: enc}`) gains an optional field 4 (the path), and a snapshot register
   (`{1: field, 2: stamp, 3: enc}`) likewise; both are free today. `Create`'s embedded field map stays path-less: a
   card made with properties (duplicate, import) is a `Create` followed by `Set`s.
@@ -171,7 +171,7 @@ replayed through `edit_prop` and skipped when the register no longer holds the v
 Each ends green and could be tagged on its own.
 
 1. **Store**: `RegKey`, paths, values, the merge rule, the file format, the tests in section 6. No UI.
-2. **App**: mirror trees and version counter, `edit_prop`, `UndoKind::Props`, duplicate and `Carried`, export and import.
+2. **App** (plan 2; plan 1 is this section 1 only, and `Kind::card()` moved to plan 3): mirror trees and version counter, `edit_prop`, `UndoKind::Props`, duplicate and `Carried`, export and import.
 3. **Labels**: `Kind::card()` first (D7), then `Kind::Label`, the menu and bar, chips and border, find, suggest arm,
    color removal, the `labels` gate stage.
 4. **Inline Json**: `BODY`, the level reading it, the write path, detach and export, the cap.
@@ -180,7 +180,7 @@ Each ends green and could be tagged on its own.
 
 - **Convergence** (phase 1): a seeded randomized test applies the same op multiset in shuffled orders, with duplicates,
   across 3 actors and mixed set, delete, scalar-over-subtree and subtree-over-scalar, and requires equal resolved trees
-  and equal snapshot bytes (a snapshot omits hidden registers, 1.4).
+  and equal compacted bytes (compaction drops hidden registers, 1.4).
 - Hidden-stays-hidden: a late older op under a tombstone stays hidden; compaction dropping dominated registers does not
   change the resolved tree; a tombstone survives a round trip.
 - Path order: a subtree is one range; the tuple encoding sorts parents before children and never lets a key prefix

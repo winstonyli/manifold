@@ -164,7 +164,8 @@ impl Doc {
     /// Drops what no later op can need while the document has never been
     /// shared (spec "Compact"). First, deleted nodes and placeholders that
     /// no group edge names; this repeats, since dropping a child can free
-    /// its group. Then the version entries of actors nothing names any
+    /// its group. Then registers a newer ancestor hides (`Node::visible_regs`): their effect is already in the
+    /// hider, so a late older write stays hidden without them. Then the version entries of actors nothing names any
     /// more. What is shown doesn't change; a later op naming a dropped
     /// node makes a placeholder, which isn't shown. Call after
     /// `forget_moves`: the move log names nodes too.
@@ -176,6 +177,12 @@ impl Doc {
             self.nodes.retain(|id, n| named.contains(id) || !(n.deleted || !n.has_type()));
             if self.nodes.len() == before {
                 break;
+            }
+        }
+        for node in self.nodes.values_mut() {
+            if node.visible_regs().count() < node.fields.len() {
+                let keep: BTreeSet<RegKey> = node.visible_regs().map(|(key, _)| key.clone()).collect();
+                node.fields.retain(|key, _| keep.contains(key));
             }
         }
         let mut used = BTreeSet::new();

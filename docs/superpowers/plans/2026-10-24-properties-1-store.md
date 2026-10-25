@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Properties 1: path-keyed registers in the store — Implementation Plan
@@ -53,8 +53,8 @@ A scratch crate compiled and passed the T1 and T4 code and tests below (20 tests
 - Consumes: `NodeId { actor: ActorId(u64), counter: u64 }`; `tlv::{Reader, Writer, TlvError}`; `varint::{zigzag, unzigzag}`; `testutil::XorShift` (`.below(n)`).
 - Produces: `Seg::{Key(String), Id(NodeId)}`; `TreePath` with `of(&[Seg])`, `child(&Seg)`, `parent()`, `segments()`, `is_root()`, `as_bytes()`, `from_bytes(&[u8])`, `is_ancestor_of(&TreePath)`, `subtree_end()`, `Default` = root, `Ord`; `Leaf::{Null, Bool, Int, Float, Num, Str, Ref, EmptyObj, EmptyArr}` with `encode() -> Vec<u8>` and `decode(&[u8]) -> Result<Option<Leaf>, TlvError>`.
 
-- [ ] **Step 1:** In `store/model.rs` make `fn id_message(id: NodeId) -> Writer` and `fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError>` (both private today, lines ~410 and ~421) `pub(super)`; tree.rs calls them with exactly those signatures. `Writer` has `varint`, `fixed64`, `str`, `message`, `into_bytes`; the reader value has `bool`, `u64`, `fixed64`, `str`, `bytes` (checked against `store/tlv.rs`).
-- [ ] **Step 2:** Create `store/tree.rs` with this content (the test module is part of the file). Add `mod tree;` to `store/mod.rs`.
+- [x] **Step 1:** In `store/model.rs` make `fn id_message(id: NodeId) -> Writer` and `fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError>` (both private today, lines ~410 and ~421) `pub(super)`; tree.rs calls them with exactly those signatures. `Writer` has `varint`, `fixed64`, `str`, `message`, `into_bytes`; the reader value has `bool`, `u64`, `fixed64`, `str`, `bytes` (checked against `store/tlv.rs`).
+- [x] **Step 2:** Create `store/tree.rs` with this content (the test module is part of the file). Add `mod tree;` to `store/mod.rs`.
 
 ```rust
 //! Tree values (spec 2026-10-24-properties-design.md, sections 1.1 and 1.2): the address of a register inside a
@@ -373,8 +373,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: 5 tests pass (`a_path_reads_back…`, `bytes_that_are_not_whole_segments…`, `a_subtree_is_one_range…`, `leaves_round_trip`, `equal_values_encode_equally…`). Mutation check: temporarily set `AFTER` to `0`; `a_subtree_is_one_range…` must fail; restore.
-- [ ] **Step 4:** `cargo fmt --all` and clippy (Global Constraints). Commit: `store: TreePath and Leaf, the address and value of a tree register` + trailer.
+- [x] **Step 3:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: 5 tests pass (`a_path_reads_back…`, `bytes_that_are_not_whole_segments…`, `a_subtree_is_one_range…`, `leaves_round_trip`, `equal_values_encode_equally…`). Mutation check: temporarily set `AFTER` to `0`; `a_subtree_is_one_range…` must fail; restore.
+- [x] **Step 4:** `cargo fmt --all` and clippy (Global Constraints). Commit: `store: TreePath and Leaf, the address and value of a tree register` + trailer.
 
 ---
 
@@ -385,7 +385,7 @@ mod tests {
 **Interfaces:**
 - Produces: `RegKey { field: u32, path: TreePath }` (`Debug, Clone, PartialEq, Eq, Ord, Hash`), `RegKey::of(no) -> RegKey` (root path), `Node.fields: BTreeMap<RegKey, Reg>`, `Node::reg(&self, no: u32) -> Option<&Reg>` (the root-path register), `field::PROPS = 25`, `field::BODY = 26`.
 
-- [ ] **Step 1:** Baseline: `cargo test -j 8 -p manifold --bin manifold`, note the pass count. Then in `store/model.rs` add above `Node` (with `use super::tree::TreePath;`):
+- [x] **Step 1:** Baseline: `cargo test -j 8 -p manifold --bin manifold`, note the pass count. Then in `store/model.rs` add above `Node` (with `use super::tree::TreePath;`):
 
 ```rust
 /// Where a register lives in a node: a field and a path inside that field's tree. Every scalar field sits at the
@@ -404,7 +404,7 @@ impl RegKey {
 ```
 
   Change `Node.fields` to `BTreeMap<RegKey, Reg>` and its doc comment to "by field and path". Add to `impl Node`: `pub fn reg(&self, no: u32) -> Option<&Reg> { self.fields.get(&RegKey::of(no)) }`.
-- [ ] **Step 2:** Add to `mod field`:
+- [x] **Step 2:** Add to `mod field`:
 
 ```rust
     /// Tree fields (no `FieldDef`: `Doc::apply` keeps them raw, paths included). PROPS: a card's properties; BODY: an
@@ -415,8 +415,8 @@ impl RegKey {
     pub const BODY: u32 = 26;
 ```
 
-- [ ] **Step 3:** Fix `model.rs` users: `has_type` → `self.reg(field::TYPE).is_some()`; `ty` → `self.reg(field::TYPE)`; `get` → `self.reg(no)`; `with_type` → `BTreeMap::from([(RegKey::of(field::TYPE), reg)])`; `closed_roots` → `n.reg(field::CLOSED)?.stamp`; `message` (cfg test) → iterate `self.fields.iter().filter(|(k, _)| k.path.is_root())` and compare `k.field` in the group-insertion test. In the tests (lines ~843–847, 913, 988) use `RegKey::of(…)` for keys.
-- [ ] **Step 4:** `ops.rs`: change `set_reg` to take the key:
+- [x] **Step 3:** Fix `model.rs` users: `has_type` → `self.reg(field::TYPE).is_some()`; `ty` → `self.reg(field::TYPE)`; `get` → `self.reg(no)`; `with_type` → `BTreeMap::from([(RegKey::of(field::TYPE), reg)])`; `closed_roots` → `n.reg(field::CLOSED)?.stamp`; `message` (cfg test) → iterate `self.fields.iter().filter(|(k, _)| k.path.is_root())` and compare `k.field` in the group-insertion test. In the tests (lines ~843–847, 913, 988) use `RegKey::of(…)` for keys.
+- [x] **Step 4:** `ops.rs`: change `set_reg` to take the key:
 
 ```rust
 fn set_reg(node: &mut Node, key: RegKey, stamp: Stamp, enc: Vec<u8>) {
@@ -427,9 +427,9 @@ fn set_reg(node: &mut Node, key: RegKey, stamp: Stamp, enc: Vec<u8>) {
 ```
 
   The Create loop passes `RegKey::of(field.no)`; the Set arm passes `RegKey::of(*no)`. `prune`'s `node.fields.values()` is unchanged. Tests at ops.rs ~251/255: `fields[&40]` → `fields[&RegKey::of(40)]`.
-- [ ] **Step 5:** `journal.rs`: snapshot loop `for (key, reg) in &node.fields { … r.varint(1, u64::from(key.field)); …`; decode inserts `RegKey::of(no)`. `store/mod.rs` testutil `shown` returns `Vec<(NodeId, BTreeMap<RegKey, Reg>, Option<NodeId>)>`.
-- [ ] **Step 6:** `closed.rs:140`: `n.fields.get(&field::CLOSED)?.stamp` → `n.reg(field::CLOSED)?.stamp`. Test sites: `journal/tests.rs` ~249 and ~282, `session_sync/tests.rs:478` (`.fields.keys().map(|k| k.field).collect()`), `session_sync/tests/remote.rs` ~157/432/1018, `session_sync/tests/writes.rs` ~1186/1193. Then `cargo check -j 8 -p manifold --all-targets` and fix any further `Node.fields` use the compiler reports (the other `.fields` maps — `Snapshot`, `Mirror`, `json` — are different types and stay).
-- [ ] **Step 7:** Compare with the baseline taken before Step 1 (run `cargo test -j 8 -p manifold --bin manifold` on the clean tree first and note the pass count). Run it again — Expected: the same count, all pass. Clippy, fmt, commit: `store: Node.fields keyed by (field, path); every field is a root path` + trailer.
+- [x] **Step 5:** `journal.rs`: snapshot loop `for (key, reg) in &node.fields { … r.varint(1, u64::from(key.field)); …`; decode inserts `RegKey::of(no)`. `store/mod.rs` testutil `shown` returns `Vec<(NodeId, BTreeMap<RegKey, Reg>, Option<NodeId>)>`.
+- [x] **Step 6:** `closed.rs:140`: `n.fields.get(&field::CLOSED)?.stamp` → `n.reg(field::CLOSED)?.stamp`. Test sites: `journal/tests.rs` ~249 and ~282, `session_sync/tests.rs:478` (`.fields.keys().map(|k| k.field).collect()`), `session_sync/tests/remote.rs` ~157/432/1018, `session_sync/tests/writes.rs` ~1186/1193. Then `cargo check -j 8 -p manifold --all-targets` and fix any further `Node.fields` use the compiler reports (the other `.fields` maps — `Snapshot`, `Mirror`, `json` — are different types and stay).
+- [x] **Step 7:** Compare with the baseline taken before Step 1 (run `cargo test -j 8 -p manifold --bin manifold` on the clean tree first and note the pass count). Run it again — Expected: the same count, all pass. Clippy, fmt, commit: `store: Node.fields keyed by (field, path); every field is a root path` + trailer.
 
 ---
 
@@ -441,7 +441,7 @@ fn set_reg(node: &mut Node, key: RegKey, stamp: Stamp, enc: Vec<u8>) {
 - Consumes: `TreePath::{from_bytes, as_bytes, is_root}`, `RegKey`, `Node::tree` (T4 lands later: this task's tests read `fields` directly, or move that assertion to T5).
 - Produces: `OpBody::Set { node, field, path: TreePath, enc }`; `OpBody::set(node, field, enc) -> OpBody` (root path); `testutil::file_with_version(path: &Path, version: u8) -> Vec<u8>` (replaces `version_one_file`).
 
-- [ ] **Step 1 (tests first).** In `store/journal/tests.rs` (imports: `crate::store::tree::{Leaf, Seg, TreePath}`, `RegKey`) add:
+- [x] **Step 1 (tests first).** In `store/journal/tests.rs` (imports: `crate::store::tree::{Leaf, Seg, TreePath}`, `RegKey`) add:
 
 ```rust
 fn props_path(keys: &[&str]) -> TreePath {
@@ -547,8 +547,8 @@ fn a_version_three_file_is_refused_and_set_aside() {
 ```
 
   In `store/mod.rs` testutil rename `version_one_file` to `file_with_version(path: &Path, version: u8)` (doc: "an empty journal whose header says format `version`", `bytes[4] = version`); replace its three calls in `journal/tests.rs` (and the import) and the one in `cli.rs` with `file_with_version(&path, 1)`.
-- [ ] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::journal` — Expected: FAIL (compile: `path` is not a field of `OpBody::Set`).
-- [ ] **Step 3:** `ops.rs`:
+- [x] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::journal` — Expected: FAIL (compile: `path` is not a field of `OpBody::Set`).
+- [x] **Step 3:** `ops.rs`:
 
 ```rust
     /// `enc` is `encode_field(field, value)`; empty resets the field. `path` addresses a register inside a tree field;
@@ -582,10 +582,10 @@ fn a_version_three_file_is_refused_and_set_aside() {
 ```
 
   Update every construction site to `OpBody::set(node, field, enc)`; patterns naming `field`/`enc` without `..` need `path` or `..` (`op_actors` already uses `..`).
-- [ ] **Step 4:** `journal.rs` wire. Snapshot register: after the `3` write, `if !key.path.is_root() { r.bytes(4, key.path.as_bytes()); }`; decode: a `path` local starting `TreePath::default()`, arm `4 => path = TreePath::from_bytes(r.value.bytes()?)?` (map the error the way neighbouring arms map `TlvError`), insert `RegKey { field: no, path }`. Ops: `ops_message`'s Set arm writes `if !path.is_root() { b.bytes(4, path.as_bytes()); }` after the `3` write; `decode_ops` adds a `path` local, arm `(OP_SET, 4) => path = TreePath::from_bytes(f.value.bytes()?)?`, and builds `OpBody::Set { node, field, path, enc: blob }`. Update the op-message doc comment (`5 Set {1: node, 2: field, 3: value encoding, 4: path}`).
-- [ ] **Step 5:** `pub const FORMAT_VERSION: u64 = 4;` and extend its doc comment: "4: registers carry a path (`Set` field 4, snapshot register field 4). 3: …". Keep `read_readable_header`'s `header.version < FORMAT_VERSION` (D1 refuses v3 although it holds no paths); update its doc comment, which names versions 1 and 2, to say any older file is refused.
-- [ ] **Step 6:** `cargo test -j 8 -p manifold --bin manifold` — Expected: all pass, including the 5 new tests; the newer-version test (`FORMAT_VERSION + 1`) still passes.
-- [ ] **Step 7:** fmt, clippy, commit: `store: Set and snapshot registers carry a path; journal format 4` + trailer.
+- [x] **Step 4:** `journal.rs` wire. Snapshot register: after the `3` write, `if !key.path.is_root() { r.bytes(4, key.path.as_bytes()); }`; decode: a `path` local starting `TreePath::default()`, arm `4 => path = TreePath::from_bytes(r.value.bytes()?)?` (map the error the way neighbouring arms map `TlvError`), insert `RegKey { field: no, path }`. Ops: `ops_message`'s Set arm writes `if !path.is_root() { b.bytes(4, path.as_bytes()); }` after the `3` write; `decode_ops` adds a `path` local, arm `(OP_SET, 4) => path = TreePath::from_bytes(f.value.bytes()?)?`, and builds `OpBody::Set { node, field, path, enc: blob }`. Update the op-message doc comment (`5 Set {1: node, 2: field, 3: value encoding, 4: path}`).
+- [x] **Step 5:** `pub const FORMAT_VERSION: u64 = 4;` and extend its doc comment: "4: registers carry a path (`Set` field 4, snapshot register field 4). 3: …". Keep `read_readable_header`'s `header.version < FORMAT_VERSION` (D1 refuses v3 although it holds no paths); update its doc comment, which names versions 1 and 2, to say any older file is refused.
+- [x] **Step 6:** `cargo test -j 8 -p manifold --bin manifold` — Expected: all pass, including the 5 new tests; the newer-version test (`FORMAT_VERSION + 1`) still passes.
+- [x] **Step 7:** fmt, clippy, commit: `store: Set and snapshot registers carry a path; journal format 4` + trailer.
 
 ---
 
@@ -597,7 +597,7 @@ fn a_version_three_file_is_refused_and_set_aside() {
 - Consumes: `RegKey`, `Reg`, `Stamp`, `Node` from `store::model`.
 - Produces: `visible(iter) -> iter`; `Node::visible_regs(&self) -> impl Iterator<Item = (&RegKey, &Reg)>` (not hidden; tombstones included); `Node::tree(&self, no: u32) -> Vec<(TreePath, Leaf, Stamp)>` (live leaves of field `no` in path order).
 
-- [ ] **Step 1:** Change the `use super::model::…` line of `tree.rs` to `use super::model::{decode_id, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};`; in its `tests` module add `use crate::store::model::Hlc;`. Append these to the `tests` module:
+- [x] **Step 1:** Change the `use super::model::…` line of `tree.rs` to `use super::model::{decode_id, id_message, ActorId, Node, NodeId, Reg, RegKey, Stamp};`; in its `tests` module add `use crate::store::model::Hlc;`. Append these to the `tests` module:
 
 ```rust
     fn stamp(n: u64) -> Stamp {
@@ -672,8 +672,8 @@ fn a_version_three_file_is_refused_and_set_aside() {
     }
 ```
 
-- [ ] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: FAIL (compile: `visible_regs`/`tree` not found).
-- [ ] **Step 3:** Add this above the `tests` module in `tree.rs` (the module-level `allow(dead_code)` covers it):
+- [x] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: FAIL (compile: `visible_regs`/`tree` not found).
+- [x] **Step 3:** Add this above the `tests` module in `tree.rs` (the module-level `allow(dead_code)` covers it):
 
 ```rust
 /// The registers no ancestor register overrides, in key order (tombstones included). A register is hidden when a
@@ -715,19 +715,19 @@ impl Node {
 
 ```
 
-- [ ] **Step 4:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: 8 pass.
-- [ ] **Step 5:** fmt, clippy, commit: `store: which registers of a tree count (a newer ancestor hides)` + trailer.
+- [x] **Step 4:** `cargo test -j 8 -p manifold --bin manifold store::tree` — Expected: 8 pass.
+- [x] **Step 5:** fmt, clippy, commit: `store: which registers of a tree count (a newer ancestor hides)` + trailer.
 
 ---
 
-### Task 5: Snapshots omit hidden registers; convergence test
+### Task 5: Compaction drops hidden registers; convergence test
 
 **Files:** Modify `store/journal.rs` (snapshot loop, `doc_actors`), `store/journal/tests.rs`.
 
 **Interfaces:**
 - Consumes: `Node::visible_regs`, `Node::tree`, `Journal::read`, compaction via `Journal::close`, the snapshot-writing function `compact` calls (grep `fn snapshot_message` or the nearest equivalent in `journal.rs`).
 
-- [ ] **Step 1 (tests first).** In `journal/tests.rs` add:
+- [x] **Step 1 (tests first).** In `journal/tests.rs` add:
 
 ```rust
 /// A fresh doc with `ops` applied in the given order.
@@ -809,11 +809,11 @@ fn a_hidden_register_stays_hidden_across_a_snapshot() {
 ```
 
   Adjust while writing: `Op`'s fields (`id`, `hlc`, `body`); `Doc::new(DocId)` and `snapshot_message(&Doc) -> Vec<u8>` (private in `journal.rs`, reachable from `journal/tests.rs`) exist. A duplicate op must be idempotent (equal stamp: `set_reg` keeps the first), which the convergence test covers.
-- [ ] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::journal` — Expected: `a_hidden_register_stays_hidden…` FAILS (the snapshot still keeps `/a/b`). If the convergence test fails, record why before changing anything; it must pass after Step 3.
-- [ ] **Step 3:** `journal.rs`: the snapshot loop iterates `node.visible_regs()` (`for (key, reg) in node.visible_regs()`), and `doc_actors` uses `node.visible_regs().map(|(_, reg)| reg.stamp.actor)` so the actor table matches what the snapshot writes. Leave `Doc::prune`'s `node.fields.values()` on *all* registers: the version table then keeps actors of hidden registers, which is conservative and correct.
-- [ ] **Step 4:** `cargo test -j 8 -p manifold --bin manifold` — Expected: all pass. Then `cargo fmt --all`, clippy, and the suite again.
-- [ ] **Step 5 (docs).** (a) Spec `docs/superpowers/specs/2026-10-24-properties-design.md`: replace `Value`/`Box<[u8]>` wording with `Leaf`/`TreePath`; say plan 1 is the store only and `Kind::card()` (D7) moves to plan 3; front matter `status: active`. (b) `docs/decisions/2026-10-24-properties-tags-json.md` "Open": the path-key wire encoding is resolved as inline per op, no interned table. (c) `grep -rn "format 3\|version 3\|FORMAT_VERSION" README.md docs PARKED.md ROADMAP.md CLAUDE.md` and fix wording that says the journal format is 3. (d) Set this plan's `status: done`. Name the stale files found in the commit message.
-- [ ] **Step 6:** Commit: `store: snapshots drop hidden registers; convergence tests; docs` + trailer.
+- [x] **Step 2:** `cargo test -j 8 -p manifold --bin manifold store::journal` — Expected: `a_hidden_register_stays_hidden…` FAILS (the snapshot still keeps `/a/b`). If the convergence test fails, record why before changing anything; it must pass after Step 3.
+- [x] **Step 3 (as built):** `Doc::prune` (`ops.rs`) drops the registers `Node::visible_regs` omits, in place. Ruling: `rewrite` asserts the reloaded doc equals the in-memory one, so filtering only in the snapshot writer failed it; making prune the one place that canonicalizes keeps that invariant and the snapshot writer unchanged. The convergence test compares `compacted_bytes` (clone, `forget_moves`, `prune`, `snapshot_message`).
+- [x] **Step 4:** `cargo test -j 8 -p manifold --bin manifold` — Expected: all pass. Then `cargo fmt --all`, clippy, and the suite again.
+- [x] **Step 5 (docs).** (a) Spec `docs/superpowers/specs/2026-10-24-properties-design.md`: replace `Value`/`Box<[u8]>` wording with `Leaf`/`TreePath`; say plan 1 is the store only and `Kind::card()` (D7) moves to plan 3; front matter `status: active`. (b) `docs/decisions/2026-10-24-properties-tags-json.md` "Open": the path-key wire encoding is resolved as inline per op, no interned table. (c) `grep -rn "format 3\|version 3\|FORMAT_VERSION" README.md docs PARKED.md ROADMAP.md CLAUDE.md` and fix wording that says the journal format is 3. (d) Set this plan's `status: done`. Name the stale files found in the commit message.
+- [x] **Step 6:** Commit: `store: snapshots drop hidden registers; convergence tests; docs` + trailer.
 
 ## Self-review
 

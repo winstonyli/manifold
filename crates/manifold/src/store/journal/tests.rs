@@ -1600,3 +1600,88 @@ fn a_version_three_file_is_refused_and_set_aside() {
     let (_journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
     assert_eq!(std::fs::read(aside.expect("moved aside")).unwrap(), bytes);
 }
+
+/// A fresh doc with `ops` applied in the given order.
+fn apply_all(ops: &[Op]) -> Doc {
+    let mut doc = Doc::new(DocId([0; 16]));
+    for op in ops {
+        doc.apply(op);
+    }
+    doc
+}
+
+/// What compaction writes for `doc`: pruned (hidden registers dropped), then snapshotted.
+fn compacted_bytes(doc: &Doc) -> Vec<u8> {
+    let mut doc = doc.clone();
+    doc.forget_moves();
+    doc.prune();
+    snapshot_message(&doc)
+}
+
+#[test]
+fn replicas_converge_whatever_the_order_and_duplicates() {
+    let node = NodeId { actor: ActorId(1), counter: 0 };
+    let mut rng = XorShift(0xC0DE_0001);
+    let keys = ["a", "b", "c"];
+    for round in 0..200 {
+        let mut ops = vec![Op {
+            id: node,
+            hlc: Hlc { ms: 1, logical: 0 },
+            body: OpBody::create(node, "application/x-from-the-future", Vec::new()),
+        }];
+        for i in 0..rng.below(14) + 1 {
+            let depth = rng.below(4) as usize;
+            let segs: Vec<Seg> = (0..depth)
+                .map(|_| match rng.below(5) {
+                    3 => Seg::Id(NodeId { actor: ActorId(9), counter: 1 }),
+                    4 => Seg::Id(NodeId { actor: ActorId(9), counter: 2 }),
+                    n => Seg::Key(keys[n as usize].to_owned()),
+                })
+                .collect();
+            let enc = if rng.below(4) == 0 { Vec::new() } else { Leaf::Int(rng.below(100) as i64).encode() };
+            ops.push(Op {
+                id: NodeId { actor: ActorId(1 + rng.below(3)), counter: 100 + i },
+                hlc: Hlc { ms: 2 + rng.below(6), logical: u32::try_from(i).unwrap() }, // distinct stamps: equal ones tie by arrival
+                body: OpBody::Set { node, field: field::PROPS, path: TreePath::of(&segs), enc },
+            });
+        }
+        let reference = apply_all(&ops);
+        for _ in 0..4 {
+            let mut shuffled = ops.clone();
+            for i in (1..shuffled.len()).rev() {
+                shuffled.swap(i, rng.below(i as u64 + 1) as usize);
+            }
+            let dup = shuffled[rng.below(shuffled.len() as u64) as usize].clone();
+            shuffled.push(dup);
+            let doc = apply_all(&shuffled);
+            assert_eq!(doc.nodes, reference.nodes, "round {round}");
+            assert_eq!(doc.nodes[&node].tree(field::PROPS), reference.nodes[&node].tree(field::PROPS));
+            assert_eq!(compacted_bytes(&doc), compacted_bytes(&reference), "compacted bytes, round {round}");
+        }
+    }
+}
+
+#[test]
+fn a_hidden_register_stays_hidden_across_a_snapshot() {
+    let dir = temp_dir("hidden");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (tab, create) = create_tab(&mut txn, "https://h.example/");
+    txn.commit(vec![create, set_at(tab, props_path(&["a", "b"]), Leaf::Int(1))]).unwrap();
+    let txn = journal.begin().unwrap();
+    txn.commit(vec![OpBody::Set { node: tab, field: field::PROPS, path: props_path(&["a"]), enc: Vec::new() }])
+        .unwrap();
+    journal.close().unwrap(); // the snapshot drops the hidden /a/b
+    let mut doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    let props_regs = |doc: &Doc| doc.nodes[&tab].fields.keys().filter(|k| k.field == field::PROPS).count();
+    assert_eq!(props_regs(&doc), 1, "only the /a tombstone");
+    // A replica that still holds an older /a/b applies it late: it must stay hidden.
+    let older = Op {
+        id: NodeId { actor: ActorId(7), counter: 1 },
+        hlc: Hlc { ms: 1, logical: 0 },
+        body: set_at(tab, props_path(&["a", "b"]), Leaf::Int(2)),
+    };
+    doc.apply(&older);
+    assert!(doc.nodes[&tab].tree(field::PROPS).is_empty());
+}

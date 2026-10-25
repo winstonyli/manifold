@@ -82,5 +82,5 @@ profile at 29-39 % machine CPU, so only the ratios mean anything.
 
 ## Open
 
-The array order encoding, the path-key encoding on the wire (inline text per op against an interned path table in the
-snapshot), and the cap value are for the spec.
+The array order encoding and the cap value are for the spec. The path-key encoding on the wire is settled (plan 1):
+inline per op and per snapshot register, no interned table.
