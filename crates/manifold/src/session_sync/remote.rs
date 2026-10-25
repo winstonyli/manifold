@@ -44,14 +44,14 @@ impl App {
         if kind == Kind::Link {
             self.doc.mirror.add_link(id);
             self.queue_create(id);
-            self.mirror_remote(id, fields, None);
+            self.mirror_remote(id, fields, &Trees::new(), None);
             return;
         }
         if self.spawns.spawning.contains_key(&id) {
             self.spawns.remote_in_flight.insert(id, Remote::Shown(snap.clone()));
             return;
         }
-        let (held, changed) = self.mirror_remote(id, fields, group);
+        let (held, changed) = self.mirror_remote(id, fields, &snap.trees, group);
         // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10). Kept as written.
         if !ty.is_empty() {
             self.doc.mirror.init_field(id, field::TYPE, FieldValue::Str(ty.to_owned()));
@@ -527,7 +527,13 @@ impl App {
     /// skips, and the fields whose value differs from what the mirror showed (Ruling 9), whose live effects it
     /// applies. A note's text is held too while the note is typed in, and remembered in `held_text` for the blur
     /// (2b-4 Ruling 7). The links (`parent`, `group`) are set but reported in neither list.
-    pub(super) fn mirror_remote(&mut self, id: NodeId, fields: &Fields, group: Option<NodeId>) -> (Vec<u32>, Vec<u32>) {
+    pub(super) fn mirror_remote(
+        &mut self,
+        id: NodeId,
+        fields: &Fields,
+        trees: &Trees,
+        group: Option<NodeId>,
+    ) -> (Vec<u32>, Vec<u32>) {
         let (mut held, mut changed) = (Vec::new(), Vec::new());
         for (&no, value) in fields {
             if no == field::PARENT {
@@ -553,6 +559,17 @@ impl App {
             if self.doc.mirror.get(id, no) != *value {
                 changed.push(no);
                 self.doc.mirror.set(id, no, value.clone());
+            }
+        }
+        // A tree is replaced by the document's, then the edits still waiting for a save go back on top: they commit
+        // next and win, and everything else the other replica changed shows now.
+        for &(no, _) in &TREE_FIELDS {
+            let mut tree = trees.get(&no).cloned().unwrap_or_default();
+            for (path, enc) in self.doc.writes.tree_edits(id, no) {
+                tree::edit(&mut tree, path, Leaf::decode(enc).ok().flatten());
+            }
+            if self.doc.mirror.set_tree(id, no, tree) {
+                changed.push(no);
             }
         }
         if !self.doc.writes.field_queued(id, field::PARENT) {

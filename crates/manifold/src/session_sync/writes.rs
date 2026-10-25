@@ -30,11 +30,18 @@ pub(crate) struct NodeWrites {
     /// replica id, 0 to reopen. A reopen's re-stamps of nested roots (each keeps its closer) must commit in their old
     /// relative order, which the node order of the map would lose.
     closed: Option<(u64, u64)>,
+    /// Queued path-keyed `Set`s of tree fields (`store::tree`), by `(field, path)`, already encoded; an empty
+    /// encoding is a tombstone. No entry lies under another's path: the newer, shallower edit hides it.
+    trees: BTreeMap<(u32, TreePath), Vec<u8>>,
 }
 
 impl NodeWrites {
     fn is_empty(&self) -> bool {
-        self.life.is_none() && self.group.is_none() && self.fields.is_empty() && self.closed.is_none()
+        self.life.is_none()
+            && self.group.is_none()
+            && self.fields.is_empty()
+            && self.closed.is_none()
+            && self.trees.is_empty()
     }
 }
 
@@ -104,6 +111,39 @@ impl PendingWrites {
 
     pub(crate) fn queue_field(&mut self, node: NodeId, no: u32, enc: Vec<u8>) {
         self.record(node).fields.insert(no, enc);
+    }
+
+    /// Queues a write of `enc` (empty: a tombstone) at `path` in `node`'s tree field `field`, dropping the queued
+    /// writes under `path`: it is newer and hides them.
+    #[allow(dead_code, reason = "called by edit_prop (plan 2 T4)")]
+    pub(crate) fn queue_tree(&mut self, node: NodeId, field: u32, path: TreePath, enc: Vec<u8>) {
+        let trees = &mut self.record(node).trees;
+        let hidden: Vec<_> =
+            trees.range((field, path.clone())..(field, path.subtree_end())).map(|(key, _)| key.clone()).collect();
+        for key in hidden {
+            trees.remove(&key);
+        }
+        trees.insert((field, path), enc);
+    }
+
+    /// `node`'s queued writes to tree field `field`, in path order (an ancestor before what lies under it).
+    pub(crate) fn tree_edits(&self, node: NodeId, field: u32) -> impl Iterator<Item = (&TreePath, &Vec<u8>)> + '_ {
+        self.nodes.get(&node).into_iter().flat_map(move |w| {
+            w.trees
+                .range((field, TreePath::default())..)
+                .take_while(move |((f, _), _)| *f == field)
+                .map(|((_, path), enc)| (path, enc))
+        })
+    }
+
+    #[allow(dead_code, reason = "read by the debug invariant and edit_prop (plan 2 T3/T4)")]
+    pub(crate) fn tree_queued(&self, node: NodeId, field: u32) -> bool {
+        self.tree_edits(node, field).next().is_some()
+    }
+
+    #[allow(dead_code, reason = "read by build_ops (plan 2 T4)")]
+    pub(crate) fn tree_sets(&self) -> impl Iterator<Item = (NodeId, u32, &TreePath, &Vec<u8>)> + '_ {
+        self.nodes.iter().flat_map(|(&n, w)| w.trees.iter().map(move |((f, path), enc)| (n, *f, path, enc)))
     }
 
     pub(crate) fn move_queued(&self, node: NodeId) -> bool {
@@ -191,6 +231,7 @@ impl PendingWrites {
     pub(crate) fn clear_edits(&mut self) {
         for w in self.nodes.values_mut() {
             w.fields.clear();
+            w.trees.clear();
             w.group = None;
         }
         self.nodes.retain(|_, w| !w.is_empty());
@@ -324,7 +365,12 @@ impl App {
                     _ => (no, self.doc.mirror.get(id, no)),
                 })
                 .collect();
-            return Some(Snapshot { ty: ty.to_owned(), group: self.doc.mirror.group(id), fields, trees: Trees::new() });
+            return Some(Snapshot {
+                ty: ty.to_owned(),
+                group: self.doc.mirror.group(id),
+                fields,
+                trees: self.doc.mirror.trees_of(id),
+            });
         }
         if self.doc.mirror.is_link(id) {
             let fields = Kind::Link.fields().iter().map(|&no| (no, self.doc.mirror.get(id, no))).collect();
@@ -562,6 +608,14 @@ impl App {
                 ty.is_some_and(|ty| runtime_has_type(&node.runtime, ty)),
                 "node {id} has type {ty:?} that its runtime does not run: a create funnel passed a mismatched kind"
             );
+            for &(no, name) in &TREE_FIELDS {
+                assert!(
+                    self.doc.writes.tree_queued(id, no)
+                        || self.doc.mirror.tree(id, no).cloned().unwrap_or_default()
+                            == doc.nodes.get(&id).map(Node::trees).and_then(|mut t| t.remove(&no)).unwrap_or_default(),
+                    "node {id}: the mirror's {name} tree differs from the document's: a tree write bypassed the mirror"
+                );
+            }
         }
         for id in self.doc.mirror.link_ids() {
             assert!(live(&id), "link {id} is shown but not live in the document: a create funnel was missed");

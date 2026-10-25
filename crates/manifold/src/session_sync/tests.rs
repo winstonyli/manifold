@@ -16,6 +16,7 @@ mod files;
 mod links;
 mod local_state;
 mod misc;
+mod props;
 mod remote;
 mod spawn;
 mod trail;
@@ -133,6 +134,12 @@ pub(crate) fn add_group(app: &mut App, name: &str) -> NodeId {
 /// Another replica sets one field of `node`.
 pub(crate) fn remote_set(other: &mut Journal, node: NodeId, no: u32, value: FieldValue) {
     other.begin().unwrap().commit(vec![OpBody::set(node, no, encode_field(no, &value))]).unwrap();
+}
+
+/// Another replica's write of `leaf` (`None`: a tombstone) at `path` in `node`'s tree field `field`.
+pub(crate) fn remote_set_tree(other: &mut Journal, node: NodeId, field: u32, path: TreePath, leaf: Option<Leaf>) {
+    let enc = leaf.map_or_else(Vec::new, |l| l.encode());
+    other.begin().unwrap().commit(vec![OpBody::Set { node, field, path, enc }]).unwrap();
 }
 
 /// `node`'s field `no` as the document stores it.

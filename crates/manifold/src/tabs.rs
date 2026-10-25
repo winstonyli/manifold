@@ -357,7 +357,8 @@ impl App {
         let own = if has { self.doc.mirror.jar(spawn.id) } else { spawn.jar };
         let view_kind = if has { self.doc.mirror.view_code(spawn.id) } else { session_sync::view_code(spawn.kind) };
         let url = shared_url.unwrap_or(&spawn.url);
-        let snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
+        let mut snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
+        snapshot.trees = self.doc.mirror.trees_of(spawn.id);
         self.spawns.spawning.insert(spawn.id, snapshot);
         // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
         self.queue_create(spawn.id);

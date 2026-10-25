@@ -13,6 +13,7 @@ use crate::json_view::JsonView;
 use crate::process_manager::ViewKind;
 use crate::session_sync::{color_of, color_value, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
+use crate::store::tree::{self, Leaf, Tree, TreePath, Trees, TREE_FIELDS};
 
 /// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
@@ -38,6 +39,10 @@ pub(crate) struct Mirror {
     defaults: BTreeSet<NodeId>,
     /// Every `Kind::Link` node this replica knows (`link_ids`); their ends are plain fields of `nodes` (`link_ends`).
     link_nodes: BTreeSet<NodeId>,
+    /// Each tree field's live leaves (`store::tree`) with the version they were last changed at, by `(node, field)`.
+    /// Only non-empty trees have an entry. A version is a tick of `tree_clock`, which no forget rewinds.
+    trees: HashMap<(NodeId, u32), (Tree, u64)>,
+    tree_clock: u64,
 }
 
 /// A node's links to other nodes, as ids.
@@ -94,6 +99,55 @@ impl Mirror {
         self.forget_node(id);
     }
 
+    pub(crate) fn tree(&self, id: NodeId, no: u32) -> Option<&Tree> {
+        self.trees.get(&(id, no)).map(|(tree, _)| tree)
+    }
+
+    /// 0 when there is no tree; otherwise a number that changes whenever the tree does and is never reused for this
+    /// `(id, no)`, so a cache keyed on it needs no content hash.
+    #[allow(dead_code, reason = "read by edit_prop and the Props view (plan 2 T4)")]
+    pub(crate) fn tree_version(&self, id: NodeId, no: u32) -> u64 {
+        self.trees.get(&(id, no)).map_or(0, |(_, version)| *version)
+    }
+
+    /// Every non-empty tree of `id`.
+    pub(crate) fn trees_of(&self, id: NodeId) -> Trees {
+        TREE_FIELDS.iter().filter_map(|&(no, _)| Some((no, self.tree(id, no)?.clone()))).collect()
+    }
+
+    /// Replaces `id`'s tree of field `no` (an empty one removes it). True when it differed.
+    pub(crate) fn set_tree(&mut self, id: NodeId, no: u32, tree: Tree) -> bool {
+        let same = match self.tree(id, no) {
+            Some(old) => *old == tree,
+            None => tree.is_empty(),
+        };
+        if same {
+            return false;
+        }
+        self.tree_clock += 1;
+        if tree.is_empty() {
+            self.trees.remove(&(id, no));
+        } else {
+            self.trees.insert((id, no), (tree, self.tree_clock));
+        }
+        true
+    }
+
+    /// A local write at `path` (`store::tree::edit`); returns the leaves it replaced, `None` for no change.
+    #[allow(dead_code, reason = "called by edit_prop (plan 2 T4)")]
+    pub(crate) fn edit_tree(
+        &mut self,
+        id: NodeId,
+        no: u32,
+        path: &TreePath,
+        leaf: Option<Leaf>,
+    ) -> Option<Vec<(TreePath, Leaf)>> {
+        let mut tree = self.tree(id, no).cloned().unwrap_or_default();
+        let removed = tree::edit(&mut tree, path, leaf)?;
+        self.set_tree(id, no, tree);
+        Some(removed)
+    }
+
     /// Drops every entry of node `id` (fields, edges, view, Default index): it left the graph without being deleted
     /// (`App::hide_node`), or, for a link, was forgotten (`forget_link`).
     pub(crate) fn forget_node(&mut self, id: NodeId) {
@@ -101,6 +155,9 @@ impl Mirror {
         self.links.remove(&id);
         self.views.remove(&id);
         self.defaults.remove(&id);
+        for (no, _) in TREE_FIELDS {
+            self.trees.remove(&(id, no));
+        }
     }
 
     /// Every link this replica knows, by id.
@@ -181,6 +238,7 @@ impl Mirror {
         self.links.retain(|&id, _| keep(id));
         self.views.retain(|&id, _| keep(id));
         self.defaults.retain(|&n| keep(n));
+        self.trees.retain(|&(id, _), _| keep(id));
     }
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
@@ -267,7 +325,7 @@ impl Mirror {
     pub(crate) fn carried(&self, id: NodeId) -> Carried {
         let held = self.nodes.get(&id).into_iter().flatten();
         let carried = held.fold(Carried::default(), |carried, (&no, value)| carried.with(no, value.clone()));
-        Carried { parent: self.parent(id), group: self.group(id), ..carried }
+        Carried { parent: self.parent(id), group: self.group(id), trees: self.trees_of(id), ..carried }
     }
 
     /// `init` for everything a node carries; absent values (no pos, an empty string, engine code 0, `false`, no jar) are
@@ -280,6 +338,9 @@ impl Mirror {
             e.insert(Fields::new());
             for (&no, value) in carried.fields.iter().filter(|(&no, _)| no != field::TYPE) {
                 self.set(id, no, value.clone());
+            }
+            for (&no, tree) in &carried.trees {
+                self.set_tree(id, no, tree.clone());
             }
         }
         if let Some(ty) = carried.fields.get(&field::TYPE) {
@@ -321,6 +382,8 @@ pub(crate) struct Carried {
     pub parent: Option<NodeId>,
     /// The group it is shown in.
     pub group: Option<NodeId>,
+    /// Its tree fields' live leaves.
+    pub trees: Trees,
 }
 
 impl Carried {
@@ -613,5 +676,59 @@ mod tests {
             assert_eq!(b.get(node(2), no), a.get(node(1), no), "field {no} is not carried");
         }
         assert_eq!((b.parent(node(2)), b.group(node(2))), (Some(node(3)), Some(node(4))));
+    }
+
+    fn leaf_at(segs: &[&str]) -> TreePath {
+        TreePath::of(&segs.iter().map(|s| tree::Seg::Key((*s).to_owned())).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_tree_edit_bumps_the_version_and_a_repeat_does_not() {
+        let (mut mirror, id) = (Mirror::default(), node(1));
+        assert_eq!(mirror.tree_version(id, field::PROPS), 0);
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), Some(Leaf::Int(1)));
+        let v1 = mirror.tree_version(id, field::PROPS);
+        assert!(v1 > 0);
+        assert!(mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), Some(Leaf::Int(1))).is_none());
+        assert_eq!(mirror.tree_version(id, field::PROPS), v1);
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), None);
+        assert!(mirror.tree(id, field::PROPS).is_none(), "an emptied tree is dropped");
+        assert!(mirror.tree_version(id, field::PROPS) == 0);
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), Some(Leaf::Int(1)));
+        assert!(mirror.tree_version(id, field::PROPS) > v1, "a version is never reused");
+    }
+
+    #[test]
+    fn a_version_never_repeats_after_a_forget() {
+        let (mut mirror, id) = (Mirror::default(), node(1));
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), Some(Leaf::Int(1)));
+        let before = mirror.tree_version(id, field::PROPS);
+        mirror.forget_node(id);
+        assert_eq!(mirror.tree_version(id, field::PROPS), 0);
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a"]), Some(Leaf::Int(1)));
+        assert!(mirror.tree_version(id, field::PROPS) > before);
+    }
+
+    #[test]
+    fn carried_trees_round_trip_and_seed_never_overwrites() {
+        let (mut mirror, id, other) = (Mirror::default(), node(1), node(2));
+        mirror.edit_tree(id, field::PROPS, &leaf_at(&["a", "b"]), Some(Leaf::Str("x".into())));
+        let carried = mirror.carried(id);
+        assert_eq!(carried.trees[&field::PROPS].len(), 1);
+        mirror.seed(other, &carried);
+        assert_eq!(mirror.trees_of(other), mirror.trees_of(id));
+        mirror.edit_tree(other, field::PROPS, &leaf_at(&["a", "b"]), Some(Leaf::Int(2)));
+        mirror.seed(other, &carried); // an existing entry stays as it is
+        assert_eq!(mirror.tree(other, field::PROPS).unwrap()[&leaf_at(&["a", "b"])], Leaf::Int(2));
+    }
+
+    #[test]
+    fn retain_drops_the_trees_of_rejected_nodes() {
+        let (mut mirror, a, b) = (Mirror::default(), node(1), node(2));
+        for id in [a, b] {
+            mirror.edit_tree(id, field::PROPS, &leaf_at(&["k"]), Some(Leaf::Int(1)));
+        }
+        mirror.retain(|id| id == a);
+        assert!(mirror.tree(a, field::PROPS).is_some() && mirror.tree(b, field::PROPS).is_none());
     }
 }

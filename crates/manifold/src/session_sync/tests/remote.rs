@@ -558,12 +558,12 @@ fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
     let mut fields = app.snapshot(tab).unwrap().fields;
     fields.insert(field::POS, FieldValue::Pos(9.0, 9.0));
     fields.insert(field::URL, FieldValue::Str("https://b/".into()));
-    let (held, changed) = app.mirror_remote(tab, &fields, None);
+    let (held, changed) = app.mirror_remote(tab, &fields, &Default::default(), None);
     assert_eq!(held, [field::POS], "a pending edit holds the field");
     assert_eq!(changed, [field::URL], "the url changed; pinned, engine and the rest did not");
     assert_eq!(app.doc.mirror.url(tab), "https://b/");
     assert_eq!(app.doc.mirror.pos(tab), Some(egui::vec2(5.0, 5.0)), "held: the local edit stands");
-    let (held, changed) = app.mirror_remote(tab, &fields, None);
+    let (held, changed) = app.mirror_remote(tab, &fields, &Default::default(), None);
     assert_eq!((held, changed), (vec![field::POS], vec![]), "the same values again change nothing");
 }
 

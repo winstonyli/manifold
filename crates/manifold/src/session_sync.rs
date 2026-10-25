@@ -19,7 +19,7 @@ use crate::store::model::{
     decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_LINK, TYPE_TAB,
 };
 use crate::store::ops::OpBody;
-use crate::store::tree::Trees;
+use crate::store::tree::{self, Leaf, TreePath, Trees, TREE_FIELDS};
 use crate::tabs::TabSpawn;
 use crate::{App, ViewMode};
 
