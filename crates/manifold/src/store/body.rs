@@ -19,6 +19,48 @@ pub fn initial_order(i: usize) -> String {
     format!("{:08}", (i + 1) * 1000)
 }
 
+/// An order key strictly between `a` and `b` (`None`: no bound on that side), or `None` when none fits. Keys are
+/// digit strings. A neighbour that is an 8-digit multiple of 1000 (what `initial_order` writes) gets the next step of
+/// 1000 on the open side, so appending or prepending never lengthens keys; anything else gets the midpoint digit at
+/// the first position where the bounds leave room, which never ends in `'0'` (so a lower key always exists).
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "first used by `App::edit_json` (plan 4b task 4), which removes this")
+)]
+pub fn between(a: Option<&str>, b: Option<&str>) -> Option<String> {
+    let step =
+        |s: &str| (s.len() == 8 && s.bytes().all(|c| c.is_ascii_digit())).then(|| s.parse::<u64>().ok()).flatten();
+    match (a, b) {
+        (None, None) => return Some(initial_order(0)),
+        (Some(a), None) => {
+            if let Some(n) = step(a).filter(|n| n % 1000 == 0 && n + 1000 < 100_000_000) {
+                return Some(format!("{:08}", n + 1000));
+            }
+        }
+        (None, Some(b)) => {
+            if let Some(n) = step(b).filter(|n| n % 1000 == 0 && *n >= 2000) {
+                return Some(format!("{:08}", n - 1000));
+            }
+        }
+        (Some(a), Some(b)) if a >= b => return None,
+        _ => {}
+    }
+    let (a, b) = (a.unwrap_or("").as_bytes(), b.map(str::as_bytes));
+    let digit = |c: Option<&u8>| c.map_or(0, |c| i32::from(c.wrapping_sub(b'0')));
+    let (mut out, mut open) = (Vec::new(), b.is_none());
+    for i in 0..a.len().max(b.map_or(0, <[u8]>::len)) + 2 {
+        let lo = digit(a.get(i));
+        let hi = if open { 10 } else { digit(b.and_then(|b| b.get(i))) };
+        if hi - lo > 1 {
+            out.push(b'0' + ((lo + hi) / 2) as u8);
+            return String::from_utf8(out).ok();
+        }
+        out.push(b'0' + lo as u8);
+        open |= hi > lo;
+    }
+    None
+}
+
 fn key(name: &str) -> Seg {
     Seg::Key(name.to_owned())
 }
@@ -267,5 +309,46 @@ mod tests {
         sorted.sort();
         assert_eq!(keys, sorted);
         assert_eq!(keys.iter().collect::<std::collections::BTreeSet<_>>().len(), keys.len(), "all distinct");
+    }
+
+    fn ok(a: Option<&str>, b: Option<&str>) -> String {
+        let k = between(a, b).expect("room");
+        assert!(a.is_none_or(|a| a < k.as_str()) && b.is_none_or(|b| k.as_str() < b), "{a:?} < {k} < {b:?}");
+        k
+    }
+
+    #[test]
+    fn between_steps_ends_and_splits_gaps() {
+        assert_eq!(ok(None, None), "00001000");
+        assert_eq!(ok(Some("00003000"), None), "00004000", "an append steps by 1000");
+        assert_eq!(ok(None, Some("00003000")), "00002000", "a prepend steps down");
+        assert_eq!(ok(Some("00001000"), Some("00002000")), "000015");
+        assert_eq!(ok(None, Some("00001000")), "000005", "no 1000 step fits below 1000");
+    }
+
+    #[test]
+    fn between_refuses_when_nothing_fits() {
+        assert_eq!(between(Some("b"), Some("b")), None, "equal neighbours");
+        assert_eq!(between(Some("c"), Some("b")), None);
+        assert_eq!(between(None, Some("000")), None, "nothing sorts below an all-zero key");
+    }
+
+    #[test]
+    fn many_random_inserts_stay_strictly_ordered_and_appends_stay_short() {
+        let mut keys: Vec<String> = Vec::new();
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        for _ in 0..2_000 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let at = (seed >> 33) as usize % (keys.len() + 1);
+            let k = ok(at.checked_sub(1).map(|i| keys[i].as_str()), keys.get(at).map(String::as_str));
+            keys.insert(at, k);
+            assert!(keys.windows(2).all(|w| w[0] < w[1]));
+        }
+        let mut tail: Vec<String> = Vec::new();
+        for _ in 0..3_000 {
+            let k = ok(tail.last().map(String::as_str), None);
+            tail.push(k);
+        }
+        assert!(tail.iter().all(|k| k.len() == 8), "appends step, they don't grow");
     }
 }
