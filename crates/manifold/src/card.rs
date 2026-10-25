@@ -318,6 +318,10 @@ pub(crate) struct CardOutput {
 pub(crate) struct CardView {
     pub(crate) kind: CardKind,
     pub(crate) color: Option<egui::Color32>,
+    /// The card's live labels, oldest first, at most `LABEL_LOOKUP_CAP` of them; the first gives `color`.
+    pub(crate) labels: Vec<LabelChip>,
+    /// How many labels the card has beyond the `labels` it lists (the loop bound is not a limit on the count).
+    pub(crate) labels_more: usize,
     /// In a group: its cards show the eject button.
     pub(crate) in_group: bool,
     /// A group over `GROUP_OVERLOAD_THRESHOLD` members: its border warns.
@@ -337,6 +341,30 @@ pub(crate) struct CardView {
     pub(crate) selected: bool,
     /// False for the Default jar, which has no Close.
     pub(crate) closable: bool,
+}
+
+/// A label as a card shows it: its name and colour.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct LabelChip {
+    pub(crate) name: String,
+    pub(crate) color: egui::Color32,
+}
+
+/// Chips a card shows before "+N".
+pub(crate) const LABEL_CHIPS_SHOWN: usize = 2;
+/// Labels read per card; a loop bound, the "+N" still counts the real total.
+const LABEL_LOOKUP_CAP: usize = 64;
+
+/// What a card draws for its `labels` (of `total` live ones): the chips shown, the count left over, and the border
+/// colour (the first label's).
+pub(crate) fn label_display(labels: &[LabelChip], total: usize) -> (&[LabelChip], usize, Option<egui::Color32>) {
+    let shown = &labels[..labels.len().min(LABEL_CHIPS_SHOWN)];
+    (shown, total - shown.len(), labels.first().map(|l| l.color))
+}
+
+/// Whether chips are drawn at this level of detail: not in a dense view.
+pub(crate) fn chips_drawn(detail: crate::graph_ui::Detail) -> bool {
+    detail.content()
 }
 
 /// A card's border width and color at hover progress `hover_t` (0 at
@@ -591,6 +619,42 @@ pub(crate) fn paint_pinned_mark(
         let at = project(center);
         overlay_painter.circle(at, 9.0, backing, egui::Stroke::new(1.0, accent));
         paint_centered(overlay_painter, at, egui_phosphor::light::PUSH_PIN, 12.0, accent);
+    }));
+}
+
+/// A card's label chips along its bottom edge, right-aligned (the pin mark is at the bottom-left): each label's name
+/// on its colour, then "+N" for the rest. Painted on the overlay layer; none in a dense view or on a card without
+/// labels.
+pub(crate) fn paint_label_chips(
+    deferred_overlays: &mut DeferredOverlays,
+    card_rect: egui::Rect,
+    view: &CardView,
+    inv_zoom: f32,
+    detail: crate::graph_ui::Detail,
+    dark: bool,
+) {
+    if view.labels.is_empty() || !chips_drawn(detail) {
+        return;
+    }
+    let right_bottom = card_rect.right_bottom() - egui::vec2(8.0, 8.0) * inv_zoom;
+    let chips: Vec<(String, egui::Color32)> = view
+        .labels
+        .iter()
+        .map(|l| (l.name.clone(), tag_shown(l.color, dark)))
+        .chain((view.labels_more > 0).then(|| (format!("+{}", view.labels_more), egui::Color32::DARK_GRAY)))
+        .collect();
+    deferred_overlays.push(Box::new(move |overlay_painter, project| {
+        let font = egui::FontId::proportional(11.0);
+        let mut right = project(right_bottom).x;
+        let bottom = project(right_bottom).y;
+        for (name, color) in chips.into_iter().rev() {
+            let galley = overlay_painter.layout_no_wrap(name, font.clone(), egui::Color32::WHITE);
+            let size = galley.size() + egui::vec2(10.0, 2.0);
+            let rect = egui::Rect::from_min_size(egui::pos2(right - size.x, bottom - size.y), size);
+            overlay_painter.rect_filled(rect, size.y / 2.0, color);
+            overlay_painter.galley(rect.min + egui::vec2(5.0, 1.0), galley, egui::Color32::WHITE);
+            right = rect.left() - 3.0;
+        }
     }));
 }
 
@@ -885,6 +949,8 @@ impl App {
                 return Some(CardView {
                     kind: entry.kind,
                     color: None,
+                    labels: Vec::new(),
+                    labels_more: 0,
                     in_group: false,
                     overloaded: false,
                     members: Vec::new(),
@@ -903,9 +969,13 @@ impl App {
         let kind = self.card_kind(id)?;
         let members = if is_container(kind.ty) { members.get(&id).cloned().unwrap_or_default() } else { Vec::new() };
         let tab = node.as_tab();
+        let (labels, total) = self.card_label_chips(id, kind);
+        let (shown, labels_more, color) = label_display(&labels, total);
         Some(CardView {
             kind,
-            color: None,
+            color,
+            labels_more,
+            labels: shown.to_vec(),
             in_group: self.doc.mirror.group(id).is_some(),
             overloaded: members.len() > GROUP_OVERLOAD_THRESHOLD,
             members,
@@ -916,6 +986,23 @@ impl App {
             selected: self.interaction.selected.contains(&card),
             closable: !self.is_default_jar(id),
         })
+    }
+
+    /// `id`'s label chips (at most `LABEL_LOOKUP_CAP`) and its live label count. A jar shows none.
+    fn card_label_chips(&self, id: NodeId, kind: CardKind) -> (Vec<LabelChip>, usize) {
+        if kind.ty == TYPE_JAR {
+            return (Vec::new(), 0);
+        }
+        let all = self.doc.mirror.card_labels(id);
+        let chips = all
+            .iter()
+            .take(LABEL_LOOKUP_CAP)
+            .map(|l| {
+                let def = self.doc.mirror.label_def(*l);
+                LabelChip { name: def.name, color: def.color.unwrap_or(egui::Color32::GRAY) }
+            })
+            .collect();
+        (chips, all.len())
     }
 
     /// One card of any kind on the graph: everything the kinds share
@@ -1162,6 +1249,7 @@ impl App {
             .then(|| CardControl::Close.action());
         let mut control_hovered = false;
         paint_pinned_mark(ui, deferred_overlays, rect, &view, inv_zoom, self.graph_detail);
+        paint_label_chips(deferred_overlays, rect, &view, inv_zoom, self.graph_detail, ui.visuals().dark_mode);
         for card_control in card_controls(&view) {
             if card_control.hover_only() && !is_hovered {
                 continue;

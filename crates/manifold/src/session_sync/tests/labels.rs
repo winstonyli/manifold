@@ -137,3 +137,26 @@ fn a_label_edit_undoes_and_redoes_as_one_step() {
     app.step_history(None, true);
     assert_eq!((labels_of(&app, c1), labels_of(&app, c2)), (vec![a], vec![a]));
 }
+
+#[test]
+fn a_labelled_cards_view_carries_the_first_labels_colour_and_a_deleted_label_disappears() {
+    let mut app = App::default();
+    let note = add_note(&mut app, "n");
+    let (red, blue) = (egui::Color32::RED, egui::Color32::BLUE);
+    let a = app.create_label("a", Some(red)).unwrap();
+    let b = app.create_label("b", Some(blue)).unwrap();
+    app.set_label(&[note], a, true);
+    app.set_label(&[note], b, true);
+    let entry = crate::level::CardEntry {
+        id: note.into(),
+        kind: app.card_kind(note).unwrap(),
+        origin: crate::level::Origin::Stored,
+        rect: egui::Rect::ZERO,
+    };
+    let view = app.card_view(&entry, &HashMap::new()).unwrap();
+    assert_eq!(view.color, Some(red));
+    assert_eq!(view.labels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    app.delete_label(a);
+    let view = app.card_view(&entry, &HashMap::new()).unwrap();
+    assert_eq!((view.color, view.labels.len(), view.labels_more), (Some(blue), 1, 0));
+}

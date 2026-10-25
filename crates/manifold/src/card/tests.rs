@@ -422,6 +422,8 @@ fn test_view(kind: CardKind) -> CardView {
     CardView {
         kind,
         color: None,
+        labels: Vec::new(),
+        labels_more: 0,
         in_group: false,
         overloaded: false,
         members: Vec::new(),
@@ -845,4 +847,29 @@ fn card_glow_shapes_keeps_two_shapes_and_offsets_downward() {
     let far = card_glow_shapes(rect, CARD_RADIUS, egui::Color32::BLACK, 2.0, 1.0, 70, 3.0);
     let (near_y, far_y) = (shapes[0].visual_bounding_rect().center().y, far[0].visual_bounding_rect().center().y);
     assert!((far_y - rect.center().y) > (near_y - rect.center().y));
+}
+
+fn chip(name: &str, color: egui::Color32) -> LabelChip {
+    LabelChip { name: name.into(), color }
+}
+
+#[test]
+fn the_border_takes_the_first_label_and_the_header_shows_two_chips_and_the_rest() {
+    let (red, blue, green) = (egui::Color32::RED, egui::Color32::BLUE, egui::Color32::GREEN);
+    let none: Vec<LabelChip> = Vec::new();
+    assert_eq!(label_display(&none, 0), (&none[..], 0, None));
+    let one = vec![chip("a", red)];
+    assert_eq!(label_display(&one, 1), (&one[..], 0, Some(red)));
+    let three = vec![chip("a", red), chip("b", blue), chip("c", green)];
+    let (shown, more, border) = label_display(&three, 3);
+    assert_eq!((shown.len(), more, border), (LABEL_CHIPS_SHOWN, 1, Some(red)));
+    assert_eq!(shown[1].color, blue);
+    // The view carries at most a bounded list, but "+N" counts every label.
+    assert_eq!(label_display(&three, 70).1, 68);
+}
+
+#[test]
+fn chips_are_not_drawn_in_dense_views() {
+    assert!(chips_drawn(crate::graph_ui::Detail::Full));
+    assert!(!chips_drawn(crate::graph_ui::Detail::Simple));
 }

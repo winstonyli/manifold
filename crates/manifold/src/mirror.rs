@@ -169,7 +169,6 @@ impl Mirror {
 
     /// The live labels `card` carries, oldest first by `(added_at_ms, label id)`. A membership whose label is gone
     /// (deleted, or not yet received) shows nothing, and a value that is not an `Int` is ignored.
-    #[allow(dead_code, reason = "drawn as border and chips in Task 6")]
     pub(crate) fn card_labels(&self, card: NodeId) -> Vec<NodeId> {
         let Some(tree) = self.tree(card, field::PROPS) else { return Vec::new() };
         let mut found: Vec<(i64, NodeId)> = tree
