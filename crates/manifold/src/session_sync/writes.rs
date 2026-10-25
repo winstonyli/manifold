@@ -284,12 +284,12 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
         } else {
             enc.clone()
         };
-        ops.push(OpBody::Set { node, field: no, enc });
+        ops.push(OpBody::set(node, no, enc));
     }
     for (node, closer) in writes.closed() {
         if editable(&node) {
             let enc = encode_field(field::CLOSED, &FieldValue::Replica(closer));
-            ops.push(OpBody::Set { node, field: field::CLOSED, enc });
+            ops.push(OpBody::set(node, field::CLOSED, enc));
         }
     }
     ops.extend(deleted.iter().map(|&node| OpBody::Delete { node }));

@@ -8,6 +8,7 @@ use super::model::{
     decode_field, encode_field, field, field_def, Doc, FieldValue, Hlc, Node, NodeId, Reg, RegKey, Stamp,
 };
 use super::tlv::Reader;
+use super::tree::TreePath;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Op {
@@ -23,8 +24,9 @@ pub struct Op {
 pub enum OpBody {
     /// `fields` is a node message (`Node::message`), `group` and `type` included.
     Create { node: NodeId, fields: Vec<u8> },
-    /// `enc` is `encode_field(field, value)`; empty resets the field.
-    Set { node: NodeId, field: u32, enc: Vec<u8> },
+    /// `enc` is `encode_field(field, value)`; empty resets the field. `path` addresses a register inside a tree field;
+    /// it is root for every scalar field, and `apply` ignores a non-root path on a field with a `FieldDef`.
+    Set { node: NodeId, field: u32, path: TreePath, enc: Vec<u8> },
     Move { node: NodeId, group: Option<NodeId> },
     Delete { node: NodeId },
 }
@@ -36,6 +38,11 @@ impl OpBody {
         debug_assert!(!ty.is_empty(), "a created node has a type");
         fields.extend(encode_field(field::TYPE, &FieldValue::Str(ty.to_owned())));
         OpBody::Create { node, fields }
+    }
+
+    /// A `Set` of a whole field (the root path): every scalar field's write.
+    pub fn set(node: NodeId, field: u32, enc: Vec<u8>) -> OpBody {
+        OpBody::Set { node, field, path: TreePath::default(), enc }
     }
 }
 
@@ -85,15 +92,15 @@ impl Doc {
                 touched.extend(self.apply_move(stamp, *node, group));
                 touched
             }
-            OpBody::Set { node, field: no, enc } => {
-                if *no == field::GROUP {
-                    return Vec::new(); // the tree edge changes only by `Move`
+            OpBody::Set { node, field: no, path, enc } => {
+                if *no == field::GROUP || (!path.is_root() && field_def(*no).is_some()) {
+                    return Vec::new(); // the tree edge changes only by `Move`; a scalar field has no tree
                 }
                 let entry = self.nodes.entry(*node).or_insert_with(Node::placeholder);
                 if entry.deleted {
                     return Vec::new();
                 }
-                set_reg(entry, RegKey::of(*no), stamp, enc.clone());
+                set_reg(entry, RegKey { field: *no, path: path.clone() }, stamp, enc.clone());
                 vec![*node]
             }
             OpBody::Move { node, group } => {
@@ -253,14 +260,14 @@ mod tests {
         let raw = doc.nodes[&t].fields[&RegKey::of(40)].enc.clone();
         doc.apply(&op(1, 1, 2, name(t, "renamed")));
         let pos = encode_field(field::POS, &FieldValue::Pos(5.0, 6.0));
-        doc.apply(&op(1, 2, 3, OpBody::Set { node: t, field: field::POS, enc: pos }));
+        doc.apply(&op(1, 2, 3, OpBody::set(t, field::POS, pos)));
         assert_eq!(doc.nodes[&t].fields[&RegKey::of(40)].enc, raw);
         assert_eq!(doc.nodes[&t].get(field::NAME), FieldValue::Str("renamed".into()));
         assert_eq!(doc.nodes[&t].get(field::POS), FieldValue::Pos(5.0, 6.0));
     }
 
     fn name(node: NodeId, text: &str) -> OpBody {
-        OpBody::Set { node, field: field::NAME, enc: encode_field(field::NAME, &FieldValue::Str(text.into())) }
+        OpBody::set(node, field::NAME, encode_field(field::NAME, &FieldValue::Str(text.into())))
     }
 
     fn apply_all(ops: &[Op]) -> Doc {

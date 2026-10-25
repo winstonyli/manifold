@@ -955,7 +955,7 @@ fn a_remote_reparent_is_not_reverted_by_the_removal_it_races() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     let ops = vec![
         OpBody::Delete { node: p },
-        OpBody::Set { node: c, field: field::PARENT, enc: encode_field(field::PARENT, &FieldValue::Id(Some(a))) },
+        OpBody::set(c, field::PARENT, encode_field(field::PARENT, &FieldValue::Id(Some(a)))),
     ];
     other.begin().unwrap().commit(ops).unwrap();
     for _ in 0..2 {

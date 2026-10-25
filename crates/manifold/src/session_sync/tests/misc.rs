@@ -173,7 +173,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     drag(&mut app, &[a], egui::vec2(0.0, 50.0));
     let node = a;
     let pos = FieldValue::Pos(7.0, 8.0);
-    let set = OpBody::Set { node, field: field::POS, enc: encode_field(field::POS, &pos) };
+    let set = OpBody::set(node, field::POS, encode_field(field::POS, &pos));
     other.begin().unwrap().commit(vec![OpBody::Move { node, group: Some(g) }, set]).unwrap();
     assert!(app.save_session());
     assert_eq!(app.layout_pos(a), egui::vec2(7.0, 8.0), "off the level, the drag no longer holds the remote pos back");

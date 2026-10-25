@@ -154,7 +154,7 @@ mod tests {
     fn check_does_not_call_a_version_one_file_clean() {
         let dir = crate::store::testutil::temp_dir("cli-v1");
         let path = dir.join("session.mnf");
-        crate::store::testutil::version_one_file(&path);
+        crate::store::testutil::file_with_version(&path, 1);
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_ne!(run(&args(&["--check", path.to_str().unwrap()])), Some(0));
     }

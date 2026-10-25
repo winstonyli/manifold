@@ -16,12 +16,14 @@ use super::local;
 use super::model::{now_ms, ActorId, Clock, Doc, DocId, Hlc, Node, NodeId, Reg, RegKey, Stamp};
 use super::ops::{Op, OpBody};
 use super::tlv::{Reader, TlvError, Writer};
+use super::tree::TreePath;
 use super::varint;
 
 pub const MAGIC: [u8; 4] = *b"MNF\0";
-/// 3: `held` (field 24) is a message of ids, not text; 2 held it as text. 2: a node's kind is its `type` register
+/// 4: registers carry a path (`Set` field 4, snapshot register field 4). 3: `held` (field 24) is a message of ids,
+/// not text; 2 held it as text. 2: a node's kind is its `type` register
 /// (field 19); 1 held a numeric kind. A file older than this is refused (no migration).
-pub const FORMAT_VERSION: u64 = 3;
+pub const FORMAT_VERSION: u64 = 4;
 
 /// Frame types. 0 is invalid, so a zeroed region never parses.
 pub mod frame {
@@ -248,7 +250,7 @@ pub fn read_header(buf: &[u8]) -> Result<Header, JournalError> {
 
 /// `read_header`, refusing as `NotAJournal` a file older than
 /// `FORMAT_VERSION`: read as this format, version 1 would leave every node typeless (compacted away) and version 2
-/// would mis-decode `held` (no migration). The one rule for what this build reads: `load`, the
+/// would mis-decode `held`; version 3 would read correctly but is refused too (no migration, spec decision D1). The one rule for what this build reads: `load`, the
 /// set-aside check and `--check` all use it.
 pub fn read_readable_header(buf: &[u8]) -> Result<Header, JournalError> {
     let header = read_header(buf)?;
@@ -461,6 +463,9 @@ fn snapshot_message(doc: &Doc) -> Vec<u8> {
             if !reg.enc.is_empty() {
                 r.bytes(3, &reg.enc);
             }
+            if !key.path.is_root() {
+                r.bytes(4, key.path.as_bytes());
+            }
             n.message(5, &r);
         }
         w.message(2, &n);
@@ -505,19 +510,20 @@ fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
                         3 => node.deleted = f.value.bool()?,
                         4 => node.group = Some(decode_id(f.value.bytes()?, actors)?),
                         5 => {
-                            let (mut no, mut stamp, mut enc) = (0, None, Vec::new());
+                            let (mut no, mut stamp, mut enc, mut path) = (0, None, Vec::new(), TreePath::default());
                             for r in Reader::new(f.value.bytes()?) {
                                 let r = r?;
                                 match r.no {
                                     1 => no = r.value.u32()?,
                                     2 => stamp = Some(decode_stamp(r.value.bytes()?, actors)?),
                                     3 => enc = r.value.bytes()?.to_vec(),
+                                    4 => path = TreePath::from_bytes(r.value.bytes()?)?,
                                     _ => {}
                                 }
                             }
                             let stamp =
                                 stamp.ok_or_else(|| JournalError::Corrupt("register without a stamp".into()))?;
-                            node.fields.insert(RegKey::of(no), Reg { stamp, enc });
+                            node.fields.insert(RegKey { field: no, path }, Reg { stamp, enc });
                         }
                         _ => {}
                     }
@@ -577,7 +583,7 @@ const OP_DELETE: u32 = 7;
 /// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
 /// previous op in the frame), 3: logical, then one body field: 4 Create
 /// {1: node, 3: fields} (2, the numeric kind, is retired), 5 Set {1: node, 2: field, 3: value
-/// encoding}, 6 Move {1: node, 2: group}, 7 Delete {1: node}}`.
+/// encoding, 4: path}, 6 Move {1: node, 2: group}, 7 Delete {1: node}}`.
 fn ops_message(ops: &[Op]) -> Vec<u8> {
     let author = ops[0].id.actor;
     let mut table = Actors::default();
@@ -611,11 +617,14 @@ fn ops_message(ops: &[Op]) -> Vec<u8> {
                 }
                 OP_CREATE
             }
-            OpBody::Set { node, field, enc } => {
+            OpBody::Set { node, field, path, enc } => {
                 b.message(1, &id_message(*node, actors));
                 b.varint(2, u64::from(*field));
                 if !enc.is_empty() {
                     b.bytes(3, enc);
+                }
+                if !path.is_root() {
+                    b.bytes(4, path.as_bytes());
                 }
                 OP_SET
             }
@@ -670,7 +679,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
         let Some((kind, bytes)) = body else {
             continue;
         };
-        let (mut node, mut num, mut blob, mut group) = (None, 0, Vec::new(), None);
+        let (mut node, mut num, mut blob, mut group, mut path) = (None, 0, Vec::new(), None, TreePath::default());
         for f in Reader::new(bytes) {
             let f = f?;
             match (kind, f.no) {
@@ -678,6 +687,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
                 (OP_SET, 2) => num = f.value.u64()?,
                 (OP_MOVE, 2) => group = Some(decode_id(f.value.bytes()?, actors)?),
                 (OP_CREATE | OP_SET, 3) => blob = f.value.bytes()?.to_vec(),
+                (OP_SET, 4) => path = TreePath::from_bytes(f.value.bytes()?)?,
                 _ => {}
             }
         }
@@ -687,6 +697,7 @@ fn decode_ops(buf: &[u8]) -> Result<Vec<Op>, JournalError> {
             OP_SET => OpBody::Set {
                 node,
                 field: u32::try_from(num).map_err(|_| JournalError::Corrupt("field number".into()))?,
+                path,
                 enc: blob,
             },
             OP_MOVE => OpBody::Move { node, group },

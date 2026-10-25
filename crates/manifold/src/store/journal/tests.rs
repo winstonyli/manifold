@@ -1,6 +1,7 @@
 use super::*;
 use crate::store::model::{encode_field, field, FieldValue, Kind, Node, RegKey, FIELDS};
-use crate::store::testutil::{shown, temp_dir, version_one_file, XorShift};
+use crate::store::testutil::{file_with_version, shown, temp_dir, XorShift};
+use crate::store::tree::{Leaf, Seg, TreePath};
 
 fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
     let node = txn.next_id();
@@ -200,7 +201,7 @@ fn enough_appends_compact_and_nothing_is_lost() {
     for i in 0..200 {
         let text = FieldValue::Str(format!("{i}{long}"));
         let txn = journal.begin().unwrap();
-        txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }]).unwrap();
+        txn.commit(vec![OpBody::set(tab, field::URL, encode_field(field::URL, &text))]).unwrap();
     }
     // 200 KB of appends against a tiny snapshot: compacted at least once.
     assert!(std::fs::metadata(&path).unwrap().len() < 100 * 1024);
@@ -221,7 +222,7 @@ fn a_failed_compaction_does_not_fail_the_commit() {
     for i in 0..200 {
         let text = FieldValue::Str(format!("{i}{long}"));
         let txn = journal.begin().unwrap();
-        txn.commit(vec![OpBody::Set { node: tab, field: field::URL, enc: encode_field(field::URL, &text) }]).unwrap();
+        txn.commit(vec![OpBody::set(tab, field::URL, encode_field(field::URL, &text))]).unwrap();
     }
     assert!(std::fs::metadata(&path).unwrap().len() > 150 * 1024); // never compacted
     assert!(journal.close().is_err());
@@ -242,7 +243,7 @@ fn a_newer_builds_frames_and_fields_survive() {
     let mut future = Writer::new();
     future.str(99, "from the future");
     let future = future.into_bytes();
-    txn.commit(vec![create, OpBody::Set { node: tab, field: 99, enc: future.clone() }]).unwrap();
+    txn.commit(vec![create, OpBody::set(tab, 99, future.clone())]).unwrap();
     journal.close().unwrap(); // compacts: the unknown field is written back
 
     let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
@@ -336,7 +337,7 @@ fn a_create_op_carries_its_type_in_its_fields_and_no_kind_slot() {
 fn a_version_one_file_is_refused_and_left_alone() {
     let dir = temp_dir("version-one");
     let path = dir.join("session.mnf");
-    let bytes = version_one_file(&path);
+    let bytes = file_with_version(&path, 1);
     assert!(!read_header(&bytes).unwrap().damaged);
     assert!(matches!(Journal::read(&bytes), Err(JournalError::NotAJournal)));
     assert!(matches!(Journal::open(&path, ActorId(2)), Err(JournalError::NotAJournal)));
@@ -347,7 +348,7 @@ fn a_version_one_file_is_refused_and_left_alone() {
 fn a_version_one_file_is_set_aside_and_a_fresh_session_starts() {
     let dir = temp_dir("version-one-aside");
     let path = dir.join("session.mnf");
-    let bytes = version_one_file(&path);
+    let bytes = file_with_version(&path, 1);
     let (mut journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
     let aside = aside.expect("moved aside");
     assert_eq!(std::fs::read(&aside).unwrap(), bytes, "kept as it was");
@@ -467,7 +468,7 @@ fn rich_file(path: &Path) -> Vec<u8> {
     note_fields.extend(encode_field(field::COLOR, &FieldValue::Color(Some(0x12ab34))));
     note_fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(group))));
     note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
-    let set = |node, no, value| OpBody::Set { node, field: no, enc: encode_field(no, &value) };
+    let set = |node, no, value| OpBody::set(node, no, encode_field(no, &value));
     let bodies = vec![
         OpBody::create(group, Kind::Group.type_str().unwrap(), encode_field(field::NAME, &FieldValue::Str("g".into()))),
         create,
@@ -1392,11 +1393,8 @@ fn save_path_costs() {
 
         // Grow the tail with single-op saves (a drag end each) to just
         // below the compaction threshold: the largest file `begin` reads.
-        let set_pos = |node: NodeId, x: f32| OpBody::Set {
-            node,
-            field: field::POS,
-            enc: encode_field(field::POS, &FieldValue::Pos(x, x)),
-        };
+        let set_pos =
+            |node: NodeId, x: f32| OpBody::set(node, field::POS, encode_field(field::POS, &FieldValue::Pos(x, x)));
         let margin = 8 * 1024;
         let mut k = 0;
         while a.since_snapshot + margin < (2 * a.snapshot_len).max(COMPACT_MIN) {
@@ -1500,4 +1498,105 @@ fn save_path_costs() {
         report("  (clone of the base doc, included above)", timed(10, || drop(base.clone())));
         println!("  tail: {} frames, {} ops", tail.len(), decoded.iter().map(Vec::len).sum::<usize>());
     }
+}
+
+fn props_path(keys: &[&str]) -> TreePath {
+    TreePath::of(&keys.iter().map(|k| Seg::Key((*k).to_owned())).collect::<Vec<_>>())
+}
+
+fn set_at(node: NodeId, path: TreePath, leaf: Leaf) -> OpBody {
+    OpBody::Set { node, field: field::PROPS, path, enc: leaf.encode() }
+}
+
+fn props(doc: &Doc, node: NodeId) -> Vec<(TreePath, Leaf)> {
+    doc.nodes[&node]
+        .fields
+        .iter()
+        .filter(|(k, r)| k.field == field::PROPS && !r.enc.is_empty())
+        .map(|(k, r)| (k.path.clone(), Leaf::decode(&r.enc).unwrap().unwrap()))
+        .collect()
+}
+
+#[test]
+fn a_path_set_survives_the_log_a_snapshot_and_a_reopen() {
+    let dir = temp_dir("path-set");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (tab, create) = create_tab(&mut txn, "https://p.example/");
+    txn.commit(vec![
+        create,
+        set_at(tab, props_path(&["a"]), Leaf::Str("x".into())),
+        set_at(tab, props_path(&["a", "b\0é"]), Leaf::Int(7)),
+        set_at(tab, props_path(&["gone"]), Leaf::Null),
+        OpBody::Set { node: tab, field: field::PROPS, path: props_path(&["gone"]), enc: Vec::new() },
+    ])
+    .unwrap();
+    let live = Journal::read(&std::fs::read(&path).unwrap()).unwrap(); // from the log
+    journal.close().unwrap(); // compacts: from a snapshot
+    let snap = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    for doc in [&live, &snap] {
+        assert_eq!(
+            props(doc, tab),
+            vec![(props_path(&["a"]), Leaf::Str("x".into())), (props_path(&["a", "b\0é"]), Leaf::Int(7))]
+        );
+    }
+    assert_eq!(live.nodes[&tab], snap.nodes[&tab], "the tombstone at /gone is kept by the snapshot");
+}
+
+#[test]
+fn a_path_on_a_known_scalar_field_is_ignored() {
+    let dir = temp_dir("path-scalar");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (tab, create) = create_tab(&mut txn, "https://s.example/");
+    let changed = encode_field(field::URL, &FieldValue::Str("https://changed.example/".into()));
+    txn.commit(vec![create, OpBody::Set { node: tab, field: field::URL, path: props_path(&["x"]), enc: changed }])
+        .unwrap();
+    let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(url(&doc, tab), FieldValue::Str("https://s.example/".into()));
+    assert!(doc.nodes[&tab].fields.keys().all(|k| k.path.is_root()));
+}
+
+#[test]
+fn a_delete_clears_the_tree_and_later_path_sets_are_ignored() {
+    let dir = temp_dir("path-delete");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (tab, create) = create_tab(&mut txn, "https://d.example/");
+    txn.commit(vec![create, set_at(tab, props_path(&["a"]), Leaf::Int(1)), OpBody::Delete { node: tab }]).unwrap();
+    let txn = journal.begin().unwrap();
+    txn.commit(vec![set_at(tab, props_path(&["b"]), Leaf::Int(2))]).unwrap();
+    let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap(); // the log, before compaction drops the node
+    assert!(doc.nodes[&tab].deleted && doc.nodes[&tab].fields.is_empty());
+    journal.close().unwrap();
+}
+
+#[test]
+fn an_unknown_field_with_a_path_survives_compaction() {
+    let dir = temp_dir("path-future");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let (tab, create) = create_tab(&mut txn, "https://f.example/");
+    let mut future = Writer::new();
+    future.str(99, "from the future");
+    let key = RegKey { field: 99, path: props_path(&["k"]) };
+    txn.commit(vec![create, OpBody::Set { node: tab, field: 99, path: key.path.clone(), enc: future.into_bytes() }])
+        .unwrap();
+    journal.close().unwrap();
+    let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    assert!(doc.nodes[&tab].fields.contains_key(&key));
+}
+
+#[test]
+fn a_version_three_file_is_refused_and_set_aside() {
+    let dir = temp_dir("version-three");
+    let path = dir.join("session.mnf");
+    let bytes = file_with_version(&path, 3);
+    assert!(matches!(Journal::read(&bytes), Err(JournalError::NotAJournal)));
+    let (_journal, aside) = Journal::open_or_set_aside(&path, ActorId(2)).unwrap();
+    assert_eq!(std::fs::read(aside.expect("moved aside")).unwrap(), bytes);
 }

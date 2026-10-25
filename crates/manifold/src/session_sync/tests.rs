@@ -132,7 +132,7 @@ pub(crate) fn add_group(app: &mut App, name: &str) -> NodeId {
 
 /// Another replica sets one field of `node`.
 pub(crate) fn remote_set(other: &mut Journal, node: NodeId, no: u32, value: FieldValue) {
-    other.begin().unwrap().commit(vec![OpBody::Set { node, field: no, enc: encode_field(no, &value) }]).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::set(node, no, encode_field(no, &value))]).unwrap();
 }
 
 /// `node`'s field `no` as the document stores it.
