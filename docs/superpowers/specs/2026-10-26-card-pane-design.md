@@ -41,23 +41,31 @@ the Graph view: select a card and its details show beside the canvas.
 - **R1. Opening or closing the right panel does not move or zoom the world.** Today `GraphCamera::fill`
   (`camera.rs:80-86`) refits the camera rect to the scene area keeping its centre, so narrowing the area by the panel
   zooms out until the same world width fits: every card shrinks and slides. With a pane that opens on every selection
-  that would happen on every click. Instead the camera remembers the last scene area; when only its right edge moved,
-  `fill` keeps the scale and the camera rect's left edge, so the panel covers a strip and reveals it again on close.
-  Any other change (a window resize, a tween to a rect of another shape) keeps today's fit. This also applies to the
-  JSON outline's toggle, which today zooms the same way.
-- **R2. A selected card under the panel is brought into view.** After R1 the camera rect is the visible area left of
-  the panel, so `pan_to` (`camera.rs:119`) already does the right thing: when the pane opens for one card selected by
-  click or keyboard and the card is not fully in view, the camera eases it in. Not for a marquee selection.
+  that would happen on every click. Instead the camera remembers the last scene area; when only its width changed (the
+  panel opening, closing or being resized, or the window resized sideways: `fill` cannot tell these apart, and keeping
+  the world put suits all of them), `fill` keeps the scale and the visible area's left edge, so the panel covers a
+  strip and reveals it again on close. Any other change (a height change, a move of the area's corner) keeps today's
+  centred fit. This also applies to the JSON outline's toggle, which today zooms the same way.
+- **R2. The card the pane starts describing is brought into view.** After R1 the camera rect is the visible area left
+  of the panel, so `pan_to` (`camera.rs:119`) already does the right thing: whenever the one selected card changes (by
+  click, keyboard or a marquee around one card) and it is not fully in view, the camera eases it in. Not while a drag
+  holds it: easing would move the world under the pointer.
 - **R3. The pane takes no graph keys** unless one of its fields has focus: `graph_keys_free` (`keys.rs:313`) is already
   false while egui wants keyboard input.
 - **R4. One width setting, `right_panel_width`,** replacing `json_outline_width` in `JsonUi` and `local_state`
   (`LocalState.json_outline_width` renames; no migration, per the no-migration rule: an old saved width is dropped).
   The outline's visibility toggle stays, JSON level only. The panel never takes more than half the window, so there is
   no separate narrow-window rule: labels must stay reachable at any width now that the pane is their only home.
-- **R5. The pane's rows join the popups' keyboard navigation.** The shared rows call `nav_row` (`popup_frame.rs:135`),
-  which locks Tab and Up/Down on a focused row and queues the row for `list_row_nav`. Drawn in a panel without
-  `list_row_nav`, a focused row would trap the keyboard and the queue would never be read. So the pane runs
-  `list_row_nav` as a popup does: Up/Down move between its rows, Escape returns focus to the selected card.
+- **R5. The pane's rows step like a menu's, but the pane never takes focus.** The shared rows call `nav_row`
+  (`popup_frame.rs:135`), which locks Tab and Up/Down on a focused row and queues the row for `list_row_nav`. Drawn in
+  a panel without a reader, a focused row would swallow the arrows and the queue would never be read. `list_row_nav`
+  itself would be wrong too: it focuses the first row when a popup opens and takes Up/Down with nothing focused, and
+  the pane opens on every click. So `list_row_nav` splits into reading the queued rows and stepping between them; a
+  popup still does both plus its opening focus, and the pane only steps, and only while one of its rows has focus.
+  Tab stays locked on a focused row, as in a menu. Escape is the graph's: egui drops a focused button's focus on
+  Escape before the pass (`Focus::begin_pass`), so the graph's Escape (`keys.rs:169`) clears the selection and the
+  pane closes, as from the canvas. No pane code for it. A text field in the pane keeps its own Escape (the graph reads
+  `text_field_has_keys` before any widget).
 
 ## Contents
 
@@ -70,8 +78,8 @@ One stored card selected, top to bottom:
   recolour, delete (click twice), then the "New label" field. They act on the selection as before
   (`GraphAction::ToggleLabel`, `NewLabel`, `RenameLabel`, `RecolorLabel`, `DeleteLabel`), so label management lives here
   too.
-- **Place:** group (`NodeAction::RemoveFromGroup`, `MoveToGroup`), a pinned mark (no toggle), jar for a tab or group
-  (the menu's Jars rows, `SetJar`).
+- **Place:** the group it is in, with `NodeAction::RemoveFromGroup` beside it (moving into a sibling group is a list of
+  verbs and stays in the menu), a pinned mark (no toggle), jar for a tab or group (the menu's Jars rows, `SetJar`).
 - **Links:** the menu's Links rows (`Connect`, `Disconnect`).
 - **Text:** a note's text, or a tab's last stored page text (`text_store.get(id)`), read-only, scrolled, capped in
   height.
@@ -84,21 +92,24 @@ pane: that level shows the outline.
 - `graph_ui/right_panel.rs` (new): `build_right_panel(ui)` owns the one `egui::Panel::right` (id, resize, width,
   160..=640). It draws the outline's contents in a JSON level and the card pane's otherwise, and nothing (no panel) when
   neither applies. `scene.rs:219` calls it in place of `build_json_outline`. `graph_scene_outer_rect` (`camera.rs:175`)
-  reads one predicate, `right_panel_shown()`, shared with `build_right_panel`.
-- `graph_ui/card_pane.rs` (new): the pane's contents from the selection and `node_menu_view(id)`, pushing
-  `GraphAction`s and returning a `NodeAction` the caller applies through `apply_node_action`.
+  reads one predicate, `right_panel()` (what the panel shows, if anything), shared with `build_right_panel`.
+- `graph_ui/card_pane.rs` (new): the pane's contents from the selection, `jar_menu(id)` and `edge_menu(id)`, pushing
+  `GraphAction`s into the frame's list (one card's `NodeAction`s as `GraphAction::Node`, which `apply_graph_action`
+  hands to `apply_node_action`).
 - `node_menu.rs`: `draw_menu_item` is shared with the pane for the Jars and Edges items. The rename draft
   (`renaming_group`, already shared by the menu and the breadcrumb for any kind) gains the pane as a third surface;
   the field shows wherever the rename started. New Jar stays in the menu (its draft is dropped when the menu closes,
   `drop_stray_jar_name`).
 - `graph_ui/label_menu.rs`: `label_row` and the field become the pane's Labels section; the popup, its anchor id and
-  `draw_label_menu` go. `interaction.label_menu` (`LabelMenu`: draft, the label being edited, the armed delete) stays as
-  that section's state, no longer optional, reset when the selection clears.
+  `draw_label_menu` go, and so does the file. `interaction.label_menu` (`LabelMenu`: draft, the label being edited, the
+  armed delete) stays as that section's state, renamed `interaction.label_section` (`LabelSection`), no longer
+  optional, reset whenever the pane is not showing cards.
 - `graph_ui/selection_bar.rs`: the Label button goes; Pin, Group, Close and the count stay.
 - Deleted with the popup: `GraphAction::LabelSelected`, `toggle_label_menu`, `LABELMENU` (`debug_control.rs:650`) and
   the test `the_label_button_opens_a_menu_that_closes_with_the_selection`.
 - `GraphCamera`: R1's remembered scene area and the anchored refit in `fill`.
-- `EXPORTSTATE` gains `right_panel: "outline" | "card" | null` and the described card ids, for the gate.
+- `EXPORTSTATE` gains `right_panel`: `null`, `{"shows": "outline"}`, or `{"shows": "cards", "cards": [ids], "card":
+  id | null}` (the one card described), for the gate.
 
 ## Edge cases
 
@@ -118,12 +129,12 @@ pane: that level shows the outline.
   it back restores the rect; a window resize keeps today's fit (R1).
 - App-level tests: one card selected gives a card pane for it; clearing the selection gives none; a JSON level gives the
   outline; several cards give the common labels' states; a label ticked off from the pane is one undo step; the bar has
-  no Label button. A frame test draws the pane with a jar row focused and checks Up/Down move focus within the pane
-  and Tab is not trapped (R5).
+  no Label button. R5: the stepping half moves focus between focused rows and leaves an unfocused list alone; the pane
+  takes no focus when it opens, and Down with nothing focused stays the graph's.
 - Docs: README's Labels paragraph (line 194) and debug command list (line 439, `LABELMENU`), the stale toolbar wording
   at README line 147 (the bar replaced those buttons 2026-10-23), and the mockups README for the bar's new shape.
-- Gate (`ui` tier): extend `gate labels` to select a card, read `right_panel` from `EXPORTSTATE`, untick a label through
-  the pane's action and check the card.
+- Gate (`ui` tier): extend `gate labels` to read `right_panel` from `EXPORTSTATE` with two cards, one card and none
+  selected. Its label toggles stay on `LABELSELECTED`, which applies the same label change the pane's rows send.
 
 ## Out of scope
 
@@ -146,3 +157,7 @@ fetching page text for a card that has none stored.
   replaced by a half-window cap. The shared menu rows call `nav_row`, which in a panel would trap the keyboard; R5.
   The Labels section is the full label list (management included), not just the card's chips. Listed what the popup's
   removal deletes and the README lines it touches.
+- Round 5 (writing the plan): `fill` sees only the area, so R1 covers any width-only change, the window's included.
+  R2's marquee exception had no reader that could tell a marquee apart; it now reveals on any change of the one card,
+  except during a drag. `list_row_nav` would have grabbed focus on every selection and taken the arrows from the graph;
+  R5 splits it. Place drops `MoveToGroup` (a list of verbs). The pane's `NodeAction`s ride `GraphAction::Node`.
