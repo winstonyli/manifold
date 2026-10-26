@@ -598,3 +598,17 @@ fn a_chip_to_an_unrenamed_card_shows_its_listed_label() {
     let chips = app.ref_chips(&level.refs, level.value.pointer("/l").unwrap(), l);
     assert_eq!(chips[0].1.text, label);
 }
+
+#[test]
+fn a_follow_up_box_on_a_new_row_past_the_page_is_revealed() {
+    use crate::json_edit::menu_op;
+    let (mut app, id) = card(json!({"l": (0..100).collect::<Vec<_>>()}));
+    open_level(&mut app, id);
+    let doc = app.json_level.as_ref().unwrap().value.as_ref().clone();
+    let (op, then) = menu_op("Add element", &doc, "/l").unwrap();
+    app.apply_json_edit(JsonEdit::Op(op, then));
+    let level = app.json_level.as_ref().unwrap();
+    let e = level.edit.as_ref().expect("the box opened on the new element");
+    assert_eq!(e.pointer, "/l/100");
+    assert!(level.entry_rect("/l/100").is_some(), "its row is on screen, so the box is not cancelled");
+}

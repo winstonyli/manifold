@@ -406,6 +406,8 @@ impl App {
                 if self.edit_json(id, op).is_ok() {
                     self.save_session();
                     if let Some((pointer, what)) = then {
+                        // The new row may sit past the card's window or in a collapsed card: bring it into view.
+                        self.reveal_json(&pointer);
                         self.begin_json_edit(pointer, what);
                     }
                 }
