@@ -164,6 +164,16 @@ fn renaming_recolouring_and_deleting_reach_every_member() {
 }
 
 #[test]
+fn import_group_reuses_the_canonical_label_when_the_target_holds_duplicates() {
+    let mut a = app_on(&temp_dir("label-collide-src").join("session.mnf"), 3);
+    let json = labelled_group_export(&mut a, "urgent", egui::Color32::RED);
+    let (mut b, canonical, _) = collided(&temp_dir("label-collide-d").join("session.mnf"));
+    b.import_group_json(&json);
+    assert_eq!(b.label_defs().keys().copied().collect::<Vec<_>>(), [canonical]);
+    assert!(b.nodes.keys().any(|n| b.doc.mirror.card_labels(*n) == [canonical]), "the imported note carries it");
+}
+
+#[test]
 fn rename_recolor_and_delete_reach_the_document() {
     let path = temp_dir("label-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
