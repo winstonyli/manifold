@@ -111,3 +111,4 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 - **Why parked:** minor, found by the plan 2 final review (2026-10-24); no user-visible effect today.
 - **Trigger:** plan 4 for M1/M2; plan 3 for M5; any touch of `build_ops` for M3.
 - **Status:** parked.
+- **Rank omnibar tab and card rows together (2026-10-25).** *What:* tabs and other cards share one section, ordered by match quality, instead of two sections (omnibar design, question 3, option 3). *Why parked:* by decision; the omnibar has no ranking today, so it is a new mechanism. *Trigger:* a best match that sits in the second section is missed. *Evidence:* `omnibar/rows.rs` `rows`. *Status:* parked.
