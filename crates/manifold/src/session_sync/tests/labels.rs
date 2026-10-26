@@ -164,6 +164,23 @@ fn renaming_recolouring_and_deleting_reach_every_member() {
 }
 
 #[test]
+fn a_rename_on_another_replica_that_never_saw_the_duplicate_splits_the_group_here() {
+    let path = temp_dir("label-collide-split").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let mut other = app_on(&path, 2);
+    let b = other.create_label("urgent", None).unwrap();
+    assert!(other.save_session());
+    let a = app.create_label("urgent", None).unwrap();
+    assert!(app.save_session());
+    assert_eq!(app.label_defs().len(), 1, "grouped here");
+    assert!(other.rename_label(b, "later"), "the other replica has not seen a, so b is alone there");
+    assert!(other.save_session());
+    assert!(app.save_session(), "pulls the rename");
+    assert_eq!(app.label_defs().keys().copied().collect::<Vec<_>>(), [a, b], "two labels again");
+    assert_eq!(app.doc.mirror.label_def(b).name, "later");
+}
+
+#[test]
 fn import_group_reuses_the_canonical_label_when_the_target_holds_duplicates() {
     let mut a = app_on(&temp_dir("label-collide-src").join("session.mnf"), 3);
     let json = labelled_group_export(&mut a, "urgent", egui::Color32::RED);
