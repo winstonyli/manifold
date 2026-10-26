@@ -43,6 +43,13 @@ pub(crate) fn page_text(parent: Option<PathBuf>) -> ExitCode {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 text = inst.text_of(&format!("text-{n}"), &id)?;
             }
+            if text == "none" {
+                // A flake leaves evidence: the card as the app saw it when the wait ran out.
+                match inst.export_state("stuck") {
+                    Ok(state) => println!("  stuck: card {:?}", state.cards().first()),
+                    Err(e) => println!("  stuck: no state export: {e}"),
+                }
+            }
             quit(&mut inst, &view);
             if !check(
                 &format!("{view}: the page's visible text is stored, whitespace collapsed ({text:?})"),
