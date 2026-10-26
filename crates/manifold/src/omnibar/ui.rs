@@ -5,7 +5,7 @@ use super::*;
 /// The icon of a row that is not a tab (a tab row is drawn with the tab's identity).
 fn row_icon(row: &Row) -> Identity {
     let glyph = match row {
-        Row::Card { .. } => egui_phosphor::light::BROWSER,
+        Row::Card { .. } => kind_caps(crate::store::model::Kind::Tab).glyph,
         Row::Other { glyph, .. } => glyph,
         Row::History { .. } => egui_phosphor::light::CLOCK_COUNTER_CLOCKWISE,
         Row::Setting { .. } => egui_phosphor::light::GEAR,

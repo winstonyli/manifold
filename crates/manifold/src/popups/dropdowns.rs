@@ -955,6 +955,8 @@ mod tests {
         assert_eq!(painted(store::model::TYPE_JAR, &[("path", "f")]), i::COOKIE);
         assert_eq!(painted(store::model::TYPE_PDF, &[("path", "f")]), i::FILE_PDF);
         assert_eq!(painted("application/x-from-the-future", &[]), i::QUESTION);
+        // A tab paints its own identity (here the neutral tile's letter), never a kind glyph on top of it.
+        assert_eq!(painted(store::model::TYPE_TAB, &[("url", "https://example.org/")]), "E");
     }
 
     /// Name rules: a Recently Closed note row shows the note's first non-blank line by the display rule.

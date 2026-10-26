@@ -335,6 +335,8 @@ mod tests {
             let ty = kind.type_str().unwrap_or(TYPE_UNKNOWN);
             assert_eq!(kind_caps(kind), plain(ty).caps(), "{kind:?}");
         }
+        // With no tags a tab is the sleeping row; only the `Loaded` tag makes it "Tab".
+        assert_eq!(kind_caps(Kind::Tab), sleeping_tab().caps());
         // A link or a label is stored, never a card: nothing about it reaches the omnibar.
         assert!(!kind_caps(Kind::Link).omni_row && !kind_caps(Kind::Label).omni_row);
     }
