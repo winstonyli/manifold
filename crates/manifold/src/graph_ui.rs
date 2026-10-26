@@ -9,7 +9,6 @@ mod card_pane;
 mod cards;
 mod hints;
 mod keys;
-mod label_menu;
 mod overlays;
 mod right_panel;
 mod scene;
@@ -125,11 +124,9 @@ pub(crate) enum GraphAction {
     /// Pick-target mode: a click on this valid target (`App::finish_connect`).
     FinishConnect(NodeId),
     PinSelected,
-    /// The selection bar's Label button: opens or closes its menu.
-    LabelSelected,
-    /// The menu's rows: put the label on the selection (`on`) or take it off, as one undo step.
+    /// The card pane's label rows: put the label on the selection (`on`) or take it off, as one undo step.
     ToggleLabel { label: NodeId, on: bool },
-    /// The menu's name field: a new label, put on the selection.
+    /// The card pane's name field: a new label, put on the selection.
     NewLabel(String),
     RenameLabel { label: NodeId, name: String },
     RecolorLabel { label: NodeId, color: Option<egui::Color32> },
@@ -228,7 +225,6 @@ impl App {
             }
             GraphAction::NewFile(pos) => self.add_file_node(Some(pos)),
             GraphAction::PinSelected => self.pin_shortcut(),
-            GraphAction::LabelSelected => self.toggle_label_menu(),
             GraphAction::ToggleLabel { label, on } => self.label_selection(label, on),
             GraphAction::NewLabel(name) => self.new_label_on_selection(&name),
             GraphAction::RenameLabel { label, name } => {

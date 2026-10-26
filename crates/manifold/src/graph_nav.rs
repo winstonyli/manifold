@@ -46,8 +46,8 @@ pub(crate) struct GraphInteraction {
     pub(crate) selected: HashSet<CardId>,
     /// The card the pane described last frame (`App::track_pane_card`), to reveal one it starts describing.
     pub(crate) pane_card: Option<NodeId>,
-    /// The selection bar's Label menu, open while `Some`.
-    pub(crate) label_menu: Option<crate::labels::LabelMenu>,
+    /// The card pane's Labels section (`card_pane`): reset whenever the pane is not showing cards.
+    pub(crate) label_section: crate::labels::LabelSection,
     /// World position of the small "New Tab/Note/Group/File" card shown
     /// after a plain right-click (no real drag) on empty Graph-view
     /// background -- see the marquee-release logic below for where this

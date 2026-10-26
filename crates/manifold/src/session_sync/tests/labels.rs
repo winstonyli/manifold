@@ -62,7 +62,7 @@ fn a_refused_menu_rename_says_why() {
 fn the_trash_button_deletes_on_the_second_press_of_the_same_label() {
     let mut app = app_on(&temp_dir("label-trash").join("session.mnf"), 1);
     let (a, b) = (app.create_label("a", None).unwrap(), app.create_label("b", None).unwrap());
-    let mut menu = crate::labels::LabelMenu::default();
+    let mut menu = crate::labels::LabelSection::default();
     assert!(!menu.press_trash(a), "the first press only arms it");
     assert!(!menu.press_trash(b), "another label's press moves the arming");
     assert!(menu.press_trash(b) && menu.confirm_delete.is_none(), "the second press on the same label deletes");

@@ -44,6 +44,9 @@ impl App {
     /// a newly described card is revealed (R2).
     pub(super) fn build_right_panel(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
         let shown = self.right_panel();
+        if shown != Some(RightPanel::Cards) {
+            self.interaction.label_section = crate::labels::LabelSection::default();
+        }
         self.track_pane_card();
         let Some(shown) = shown else { return };
         if shown == RightPanel::Outline {

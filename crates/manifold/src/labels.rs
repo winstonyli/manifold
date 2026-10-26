@@ -17,17 +17,17 @@ pub(crate) struct LabelDef {
     pub(crate) color: Option<egui::Color32>,
 }
 
-/// The selection bar's Label menu while it is open: the name being typed for a new label, and the label whose row is
-/// being edited (its draft name).
+/// The card pane's Labels section: the name being typed for a new label, and the label whose row is being edited (its
+/// draft name).
 #[derive(Debug, Default)]
-pub(crate) struct LabelMenu {
+pub(crate) struct LabelSection {
     pub(crate) draft: String,
     pub(crate) editing: Option<(NodeId, String)>,
     /// The label whose trash button was pressed once: the next press on it deletes.
     pub(crate) confirm_delete: Option<NodeId>,
 }
 
-impl LabelMenu {
+impl LabelSection {
     /// The trash button of label `id` was pressed: true when that confirms a delete, else it arms the button.
     pub(crate) fn press_trash(&mut self, id: NodeId) -> bool {
         if self.confirm_delete == Some(id) {
@@ -97,7 +97,7 @@ impl App {
         self.record_label_undo(&format!("{verb} {n} card{}", if n == 1 { "" } else { "s" }), edits);
     }
 
-    /// The Label menu's name field: makes (or finds) the label and puts it on the selection.
+    /// The Labels section's name field: makes (or finds) the label and puts it on the selection.
     pub(crate) fn new_label_on_selection(&mut self, name: &str) {
         if let Some(label) = self.create_label(name, None) {
             self.label_selection(label, true);
@@ -168,12 +168,6 @@ impl App {
             self.edit_field(member, field::NAME, FieldValue::Str(name.clone()));
         }
         true
-    }
-
-    /// The Label menu's open state, toggled by the bar's button.
-    pub(crate) fn toggle_label_menu(&mut self) {
-        self.interaction.label_menu =
-            if self.interaction.label_menu.is_some() { None } else { Some(LabelMenu::default()) };
     }
 
     /// Recolours label `id` and every label that reads as it.

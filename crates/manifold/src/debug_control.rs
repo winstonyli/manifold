@@ -647,12 +647,6 @@ const VERBS: &[Verb] = &[
         let ids: Vec<crate::card_id::CardId> = rest.split_whitespace().map(str::parse).collect::<Result<_, _>>().ok()?;
         job(move |app, _| app.interaction.selected = ids.into_iter().collect())
     }),
-    row("LABELMENU", "Open or close the selection bar's Label menu", |_| {
-        job(|app, _| {
-            let ctx = app.egui_ctx.clone();
-            app.apply_graph_action(&ctx, GraphAction::LabelSelected);
-        })
-    }),
     row("LABEL name", "Make a label (or find the one with that name) and put it on the selected cards", |rest| {
         with_text(rest, |app, name| {
             let ctx = app.egui_ctx.clone();
@@ -1400,7 +1394,6 @@ mod tests {
             r"PRINTTOPDF C:\x.pdf",
             "TOGGLEPIN",
             "SELECTCARDS 0000000000000001-1 0000000000000001-2",
-            "LABELMENU",
             "LABEL urgent",
             "LABELSELECTED urgent on",
             "LABELRENAME urgent now",
