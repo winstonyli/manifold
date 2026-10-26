@@ -188,6 +188,9 @@ pub(crate) struct GraphCamera {
     /// A card to bring into view once it has a rect (`App::reveal_card`): a reopened node appears a frame after the
     /// write that reopens it, wherever the layout put it.
     pub(crate) reveal: Option<NodeId>,
+    /// The scene area `fill` last fitted `rect` to. When the next area differs only in width (the right panel
+    /// opening, closing or resized, or the window resized sideways), `fill` keeps the scale and left edge (R1).
+    pub(crate) area: Option<egui::Rect>,
 }
 
 impl App {

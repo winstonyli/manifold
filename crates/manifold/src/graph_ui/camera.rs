@@ -13,6 +13,7 @@ impl GraphCamera {
             frame_restored: false,
             strip_tab: None,
             reveal: None,
+            area: None,
         }
     }
 
@@ -77,10 +78,27 @@ impl GraphCamera {
     /// or zoom. Until then the grid, card culling, the LOD count and the
     /// minimap, which all read `rect`, skipped that margin: a card dragged
     /// into it vanished.
+    ///
+    /// When `outer` differs from the last area only in width, the world stays put instead (card-pane spec R1): `rect`
+    /// is first fitted to the last area, then keeps that scale and left edge, so a panel on the right covers or shows
+    /// a strip rather than zooming everything.
     pub(crate) fn fill(&mut self, outer: egui::Rect) {
         if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
             return; // `Scene` resets a bad rect itself.
         }
+        let last = self.area.replace(outer);
+        match last.filter(|l| l.min == outer.min && l.height() == outer.height() && l.width() != outer.width()) {
+            Some(last) => {
+                self.fit(last);
+                let scale = last.width() / self.rect.width();
+                self.rect = egui::Rect::from_min_size(self.rect.min, outer.size() / scale);
+            }
+            None => self.fit(outer),
+        }
+    }
+
+    /// `rect` refitted to `outer`'s shape about its centre, at the scale `Scene` shows it with.
+    fn fit(&mut self, outer: egui::Rect) {
         let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
         self.rect = egui::Rect::from_center_size(self.rect.center(), outer.size() / scale);
     }
@@ -531,5 +549,51 @@ mod tests {
         camera.pan_to(far);
         let tween = camera.tween.expect("off screen: eases");
         assert_eq!(tween.to, egui::Rect::from_center_size(far.center(), camera.rect.size()));
+    }
+
+    /// R1: an area that only narrows (the right panel opening) keeps the scale and the visible left edge, so the
+    /// panel covers a strip; widening back shows the same world again.
+    #[test]
+    fn a_change_of_width_alone_keeps_the_scale_and_the_left_edge() {
+        let wide = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));
+        let narrow = egui::Rect::from_min_size(wide.min, egui::vec2(700.0, 600.0));
+        let mut camera = GraphCamera::new();
+        camera.jump_to(egui::Rect::from_min_size(egui::pos2(-500.0, -300.0), egui::vec2(1000.0, 600.0)));
+        camera.fill(wide);
+        let before = camera.rect;
+        let scale = camera.transform(wide).0;
+        camera.fill(narrow);
+        assert_eq!(camera.rect.min, before.min, "the left edge stays");
+        assert_eq!(camera.transform(narrow).0, scale, "and the scale");
+        assert_eq!(camera.rect.size(), egui::vec2(700.0, 600.0));
+        camera.fill(wide);
+        assert_eq!(camera.rect, before, "widening back shows the same world");
+    }
+
+    /// R1: a rect of another shape (a fit, a tween target) is first fitted to the last area, so the left edge kept is
+    /// the one on screen, not the rect's own.
+    #[test]
+    fn a_narrowing_keeps_the_left_edge_shown_not_the_rects_own() {
+        let wide = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));
+        let narrow = egui::Rect::from_min_size(wide.min, egui::vec2(700.0, 600.0));
+        let mut camera = GraphCamera::new();
+        camera.fill(wide);
+        // A square fit: `Scene` shows it with world beside it.
+        camera.jump_to(egui::Rect::from_center_size(egui::pos2(0.0, 0.0), egui::vec2(600.0, 600.0)));
+        camera.fill(narrow);
+        assert_eq!(camera.rect.min, egui::pos2(-500.0, -300.0), "the left edge `wide` showed");
+        assert_eq!(camera.rect.size(), egui::vec2(700.0, 600.0));
+    }
+
+    /// R1 leaves every other change to today's centred fit: a taller area keeps the centre.
+    #[test]
+    fn a_change_of_height_keeps_the_centred_fit() {
+        let outer = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));
+        let taller = egui::Rect::from_min_size(outer.min, egui::vec2(1000.0, 800.0));
+        let mut camera = GraphCamera::new();
+        camera.jump_to(egui::Rect::from_center_size(egui::pos2(250.0, 0.0), egui::vec2(1000.0, 600.0)));
+        camera.fill(outer);
+        camera.fill(taller);
+        assert_eq!(camera.rect, egui::Rect::from_center_size(egui::pos2(250.0, 0.0), egui::vec2(1000.0, 800.0)));
     }
 }
