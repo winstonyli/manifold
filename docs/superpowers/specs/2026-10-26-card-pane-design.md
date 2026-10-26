@@ -21,16 +21,17 @@ the Graph view: select a card and its details show beside the canvas.
    today: `NodeAction` (applied by `App::apply_node_action`) for one card's menu rows, `GraphAction` for the
    selection's labels. Undo, sync, the debug commands and the gate already cover both.
 
+4. **The pane is an inspector (D1, option 2 of the survey).** It shows what the card is: its state, each editable
+   piece sending the action the menu sends for it. The commands (Sleep, Copy URL, Duplicate, Close, ...) stay in the
+   right-click menu. The jar and Links sections reuse the menu's drawing (`NodeMenuItem::Jars`, `Edges` through
+   `draw_menu_item`), so the two never list them differently. Rejected: the menu laid open (a second copy of a list
+   of verbs, with Close one click away all the time), the pane replacing the menu, hand-built jar and link rows.
+5. **The world stays put (R1 below, option 8 of the survey).** Rejected: the pane over the canvas (Fit and the minimap
+   would land under it, and the outline would no longer share the slot), today's refit (the view zooms on every click).
+
 ## Open for review
 
-- **D1. The pane is the card's menu laid open (recommended).** Its sections are drawn from the same data the popups
-  draw: `node_menu_config(&node_menu_view(id), ..)` items through `draw_menu_item`, and the Label menu's rows. Both
-  draw functions are split so the popup and the pane share them; no second list of what a card offers. Alternative:
-  a hand-built pane with its own rows (more freedom of layout, a second list to keep in step with the menu).
-- **D2. The selection bar stays as it is (recommended).** It floats by the cards and carries the bulk verbs (Pin, Group,
-  Label, Close); the pane carries the details. Its Label button then opens a menu whose rows the pane also shows.
-  Alternative: drop the bar's Label button while the pane is open (one place for labels, but the bar changes shape
-  with the window width).
+- **D2. The selection bar and the pane.** Surveyed 2026-10-26; options in the conversation, not yet chosen.
 
 ## Rulings (mine, for review)
 
@@ -54,16 +55,19 @@ the Graph view: select a card and its details show beside the canvas.
 
 One stored card selected, top to bottom:
 
-- **Header:** the kind's word and the name through `names::display_name`; for a tab or file, its URL or path.
-- **Labels:** the Label menu's rows (tick, rename, recolour, delete) and its "New label" field, acting on the selection
-  as the menu does (`GraphAction::ToggleLabel`, `NewLabel`, `RenameLabel`, `RecolorLabel`, `DeleteLabel`).
-- **Menu:** the card's menu items in order (`NodeMenuConfig::items`), with the Jar page's rows inline rather than behind
-  a page row. Rename and New Jar swap in their name field in the pane, as they do in the menu.
+- **Header:** the kind's word; the name through `names::display_name`, edited in place (`NodeAction::Rename`
+  then `CommitRename`, as the menu's field and the toolbar's breadcrumb (`toolbar.rs:172`) already do through the one
+  draft `renaming_group`); for a tab or file, its URL or path, copyable.
+- **Labels:** the card's labels and a way to add or remove one, acting on the selection (`GraphAction::ToggleLabel`,
+  `NewLabel`). How this relates to the bar's Label menu is D2.
+- **Place:** group (`NodeAction::RemoveFromGroup`, `MoveToGroup`), pinned, jar for a tab or group (the menu's Jars rows,
+  `SetJar`).
+- **Links:** the menu's Links rows (`Connect`, `Disconnect`).
 - **Text:** a note's text, or a tab's last stored page text (`text_store.get(id)`), read-only, scrolled, capped in
   height.
 
-Several stored cards selected: the count and the Labels section (tri-state ticks, as the menu shows them). The bulk verbs
-stay on the selection bar. Virtual cards (a JSON level's rows) never reach the pane: that level shows the outline.
+Several stored cards selected: the count and the labels' tri-state. Virtual cards (a JSON level's rows) never reach the
+pane: that level shows the outline.
 
 ## Layout and code
 
@@ -71,10 +75,12 @@ stay on the selection bar. Virtual cards (a JSON level's rows) never reach the p
   160..=640). It draws the outline's contents in a JSON level and the card pane's otherwise, and nothing (no panel) when
   neither applies. `scene.rs:219` calls it in place of `build_json_outline`. `graph_scene_outer_rect` (`camera.rs:175`)
   reads one predicate, `right_panel_shown()`, shared with `build_right_panel`.
-- `graph_ui/card_pane.rs` (new): the pane's contents from the selection, pushing `GraphAction`s and returning a
-  `NodeAction` the caller applies.
-- `node_menu.rs`: `draw_menu_item` and the items are reused as they are; the jar page's items are drawn inline.
-- `label_menu.rs`: the row list and the field move into one function both the popup and the pane call.
+- `graph_ui/card_pane.rs` (new): the pane's contents from the selection and `node_menu_view(id)`, pushing
+  `GraphAction`s and returning a `NodeAction` the caller applies through `apply_node_action`.
+- `node_menu.rs`: `draw_menu_item` is shared with the pane for the Jars and Edges items. The rename draft
+  (`renaming_group`, already shared by the menu and the breadcrumb for any kind) gains the pane as a third surface;
+  the field shows wherever the rename started. New Jar stays in the menu (its draft is dropped when the menu closes,
+  `drop_stray_jar_name`).
 - `GraphCamera`: R1's remembered scene area and the anchored refit in `fill`.
 - `EXPORTSTATE` gains `right_panel: "outline" | "card" | null` and the described card ids, for the gate.
 
@@ -111,3 +117,5 @@ fetching page text for a card that has none stored.
 - Round 2 (adversarial): the selection bar and the pane now always appear together, so their overlap (labels) is raised
   as D2. Added the rename-in-progress and both-menus-open cases. `json_outline_width` is persisted in `local_state`:
   R4 names the rename.
+- Round 3 (after choosing the inspector and R1): rename already works for every kind and its draft is already shared by
+  two surfaces, so the pane adds no new rename state; New Jar stays menu-only. The Label menu reuse moved under D2.
