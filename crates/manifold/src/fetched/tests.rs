@@ -898,3 +898,17 @@ fn undoing_a_detach_restores_the_stored_path_not_this_machines() {
     let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
     assert!(!p.is_inline() && p.path() == file.to_string_lossy(), "shown from the file this machine has");
 }
+
+#[test]
+fn undoing_a_redone_detach_works_after_the_file_changed_in_between() {
+    let (mut app, id, file) = detached("redo-changed");
+    app.step_history(None, false);
+    std::fs::write(&file, r#"{"k": [1, 2]}"#).unwrap();
+    app.rebuild_file_json(id, file.clone()); // the card rereads the file, as a reload does
+    app.step_history(None, true);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert_eq!(*p.value, serde_json::json!({"k": [1, 2]}), "redo detaches what the file holds now");
+    app.step_history(None, false);
+    let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
+    assert!(!p.is_inline(), "and that detach can be undone");
+}

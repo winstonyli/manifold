@@ -100,8 +100,8 @@ impl App {
     /// Undoes (or, with `redo`, redoes) entry `serial`, the newest when `None`, and offers the way back in a toast.
     /// An entry that restored nothing is dropped: its cards have all moved on.
     pub(crate) fn step_history(&mut self, serial: Option<u64>, redo: bool) {
-        let Some(entry) = self.undo.take(serial, redo) else { return };
-        let (done, total) = self.replay(&entry.kind, redo);
+        let Some(mut entry) = self.undo.take(serial, redo) else { return };
+        let (done, total) = self.replay(&mut entry.kind, redo);
         let verb = if redo { "Redone" } else { "Undone" };
         let message = match (done, total) {
             (0, _) => format!("Nothing to {}: it has changed since", if redo { "redo" } else { "undo" }),
@@ -118,7 +118,7 @@ impl App {
     }
 
     /// Applies `kind` one way; returns how many of its parts took effect and how many there were.
-    fn replay(&mut self, kind: &UndoKind, redo: bool) -> (usize, usize) {
+    fn replay(&mut self, kind: &mut UndoKind, redo: bool) -> (usize, usize) {
         match kind {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
@@ -132,12 +132,16 @@ impl App {
     /// A detach undone (the card is inline and still holds `body`: the BODY tree is deleted, the path restored and
     /// the file read again) or redone (the card is that file's again, and detaches once more). False when the card
     /// has moved on.
-    fn replay_detach(&mut self, node: NodeId, stored: &str, shown: &str, body: &tree::Tree, redo: bool) -> bool {
+    fn replay_detach(&mut self, node: NodeId, stored: &str, shown: &str, body: &mut tree::Tree, redo: bool) -> bool {
         let Some(json) = self.nodes.get(&node).and_then(|n| n.as_json()) else { return false };
         if redo {
-            return !json.is_inline() && json.path() == shown && self.detach_json_untracked(node).is_ok();
+            if json.is_inline() || json.path() != shown {
+                return false;
+            }
+            // The file may have changed since: the entry now holds what this detach wrote, for the next undo.
+            return self.detach_json_untracked(node).map(|written| *body = written).is_ok();
         }
-        if !json.is_inline() || self.doc.mirror.tree(node, field::BODY) != Some(body) {
+        if !json.is_inline() || self.doc.mirror.tree(node, field::BODY) != Some(&*body) {
             return false;
         }
         // One tombstone at the root, so a leaf another replica wrote meanwhile is hidden too.
