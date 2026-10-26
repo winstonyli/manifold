@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Card-kind icon, name and omnibar membership in the capability rows — Design

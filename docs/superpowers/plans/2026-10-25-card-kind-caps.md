@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Card-kind caps (glyph, kind word, omnibar membership) Implementation Plan
