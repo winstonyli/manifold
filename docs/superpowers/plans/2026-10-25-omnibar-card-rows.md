@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Omnibar rows for every card kind Implementation Plan
