@@ -1,6 +1,8 @@
 //! The Graph view's cards: drawing them, a virtual card's click, the new-node menu and the hover peek.
 
 use super::*;
+use crate::card_kind::kind_caps;
+use crate::store::model::Kind;
 
 impl App {
     /// Every card at this level, through the shared frame
@@ -227,9 +229,9 @@ impl App {
         let area = menu_popup(ui.ctx(), egui::Area::new(id).fixed_pos(screen_pos), 1.0, |ui| {
             ui.set_min_width(150.0);
             tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
-            note = ui.button(format!("{} New Note", egui_phosphor::light::NOTE_PENCIL)).clicked();
+            note = ui.button(format!("{} New Note", kind_caps(Kind::Note).glyph)).clicked();
             group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
-            json = ui.button(format!("{} New JSON", egui_phosphor::light::BRACKETS_CURLY)).clicked();
+            json = ui.button(format!("{} New JSON", kind_caps(Kind::Json).glyph)).clicked();
             // A real picker blocks on OS/human input, which headless mode has neither of.
             if !self.headless {
                 file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();

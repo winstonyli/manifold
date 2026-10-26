@@ -41,7 +41,7 @@ impl App {
         if self.graph_detail.content() {
             let words = self.note_text(id).split_whitespace().count();
             let header = CardHeader {
-                identity: Identity::Glyph { glyph: egui_phosphor::light::NOTE_PENCIL, color: None },
+                identity: Identity::Glyph { glyph: kind_caps(Kind::Note).glyph, color: None },
                 name: "Note".to_owned(),
                 user_name: None,
                 source: format!("{words} word{}", if words == 1 { "" } else { "s" }),

@@ -31,7 +31,7 @@ impl App {
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
         if self.graph_detail.content() {
             let header = CardHeader {
-                identity: Identity::Glyph { glyph: egui_phosphor::light::DOWNLOAD_SIMPLE, color: None },
+                identity: Identity::Glyph { glyph: kind_caps(Kind::Download).glyph, color: None },
                 name: filename.to_owned(),
                 user_name: None,
                 source_is_path: download_url.is_none(),

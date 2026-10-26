@@ -19,6 +19,9 @@ pub(crate) struct Row {
     click: Option<Click>,
     file: Option<bool>,
     menu_area: Option<&'static str>,
+    glyph: Option<&'static str>,
+    kind_name: Option<&'static str>,
+    omni_row: Option<bool>,
 }
 
 impl Row {
@@ -38,6 +41,9 @@ impl Row {
             click: None,
             file: None,
             menu_area: None,
+            glyph: None,
+            kind_name: None,
+            omni_row: None,
         }
     }
 
@@ -91,6 +97,21 @@ impl Row {
         self
     }
 
+    pub(crate) fn glyph(mut self, glyph: &'static str) -> Row {
+        self.glyph = Some(glyph);
+        self
+    }
+
+    pub(crate) fn kind_name(mut self, name: &'static str) -> Row {
+        self.kind_name = Some(name);
+        self
+    }
+
+    pub(crate) fn omni_row(mut self, on: bool) -> Row {
+        self.omni_row = Some(on);
+        self
+    }
+
     pub(crate) fn requires(mut self, tags: &[Tag]) -> Row {
         self.requires = TagSet::of(tags);
         self
@@ -141,6 +162,12 @@ pub(crate) struct Caps {
     pub(crate) file: bool,
     /// The egui area id of its node menu.
     pub(crate) menu_area: &'static str,
+    /// Its icon: the card header, the omnibar row, Recently Closed and the New menu.
+    pub(crate) glyph: &'static str,
+    /// The first word of its accessible name.
+    pub(crate) kind_name: &'static str,
+    /// The omnibar lists it as an `Other` row when it matches.
+    pub(crate) omni_row: bool,
 }
 
 impl Default for Caps {
@@ -158,6 +185,9 @@ impl Default for Caps {
             click: None,
             file: false,
             menu_area: "node_context_menu",
+            glyph: egui_phosphor::light::QUESTION,
+            kind_name: "Card",
+            omni_row: false,
         }
     }
 }
@@ -240,6 +270,15 @@ impl Registry {
             if let Some(v) = row.menu_area {
                 caps.menu_area = v;
             }
+            if let Some(v) = row.glyph {
+                caps.glyph = v;
+            }
+            if let Some(v) = row.kind_name {
+                caps.kind_name = v;
+            }
+            if let Some(v) = row.omni_row {
+                caps.omni_row = v;
+            }
         }
         caps
     }
@@ -247,13 +286,14 @@ impl Registry {
 
 /// What `worth_reopening` decides per type: only a completed download and a blank note are not recorded when closed
 /// (a type this build doesn't know comes back as a shell, spec decision 4). Also the draw layer of each type
-/// (`draw_layer`). A string no row matches gets the `Caps` default; `card_kind::canonical_type` maps every stored
+/// (`draw_layer`), its icon, its kind word and whether the omnibar lists it. A string no row matches gets the `Caps` default; `card_kind::canonical_type` maps every stored
 /// type to a row first.
 pub(crate) fn builtin_rows() -> Vec<Row> {
     use crate::store::model::{
         TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON_LEVEL, TYPE_NOTE, TYPE_TAB, TYPE_TRAIL_PAGE, TYPE_UNKNOWN,
         TYPE_VIRTUAL_PREFIX,
     };
+    use egui_phosphor::light as icon;
     vec![
         // Every stored kind can do everything; a virtual kind's own row, below, turns off what it cannot.
         Row::new("*/*")
@@ -279,28 +319,65 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .drop_target(false)
             .menu(false)
             .stored_controls(false),
-        Row::new(TYPE_TAB).restorable(true).draw_layer(1).delete_verb("close").click(Click::Open), // a sleeping tab; a loaded one draws under it
+        Row::new(TYPE_TAB)
+            .restorable(true)
+            .draw_layer(1)
+            .delete_verb("close")
+            .click(Click::Open)
+            .glyph(icon::BROWSER)
+            .kind_name("Sleeping tab"), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
-        Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0),
-        Row::new(TYPE_GROUP).restorable(true).draw_layer(7).delete_verb("close"),
+        Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0).kind_name("Tab"),
+        Row::new(TYPE_GROUP)
+            .restorable(true)
+            .draw_layer(7)
+            .delete_verb("close")
+            .glyph(icon::FOLDER)
+            .kind_name("Group")
+            .omni_row(true),
         Row::new("image/*")
             .restorable(true)
             .draw_layer(4)
             .file(true)
             .click(Click::Open)
-            .menu_area("image_context_menu"),
+            .menu_area("image_context_menu")
+            .glyph(icon::IMAGE)
+            .kind_name("Image")
+            .omni_row(true),
         Row::new("application/pdf")
             .restorable(true)
             .draw_layer(5)
             .file(true)
             .click(Click::Reveal)
-            .menu_area("pdf_context_menu"),
-        Row::new("application/json").restorable(true).draw_layer(6).file(true).menu_area("json_context_menu"),
-        Row::new(TYPE_NOTE).restorable(true).draw_layer(3),
-        Row::new(TYPE_JAR).restorable(true).draw_layer(3).delete_verb("close"), // a jar card, drawn with notes
+            .menu_area("pdf_context_menu")
+            .glyph(icon::FILE_PDF)
+            .kind_name("PDF")
+            .omni_row(true),
+        Row::new("application/json")
+            .restorable(true)
+            .draw_layer(6)
+            .file(true)
+            .menu_area("json_context_menu")
+            .glyph(icon::BRACKETS_CURLY)
+            .kind_name("JSON")
+            .omni_row(true),
+        Row::new(TYPE_NOTE).restorable(true).draw_layer(3).glyph(icon::NOTE_PENCIL).kind_name("Note").omni_row(true),
+        Row::new(TYPE_JAR)
+            .restorable(true)
+            .draw_layer(3)
+            .delete_verb("close")
+            .glyph(icon::COOKIE)
+            .kind_name("Cookie jar"), // a jar card, drawn with notes
         Row::new(TYPE_UNKNOWN).restorable(true).draw_layer(3), // a type this build doesn't know, drawn with notes
         Row::new(TYPE_NOTE).requires(&[Tag::Blank]).restorable(false),
-        Row::new(TYPE_DOWNLOAD).restorable(false).draw_layer(2).delete_verb("remove").click(Click::Reveal), // a download
+        Row::new(TYPE_DOWNLOAD)
+            .restorable(false)
+            .draw_layer(2)
+            .delete_verb("remove")
+            .click(Click::Reveal)
+            .glyph(icon::DOWNLOAD_SIMPLE)
+            .kind_name("Download")
+            .omni_row(true), // a download
     ]
     .into_iter()
     .chain(test_rows())

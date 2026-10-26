@@ -111,7 +111,7 @@ impl App {
         let (name, source, source_is_path) = file_header_text(&pdf.path, self.source_url(id));
         // The page count sits at the bottom right, so the fallback strip stops short of it.
         let header = CardHeader {
-            identity: Identity::Glyph { glyph: egui_phosphor::light::FILE_PDF, color: None }.busy(busy),
+            identity: Identity::Glyph { glyph: kind_caps(Kind::Pdf).glyph, color: None }.busy(busy),
             name,
             user_name: None,
             source,

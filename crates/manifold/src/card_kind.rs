@@ -20,6 +20,13 @@ pub(crate) fn canonical_type(raw: &str) -> &'static str {
     Kind::from_type(raw).type_str().unwrap_or(TYPE_UNKNOWN)
 }
 
+/// The registry's answer for a kind with no tags: its icon, its kind word and its abilities. For a site that holds a
+/// `Kind` and no `CardKind` (a card body, the omnibar, Recently Closed). A loaded tab differs only by its tag
+/// (`CardKind::caps`).
+pub(crate) fn kind_caps(kind: Kind) -> Caps {
+    registry().caps(kind.type_str().unwrap_or(TYPE_UNKNOWN), TagSet::EMPTY)
+}
+
 /// A card's type and tags, as `caps::registry().caps(ty, tags)` takes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CardKind {
@@ -297,5 +304,38 @@ mod tests {
     fn a_live_and_a_sleeping_tab_share_a_type_and_differ_in_loaded() {
         assert_eq!(loaded_tab().ty, sleeping_tab().ty);
         assert!(loaded_tab().loaded() && !sleeping_tab().loaded());
+    }
+
+    /// Each kind's icon, kind word and omnibar membership (spec "Rows"); `kind_caps` agrees for a kind with no tags.
+    #[test]
+    fn each_kind_has_its_glyph_word_and_omnibar_membership() {
+        use egui_phosphor::light as i;
+        let table: [(CardKind, &str, &str, bool); 10] = [
+            (loaded_tab(), i::BROWSER, "Tab", false),
+            (sleeping_tab(), i::BROWSER, "Sleeping tab", false),
+            (plain(TYPE_DOWNLOAD), i::DOWNLOAD_SIMPLE, "Download", true),
+            (plain(TYPE_NOTE), i::NOTE_PENCIL, "Note", true),
+            (plain(TYPE_JAR), i::COOKIE, "Cookie jar", false),
+            (plain(TYPE_UNKNOWN), i::QUESTION, "Card", false),
+            (plain(TYPE_IMAGE), i::IMAGE, "Image", true),
+            (plain(TYPE_PDF), i::FILE_PDF, "PDF", true),
+            (plain(TYPE_JSON), i::BRACKETS_CURLY, "JSON", true),
+            (plain(TYPE_GROUP), i::FOLDER, "Group", true),
+        ];
+        assert_eq!(table.map(|row| row.0), kinds(), "the table lists kinds() in order");
+        for (kind, glyph, word, omni) in table {
+            let caps = kind.caps();
+            assert_eq!((caps.glyph, caps.kind_name, caps.omni_row), (glyph, word, omni), "{kind:?}");
+        }
+        assert_eq!(plain(TYPE_UNKNOWN).caps().glyph, Caps::default().glyph);
+        assert!(kinds().iter().filter(|k| k.ty != TYPE_UNKNOWN).all(|k| k.caps().glyph != Caps::default().glyph));
+        for kind in
+            [Kind::Group, Kind::Note, Kind::Image, Kind::Pdf, Kind::Json, Kind::Download, Kind::Jar, Kind::Unknown]
+        {
+            let ty = kind.type_str().unwrap_or(TYPE_UNKNOWN);
+            assert_eq!(kind_caps(kind), plain(ty).caps(), "{kind:?}");
+        }
+        // A link or a label is stored, never a card: nothing about it reaches the omnibar.
+        assert!(!kind_caps(Kind::Link).omni_row && !kind_caps(Kind::Label).omni_row);
     }
 }

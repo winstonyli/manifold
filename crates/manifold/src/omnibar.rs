@@ -7,7 +7,8 @@ mod ui;
 pub(crate) use rows::{default_highlight, Mode, Row};
 
 use super::*;
-use crate::store::model::{Kind, NodeId};
+use crate::card_kind::kind_caps;
+use crate::store::model::NodeId;
 use rows::{CardInfo, Corpus, OtherInfo};
 use std::collections::HashMap;
 
@@ -91,22 +92,6 @@ impl OmniBar {
     }
 }
 
-/// The icon of a card that is not a tab, and so whether the omnibar offers it as a row: one table for both. A jar
-/// holds cookies and is no card to open, a card of a type this build does not know has no name to search, and a link
-/// or label is never a card. The match is exhaustive: a new `Kind` must be placed here.
-fn other_glyph(kind: Kind) -> Option<&'static str> {
-    use egui_phosphor::light as icon;
-    Some(match kind {
-        Kind::Note => icon::NOTE_PENCIL,
-        Kind::Group => icon::FOLDER,
-        Kind::Download => icon::DOWNLOAD_SIMPLE,
-        Kind::Image => icon::IMAGE,
-        Kind::Pdf => icon::FILE_PDF,
-        Kind::Json => icon::BRACKETS_CURLY,
-        Kind::Tab | Kind::Jar | Kind::Link | Kind::Label | Kind::Unknown => return None,
-    })
-}
-
 /// The open cards and history `rows` draws from.
 struct AppCorpus<'a> {
     app: &'a App,
@@ -137,8 +122,14 @@ impl Corpus for AppCorpus<'_> {
             .iter()
             .filter(|&&id| Some(id) != self.exclude)
             .filter_map(|&id| {
-                let glyph = other_glyph(app.doc.mirror.kind_of(id))?;
-                Some(OtherInfo { id, label: app.accessible_name(id)?, glyph, labels: app.label_names(id) })
+                // The registry says which kinds the omnibar offers (`Caps::omni_row`): a jar holds cookies and is no
+                // card to open, a card of a type this build does not know has no name to search, a link or label is
+                // never a card.
+                let caps = kind_caps(app.doc.mirror.kind_of(id));
+                if !caps.omni_row {
+                    return None;
+                }
+                Some(OtherInfo { id, label: app.accessible_name(id)?, glyph: caps.glyph, labels: app.label_names(id) })
             })
             .collect()
     }

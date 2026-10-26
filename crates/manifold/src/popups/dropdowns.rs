@@ -124,7 +124,8 @@ impl App {
         }
     }
 
-    /// The "Recently Closed" dropdown's row for one entry: an icon (drawn
+    /// The "Recently Closed" dropdown's row for one entry: an icon (its kind's
+    /// table glyph, `Caps::glyph`, or a tab's favicon; drawn
     /// into `ui` as a side effect, same as the row's other icons, and for a
     /// group nothing more: `build_recently_closed_popup` draws its member
     /// count after the text), the text, and its hover -- `name` for a
@@ -142,14 +143,18 @@ impl App {
         title: Option<&str>,
     ) -> (egui::WidgetText, Option<String>) {
         let str_field = |name: &str| node.fields.get(name).and_then(|v| v.as_str()).unwrap_or_default().to_string();
-        if node.kind() == Some(Kind::Group) {
-            ui.label(egui_phosphor::light::FOLDER_SIMPLE);
+        let kind = node.kind();
+        // The kind's table glyph (`Caps::glyph`); a tab paints its favicon below, and a type this build doesn't know
+        // reads the default.
+        if kind != Some(Kind::Tab) {
+            ui.label(kind_caps(kind.unwrap_or(Kind::Unknown)).glyph);
+        }
+        if kind == Some(Kind::Group) {
             let name = str_field("name");
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
-        if node.kind() == Some(Kind::Note) {
-            ui.label(egui_phosphor::light::NOTE_PENCIL);
+        if kind == Some(Kind::Note) {
             // The note's text is never cleaned; its first non-blank line is shown by the display rule.
             let text = str_field("text");
             let first = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default();
@@ -158,8 +163,7 @@ impl App {
         }
         // A type this build doesn't know (`JsonNode::kind` is `None`): its stored name, else its type string, as its
         // card's header shows them.
-        if node.kind().is_none() {
-            ui.label(egui_phosphor::light::QUESTION);
+        if kind.is_none() {
             let name = str_field("name");
             if name.is_empty() {
                 return (str_field("type").into(), None);
@@ -167,7 +171,7 @@ impl App {
             let segs = crate::names::display_name(&name, crate::names::UNTITLED);
             return (crate::names::name_job(ui, "", &segs, "").into(), crate::names::hidden_hint(&segs));
         }
-        let text: String = match node.kind() {
+        let text: String = match kind {
             Some(Kind::Tab) => {
                 let url = str_field("url");
                 let kind = ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo);
@@ -176,19 +180,8 @@ impl App {
                 paint_row_icon(ui, slot, 0.0, "", false, identity);
                 title.map_or(url, str::to_string)
             }
-            Some(Kind::Image) => {
-                ui.label(egui_phosphor::light::IMAGE);
-                str_field("path")
-            }
-            Some(Kind::Pdf) => {
-                ui.label(egui_phosphor::light::FILE_PDF);
-                str_field("path")
-            }
-            _ => {
-                // Json, a jar, a download.
-                ui.label(egui_phosphor::light::BRACKETS_CURLY);
-                str_field("path")
-            }
+            // Image, Pdf, Json, a jar, a download: the stored path.
+            _ => str_field("path"),
         };
         (text.into(), None)
     }
@@ -930,6 +923,38 @@ mod tests {
             assert_eq!((label.text(), hint), ("https://example.org/", None));
         });
         output.textures_delta.clear();
+    }
+
+    /// The icon a Recently Closed row paints, for each kind (spec Decision 1): the table's glyph, one icon only.
+    #[test]
+    fn a_closed_row_paints_its_kinds_table_glyph() {
+        let painted = |ty: &str, extra: &[(&str, &str)]| -> String {
+            let ctx = egui::Context::default();
+            let mut fields = serde_json::Map::new();
+            fields.insert("type".into(), ty.into());
+            for (k, v) in extra {
+                fields.insert((*k).into(), (*v).into());
+            }
+            let node = store::json::JsonNode { id: "n".into(), fields };
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                App::closed_entry_label(ui, None, &node, None);
+            });
+            output.textures_delta.clear();
+            output
+                .shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect()
+        };
+        use egui_phosphor::light as i;
+        assert_eq!(painted(store::model::TYPE_GROUP, &[("name", "G")]), i::FOLDER);
+        assert_eq!(painted(store::model::TYPE_DOWNLOAD, &[("path", "f")]), i::DOWNLOAD_SIMPLE);
+        assert_eq!(painted(store::model::TYPE_JAR, &[("path", "f")]), i::COOKIE);
+        assert_eq!(painted(store::model::TYPE_PDF, &[("path", "f")]), i::FILE_PDF);
+        assert_eq!(painted("application/x-from-the-future", &[]), i::QUESTION);
     }
 
     /// Name rules: a Recently Closed note row shows the note's first non-blank line by the display rule.

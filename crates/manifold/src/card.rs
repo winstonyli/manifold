@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::caps::Click;
-use crate::store::model::NodeId;
+use crate::card_kind::kind_caps;
+use crate::store::model::{Kind, NodeId};
 use crate::store::model::{TYPE_DOWNLOAD, TYPE_GROUP, TYPE_IMAGE, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 mod download_body;
@@ -1456,7 +1457,7 @@ impl App {
         let segs = crate::names::display_name(&def.name, crate::names::UNTITLED);
         let header = CardHeader {
             identity: Identity::Glyph {
-                glyph: egui_phosphor::light::COOKIE,
+                glyph: kind_caps(Kind::Jar).glyph,
                 color: Some(def.color.unwrap_or(crate::theme::TAG_COLOR_PALETTE[0])),
             },
             name: "Jar".to_owned(),
@@ -1490,7 +1491,7 @@ impl App {
         let ty = self.doc.mirror.ty(id).to_owned();
         let named = !self.doc.mirror.name(id).is_empty(); // name rule: only whether one is stored
         let header = CardHeader {
-            identity: Identity::Glyph { glyph: egui_phosphor::light::QUESTION, color: None },
+            identity: Identity::Glyph { glyph: kind_caps(Kind::Unknown).glyph, color: None },
             source: if named { ty.clone() } else { String::new() },
             name: ty,
             user_name: None,

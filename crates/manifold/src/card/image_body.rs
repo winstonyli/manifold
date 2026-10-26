@@ -100,7 +100,7 @@ impl App {
                 if let Some(image) = self.nodes.get(&id).and_then(|n| n.as_image()) {
                     let (name, source, source_is_path) = file_header_text(&image.path, self.source_url(id));
                     let header = CardHeader {
-                        identity: Identity::Glyph { glyph: egui_phosphor::light::IMAGE, color: None }.busy(decoding),
+                        identity: Identity::Glyph { glyph: kind_caps(Kind::Image).glyph, color: None }.busy(decoding),
                         name,
                         user_name: None,
                         source,

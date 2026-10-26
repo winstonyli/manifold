@@ -450,57 +450,56 @@ impl Layout {
 }
 
 impl GraphNode {
-    /// What a screen reader announces for the node's card: its kind, then what identifies it. A content card is named
-    /// by its web `source` (`App::source_url`), or by its file name when it has none; a note by the first line of
-    /// `text` and a group or jar by `text`, the stored text its card shows (`App::own_text`), ignored for other kinds;
-    /// a card of a type this build doesn't know is "Card", which a stored name follows (`App::accessible_name`).
-    pub(crate) fn accessible_name(&self, text: &str, source: Option<&str>) -> String {
+    /// What identifies the node's card to a screen reader, after its kind word (`Caps::kind_name`, joined by
+    /// `App::accessible_name`). A content card is named by its web `source` (`App::source_url`), or by its file name
+    /// when it has none; a note by the first line of `text` and a group or jar by `text`, the stored text its card
+    /// shows (`App::own_text`), ignored for other kinds; a card of a type this build doesn't know has none, which a
+    /// stored name follows (`App::accessible_name`).
+    pub(crate) fn accessible_detail(&self, text: &str, source: Option<&str>) -> Option<String> {
         let first_nonempty = |parts: &[&str]| parts.iter().find(|p| !p.trim().is_empty()).map(|p| p.trim().to_string());
         // Either separator: a saved path may come from the other platform.
         let file_name =
             |path: &str| path.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_string);
         let source_or_file = |path: &str| source.map(str::to_string).or_else(|| file_name(path));
-        let (kind, detail) = match &self.runtime {
-            Runtime::Tab(t) => ("Tab", first_nonempty(&[&t.title, &t.url])),
-            Runtime::Unloaded(t) => ("Sleeping tab", first_nonempty(&[&t.title, &t.url])),
-            Runtime::Download(d) => ("Download", file_name(&d.path)),
-            // A group has no runtime of its own (2b-6 Ruling 8); its name is `text`.
-            Runtime::None => {
-                ("Group", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
+        match &self.runtime {
+            Runtime::Tab(t) => first_nonempty(&[&t.title, &t.url]),
+            Runtime::Unloaded(t) => first_nonempty(&[&t.title, &t.url]),
+            Runtime::Download(d) => file_name(&d.path),
+            // A group has no runtime of its own (2b-6 Ruling 8); its name is `text`. A jar is named like a group: its
+            // stored name is `text` (`App::own_text`).
+            Runtime::None | Runtime::Jar => {
+                Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED)))
             }
-            // A jar is named like a group: its stored name is `text` (`App::own_text`).
-            Runtime::Jar => {
-                ("Cookie jar", Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED))))
-            }
-            Runtime::Unknown => ("Card", None),
+            Runtime::Unknown => None,
             Runtime::Note(_) => {
                 // The note's text is never cleaned; its first non-blank line is shown by the display rule.
                 let first = text.lines().map(str::trim).find(|l| !l.is_empty());
-                ("Note", first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED))))
+                first.map(|l| crate::names::to_plain(&crate::names::display_name(l, crate::names::UNTITLED)))
             }
-            Runtime::Image(p) => ("Image", source_or_file(&p.path)),
-            Runtime::Pdf(p) => ("PDF", source_or_file(&p.path)),
-            Runtime::Json(p) => ("JSON", (!p.is_inline()).then(|| source_or_file(p.path())).flatten()),
-        };
-        match detail {
-            Some(detail) => format!("{kind}: {detail}"),
-            None => kind.to_string(),
+            Runtime::Image(p) => source_or_file(&p.path),
+            Runtime::Pdf(p) => source_or_file(&p.path),
+            Runtime::Json(p) => (!p.is_inline()).then(|| source_or_file(p.path())).flatten(),
         }
     }
 }
 
 impl App {
-    /// `GraphNode::accessible_name` of node `id` with a rename (`NodeAction::CommitRename`) in place of the derived
-    /// detail; a group's own name is already its detail. `None` for an id that isn't a node.
+    /// What a screen reader announces for node `id`'s card: its kind word (`Caps::kind_name`, "Card" for a type this
+    /// build doesn't know), then `GraphNode::accessible_detail`, or a rename (`NodeAction::CommitRename`) in its place;
+    /// a group's own name is already its detail. `None` for an id that isn't a node.
     pub(crate) fn accessible_name(&self, id: NodeId) -> Option<String> {
-        let base = self.nodes.get(&id)?.accessible_name(self.own_text(id), self.source_url(id));
+        let node = self.nodes.get(&id)?;
+        let word = self.card_kind(id)?.caps().kind_name;
         let renamed = self.doc.mirror.name(id); // name rule: drawn through display_name
-        if renamed.is_empty() || self.is_container(id) {
-            return Some(base);
-        }
-        let kind = base.split(": ").next().unwrap_or(&base);
-        let shown = crate::names::to_plain(&crate::names::display_name(renamed, crate::names::UNTITLED));
-        Some(format!("{kind}: {shown}"))
+        let detail = if renamed.is_empty() || self.is_container(id) {
+            node.accessible_detail(self.own_text(id), self.source_url(id))
+        } else {
+            Some(crate::names::to_plain(&crate::names::display_name(renamed, crate::names::UNTITLED)))
+        };
+        Some(match detail {
+            Some(detail) => format!("{word}: {detail}"),
+            None => word.to_string(),
+        })
     }
 
     /// The web source of an Image, Pdf, Json or Note node (`Mirror::url`): Refresh and Open as tab use it,
@@ -551,7 +550,7 @@ mod tests {
         let (g, n) = (app.alloc_node_id(), app.alloc_node_id());
         app.insert_group_at(g, None);
         app.insert_note_at(n, None);
-        let name = |app: &crate::App, id: NodeId| app.nodes[&id].accessible_name(app.own_text(id), None);
+        let name = |app: &crate::App, id: NodeId| app.accessible_name(id).unwrap();
         assert_eq!(name(&app, n), "Note");
         app.nodes.get_mut(&n).unwrap().runtime.as_note_mut().unwrap().text = "
   first line
@@ -576,17 +575,83 @@ second"
 
     /// Review C-B12: a local file's card is named by its file name; a web source still wins.
     #[test]
-    fn a_local_file_card_has_an_accessible_name() {
+    fn a_local_file_card_has_an_accessible_detail() {
         let node = |runtime| GraphNode { runtime };
         let pdf = node(Runtime::Pdf(PdfPayload { path: r"C:\docs\report.pdf".into(), outcome: None }));
-        assert_eq!(pdf.accessible_name("", None), "PDF: report.pdf");
+        assert_eq!(pdf.accessible_detail("", None).as_deref(), Some("report.pdf"));
         let source = Some("https://example.org/r.pdf");
-        assert_eq!(pdf.accessible_name("", source), "PDF: https://example.org/r.pdf");
+        assert_eq!(pdf.accessible_detail("", source).as_deref(), Some("https://example.org/r.pdf"));
         let image =
             node(Runtime::Image(ImagePayload { path: "/home/u/cat.png".into(), width: 1, height: 1, error: None }));
-        assert_eq!(image.accessible_name("", None), "Image: cat.png");
+        assert_eq!(image.accessible_detail("", None).as_deref(), Some("cat.png"));
         let json = node(Runtime::Json(JsonPayload::file(r"D:\data\x.json".into(), Default::default(), None)));
-        assert_eq!(json.accessible_name("", None), "JSON: x.json");
+        assert_eq!(json.accessible_detail("", None).as_deref(), Some("x.json"));
+    }
+
+    /// The kind word comes from the registry (spec R4): a live tab, a sleeping one, a download, a jar, a node with no
+    /// stored type, and a rename that keeps the word.
+    #[test]
+    fn the_accessible_name_starts_with_the_registry_word() {
+        use crate::store::model::{field, FieldValue, Kind};
+        let mut app = crate::App::default();
+        let place = |app: &mut crate::App, kind, runtime| {
+            let id = app.alloc_node_id();
+            app.test_node(id, kind, runtime);
+            id
+        };
+        let (tab, _peer) = crate::process_manager::ViewTab::fake(crate::process_manager::ViewKind::Servo);
+        let live = place(
+            &mut app,
+            Kind::Tab,
+            Runtime::Tab(TabPayload {
+                tab,
+                url: "https://a/".into(),
+                title: String::new(),
+                can_go_back: false,
+                can_go_forward: false,
+                loading: false,
+                audio_playing: false,
+                muted: false,
+                zoom_factor: 1.0,
+                swap_target: None,
+            }),
+        );
+        let sleeping = place(
+            &mut app,
+            Kind::Tab,
+            Runtime::Unloaded(UnloadedTabPayload {
+                url: "https://s/".into(),
+                title: String::new(),
+                muted: false,
+                zoom_factor: 1.0,
+                state: UnloadedState::Sleeping,
+            }),
+        );
+        let download = place(
+            &mut app,
+            Kind::Download,
+            Runtime::Download(DownloadPayload {
+                path: "dir/f.bin".into(),
+                bytes_received: 0,
+                total_bytes: None,
+                completed: false,
+                failed: false,
+            }),
+        );
+        let jar = place(&mut app, Kind::Jar, Runtime::Jar);
+        let name = |app: &crate::App, id| app.accessible_name(id).unwrap();
+        assert_eq!(name(&app, live), "Tab: https://a/");
+        assert_eq!(name(&app, sleeping), "Sleeping tab: https://s/");
+        assert_eq!(name(&app, download), "Download: f.bin");
+        assert_eq!(name(&app, jar), "Cookie jar: Untitled");
+        // A renamed non-container keeps its word; the rename is the detail.
+        app.doc.mirror.set(download, field::NAME, FieldValue::Str("Mine".into()));
+        assert_eq!(name(&app, download), "Download: Mine");
+        // A node the mirror holds no type for reads `Caps::default()`: "Card", whatever its payload.
+        let untyped = app.alloc_node_id();
+        app.nodes
+            .insert(untyped, GraphNode { runtime: Runtime::Note(NotePayload { text: "x".into(), editing: false }) });
+        assert_eq!(name(&app, untyped), "Card");
     }
 
     /// An unloaded tab's card is saved, exported and copied as its tab.

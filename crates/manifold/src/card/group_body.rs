@@ -27,7 +27,7 @@ impl App {
                 let segs = crate::names::display_name(&stored, crate::names::UNTITLED);
                 body.tooltip = crate::names::hidden_hint(&segs);
                 let header = CardHeader {
-                    identity: Identity::Glyph { glyph: egui_phosphor::light::FOLDER, color: None },
+                    identity: Identity::Glyph { glyph: kind_caps(Kind::Group).glyph, color: None },
                     name: String::new(),
                     user_name: Some(&segs),
                     source: format!("{member_count} item{}", if member_count == 1 { "" } else { "s" }),
