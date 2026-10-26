@@ -30,6 +30,10 @@ pub(crate) struct PropEdit {
 }
 
 pub(crate) enum UndoKind {
+    /// A label deleted (`App::delete_label`). A store delete is permanent, so undo makes a new label from `name` and
+    /// `color` and puts each of `carriers` (card, membership stamp) on it; `label` is the one it made, so redo
+    /// deletes that. `None` until the first undo.
+    LabelDelete { label: Option<NodeId>, name: String, color: Option<egui::Color32>, carriers: Vec<(NodeId, i64)> },
     /// A drop with an effect (Join, GroupWith, Eject, Reparent). `created` is the group a GroupWith made.
     Revert { moved: Vec<Moved>, created: Option<NodeId> },
     /// Dissolve, Ungroup All, Merge: each group and where `fold_group` sent its members. Undo reopens the groups,
@@ -123,10 +127,41 @@ impl App {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
             UndoKind::Props(edits) => self.replay_props(edits, redo),
+            UndoKind::LabelDelete { label, name, color, carriers } => {
+                self.replay_label_delete(label, name, *color, carriers, redo)
+            }
             UndoKind::Detach { node, stored, shown, url, body } => {
                 (usize::from(self.replay_detach(*node, stored, shown, url, body, redo)), 1)
             }
         }
+    }
+
+    /// A label delete undone (a new label with the old name, colour and carriers; a name another label has since
+    /// taken folds into that label) or redone (the label undo made is deleted). Parts: the label, then each carrier.
+    fn replay_label_delete(
+        &mut self,
+        label: &mut Option<NodeId>,
+        name: &str,
+        color: Option<egui::Color32>,
+        carriers: &[(NodeId, i64)],
+        redo: bool,
+    ) -> (usize, usize) {
+        let total = 1 + carriers.len();
+        if redo {
+            let Some(id) = label.filter(|&id| self.doc.mirror.is_stored(id)) else { return (0, total) };
+            self.delete_label_group(id);
+            return (total, total);
+        }
+        let Some(id) = self.create_label(name, color) else { return (0, total) };
+        *label = Some(id);
+        let mut done = 1;
+        for &(card, at) in carriers {
+            if self.nodes.contains_key(&card) {
+                self.edit_prop(card, field::PROPS, crate::labels::labels_path(id), Some(Leaf::Int(at)));
+                done += 1;
+            }
+        }
+        (done, total)
     }
 
     /// A detach undone (the card is inline and still holds `body`: the BODY tree is deleted, the path restored and

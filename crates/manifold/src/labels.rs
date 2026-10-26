@@ -230,12 +230,48 @@ impl App {
         }
     }
 
+    /// Deletes label `id` and every label that reads as it, as one undo step (`UndoKind::LabelDelete`).
+    pub(crate) fn delete_label(&mut self, id: NodeId) {
+        let def = self.doc.mirror.label_def(self.doc.mirror.canonical_label(id));
+        let carriers = self.label_carriers(id);
+        self.delete_label_group(id);
+        let shown = crate::names::to_plain(&crate::names::display_name(&def.name, "label"));
+        let message = format!("Deleted label \"{shown}\"");
+        // name rule: the stored name, kept to make the label again
+        let name = def.name;
+        self.record_undo(message, UndoKind::LabelDelete { label: None, name, color: def.color, carriers });
+    }
+
     /// Forgets label `id` and every label that reads as it, and queues their deletes. Cards keep their membership
     /// entries, which show nothing once the labels are gone (`Mirror::card_labels`).
-    pub(crate) fn delete_label(&mut self, id: NodeId) {
+    pub(crate) fn delete_label_group(&mut self, id: NodeId) {
         for member in self.label_group_of(id) {
             self.doc.mirror.forget_stored(member);
             self.queue_delete(member);
         }
+    }
+
+    /// The cards carrying label `id` (or one that reads as it), each with its earliest membership stamp, by card id.
+    fn label_carriers(&self, id: NodeId) -> Vec<(NodeId, i64)> {
+        let members = self.label_group_of(id);
+        let mut out: Vec<(NodeId, i64)> = self
+            .nodes
+            .keys()
+            .filter_map(|&card| {
+                let tree = self.doc.mirror.tree(card, field::PROPS)?;
+                let at = tree
+                    .iter()
+                    .filter_map(|(path, leaf)| match (path.segments().as_slice(), leaf) {
+                        ([Seg::Key(k), Seg::Id(l)], Leaf::Int(at)) if k == LABELS_KEY && members.contains(l) => {
+                            Some(*at)
+                        }
+                        _ => None,
+                    })
+                    .min()?;
+                Some((card, at))
+            })
+            .collect();
+        out.sort_unstable();
+        out
     }
 }

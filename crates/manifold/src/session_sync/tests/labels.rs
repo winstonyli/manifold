@@ -181,6 +181,31 @@ fn a_rename_on_another_replica_that_never_saw_the_duplicate_splits_the_group_her
 }
 
 #[test]
+fn undoing_a_label_delete_brings_back_the_label_and_its_cards_and_redo_removes_it_again() {
+    let mut app = app_on(&temp_dir("label-undo").join("session.mnf"), 1);
+    let (n1, n2, n3) = (add_note(&mut app, "1"), add_note(&mut app, "2"), add_note(&mut app, "3"));
+    let label = app.create_label("urgent", Some(egui::Color32::RED)).unwrap();
+    app.set_label(&[n1, n2], label, true);
+    let stamp = app.doc.mirror.tree(n1, field::PROPS).unwrap().clone();
+    app.delete_label(label);
+    assert!(app.label_defs().is_empty());
+    app.step_history(None, false);
+    let defs = app.label_defs();
+    let (id, def) = defs.iter().next().expect("the label is back");
+    assert_eq!((def.name.as_str(), def.color), ("urgent", Some(egui::Color32::RED)));
+    assert_eq!(app.doc.mirror.card_labels(n1), [*id]);
+    assert_eq!(app.doc.mirror.card_labels(n2), [*id]);
+    assert!(app.doc.mirror.card_labels(n3).is_empty(), "a card that never had it still does not");
+    let restored = app.doc.mirror.tree(n1, field::PROPS).unwrap();
+    let stamp_of = |t: &crate::store::tree::Tree, l: NodeId| t.get(&labels_path(l)).cloned();
+    assert_eq!(stamp_of(restored, *id), stamp_of(&stamp, label), "the membership keeps its stamp");
+    app.step_history(None, true);
+    assert!(app.label_defs().is_empty(), "redo deletes it again");
+    app.step_history(None, false);
+    assert_eq!(app.label_defs().len(), 1, "and undo brings it back once more");
+}
+
+#[test]
 fn import_group_reuses_the_canonical_label_when_the_target_holds_duplicates() {
     let mut a = app_on(&temp_dir("label-collide-src").join("session.mnf"), 3);
     let json = labelled_group_export(&mut a, "urgent", egui::Color32::RED);
