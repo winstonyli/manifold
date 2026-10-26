@@ -29,9 +29,12 @@ the Graph view: select a card and its details show beside the canvas.
 5. **The world stays put (R1 below, option 8 of the survey).** Rejected: the pane over the canvas (Fit and the minimap
    would land under it, and the outline would no longer share the slot), today's refit (the view zooms on every click).
 
-## Open for review
-
-- **D2. The selection bar and the pane.** Surveyed 2026-10-26; options in the conversation, not yet chosen.
+6. **Labels move into the pane; the selection bar keeps Pin, Group and Close (D2, option 2 of its survey).** The pane
+   holds state and edits, the bar the commands beside the cards (the 2026-10-23 move off the toolbar stands). The Label
+   menu popup, its bar button, `GraphAction::LabelSelected` and the `LABELMENU` debug command are deleted; its rows
+   become the pane's Labels section. The pane shows pinned as a mark only; the bar's Pin stays the one toggle. Rejected:
+   both unchanged (two label UIs), a bar button that only focuses the pane, the pane absorbing the bar (reverses
+   2026-10-23), a bar for two or more cards only (a branch per count).
 
 ## Rulings (mine, for review)
 
@@ -49,7 +52,12 @@ the Graph view: select a card and its details show beside the canvas.
   false while egui wants keyboard input.
 - **R4. One width setting, `right_panel_width`,** replacing `json_outline_width` in `JsonUi` and `local_state`
   (`LocalState.json_outline_width` renames; no migration, per the no-migration rule: an old saved width is dropped).
-  The outline's visibility toggle stays, JSON level only.
+  The outline's visibility toggle stays, JSON level only. The panel never takes more than half the window, so there is
+  no separate narrow-window rule: labels must stay reachable at any width now that the pane is their only home.
+- **R5. The pane's rows join the popups' keyboard navigation.** The shared rows call `nav_row` (`popup_frame.rs:135`),
+  which locks Tab and Up/Down on a focused row and queues the row for `list_row_nav`. Drawn in a panel without
+  `list_row_nav`, a focused row would trap the keyboard and the queue would never be read. So the pane runs
+  `list_row_nav` as a popup does: Up/Down move between its rows, Escape returns focus to the selected card.
 
 ## Contents
 
@@ -58,15 +66,17 @@ One stored card selected, top to bottom:
 - **Header:** the kind's word; the name through `names::display_name`, edited in place (`NodeAction::Rename`
   then `CommitRename`, as the menu's field and the toolbar's breadcrumb (`toolbar.rs:172`) already do through the one
   draft `renaming_group`); for a tab or file, its URL or path, copyable.
-- **Labels:** the card's labels and a way to add or remove one, acting on the selection (`GraphAction::ToggleLabel`,
-  `NewLabel`). How this relates to the bar's Label menu is D2.
-- **Place:** group (`NodeAction::RemoveFromGroup`, `MoveToGroup`), pinned, jar for a tab or group (the menu's Jars rows,
-  `SetJar`).
+- **Labels:** today's Label menu rows, in `label_defs` order: every label with its tick for the selection, rename and
+  recolour, delete (click twice), then the "New label" field. They act on the selection as before
+  (`GraphAction::ToggleLabel`, `NewLabel`, `RenameLabel`, `RecolorLabel`, `DeleteLabel`), so label management lives here
+  too.
+- **Place:** group (`NodeAction::RemoveFromGroup`, `MoveToGroup`), a pinned mark (no toggle), jar for a tab or group
+  (the menu's Jars rows, `SetJar`).
 - **Links:** the menu's Links rows (`Connect`, `Disconnect`).
 - **Text:** a note's text, or a tab's last stored page text (`text_store.get(id)`), read-only, scrolled, capped in
   height.
 
-Several stored cards selected: the count and the labels' tri-state. Virtual cards (a JSON level's rows) never reach the
+Several stored cards selected: the count and the Labels section (its ticks tri-state, as the menu's are today). Virtual cards (a JSON level's rows) never reach the
 pane: that level shows the outline.
 
 ## Layout and code
@@ -81,6 +91,12 @@ pane: that level shows the outline.
   (`renaming_group`, already shared by the menu and the breadcrumb for any kind) gains the pane as a third surface;
   the field shows wherever the rename started. New Jar stays in the menu (its draft is dropped when the menu closes,
   `drop_stray_jar_name`).
+- `graph_ui/label_menu.rs`: `label_row` and the field become the pane's Labels section; the popup, its anchor id and
+  `draw_label_menu` go. `interaction.label_menu` (`LabelMenu`: draft, the label being edited, the armed delete) stays as
+  that section's state, no longer optional, reset when the selection clears.
+- `graph_ui/selection_bar.rs`: the Label button goes; Pin, Group, Close and the count stay.
+- Deleted with the popup: `GraphAction::LabelSelected`, `toggle_label_menu`, `LABELMENU` (`debug_control.rs:650`) and
+  the test `the_label_button_opens_a_menu_that_closes_with_the_selection`.
 - `GraphCamera`: R1's remembered scene area and the anchored refit in `fill`.
 - `EXPORTSTATE` gains `right_panel: "outline" | "card" | null` and the described card ids, for the gate.
 
@@ -89,7 +105,10 @@ pane: that level shows the outline.
 - A selected card closes or is deleted on another replica: the selection drops it and the pane follows.
 - Tab view: the Graph view is not drawn, so no pane.
 - A label renamed or recoloured elsewhere: the pane reads the mirror each frame.
-- A narrow window: under 480 points of window width the pane does not open (the canvas would be unusable).
+- A narrow window: the pane opens at any width, capped at half the window (R4).
+- Many labels: the Labels section scrolls inside the pane like the rest.
+- A label being renamed in the pane when the selection clears: the edit is dropped with the section's state, as the
+  popup's was when it closed.
 - The right-click menu open for the selected card: both show; an action from either applies once.
 - A rename in progress when the selection changes: the draft commits as when the menu loses focus.
 
@@ -98,7 +117,11 @@ pane: that level shows the outline.
 - `camera.rs` unit tests: a scene area that loses only its right strip keeps the scale and the left edge; one that gets
   it back restores the rect; a window resize keeps today's fit (R1).
 - App-level tests: one card selected gives a card pane for it; clearing the selection gives none; a JSON level gives the
-  outline; several cards give the common labels' states; a label ticked off from the pane is one undo step.
+  outline; several cards give the common labels' states; a label ticked off from the pane is one undo step; the bar has
+  no Label button. A frame test draws the pane with a jar row focused and checks Up/Down move focus within the pane
+  and Tab is not trapped (R5).
+- Docs: README's Labels paragraph (line 194) and debug command list (line 439, `LABELMENU`), the stale toolbar wording
+  at README line 147 (the bar replaced those buttons 2026-10-23), and the mockups README for the bar's new shape.
 - Gate (`ui` tier): extend `gate labels` to select a card, read `right_panel` from `EXPORTSTATE`, untick a label through
   the pane's action and check the card.
 
@@ -119,3 +142,7 @@ fetching page text for a card that has none stored.
   R4 names the rename.
 - Round 3 (after choosing the inspector and R1): rename already works for every kind and its draft is already shared by
   two surfaces, so the pane adds no new rename state; New Jar stays menu-only. The Label menu reuse moved under D2.
+- Round 4 (after choosing D2 option 2): the 480-point rule would have left labels unreachable in a narrow window;
+  replaced by a half-window cap. The shared menu rows call `nav_row`, which in a panel would trap the keyboard; R5.
+  The Labels section is the full label list (management included), not just the card's chips. Listed what the popup's
+  removal deletes and the README lines it touches.
