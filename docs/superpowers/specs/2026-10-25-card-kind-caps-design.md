@@ -24,9 +24,10 @@ kind needs one row, not a dozen edits. It supersedes PARKED.md "One icon table f
 
 ## Rulings (mine, for review)
 
-- **R1. The tab has no glyph row.** I said "tab `BROWSER`" in the design message. Nothing draws a tab's kind glyph (a
-  tab shows its favicon, `MOON` or `WARNING`, by state), so an entry would be dead data. The tab rows set only
-  `kind_name`; their `glyph` is the default, and the coverage test exempts the two tab kinds.
+- **R1. The tab keeps a glyph row (user, 2026-10-25).** `BROWSER` on the `TYPE_TAB` row, inherited by the loaded
+  row. Nothing draws it yet (a tab shows its favicon, `MOON` or `WARNING`, by state); it is the table's complete answer
+  for "what icon is this kind", so every card kind has a non-default glyph except unknown (R3), and the coverage test
+  has no tab exemption.
 - **R2. `json_level_ui::header_parts` (`BRACKETS_SQUARE` for an array, `BRACKETS_CURLY` for an object) stays.** I said
   it would read the registry. It picks by the JSON value's shape, not by card kind, so the registry cannot answer it.
 - **R3. Unknown needs no row.** `Caps::default()` becomes the unknown card: glyph `QUESTION`, kind word "Card",
@@ -47,8 +48,8 @@ kind needs one row, not a dozen edits. It supersedes PARKED.md "One icon table f
 
   | Row | glyph | kind_name | omni_row |
   | --- | --- | --- | --- |
-  | `TYPE_TAB` | default | "Sleeping tab" | false |
-  | `TYPE_TAB` + `Loaded` | default | "Tab" | false |
+  | `TYPE_TAB` | `BROWSER` | "Sleeping tab" | false |
+  | `TYPE_TAB` + `Loaded` | (inherits) | "Tab" | false |
   | `TYPE_GROUP` | `FOLDER` | "Group" | true |
   | `TYPE_NOTE` | `NOTE_PENCIL` | "Note" | true |
   | `image/*` | `IMAGE` | "Image" | true |
@@ -80,8 +81,8 @@ kind needs one row, not a dozen edits. It supersedes PARKED.md "One icon table f
 ## Testing
 
 - `caps/rows.rs`: a table test over `card_kind::fixtures::kinds()` pinning each kind's `glyph`, `kind_name` and
-  `omni_row` against the table above (so a kind added to `kinds()` without a row fails), plus that the tab kinds'
-  glyph is the default (R1) and the unknown kind equals `Caps::default()`.
+  `omni_row` against the table above (so a kind added to `kinds()` without a row fails), plus that the unknown kind
+  equals `Caps::default()` and every other kind's glyph differs from the default.
 - `kinds_cover_every_node_type` stays; the table test shares its fixture.
 - The existing omnibar tests (kind membership, labels) and the `accessible_name` tests (`node.rs`, `node_menu`,
   `session_sync`) pass unchanged except for the argument in R4. The `node.rs` tests that call `GraphNode::accessible_name`
