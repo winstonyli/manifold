@@ -45,6 +45,9 @@ pub(crate) struct Mirror {
     /// Only non-empty trees have an entry. A version is a tick of `tree_clock`, which no forget rewinds.
     trees: HashMap<(NodeId, u32), (Tree, u64)>,
     tree_clock: u64,
+    /// Each live label whose name key another, lower-id label also has, mapped to that lowest id
+    /// (`canonical_label`). Rebuilt by `regroup_labels` wherever a label is added, forgotten or renamed.
+    label_group: HashMap<NodeId, NodeId>,
 }
 
 /// A node's links to other nodes, as ids.
@@ -85,6 +88,9 @@ impl Mirror {
             }
         }
         self.nodes.entry(id).or_default().insert(no, value);
+        if no == field::NAME && self.stored_nodes.contains(&id) && self.kind_of(id) == Kind::Label {
+            self.regroup_labels();
+        }
     }
 
     /// Makes `id` a stored-only node of `kind` (not a card) this replica knows, and seeds its type. Never a graph node.
@@ -93,13 +99,54 @@ impl Mirror {
         if self.stored_nodes.insert(id) {
             let ty = kind.type_str().expect("a stored-only kind has a type").to_owned();
             self.init_field(id, field::TYPE, FieldValue::Str(ty));
+            if kind == Kind::Label {
+                self.regroup_labels();
+            }
         }
     }
 
     /// Drops stored-only node `id` and its fields (a local or remote delete).
     pub(crate) fn forget_stored(&mut self, id: NodeId) {
+        let label = self.kind_of(id) == Kind::Label;
         self.stored_nodes.remove(&id);
         self.forget_node(id);
+        if label {
+            self.regroup_labels();
+        }
+    }
+
+    /// Rebuilds `label_group`: live labels with the same non-empty `name_key` fold into the lowest id.
+    fn regroup_labels(&mut self) {
+        let mut first: HashMap<String, NodeId> = HashMap::new();
+        let mut group = HashMap::new();
+        for id in self.stored_ids(Kind::Label) {
+            let key = crate::names::name_key(self.str_field(id, field::NAME));
+            if key.is_empty() {
+                continue;
+            }
+            match first.get(&key) {
+                Some(&canonical) => {
+                    group.insert(id, canonical);
+                }
+                None => {
+                    first.insert(key, id);
+                }
+            }
+        }
+        self.label_group = group;
+    }
+
+    /// The label `id` reads as: the lowest id among live labels with its name key (itself when alone or unnamed).
+    pub(crate) fn canonical_label(&self, id: NodeId) -> NodeId {
+        self.label_group.get(&id).copied().unwrap_or(id)
+    }
+
+    /// `canonical` and every label folded into it, ascending.
+    pub(crate) fn label_members(&self, canonical: NodeId) -> Vec<NodeId> {
+        let mut all: Vec<NodeId> = self.label_group.iter().filter(|&(_, &c)| c == canonical).map(|(&m, _)| m).collect();
+        all.push(canonical);
+        all.sort_unstable();
+        all
     }
 
     pub(crate) fn tree(&self, id: NodeId, no: u32) -> Option<&Tree> {
@@ -166,8 +213,9 @@ impl Mirror {
         self.stored_nodes.iter().copied().filter(move |&id| self.kind_of(id) == kind)
     }
 
-    /// The live labels `card` carries, oldest first by `(added_at_ms, label id)`. A membership whose label is gone
-    /// (deleted, or not yet received) shows nothing, and a value that is not an `Int` is ignored.
+    /// The live labels `card` carries, oldest first by `(added_at_ms, label id)`, each as its canonical label
+    /// (`canonical_label`) and once, at its earliest stamp. A membership whose label is gone (deleted, or not yet
+    /// received) shows nothing, and a value that is not an `Int` is ignored.
     pub(crate) fn card_labels(&self, card: NodeId) -> Vec<NodeId> {
         let Some(tree) = self.tree(card, field::PROPS) else { return Vec::new() };
         let mut found: Vec<(i64, NodeId)> = tree
@@ -177,9 +225,11 @@ impl Mirror {
                 _ => None,
             })
             .filter(|(_, label)| self.is_stored(*label) && self.kind_of(*label) == Kind::Label)
+            .map(|(at, label)| (at, self.canonical_label(label)))
             .collect();
         found.sort_unstable();
-        found.into_iter().map(|(_, label)| label).collect()
+        let mut seen = BTreeSet::new();
+        found.into_iter().filter(|(_, label)| seen.insert(*label)).map(|(_, label)| label).collect()
     }
 
     /// Every link this replica knows, by id.
@@ -487,6 +537,51 @@ mod tests {
     use super::*;
     use crate::card_id::testutil::node;
     use crate::session_sync::color_value;
+
+    fn label(m: &mut Mirror, n: u64, name: &str) -> NodeId {
+        let id = node(n);
+        m.add_stored(id, Kind::Label);
+        m.set(id, field::NAME, FieldValue::Str(name.to_owned()));
+        id
+    }
+
+    #[test]
+    fn same_key_labels_group_under_the_lowest_id() {
+        let mut m = Mirror::default();
+        let (c, a, b) = (label(&mut m, 5, "Urgent"), label(&mut m, 2, "urgent"), label(&mut m, 9, " URGENT "));
+        assert_eq!([m.canonical_label(a), m.canonical_label(b), m.canonical_label(c)], [a, a, a]);
+        assert_eq!(m.label_members(a), vec![a, c, b]);
+    }
+
+    #[test]
+    fn an_empty_key_is_its_own_group() {
+        let mut m = Mirror::default();
+        let (a, b) = (label(&mut m, 1, "\u{200b}"), label(&mut m, 2, "\u{200b}"));
+        assert_eq!([m.canonical_label(a), m.canonical_label(b)], [a, b]);
+    }
+
+    #[test]
+    fn renaming_a_member_splits_and_reforms_the_group() {
+        let mut m = Mirror::default();
+        let (a, b) = (label(&mut m, 1, "x"), label(&mut m, 2, "x"));
+        m.set(a, field::NAME, FieldValue::Str("y".to_owned()));
+        assert_eq!([m.canonical_label(a), m.canonical_label(b)], [a, b]);
+        m.set(a, field::NAME, FieldValue::Str("x".to_owned()));
+        assert_eq!(m.canonical_label(b), a);
+        m.forget_stored(a);
+        assert_eq!(m.canonical_label(b), b, "the survivor is canonical again");
+    }
+
+    #[test]
+    fn a_card_carrying_two_members_shows_one_chip_with_the_earlier_stamp() {
+        let mut m = Mirror::default();
+        let (a, b, other) = (label(&mut m, 1, "x"), label(&mut m, 2, "X"), label(&mut m, 3, "z"));
+        let card = node(10);
+        for (l, at) in [(a, 20), (b, 10), (other, 15)] {
+            m.edit_tree(card, field::PROPS, &crate::labels::labels_path(l), Some(Leaf::Int(at)));
+        }
+        assert_eq!(m.card_labels(card), vec![a, other], "b folds into a at stamp 10, so a leads");
+    }
 
     #[test]
     fn the_default_index_follows_is_default_writes_and_retain() {

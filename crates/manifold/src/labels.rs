@@ -56,9 +56,14 @@ pub(crate) fn labels_path(label: NodeId) -> TreePath {
 }
 
 impl App {
-    /// The live labels, by id.
+    /// The live labels, one per name (the lowest id of those sharing it, `Mirror::canonical_label`), by id.
     pub(crate) fn label_defs(&self) -> BTreeMap<NodeId, LabelDef> {
-        self.doc.mirror.stored_ids(Kind::Label).map(|id| (id, self.doc.mirror.label_def(id))).collect()
+        self.doc
+            .mirror
+            .stored_ids(Kind::Label)
+            .filter(|&id| self.doc.mirror.canonical_label(id) == id)
+            .map(|id| (id, self.doc.mirror.label_def(id)))
+            .collect()
     }
 
     /// The names of `card`'s live labels, oldest first.
@@ -146,13 +151,22 @@ impl App {
         });
     }
 
-    /// Renames label `id`; false for a name that is empty once cleaned or that another label has.
+    /// The labels that read as `id`: it and every label with the same name key (`Mirror::label_members`).
+    fn label_group_of(&self, id: NodeId) -> Vec<NodeId> {
+        self.doc.mirror.label_members(self.doc.mirror.canonical_label(id))
+    }
+
+    /// Renames label `id` and every label that reads as it; false for a name that is empty once cleaned or that
+    /// another label has.
     pub(crate) fn rename_label(&mut self, id: NodeId, name: &str) -> bool {
         let name = clean_name(name).into_owned();
-        if name.is_empty() || self.label_named(&name, Some(id)).is_some() {
+        let canonical = self.doc.mirror.canonical_label(id);
+        if name.is_empty() || self.label_named(&name, Some(canonical)).is_some() {
             return false;
         }
-        self.edit_field(id, field::NAME, FieldValue::Str(name));
+        for member in self.label_group_of(id) {
+            self.edit_field(member, field::NAME, FieldValue::Str(name.clone()));
+        }
         true
     }
 
@@ -162,8 +176,11 @@ impl App {
             if self.interaction.label_menu.is_some() { None } else { Some(LabelMenu::default()) };
     }
 
+    /// Recolours label `id` and every label that reads as it.
     pub(crate) fn recolor_label(&mut self, id: NodeId, color: Option<egui::Color32>) {
-        self.edit_field(id, field::COLOR, color_value(color));
+        for member in self.label_group_of(id) {
+            self.edit_field(member, field::COLOR, color_value(color));
+        }
     }
 
     /// A millisecond stamp for a new membership: the wall clock, but always past the last one handed out, so two adds
@@ -175,21 +192,33 @@ impl App {
         self.doc.label_ms
     }
 
-    /// Puts `label` on each of `cards` (`on`) or takes it off. A card already in that state writes nothing. Returns
-    /// the edits made; the caller records the undo step (`record_label_undo`).
+    /// Puts `label` on each of `cards` (`on`) or takes it off. A card already in that state writes nothing; a card
+    /// carrying any label that reads as `label` has it. Off removes every such membership. Returns the edits made; the
+    /// caller records the undo step (`record_label_undo`).
     pub(crate) fn set_label(&mut self, cards: &[NodeId], label: NodeId, on: bool) -> Vec<PropEdit> {
         if !self.doc.mirror.is_stored(label) {
             return Vec::new();
         }
-        let path = labels_path(label);
+        let members = self.label_group_of(label);
+        let canonical = self.doc.mirror.canonical_label(label);
         let mut edits = Vec::new();
         for &card in cards {
-            let has = self.doc.mirror.tree(card, field::PROPS).is_some_and(|t| t.contains_key(&path));
-            if has == on || !self.doc.mirror.has(card) {
+            let held: Vec<TreePath> = {
+                let tree = self.doc.mirror.tree(card, field::PROPS);
+                let paths = members.iter().map(|&m| labels_path(m));
+                paths.filter(|p| tree.is_some_and(|t| t.contains_key(p))).collect()
+            };
+            if held.is_empty() != on || !self.doc.mirror.has(card) {
                 continue;
             }
-            let leaf = on.then(|| Leaf::Int(self.next_label_ms() as i64));
-            edits.extend(self.edit_prop(card, field::PROPS, path.clone(), leaf));
+            if on {
+                let leaf = Some(Leaf::Int(self.next_label_ms() as i64));
+                edits.extend(self.edit_prop(card, field::PROPS, labels_path(canonical), leaf));
+            } else {
+                for path in held {
+                    edits.extend(self.edit_prop(card, field::PROPS, path, None));
+                }
+            }
         }
         edits
     }
@@ -201,10 +230,12 @@ impl App {
         }
     }
 
-    /// Forgets label `id` and queues its delete. Cards keep their membership entries, which show nothing once the
-    /// label is gone (`Mirror::card_labels`).
+    /// Forgets label `id` and every label that reads as it, and queues their deletes. Cards keep their membership
+    /// entries, which show nothing once the labels are gone (`Mirror::card_labels`).
     pub(crate) fn delete_label(&mut self, id: NodeId) {
-        self.doc.mirror.forget_stored(id);
-        self.queue_delete(id);
+        for member in self.label_group_of(id) {
+            self.doc.mirror.forget_stored(member);
+            self.queue_delete(member);
+        }
     }
 }

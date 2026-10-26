@@ -124,6 +124,45 @@ fn a_file_label_with_an_unusable_name_imports_as_its_own_label() {
     assert!(b.label_defs().len() <= 2, "no false match with the live label");
 }
 
+/// `app` (actor 1) with a label "urgent" and, from a replica that never saw it (actor 2), a duplicate. Returns
+/// (canonical, duplicate): the lower id first.
+fn collided(path: &std::path::Path) -> (App, NodeId, NodeId) {
+    let mut app = app_on(path, 1);
+    let mut other = app_on(path, 2);
+    let b = other.create_label("urgent", None).unwrap();
+    assert!(other.save_session());
+    let a = app.create_label("urgent", None).unwrap();
+    assert!(app.save_session());
+    assert!(app.doc.mirror.is_stored(b), "the save pulled the other replica's label");
+    assert!(a < b);
+    (app, a, b)
+}
+
+#[test]
+fn a_collision_shows_one_row_and_unlabel_clears_a_card_that_carried_only_the_duplicate() {
+    let (mut app, a, b) = collided(&temp_dir("label-collide-a").join("session.mnf"));
+    assert_eq!(app.label_defs().keys().copied().collect::<Vec<_>>(), [a]);
+    let n = add_note(&mut app, "n");
+    app.edit_prop(n, field::PROPS, labels_path(b), Some(Leaf::Int(5)));
+    assert_eq!(app.doc.mirror.card_labels(n), [a], "one chip, as the canonical label");
+    assert!(app.set_label(&[n], a, true).is_empty(), "the card already shows it");
+    assert!(!app.set_label(&[n], a, false).is_empty());
+    assert!(app.doc.mirror.card_labels(n).is_empty());
+}
+
+#[test]
+fn renaming_recolouring_and_deleting_reach_every_member() {
+    let (mut app, a, b) = collided(&temp_dir("label-collide-b").join("session.mnf"));
+    assert!(app.rename_label(a, "URGENT"), "the duplicate is the same label, not another");
+    assert!(app.rename_label(a, "later"));
+    assert_eq!(app.doc.mirror.label_def(b).name, "later");
+    assert_eq!(app.label_defs().keys().copied().collect::<Vec<_>>(), [a], "the duplicate is not promoted");
+    app.recolor_label(a, Some(egui::Color32::RED));
+    assert_eq!(app.doc.mirror.label_def(b).color, Some(egui::Color32::RED));
+    app.delete_label(a);
+    assert!(app.label_defs().is_empty() && !app.doc.mirror.is_stored(b));
+}
+
 #[test]
 fn rename_recolor_and_delete_reach_the_document() {
     let path = temp_dir("label-edit").join("session.mnf");

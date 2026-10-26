@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Label name collisions Implementation Plan
