@@ -581,8 +581,14 @@ impl App {
             .filter_map(|(pointer, &target)| {
                 let row = json_view::row_of(value, &card.pointer, pointer, card.skip..card.skip + card.rows)?;
                 let missing = !self.nodes.contains_key(&target);
-                let name = crate::names::display_name(self.doc.mirror.name(target), crate::names::UNTITLED);
-                let text = if missing { "missing".to_owned() } else { crate::names::to_plain(&name) };
+                let named = self.doc.mirror.name(target);
+                let text = if missing {
+                    "missing".to_owned()
+                } else if named.is_empty() {
+                    self.drop_target_name(target) // a tab's title or url
+                } else {
+                    crate::names::to_plain(&crate::names::display_name(named, crate::names::UNTITLED))
+                };
                 Some((row, Chip { text, missing }))
             })
             .collect()

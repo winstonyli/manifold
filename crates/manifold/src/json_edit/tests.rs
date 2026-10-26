@@ -580,3 +580,21 @@ fn a_remote_body_change_swaps_the_value_of_the_open_level() {
     b.apply_remote(vec![(id, crate::session_sync::Remote::Shown(a.snapshot(id).unwrap()))]);
     assert_eq!(*b.json_level.as_ref().unwrap().value, json!({"a": 2}));
 }
+
+#[test]
+fn a_chip_to_an_unrenamed_card_shows_its_listed_label() {
+    let (mut app, _) = card_with_refs([NodeId { actor: crate::store::model::ActorId(9), counter: 9 }; 2]);
+    let (note, _peer) =
+        crate::session_sync::tests::live_tab(&mut app, crate::ViewKind::Servo, "https://example.com/page");
+    let label = app.drop_target_name(note);
+    assert_eq!(label, "https://example.com/page", "an untitled tab is listed by its url");
+    let id = app.json_level.as_ref().unwrap().node_id;
+    let tree = app.doc.mirror.tree(id, field::BODY).cloned().unwrap();
+    let path = crate::store::body::pointer_path(&tree, "/l/0").unwrap();
+    app.edit_prop(id, field::BODY, path, Some(crate::store::tree::Leaf::Ref(note)));
+    app.refresh_inline(id);
+    let level = app.json_level.as_ref().unwrap();
+    let l = level.cards.iter().find(|c| c.pointer == "/l").unwrap();
+    let chips = app.ref_chips(&level.refs, level.value.pointer("/l").unwrap(), l);
+    assert_eq!(chips[0].1.text, label);
+}
