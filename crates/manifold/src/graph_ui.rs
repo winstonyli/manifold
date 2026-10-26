@@ -226,7 +226,7 @@ impl App {
             GraphAction::ToggleLabel { label, on } => self.label_selection(label, on),
             GraphAction::NewLabel(name) => self.new_label_on_selection(&name),
             GraphAction::RenameLabel { label, name } => {
-                self.rename_label(label, &name);
+                self.rename_label_or_toast(label, &name);
             }
             GraphAction::RecolorLabel { label, color } => self.recolor_label(label, color),
             GraphAction::DeleteLabel(label) => self.delete_label(label),

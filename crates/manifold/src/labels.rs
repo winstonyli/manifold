@@ -23,6 +23,20 @@ pub(crate) struct LabelDef {
 pub(crate) struct LabelMenu {
     pub(crate) draft: String,
     pub(crate) editing: Option<(NodeId, String)>,
+    /// The label whose trash button was pressed once: the next press on it deletes.
+    pub(crate) confirm_delete: Option<NodeId>,
+}
+
+impl LabelMenu {
+    /// The trash button of label `id` was pressed: true when that confirms a delete, else it arms the button.
+    pub(crate) fn press_trash(&mut self, id: NodeId) -> bool {
+        if self.confirm_delete == Some(id) {
+            self.confirm_delete = None;
+            return true;
+        }
+        self.confirm_delete = Some(id);
+        false
+    }
 }
 
 /// How much of the selection carries a label.
@@ -111,6 +125,19 @@ impl App {
         self.edit_field(id, field::NAME, FieldValue::Str(name));
         self.edit_field(id, field::COLOR, color_value(Some(color)));
         Some(id)
+    }
+
+    /// `rename_label` from the menu: a refusal says why in a toast.
+    pub(crate) fn rename_label_or_toast(&mut self, id: NodeId, name: &str) {
+        if self.rename_label(id, name) {
+            return;
+        }
+        let cleaned = clean_name(name);
+        self.queue_toast(if cleaned.is_empty() {
+            "A label needs a name".to_string()
+        } else {
+            format!("A label named \"{cleaned}\" already exists")
+        });
     }
 
     /// Renames label `id`; false for a name that is empty once cleaned or that another label has.

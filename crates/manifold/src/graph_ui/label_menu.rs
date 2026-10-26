@@ -84,12 +84,20 @@ fn label_row(
         let row = ui.button(format!("{mark} {shown}"));
         ui.painter().circle_filled(row.rect.right_center() - egui::vec2(6.0, 0.0), 4.0, dot);
         if row.clicked() {
+            menu.confirm_delete = None;
             actions.push(GraphAction::ToggleLabel { label: id, on: state != LabelState::All });
         }
         if ui.small_button(egui_phosphor::light::PENCIL_SIMPLE).on_hover_text("Rename or recolour").clicked() {
+            menu.confirm_delete = None;
             menu.editing = Some((id, name.to_owned())); // name rule: the draft starts as the stored name
         }
-        if ui.small_button(egui_phosphor::light::TRASH).on_hover_text("Delete this label").clicked() {
+        let armed = menu.confirm_delete == Some(id);
+        let trash = if armed {
+            egui::Button::new(egui::RichText::new("Delete?").color(ui.visuals().error_fg_color)).small()
+        } else {
+            egui::Button::new(egui_phosphor::light::TRASH).small()
+        };
+        if ui.add(trash).on_hover_text("Delete this label (click twice)").clicked() && menu.press_trash(id) {
             actions.push(GraphAction::DeleteLabel(id));
         }
     });

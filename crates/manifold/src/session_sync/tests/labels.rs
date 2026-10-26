@@ -46,6 +46,29 @@ fn new_labels_take_free_palette_colours() {
 }
 
 #[test]
+fn a_refused_menu_rename_says_why() {
+    let mut app = app_on(&temp_dir("label-refused").join("session.mnf"), 1);
+    let a = app.create_label("a", None).unwrap();
+    app.create_label("b", None).unwrap();
+    app.rename_label_or_toast(a, "B");
+    app.rename_label_or_toast(a, " ");
+    app.rename_label_or_toast(a, "fine");
+    let toasts: Vec<_> = app.toasts.save_toast_queue.iter().map(String::as_str).collect();
+    assert_eq!(toasts, ["A label named \"B\" already exists", "A label needs a name"]);
+    assert_eq!(app.doc.mirror.label_def(a).name, "fine");
+}
+
+#[test]
+fn the_trash_button_deletes_on_the_second_press_of_the_same_label() {
+    let mut app = app_on(&temp_dir("label-trash").join("session.mnf"), 1);
+    let (a, b) = (app.create_label("a", None).unwrap(), app.create_label("b", None).unwrap());
+    let mut menu = crate::labels::LabelMenu::default();
+    assert!(!menu.press_trash(a), "the first press only arms it");
+    assert!(!menu.press_trash(b), "another label's press moves the arming");
+    assert!(menu.press_trash(b) && menu.confirm_delete.is_none(), "the second press on the same label deletes");
+}
+
+#[test]
 fn rename_recolor_and_delete_reach_the_document() {
     let path = temp_dir("label-edit").join("session.mnf");
     let mut app = app_on(&path, 1);
