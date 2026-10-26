@@ -436,7 +436,7 @@ impl App {
         }
         let op = match edit.on {
             EditWhat::Value => match parse_edit(&edit.original, &edit.buffer) {
-                Ok(value) => JsonOp::Set { pointer: edit.pointer, value },
+                Ok(value) => JsonOp::Set { pointer: edit.pointer.clone(), value },
                 Err(message) => {
                     self.queue_toast(message);
                     if let Some(level) = self.json_level.as_mut() {
@@ -445,10 +445,19 @@ impl App {
                     return;
                 }
             },
-            EditWhat::Key => JsonOp::Rename { pointer: edit.pointer, to: edit.buffer },
+            EditWhat::Key => JsonOp::Rename { pointer: edit.pointer.clone(), to: edit.buffer.clone() },
         };
-        if self.edit_json(id, op).is_ok() {
-            self.save_session();
+        match self.edit_json(id, op) {
+            Ok(()) => {
+                self.save_session();
+            }
+            // A refused rename (the name is taken) keeps the box and the typed text, as a bad value does.
+            Err(_) if edit.on == EditWhat::Key => {
+                if let Some(level) = self.json_level.as_mut() {
+                    level.edit = Some(edit);
+                }
+            }
+            Err(_) => {}
         }
     }
 

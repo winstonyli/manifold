@@ -434,7 +434,7 @@ fn a_key_commit_renames_and_a_taken_name_changes_nothing() {
     app.json_level.as_mut().unwrap().edit.as_mut().unwrap().buffer = s("b");
     app.apply_json_edit(JsonEdit::Commit);
     assert_eq!(doc(&app, id), json!({"c": 1, "b": 2}));
-    assert_eq!(edit_of(&app), None);
+    assert_eq!(edit_of(&app), Some((s("/c"), s("b"))), "the box stays open on the refused name");
 }
 
 #[test]
