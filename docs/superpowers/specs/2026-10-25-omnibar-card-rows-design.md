@@ -22,11 +22,11 @@ rows (M7)".
 
 ## Design
 
-- **Row.** One new variant, `Row::Other { id: NodeId, label: String, snippet: Option<String> }`. It has no url or jar:
+- **Row.** One new variant, `Row::Other { id: NodeId, label: String, glyph: &'static str, snippet: Option<String> }` (the glyph rides on the row so drawing needs no `App`). It has no url or jar:
   only tabs have them. `Row::Card` is unchanged.
 - **Corpus.** `Corpus` gains `others() -> Vec<OtherInfo>` (`id`, `label`, `labels`), one entry per live non-tab card in
   `node_order`. The label is `App::accessible_name(id)` ("Note: first line", "Group: Research", "Download: a.zip"): the
-  one naming rule the app already has, so there is no new one. The Graph host excludes nothing; the popup's `exclude`
+  one naming rule the app already has, so there is no new one. Which kinds are offered, and their glyph, is one exhaustive table, `other_glyph(Kind)`: note, group, download, image, PDF and Json; a tab, jar, link, label or unknown type is not. The Graph host excludes nothing; the popup's `exclude`
   applies to both lists.
 - **Matching** (`rows`): the same rules as tabs. A plain word is a case-insensitive substring of the label or a label
   name; `#tags` filter by label prefix (`labels_match`); with no plain word, only the `#label` filter applies and

@@ -81,7 +81,7 @@ impl App {
         let (left, right, hint) = match host {
             // Room for the favicon at the left and the Ctrl L keycaps at the right.
             Host::Item => (32, 56, "Search or enter address"),
-            _ => (8, 8, "Search tabs, history, settings..."),
+            _ => (8, 8, "Search cards, history, settings..."),
         };
         let response = toolbar_field(ui, |ui| {
             ui.add(field_edit_inset(&mut bar.text, left, right).desired_width(width).hint_text(hint))
@@ -216,7 +216,7 @@ impl App {
                                 // Tab would otherwise walk focus out to the toolbar behind the popup; arrows and
                                 // Enter pick a row.
                                 .lock_focus(true)
-                                .hint_text("Search tabs, history, settings..."),
+                                .hint_text("Search cards, history, settings..."),
                         )
                     });
                     if take_focus(&mut self.pending_focus, FocusTarget::OmniPopup) {
@@ -227,7 +227,7 @@ impl App {
                     }
                     ui.separator();
                     if rows.is_empty() {
-                        ui.label("Nothing open");
+                        ui.label("Nothing found");
                     }
                     key_hint_row(ui, [("Up / Down", "move"), ("Enter", "open"), ("Esc", "close")].into_iter());
                     egui::ScrollArea::vertical().max_height(240.0).show(ui, |ui| {

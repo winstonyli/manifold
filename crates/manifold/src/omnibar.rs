@@ -351,7 +351,8 @@ impl App {
         if !self.nodes.contains_key(&id) {
             return;
         }
-        if self.showing_tab_view() {
+        // Whatever view is leaving (the Item view, or the Settings page opened from a tab) may hold the tab showing.
+        if self.viewed_image.is_none() {
             self.hide_focused_tab();
         }
         self.viewed_image = None;
@@ -458,10 +459,14 @@ mod tests {
         assert_eq!(app.view_mode, ViewMode::Graph);
     }
 
+    fn hidden(peer: &mut crate::session_sync::tests::Peer) -> bool {
+        peer.sent().iter().any(|m| matches!(m, HostToView::SetVisible(false)))
+    }
+
     #[test]
     fn an_other_row_chosen_in_the_item_view_hides_the_tab_and_shows_the_graph() {
         let mut app = App::default();
-        let (tab_id, _peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
         let note = add_note(&mut app, "kept");
         app.focused = Some(tab_id);
         app.view_mode = ViewMode::Item;
@@ -469,6 +474,22 @@ mod tests {
         app.omni_activate(row, Host::Item);
         assert_eq!(app.view_mode, ViewMode::Graph);
         assert_eq!(app.camera.reveal, Some(note));
+        assert!(hidden(&mut peer), "the tab stopped rendering");
+    }
+
+    /// The Settings page opened from a tab leaves that tab showing: leaving for the Graph must hide it too.
+    #[test]
+    fn an_other_row_chosen_in_settings_opened_from_a_tab_hides_the_tab() {
+        let mut app = App::default();
+        let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        let note = add_note(&mut app, "kept");
+        app.focused = Some(tab_id);
+        app.view_mode = ViewMode::Item;
+        app.open_settings_page();
+        let row = app.other_row_for_test(note);
+        app.omni_activate(row, Host::Settings);
+        assert_eq!(app.view_mode, ViewMode::Graph);
+        assert!(hidden(&mut peer), "the tab stopped rendering");
     }
 
     #[test]
