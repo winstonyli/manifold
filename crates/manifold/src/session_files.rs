@@ -276,12 +276,7 @@ impl App {
     /// `save_session`, same as `replace_running_session`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         self.leave_json_level();
-        let live: std::collections::HashMap<String, NodeId> = self
-            .label_defs()
-            .into_iter()
-            .map(|(id, def)| (crate::names::name_key(&def.name), id))
-            .filter(|(key, _)| !key.is_empty())
-            .collect();
+        let live = self.label_keys();
         let reuse = |node: &crate::store::json::JsonNode| {
             if node.kind() != Some(Kind::Label) {
                 return None;

@@ -105,6 +105,12 @@ impl App {
         self.label_defs().into_iter().find(|(id, d)| Some(*id) != except && name_key(&d.name) == key).map(|(id, _)| id)
     }
 
+    /// Every live label's id by name key (`names::name_key`), skipping labels whose key is empty. An owned map, so a
+    /// caller can match names while it also borrows the app mutably.
+    pub(crate) fn label_keys(&self) -> std::collections::HashMap<String, NodeId> {
+        self.label_defs().into_iter().map(|(id, d)| (name_key(&d.name), id)).filter(|(k, _)| !k.is_empty()).collect()
+    }
+
     /// Makes a label named `name` (cleaned) and returns its id, or the live label that already has that name; `None`
     /// for a name that is empty once cleaned. With no `color`, it takes a palette colour no label has. Queued for the
     /// next save.
