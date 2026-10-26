@@ -1,6 +1,6 @@
 //! `gate labels`: labels end to end in a headless instance. Two notes carry one raw `color` from an old session, which
 //! is ignored (a card has no colour of its own). Two topic notes accept a suggestion as a label
-//! (`ACCEPTSUGGESTIONLABEL`), a second label goes on two selected notes (`SELECTCARDS`, `LABELSELECTED`), one undo
+//! (`ACCEPTSUGGESTIONLABEL`), a second label goes on two selected notes (`SELECTCARDS`, `LABELSELECTED`), which show the card pane (`right_panel`), one undo
 //! clears it, deleting a label and undoing that brings it back, and after a restart the labels are still there. No page loads, so no engine is needed. Build first:
 //! `cargo build -p manifold`.
 
@@ -75,6 +75,13 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         inst.send("LABEL urgent")?;
         inst.send("WAITIDLE")?;
         let urgent = carrying(&inst.export_state("urgent")?, "urgent");
+        let two = inst.export_state("pane-two")?;
+        let pane_two = two.0["right_panel"].clone();
+        inst.send(&format!("SELECTCARDS {}", bare[0]))?;
+        inst.send("WAITIDLE")?;
+        let pane_one = inst.export_state("pane-one")?.0["right_panel"].clone();
+        inst.send(&format!("SELECTCARDS {}", bare.join(" ")))?;
+        inst.send("WAITIDLE")?;
         inst.send("LABELSELECTED urgent off")?;
         inst.send("WAITIDLE")?;
         let off = carrying(&inst.export_state("off")?, "urgent");
@@ -99,6 +106,7 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         let kept = restored.0["labels"].as_array().map_or(0, Vec::len);
         let still: usize =
             restored.cards().iter().filter(|c| c["labels"].as_array().is_some_and(|a| !a.is_empty())).count();
+        let pane_none = restored.0["right_panel"].clone();
         quit(&mut again, "labels");
         check(&format!("an old raw colour on a note shows no colour ({old_colour_ignored})"), old_colour_ignored);
         check(
@@ -107,6 +115,16 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         );
         check(&format!("and makes one label ({defs})"), defs == 1);
         check(&format!("the typed label goes on the two selected notes ({urgent})"), urgent == 2);
+        check(
+            &format!("two selected notes show the card pane without a single card ({pane_two})"),
+            pane_two["shows"] == "cards"
+                && pane_two["cards"].as_array().map_or(0, Vec::len) == 2
+                && pane_two["card"].is_null(),
+        );
+        check(
+            &format!("one selected note shows the pane for it ({pane_one})"),
+            pane_one["shows"] == "cards" && pane_one["card"] == bare[0].as_str(),
+        );
         check(&format!("the toggle takes it off both ({off} left)"), off == 0);
         check(&format!("and one undo of the next toggle takes it off again ({undone} left)"), undone == 0);
         check(&format!("deleting the label leaves no note carrying it ({deleted})"), deleted == 0);
@@ -115,6 +133,7 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
             &format!("after a restart the {kept} label(s) and {still} labelled notes are still there"),
             kept >= 1 && still == 3,
         );
+        check(&format!("with nothing selected there is no right panel ({pane_none})"), pane_none.is_null());
         Ok(())
     });
     finish(&work)
