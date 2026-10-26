@@ -81,13 +81,23 @@ impl GraphCamera {
     ///
     /// When `outer` differs from the last area only in width, the world stays put instead (card-pane spec R1): `rect`
     /// is first fitted to the last area, then keeps that scale and left edge, so a panel on the right covers or shows
-    /// a strip rather than zooming everything.
+    /// a strip rather than zooming everything. A running ease's endpoints are kept the same way, or its next step
+    /// would bring back their old shape.
     pub(crate) fn fill(&mut self, outer: egui::Rect) {
         if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
             return; // `Scene` resets a bad rect itself.
         }
+        if let (Some(last), Some(tween)) = (self.width_only_change(outer), self.tween.as_mut()) {
+            tween.from = keep_world(tween.from, last, outer);
+            tween.to = keep_world(tween.to, last, outer);
+        }
         self.rect = self.filled(outer);
         self.area = Some(outer);
+    }
+
+    /// The last area, when `outer` differs from it only in width.
+    fn width_only_change(&self, outer: egui::Rect) -> Option<egui::Rect> {
+        self.area.filter(|l| l.min == outer.min && l.height() == outer.height() && l.width() != outer.width())
     }
 
     /// The rect `fill(outer)` would leave, without filling: `transform` maps through it, so a point converted after
@@ -96,13 +106,8 @@ impl GraphCamera {
         if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
             return self.rect;
         }
-        let last =
-            self.area.filter(|l| l.min == outer.min && l.height() == outer.height() && l.width() != outer.width());
-        match last {
-            Some(last) => {
-                let shown = fit(self.rect, last);
-                egui::Rect::from_min_size(shown.min, outer.size() * (shown.width() / last.width()))
-            }
+        match self.width_only_change(outer) {
+            Some(last) => keep_world(self.rect, last, outer),
             None => fit(self.rect, outer),
         }
     }
@@ -150,6 +155,13 @@ impl GraphCamera {
 fn fit(rect: egui::Rect, outer: egui::Rect) -> egui::Rect {
     let scale = (outer.size() / rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
     egui::Rect::from_center_size(rect.center(), outer.size() / scale)
+}
+
+/// `rect` as shown in `last`, resized to `outer` (which differs from it only in width) at the same scale and left
+/// edge (R1).
+fn keep_world(rect: egui::Rect, last: egui::Rect, outer: egui::Rect) -> egui::Rect {
+    let shown = fit(rect, last);
+    egui::Rect::from_min_size(shown.min, outer.size() * (shown.width() / last.width()))
 }
 
 /// The graph's `Scene`: its zoom range, and the primary button pans unless `drag_pan` is off (while a link retargets).
@@ -241,6 +253,11 @@ impl App {
         if let Some(rect) = self.camera.reveal.and_then(|id| self.card_rect(id)) {
             self.camera.reveal = None;
             self.camera.pan_to(rect);
+        }
+        // Card-pane R2: an ease would move the world under a dragged card, so a drag ends any (a press-drag can follow
+        // the click that started one) and refuses new ones.
+        if self.interaction.dragging.is_some() {
+            self.camera.tween = None;
         }
     }
 
@@ -473,6 +490,27 @@ mod tests {
         assert!(app.camera.is_moving() && app.camera.reveal.is_none(), "eased to the far card");
     }
 
+    /// Review M2 (card-pane R2): no ease moves the world under a dragged card, neither one already running (a click
+    /// on a half-hidden card, then a quick drag) nor a reveal asked for during the drag.
+    #[test]
+    fn a_drag_stops_and_refuses_camera_eases() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let far = app.alloc_node_id();
+        app.insert_placeholder_node(far, egui::vec2(5000.0, 5000.0), Kind::Tab, sleeping_tab("https://a.test/", "t"));
+        app.camera.jump_to(egui::Rect::from_center_size(egui::pos2(100.0, 100.0), egui::vec2(900.0, 700.0)));
+        app.camera.reveal = Some(far);
+        app.apply_camera_requests(false);
+        assert!(app.camera.is_moving());
+        app.interaction.dragging = Some(crate::card_id::CardId::from(far));
+        app.apply_camera_requests(false);
+        assert!(!app.camera.is_moving(), "the drag stopped the running ease");
+        app.camera.reveal = Some(far);
+        app.apply_camera_requests(false);
+        assert!(!app.camera.is_moving() && app.camera.reveal.is_none(), "and a reveal during it is dropped");
+    }
+
     #[test]
     fn easing_the_camera_stops_a_glide() {
         let mut camera = GraphCamera::new();
@@ -575,6 +613,24 @@ mod tests {
         assert_eq!(camera.rect.size(), egui::vec2(700.0, 600.0));
         camera.fill(wide);
         assert_eq!(camera.rect, before, "widening back shows the same world");
+    }
+
+    /// Review M1: an ease still running when only the width changes keeps its scale; its endpoints are anchored like
+    /// `rect`, else the next frame's `advance` brings back their old shape and the centred fit zooms out.
+    #[test]
+    fn an_ease_running_through_a_width_change_keeps_its_scale() {
+        let wide = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));
+        let narrow = egui::Rect::from_min_size(wide.min, egui::vec2(700.0, 600.0));
+        let mut camera = GraphCamera::new();
+        camera.jump_to(egui::Rect::from_min_size(egui::pos2(-500.0, -300.0), egui::vec2(1000.0, 600.0)));
+        camera.fill(wide);
+        camera.ease_to(egui::Rect::from_min_size(egui::pos2(200.0, -300.0), egui::vec2(1000.0, 600.0)));
+        camera.fill(narrow);
+        for _ in 0..3 {
+            camera.advance();
+            camera.fill(narrow);
+            assert!((camera.transform(narrow).0 - 1.0).abs() < 1e-4, "scale {}", camera.transform(narrow).0);
+        }
     }
 
     /// R1: a rect of another shape (a fit, a tween target) is first fitted to the last area, so the left edge kept is

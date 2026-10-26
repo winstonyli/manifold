@@ -20,15 +20,14 @@ impl App {
     }
 
     /// R2: when the pane starts describing another card, the camera brings it into view (`camera.reveal`, eased by
-    /// `pan_to` only when it is not fully visible), unless a drag holds it: easing would move the world under the
-    /// pointer.
+    /// `pan_to` only when it is not fully visible; never during a drag, `apply_camera_requests`).
     pub(super) fn track_pane_card(&mut self) {
         let card = self.pane_card();
         if card == self.interaction.pane_card {
             return;
         }
         self.interaction.pane_card = card;
-        if let (Some(id), None) = (card, self.interaction.dragging) {
+        if let Some(id) = card {
             self.camera.reveal = Some(id);
         }
     }
@@ -177,16 +176,25 @@ fn label_row(
     use crate::labels::LabelState;
     let shown = crate::names::to_plain(&crate::names::display_name(name, "?"));
     if let Some((_, draft)) = section.editing.as_mut().filter(|(edited, _)| *edited == id) {
-        let field = ui.add(egui::TextEdit::singleline(draft).desired_width(160.0));
-        field.request_focus();
+        let edit = ui.vertical(|ui| {
+            let field = ui.add(egui::TextEdit::singleline(draft).desired_width(160.0));
+            if std::mem::take(&mut section.focus_pending) {
+                field.request_focus();
+            }
+            if let Some(picked) = crate::node_menu::color_swatch_row(ui, color) {
+                actions.push(GraphAction::RecolorLabel { label: id, color: picked });
+            }
+            field
+        });
+        let field = edit.inner;
         let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if let Some(picked) = crate::node_menu::color_swatch_row(ui, color) {
-            actions.push(GraphAction::RecolorLabel { label: id, color: picked });
-        }
         if enter {
             actions.push(GraphAction::RenameLabel { label: id, name: std::mem::take(draft) });
         }
-        if enter || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // Escape, Tab or a click outside the field and its swatches cancels: the pane stays open, so a rename that
+        // outlived its focus would keep the keys from the graph.
+        let swatch_press = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| edit.response.rect.contains(p));
+        if enter || (field.lost_focus() && !swatch_press) {
             section.editing = None;
         }
         return;
@@ -206,8 +214,7 @@ fn label_row(
             actions.push(GraphAction::ToggleLabel { label: id, on: state != LabelState::All });
         }
         if ui.small_button(egui_phosphor::light::PENCIL_SIMPLE).on_hover_text("Rename or recolour").clicked() {
-            section.confirm_delete = None;
-            section.editing = Some((id, name.to_owned())); // name rule: the draft starts as the stored name
+            section.start_editing(id, name); // name rule: the draft starts as the stored name
         }
         let armed = section.confirm_delete == Some(id);
         let trash = if armed {
@@ -226,8 +233,8 @@ mod tests {
     use super::*;
     use crate::card_id::CardId;
 
-    /// R2: the card the pane starts describing is revealed once; a second card, a drag or a second selected card is
-    /// not.
+    /// R2: the card the pane starts describing is revealed once; a second selected card is not. (A drag refuses the
+    /// ease itself: `a_drag_stops_and_refuses_camera_eases`.)
     #[test]
     fn the_pane_reveals_the_card_it_starts_describing() {
         let mut app = App::default();
@@ -244,10 +251,9 @@ mod tests {
         assert_eq!((app.pane_card(), app.camera.reveal), (None, None), "two cards: nothing to reveal");
         app.interaction.selected.clear();
         app.track_pane_card();
-        app.interaction.dragging = Some(CardId::from(b));
         app.interaction.selected.insert(CardId::from(b));
         app.track_pane_card();
-        assert_eq!((app.pane_card(), app.camera.reveal), (Some(b), None), "a drag holds it: no ease");
+        assert_eq!((app.pane_card(), app.camera.reveal), (Some(b), Some(b)), "back to one card: revealed");
     }
 
     /// The Labels section lists every label with how much of the selection carries it.
@@ -336,6 +342,41 @@ mod tests {
         }
         assert_eq!(ctx.memory(|m| m.focused()), None);
         assert!(down_left, "the pane left Down to the graph");
+    }
+
+    /// Review I2: a label rename takes the keys once; a click away cancels it and leaves the keys to the graph.
+    #[test]
+    fn a_click_away_cancels_a_label_rename() {
+        let mut app = App::default();
+        let a = crate::session_sync::tests::add_note(&mut app, "a");
+        let urgent = app.create_label("urgent", None).unwrap();
+        app.interaction.selected.insert(CardId::from(a));
+        let ctx = crate::theme::testutil::ctx(true);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut actions = Vec::new();
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.build_right_panel(ui, &mut actions));
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+            actions
+        };
+        frame(&mut app, vec![]);
+        app.interaction.label_section.start_editing(urgent, "urgent");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        assert!(ctx.memory(|m| m.focused()).is_some(), "the field took the keys");
+        let at = egui::pos2(10.0, 10.0); // the canvas side, left of the panel
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at), button(true)]);
+        let actions = frame(&mut app, vec![button(false)]);
+        frame(&mut app, vec![]);
+        assert!(app.interaction.label_section.editing.is_none(), "the click cancelled it");
+        assert!(!actions.iter().any(|a| matches!(a, GraphAction::RenameLabel { .. })), "without renaming");
+        assert_eq!(ctx.memory(|m| m.focused()), None, "and the field did not take the keys back");
     }
 
     /// A label rename in progress is dropped with the pane, not carried to the next selection.

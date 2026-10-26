@@ -25,9 +25,18 @@ pub(crate) struct LabelSection {
     pub(crate) editing: Option<(NodeId, String)>,
     /// The label whose trash button was pressed once: the next press on it deletes.
     pub(crate) confirm_delete: Option<NodeId>,
+    /// The rename field takes the keys on its first frame only, so a click away can take them back.
+    pub(crate) focus_pending: bool,
 }
 
 impl LabelSection {
+    /// Starts renaming label `id`, its draft the stored `name`.
+    pub(crate) fn start_editing(&mut self, id: NodeId, name: &str) {
+        self.confirm_delete = None;
+        self.editing = Some((id, name.to_owned()));
+        self.focus_pending = true;
+    }
+
     /// The trash button of label `id` was pressed: true when that confirms a delete, else it arms the button.
     pub(crate) fn press_trash(&mut self, id: NodeId) -> bool {
         if self.confirm_delete == Some(id) {

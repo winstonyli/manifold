@@ -136,9 +136,13 @@ impl App {
                 ]
                 .map(|(key, dir)| (dir, i.num_presses(key)))
             });
-            // An open node menu keeps the arrows and Enter for itself.
-            let menu_open = self.menus.node_menu.open.is_some();
-            if !menu_open {
+            // An open node menu, or a focused widget that is not a card (a card pane row), keeps the arrows and Enter
+            // for itself. egui gives focus by keyboard or code only, never by a click, so a focused widget here was
+            // stepped to.
+            let card_focused = self.card_nav_active;
+            let widget_keys =
+                self.menus.node_menu.open.is_some() || (!card_focused && ui.memory(|m| m.focused()).is_some());
+            if !widget_keys {
                 for (dir, n) in presses {
                     for _ in 0..n {
                         self.move_graph_focus(dir);
@@ -149,7 +153,7 @@ impl App {
             // way clicking the node's card does. A Tab-focused card handles its own
             // Enter in the card pass, so this skips it (else it would open the
             // app-focused tab instead of the card).
-            if !self.card_nav_active && !menu_open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if !card_focused && !widget_keys && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 self.open_focused_graph_node();
             }
             // Escape clears a rectangle-select selection, dismisses any
@@ -509,6 +513,49 @@ mod tests {
         let mut output = ctx.run_ui(input, |ui| app.handle_graph_keys(ui, false));
         output.textures_delta.clear();
         assert_eq!(app.focused, Some(ids[2]));
+    }
+
+    /// Review I1: while a widget other than a card has focus (a card pane row, a toolbar button), the arrows and Enter
+    /// are its own: the graph focus stays and nothing opens.
+    #[test]
+    fn a_focused_widget_keeps_the_arrows_and_enter_from_the_graph() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let ids: Vec<crate::store::model::NodeId> = (0..2).map(|_| app.alloc_node_id()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let tab = sleeping_tab(&format!("https://{i}.test/"), &format!("t{i}"));
+            app.insert_placeholder_node(*id, egui::vec2(100.0 + 200.0 * i as f32, 0.0), Kind::Tab, tab);
+        }
+        app.focused = Some(ids[0]);
+        let ctx = egui::Context::default();
+        let row = egui::Id::new("pane_row");
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.handle_graph_keys(ui, false);
+                ui.interact(
+                    egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(40.0, 20.0)),
+                    row,
+                    egui::Sense::click(),
+                );
+            });
+            output.textures_delta.clear();
+        };
+        ctx.memory_mut(|m| m.request_focus(row));
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![]);
+        assert!(ctx.memory(|m| m.has_focus(row)));
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![key(egui::Key::ArrowRight), key(egui::Key::Enter)]);
+        assert_eq!(app.focused, Some(ids[0]), "the arrow was the row's");
+        assert!(app.transition.is_none(), "and so was Enter");
     }
 
     /// Links: Escape in pick-target mode ends the mode and does nothing else; the next one is the graph's as before.
