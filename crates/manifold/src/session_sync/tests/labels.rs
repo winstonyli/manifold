@@ -68,6 +68,62 @@ fn the_trash_button_deletes_on_the_second_press_of_the_same_label() {
     assert!(menu.press_trash(b) && menu.confirm_delete.is_none(), "the second press on the same label deletes");
 }
 
+/// A group with one labelled note in `app`, exported.
+fn labelled_group_export(app: &mut App, label: &str, color: egui::Color32) -> crate::store::json::JsonDoc {
+    let g = add_group(app, "G");
+    let n = add_note(app, "n");
+    app.edit_group(n, Some(g));
+    let l = app.create_label(label, Some(color)).unwrap();
+    app.set_label(&[n], l, true);
+    assert!(app.save_session());
+    app.export_group_json(g).unwrap()
+}
+
+fn label_names(app: &App) -> Vec<String> {
+    let mut names: Vec<_> = app.label_defs().values().map(|d| d.name.clone()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_group_export_brings_its_label_to_a_document_without_it() {
+    let mut a = app_on(&temp_dir("label-export-a").join("session.mnf"), 1);
+    let json = labelled_group_export(&mut a, "urgent", egui::Color32::RED);
+    let mut b = app_on(&temp_dir("label-export-b").join("session.mnf"), 2);
+    b.import_group_json(&json);
+    assert_eq!(label_names(&b), ["urgent"]);
+    let (id, def) = b.label_defs().into_iter().next().unwrap();
+    assert_eq!(def.color, Some(egui::Color32::RED));
+    assert!(b.nodes.keys().any(|n| b.doc.mirror.card_labels(*n) == [id]), "the imported note carries the label");
+}
+
+#[test]
+fn a_group_export_reuses_a_same_named_label_and_keeps_the_targets_colour() {
+    let mut a = app_on(&temp_dir("label-merge-a").join("session.mnf"), 1);
+    let json = labelled_group_export(&mut a, "Urgent", egui::Color32::RED);
+    let mut b = app_on(&temp_dir("label-merge-b").join("session.mnf"), 2);
+    let mine = b.create_label("urgent", Some(egui::Color32::BLUE)).unwrap();
+    b.import_group_json(&json);
+    b.import_group_json(&json);
+    assert_eq!(label_names(&b), ["urgent"], "one label after two imports, named as the target has it");
+    assert_eq!(b.doc.mirror.label_def(mine).color, Some(egui::Color32::BLUE));
+    let carriers = b.nodes.keys().filter(|n| b.doc.mirror.card_labels(**n) == [mine]).count();
+    assert_eq!(carriers, 2, "both imported notes carry the target's label");
+}
+
+#[test]
+fn a_file_label_with_an_unusable_name_imports_as_its_own_label() {
+    let mut b = app_on(&temp_dir("label-blank").join("session.mnf"), 2);
+    b.create_label("x", None).unwrap();
+    let json: crate::store::json::JsonDoc = serde_json::from_str(
+        r#"{"nodes": [{"id": "g", "type": "application/vnd.manifold.group", "name": "G"},
+            {"id": "l", "type": "application/vnd.manifold.label", "name": "\u200b"}]}"#,
+    )
+    .unwrap();
+    b.import_group_json(&json);
+    assert!(b.label_defs().len() <= 2, "no false match with the live label");
+}
+
 #[test]
 fn rename_recolor_and_delete_reach_the_document() {
     let path = temp_dir("label-edit").join("session.mnf");

@@ -271,12 +271,26 @@ impl App {
     /// nested under it) and needs no translation, only the re-parented
     /// root itself does. A `group` link only within this file's own nodes
     /// is kept; a member whose group was outside the exported subtree
-    /// lands with the root (`materialize_imported`). Ends with
+    /// lands with the root (`materialize_imported`). A label in the file whose name key matches a live label is not
+    /// created: its cards carry the live one (`import_with`). Ends with
     /// `save_session`, same as `replace_running_session`.
     pub(crate) fn import_group_json(&mut self, json: &JsonDoc) {
         self.leave_json_level();
+        let live: std::collections::HashMap<String, NodeId> = self
+            .label_defs()
+            .into_iter()
+            .map(|(id, def)| (crate::names::name_key(&def.name), id))
+            .filter(|(key, _)| !key.is_empty())
+            .collect();
+        let reuse = |node: &crate::store::json::JsonNode| {
+            if node.kind() != Some(Kind::Label) {
+                return None;
+            }
+            let key = crate::names::name_key(node.fields.get("name")?.as_str()?);
+            live.get(&key).copied()
+        };
         let next_id = || self.alloc_node_id();
-        let imported = match crate::store::json::import(json, next_id, crate::store::json::Trust::Foreign) {
+        let imported = match crate::store::json::import_with(json, next_id, crate::store::json::Trust::Foreign, reuse) {
             Ok(imported) => imported,
             Err(err) => {
                 self.queue_toast(format!("Couldn't import the group: {err}"));
@@ -332,6 +346,8 @@ impl App {
         keep_live_parents: bool,
     ) {
         let mut imported = imported;
+        // A node `import_with` matched to an existing one (a label with a live twin) is already in the document.
+        imported.retain(|i| !i.reused);
         // A file's Default jar is not placed: this profile has its own, and every `jar` edge naming the file's is
         // re-pointed at it (spec "The Default jar").
         let file_defaults: Vec<NodeId> = imported
