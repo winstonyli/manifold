@@ -1,7 +1,7 @@
 //! `gate labels`: labels end to end in a headless instance. Two notes carry one raw `color` from an old session, which
 //! is ignored (a card has no colour of its own). Two topic notes accept a suggestion as a label
 //! (`ACCEPTSUGGESTIONLABEL`), a second label goes on two selected notes (`SELECTCARDS`, `LABELSELECTED`), one undo
-//! clears it, and after a restart the labels are still there. No page loads, so no engine is needed. Build first:
+//! clears it, deleting a label and undoing that brings it back, and after a restart the labels are still there. No page loads, so no engine is needed. Build first:
 //! `cargo build -p manifold`.
 
 use std::path::PathBuf;
@@ -82,6 +82,16 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         inst.send("UNDOKEY")?;
         inst.send("WAITIDLE")?;
         let undone = carrying(&inst.export_state("undone")?, "urgent");
+        // Deleting the label takes it off both notes, and one undo brings label and notes back; then off again.
+        inst.send("LABELSELECTED urgent on")?;
+        inst.send("LABELDELETE urgent")?;
+        inst.send("WAITIDLE")?;
+        let deleted = carrying(&inst.export_state("deleted")?, "urgent");
+        inst.send("UNDOKEY")?;
+        inst.send("WAITIDLE")?;
+        let revived = carrying(&inst.export_state("revived")?, "urgent");
+        inst.send("LABELSELECTED urgent off")?;
+        inst.send("WAITIDLE")?;
         quit(&mut inst, "labels");
         let mut again = Instance::launch(&exe, &profile, &work, "labels-restart.log")?;
         again.send("WAITIDLE")?;
@@ -99,6 +109,8 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         check(&format!("the typed label goes on the two selected notes ({urgent})"), urgent == 2);
         check(&format!("the toggle takes it off both ({off} left)"), off == 0);
         check(&format!("and one undo of the next toggle takes it off again ({undone} left)"), undone == 0);
+        check(&format!("deleting the label leaves no note carrying it ({deleted})"), deleted == 0);
+        check(&format!("and one undo brings it back on both notes ({revived})"), revived == 2);
         check(
             &format!("after a restart the {kept} label(s) and {still} labelled notes are still there"),
             kept >= 1 && still == 3,
