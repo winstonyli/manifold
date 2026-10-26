@@ -19,6 +19,8 @@ pub(crate) enum Mode {
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) enum Row {
     Card { id: NodeId, label: String, url: String, jar: Option<String>, snippet: Option<String> },
+    /// A live card that is not a tab (a note, group, download, image, PDF or Json): chosen, it is shown in the Graph.
+    Other { id: NodeId, label: String, glyph: &'static str, snippet: Option<String> },
     History { url: String, title: String },
     Setting { id: &'static str, title: &'static str, section: &'static str },
     /// The typed text: a url to open, or a search with the default engine.
@@ -70,8 +72,21 @@ pub(crate) struct CardInfo {
     pub(crate) closed: bool,
 }
 
+/// One live card that is not a tab the omnibar may offer.
+pub(crate) struct OtherInfo {
+    pub(crate) id: NodeId,
+    /// What the card is called (`App::accessible_name`): "Note: first line", "Group: Research".
+    pub(crate) label: String,
+    /// The icon of its kind.
+    pub(crate) glyph: &'static str,
+    /// The names of the card's live labels.
+    pub(crate) labels: Vec<String>,
+}
+
 pub(crate) trait Corpus {
     fn cards(&self) -> Vec<CardInfo>;
+    /// The live cards that are not tabs, in document order.
+    fn others(&self) -> Vec<OtherInfo>;
     /// `(title, url)`, newest first.
     fn history(&self) -> Vec<(String, String)>;
     /// The cards whose page text (or other document) holds every word of `text`, best first.
@@ -107,8 +122,40 @@ pub(crate) fn labels_match(tags: &[String], names: &[String]) -> bool {
     tags.iter().all(|tag| names.iter().any(|n| crate::names::name_key(n).starts_with(tag.as_str())))
 }
 
-/// The rows for `text`: open cards, history, settings, the typed text, then search `suggestions`, each section at
-/// most `ROW_CAP`. An empty text offers the first open cards and nothing else (the Ctrl+K list before a keystroke).
+/// The rows for the live cards that are not tabs: the label matches, then the page-text `hits`, at most `ROW_CAP` in
+/// all. Nothing for an empty `text`.
+fn other_rows(corpus: &impl Corpus, text: &str, tags: &[String], plain: &str, hits: &[NodeId]) -> Vec<Row> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let others = corpus.others();
+    let mut out: Vec<Row> = others
+        .iter()
+        .filter(|o| labels_match(tags, &o.labels))
+        .filter(|o| {
+            let mut haystacks: Vec<&str> = vec![&o.label];
+            haystacks.extend(o.labels.iter().map(String::as_str));
+            contains(plain, &haystacks)
+        })
+        .take(ROW_CAP)
+        .map(|o| Row::Other { id: o.id, label: o.label.clone(), glyph: o.glyph, snippet: None })
+        .collect();
+    for &id in hits {
+        if out.len() >= ROW_CAP {
+            break;
+        }
+        let Some(o) = others.iter().find(|o| o.id == id && labels_match(tags, &o.labels)) else { continue };
+        if out.iter().any(|r| matches!(r, Row::Other { id: seen, .. } if *seen == id)) {
+            continue;
+        }
+        out.push(Row::Other { id, label: o.label.clone(), glyph: o.glyph, snippet: corpus.snippet(id, plain) });
+    }
+    out
+}
+
+/// The rows for `text`: open cards, the other cards, history, settings, the typed text, then search `suggestions`, each
+/// section at most `ROW_CAP`. An empty text offers the first open cards and nothing else (the Ctrl+K list before a
+/// keystroke).
 pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> Vec<Row> {
     let text = text.trim();
     let (tags, plain) = split_query(text);
@@ -124,21 +171,21 @@ pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> 
         .take(ROW_CAP)
         .map(|c| Row::Card { id: c.id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet: None })
         .collect();
-    if !plain.is_empty() {
-        for id in corpus.text_hits(&plain) {
-            if out.len() >= ROW_CAP {
-                break;
-            }
-            let Some(c) = cards.iter().find(|c| c.id == id && !c.closed && labels_match(&tags, &c.labels)) else {
-                continue;
-            };
-            if out.iter().any(|r| matches!(r, Row::Card { id: seen, .. } if *seen == id)) {
-                continue;
-            }
-            let snippet = corpus.snippet(id, &plain);
-            out.push(Row::Card { id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet });
+    let hits = if plain.is_empty() { Vec::new() } else { corpus.text_hits(&plain) };
+    for &id in &hits {
+        if out.len() >= ROW_CAP {
+            break;
         }
+        let Some(c) = cards.iter().find(|c| c.id == id && !c.closed && labels_match(&tags, &c.labels)) else {
+            continue;
+        };
+        if out.iter().any(|r| matches!(r, Row::Card { id: seen, .. } if *seen == id)) {
+            continue;
+        }
+        let snippet = corpus.snippet(id, &plain);
+        out.push(Row::Card { id, label: c.label.clone(), url: c.url.clone(), jar: c.jar.clone(), snippet });
     }
+    out.extend(other_rows(corpus, text, &tags, &plain, &hits));
     // Only `#label` words: the cards with those labels, and nothing else to offer.
     if plain.is_empty() {
         return out;
@@ -182,10 +229,20 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         cards: Vec<(u64, &'static str, &'static str, bool)>,
+        /// `(id, label, label names)` of the live cards that are not tabs.
+        others: Vec<(u64, &'static str, Vec<&'static str>)>,
         history: Vec<(&'static str, &'static str)>,
         /// `(card, snippet)` for the cards a page-text search finds.
         text_hits: Vec<(u64, &'static str)>,
         commands: bool,
+    }
+
+    fn other(n: u64, label: &'static str) -> (u64, &'static str, Vec<&'static str>) {
+        (n, label, Vec::new())
+    }
+
+    fn other_ids(shown: Vec<Row>) -> Vec<NodeId> {
+        shown.into_iter().filter_map(|r| if let Row::Other { id, .. } = r { Some(id) } else { None }).collect()
     }
 
     impl Corpus for Fake {
@@ -199,6 +256,17 @@ mod tests {
                     jar: None,
                     labels: Vec::new(),
                     closed,
+                })
+                .collect()
+        }
+        fn others(&self) -> Vec<OtherInfo> {
+            self.others
+                .iter()
+                .map(|(n, label, names)| OtherInfo {
+                    id: id(*n),
+                    label: (*label).into(),
+                    glyph: "g",
+                    labels: names.iter().map(|s| (*s).into()).collect(),
                 })
                 .collect()
         }
@@ -220,6 +288,7 @@ mod tests {
         rows.iter()
             .map(|r| match r {
                 Row::Card { .. } => "card",
+                Row::Other { .. } => "other",
                 Row::History { .. } => "history",
                 Row::Setting { .. } => "setting",
                 Row::Typed { .. } => "typed",
@@ -336,6 +405,63 @@ mod tests {
             ..Default::default()
         };
         assert!(!rows(&fake, "borrow", &[]).iter().any(|r| matches!(r, Row::Card { .. })));
+    }
+
+    #[test]
+    fn other_rows_sit_after_tab_rows_and_before_history() {
+        let fake = Fake {
+            cards: vec![(1, "Rust book", "https://doc.test/", false)],
+            others: vec![other(5, "Note: rust ideas")],
+            history: vec![("Rust blog", "https://blog.test/")],
+            ..Default::default()
+        };
+        let mut order = kinds(&rows(&fake, "rust", &[]));
+        order.dedup();
+        order.truncate(3);
+        assert_eq!(order, ["card", "other", "history"]);
+    }
+
+    #[test]
+    fn a_card_matches_by_label_word_by_label_name_and_by_hash_label() {
+        let fake =
+            Fake { others: vec![(5, "Note: milk", vec!["Urgent"]), other(6, "Group: Cheese")], ..Default::default() };
+        let ids = |text: &str| other_ids(rows(&fake, text, &[]));
+        assert_eq!(ids("milk"), [id(5)]);
+        assert_eq!(ids("urgent"), [id(5)], "a label name matches");
+        assert_eq!(ids("#urg"), [id(5)], "only the tag filters");
+        assert!(ids("#urg chee").is_empty(), "a tag and a plain word are both needed");
+        assert_eq!(ids("group"), [id(6)], "the kind word is part of the label");
+        assert!(ids("zebra").is_empty());
+    }
+
+    #[test]
+    fn other_rows_are_capped_and_an_empty_text_offers_none() {
+        let others = (0..ROW_CAP as u64 + 3).map(|n| other(n, "Note: a")).collect();
+        let fake = Fake { others, ..Default::default() };
+        assert_eq!(other_ids(rows(&fake, "a", &[])).len(), ROW_CAP);
+        assert!(rows(&fake, "  ", &[]).is_empty());
+    }
+
+    #[test]
+    fn a_text_hit_on_a_non_tab_card_carries_its_snippet_and_is_listed_once() {
+        let fake = Fake {
+            others: vec![other(5, "Note: other words"), other(6, "Note: borrow list")],
+            text_hits: vec![(5, "…the borrow checker…"), (6, "…borrow…")],
+            ..Default::default()
+        };
+        let shown: Vec<Row> =
+            rows(&fake, "borrow", &[]).into_iter().filter(|r| matches!(r, Row::Other { .. })).collect();
+        assert_eq!(shown.len(), 2, "the label match and the text hit, not three");
+        assert_eq!(shown[0], Row::Other { id: id(6), label: "Note: borrow list".into(), glyph: "g", snippet: None });
+        assert_eq!(
+            shown[1],
+            Row::Other {
+                id: id(5),
+                label: "Note: other words".into(),
+                glyph: "g",
+                snippet: Some("…the borrow checker…".into())
+            }
+        );
     }
 
     #[test]

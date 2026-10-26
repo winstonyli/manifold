@@ -7,8 +7,8 @@ mod ui;
 pub(crate) use rows::{default_highlight, Mode, Row};
 
 use super::*;
-use crate::store::model::NodeId;
-use rows::{CardInfo, Corpus};
+use crate::store::model::{Kind, NodeId};
+use rows::{CardInfo, Corpus, OtherInfo};
 use std::collections::HashMap;
 
 /// Where an omnibar is drawn: the view it sits in, or the Ctrl+K popup. The Item view's is `Mode::Address`.
@@ -91,6 +91,22 @@ impl OmniBar {
     }
 }
 
+/// The icon of a card that is not a tab, and so whether the omnibar offers it as a row: one table for both. A jar
+/// holds cookies and is no card to open, a card of a type this build does not know has no name to search, and a link
+/// or label is never a card. The match is exhaustive: a new `Kind` must be placed here.
+fn other_glyph(kind: Kind) -> Option<&'static str> {
+    use egui_phosphor::light as icon;
+    Some(match kind {
+        Kind::Note => icon::NOTE_PENCIL,
+        Kind::Group => icon::FOLDER,
+        Kind::Download => icon::DOWNLOAD_SIMPLE,
+        Kind::Image => icon::IMAGE,
+        Kind::Pdf => icon::FILE_PDF,
+        Kind::Json => icon::BRACKETS_CURLY,
+        Kind::Tab | Kind::Jar | Kind::Link | Kind::Label | Kind::Unknown => return None,
+    })
+}
+
 /// The open cards and history `rows` draws from.
 struct AppCorpus<'a> {
     app: &'a App,
@@ -111,6 +127,18 @@ impl Corpus for AppCorpus<'_> {
                 let (label, url) = (app.listed_tab_label(id)?, app.listed_tab_url(id)?);
                 let jar = app.effective_jar(id).map(|(jar, _)| app.doc.mirror.name(jar).to_owned()); // name rule: stored
                 Some(CardInfo { id, label, url, jar, labels: app.label_names(id), closed: false })
+            })
+            .collect()
+    }
+
+    fn others(&self) -> Vec<OtherInfo> {
+        let app = self.app;
+        app.node_order
+            .iter()
+            .filter(|&&id| Some(id) != self.exclude)
+            .filter_map(|&id| {
+                let glyph = other_glyph(app.doc.mirror.kind_of(id))?;
+                Some(OtherInfo { id, label: app.accessible_name(id)?, glyph, labels: app.label_names(id) })
             })
             .collect()
     }
@@ -317,9 +345,25 @@ impl App {
         }
     }
 
-    /// What Enter (or a click) on `row` does in `host` (spec decision 8): a card is jumped to in the Graph and opened
-    /// elsewhere, a page or search opens in a new tab (the Item view navigates its own), a setting opens the
-    /// Settings page at its row.
+    /// Shows card `id` in the Graph on its level and eases the camera to it, leaving the Item or Settings view (and the
+    /// image viewer) for the Graph. A card that has since gone does nothing.
+    fn reveal_in_graph(&mut self, id: NodeId) {
+        if !self.nodes.contains_key(&id) {
+            return;
+        }
+        if self.showing_tab_view() {
+            self.hide_focused_tab();
+        }
+        self.viewed_image = None;
+        self.view_mode = ViewMode::Graph;
+        self.show_level_of(id);
+        self.camera.reveal = Some(id);
+        self.save_session();
+    }
+
+    /// What Enter (or a click) on `row` does in `host` (spec decision 8): a tab is jumped to in the Graph and opened
+    /// elsewhere, any other card is shown in the Graph from every host, a page or search opens in a new tab (the Item
+    /// view navigates its own), a setting opens the Settings page at its row.
     pub(crate) fn omni_activate(&mut self, row: Row, host: Host) {
         let engine = self.settings.default_search_engine;
         match row {
@@ -331,6 +375,7 @@ impl App {
                     self.focus_tab(id);
                 }
             }
+            Row::Other { id, .. } => self.reveal_in_graph(id),
             Row::Setting { id, .. } => {
                 self.open_settings_page();
                 self.settings_focus = Some(id);
@@ -347,8 +392,108 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_sync::tests::{add, app_on, live_tab, sleeping_tab};
+    use crate::session_sync::tests::{add, add_group, add_note, app_on, live_tab, sleeping_tab};
     use crate::store::model::Kind;
+
+    impl App {
+        fn other_row_for_test(&self, id: NodeId) -> Row {
+            Row::Other { id, label: self.accessible_name(id).unwrap(), glyph: "g", snippet: None }
+        }
+    }
+
+    fn others(app: &App) -> Vec<(NodeId, String)> {
+        AppCorpus { app, exclude: None }.others().into_iter().map(|o| (o.id, o.label)).collect()
+    }
+
+    fn other_ids(app: &App, host: Host) -> Vec<NodeId> {
+        app.omni_rows(host)
+            .into_iter()
+            .filter_map(|r| if let Row::Other { id, .. } = r { Some(id) } else { None })
+            .collect()
+    }
+
+    #[test]
+    fn every_card_kind_but_a_tab_or_a_jar_is_an_other_card_named_by_its_accessible_name() {
+        let mut app = App::default();
+        let note = add_note(&mut app, "buy milk\nmore");
+        let group = add_group(&mut app, "Research");
+        add(&mut app, Kind::Jar, Runtime::Jar);
+        tab(&mut app, "https://a.test/", "Alpha");
+        assert_eq!(others(&app), [(note, "Note: buy milk".to_owned()), (group, "Group: Research".to_owned())]);
+        let corpus = AppCorpus { app: &app, exclude: Some(note) };
+        assert_eq!(corpus.others().len(), 1, "the excluded card is left out");
+    }
+
+    #[test]
+    fn an_empty_note_is_labelled_note() {
+        let mut app = App::default();
+        let note = add_note(&mut app, "");
+        assert_eq!(others(&app), [(note, "Note".to_owned())]);
+        app.omni.text = "note".into();
+        assert_eq!(other_ids(&app, Host::Graph), [note], "listed, harmlessly");
+    }
+
+    #[test]
+    fn a_renamed_card_is_found_by_its_stored_name() {
+        let mut app = App::default();
+        let note = add_note(&mut app, "buy milk");
+        app.edit_name(note, "Groceries");
+        assert_eq!(others(&app), [(note, "Note: Groceries".to_owned())]);
+        app.omni.text = "grocer".into();
+        assert_eq!(other_ids(&app, Host::Graph), [note]);
+    }
+
+    #[test]
+    fn enter_on_an_other_row_in_graph_switches_level_and_sets_reveal() {
+        let mut app = app_on(&crate::store::testutil::temp_dir("omni-other").join("session.mnf"), 1);
+        let group = add_group(&mut app, "G");
+        let inner = add_note(&mut app, "kept");
+        app.edit_group(inner, Some(group));
+        app.view_mode = ViewMode::Graph;
+        assert_eq!(app.current_group, None);
+        let row = app.other_row_for_test(inner);
+        app.omni_activate(row, Host::Graph);
+        assert_eq!(app.current_group, Some(group));
+        assert_eq!(app.camera.reveal, Some(inner));
+        assert_eq!(app.view_mode, ViewMode::Graph);
+    }
+
+    #[test]
+    fn an_other_row_chosen_in_the_item_view_hides_the_tab_and_shows_the_graph() {
+        let mut app = App::default();
+        let (tab_id, _peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        let note = add_note(&mut app, "kept");
+        app.focused = Some(tab_id);
+        app.view_mode = ViewMode::Item;
+        let row = app.other_row_for_test(note);
+        app.omni_activate(row, Host::Item);
+        assert_eq!(app.view_mode, ViewMode::Graph);
+        assert_eq!(app.camera.reveal, Some(note));
+    }
+
+    #[test]
+    fn an_other_row_chosen_in_the_image_viewer_returns_to_the_graph() {
+        let mut app = App::default();
+        let note = add_note(&mut app, "kept");
+        app.viewed_image = Some(note);
+        app.view_mode = ViewMode::Item;
+        let row = app.other_row_for_test(note);
+        app.omni_activate(row, Host::Item);
+        assert_eq!((app.view_mode, app.viewed_image), (ViewMode::Graph, None));
+        assert_eq!(app.camera.reveal, Some(note));
+    }
+
+    #[test]
+    fn activating_a_card_that_has_gone_does_nothing_and_closes_the_bar() {
+        let mut app = App::default();
+        let gone = app.alloc_node_id();
+        app.view_mode = ViewMode::Settings;
+        app.omni.text = "x".into();
+        app.omni_activate(Row::Other { id: gone, label: "Note".into(), glyph: "g", snippet: None }, Host::Settings);
+        assert_eq!(app.view_mode, ViewMode::Settings);
+        assert_eq!(app.camera.reveal, None);
+        assert!(app.omni.text.is_empty() && !app.omni.open, "the bar closed");
+    }
 
     fn tab(app: &mut App, url: &str, title: &str) -> NodeId {
         add(app, Kind::Tab, sleeping_tab(url, title))

@@ -2,10 +2,11 @@
 
 use super::*;
 
-/// The icon of a row that is not a card.
+/// The icon of a row that is not a tab (a tab row is drawn with the tab's identity).
 fn row_icon(row: &Row) -> Identity {
     let glyph = match row {
         Row::Card { .. } => egui_phosphor::light::BROWSER,
+        Row::Other { glyph, .. } => glyph,
         Row::History { .. } => egui_phosphor::light::CLOCK_COUNTER_CLOCKWISE,
         Row::Setting { .. } => egui_phosphor::light::GEAR,
         Row::Typed { text } if looks_like_url(text) => egui_phosphor::light::ARROW_RIGHT,
@@ -23,6 +24,8 @@ pub(crate) fn row_text(row: &Row) -> String {
             None => format!("{label} \u{2014} {snippet}"),
         },
         Row::Card { label, .. } => label.clone(),
+        Row::Other { label, snippet: Some(snippet), .. } => format!("{label} \u{2014} {snippet}"),
+        Row::Other { label, .. } => label.clone(),
         Row::History { url, title } if title.is_empty() => url.clone(),
         Row::History { url, title } => format!("{title} \u{2014} {url}"),
         Row::Setting { title, section, .. } => format!("{section} \u{203a} {title}"),
@@ -300,6 +303,20 @@ mod tests {
             row_text(&hit(Some("the borrow checker"), Some("Work"))),
             "Other \u{2014} the borrow checker \u{b7} Work"
         );
+    }
+
+    #[test]
+    fn an_other_row_says_its_label_and_the_snippet_and_draws_its_glyph() {
+        use crate::store::model::ActorId;
+        let row = |snippet: Option<&str>| Row::Other {
+            id: NodeId { actor: ActorId(1), counter: 1 },
+            label: "Note: milk".into(),
+            glyph: egui_phosphor::light::NOTE_PENCIL,
+            snippet: snippet.map(str::to_owned),
+        };
+        assert_eq!(row_text(&row(None)), "Note: milk");
+        assert_eq!(row_text(&row(Some("buy some"))), "Note: milk \u{2014} buy some");
+        assert_eq!(row_icon(&row(None)), Identity::Glyph { glyph: egui_phosphor::light::NOTE_PENCIL, color: None });
     }
 
     /// The highlighted row's full address shows under the list when the label is not already the address.

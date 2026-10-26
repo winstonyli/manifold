@@ -59,6 +59,7 @@ impl App {
                 .into_iter()
                 .map(|row| match row {
                     crate::omnibar::Row::Card { id, .. } => format!("tab:{id}"),
+                    crate::omnibar::Row::Other { id, .. } => format!("card:{id}"),
                     crate::omnibar::Row::Setting { id, .. } => format!("setting:{id}"),
                     crate::omnibar::Row::History { url, .. } => url,
                     crate::omnibar::Row::Command(command) => format!("command:{}", command.title),
