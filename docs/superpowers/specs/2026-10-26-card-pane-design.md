@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Card pane — Design
@@ -44,14 +44,17 @@ the Graph view: select a card and its details show beside the canvas.
   that would happen on every click. Instead the camera remembers the last scene area; when only its width changed (the
   panel opening, closing or being resized, or the window resized sideways: `fill` cannot tell these apart, and keeping
   the world put suits all of them), `fill` keeps the scale and the visible area's left edge, so the panel covers a
-  strip and reveals it again on close. Any other change (a height change, a move of the area's corner) keeps today's
+  strip and reveals it again on close; an ease running through the change is re-anchored the same way, so it keeps its
+  scale. Any other change (a height change, a move of the area's corner) keeps today's
   centred fit. This also applies to the JSON outline's toggle, which today zooms the same way.
 - **R2. The card the pane starts describing is brought into view.** After R1 the camera rect is the visible area left
   of the panel, so `pan_to` (`camera.rs:119`) already does the right thing: whenever the one selected card changes (by
-  click, keyboard or a marquee around one card) and it is not fully in view, the camera eases it in. Not while a drag
-  holds it: easing would move the world under the pointer.
+  click, keyboard or a marquee around one card) and it is not fully in view, the camera eases it in. No ease runs while a card
+  is dragged, from here or anywhere: easing would move the world under the pointer, so `apply_camera_requests` ends a
+  running ease when a drag starts (a click can start one just before) and drops requests during it.
 - **R3. The pane takes no graph keys** unless one of its fields has focus: `graph_keys_free` (`keys.rs:313`) is already
-  false while egui wants keyboard input.
+  false while egui wants keyboard input. A focused row is not a field, so `handle_graph_keys` also leaves the arrows
+  and Enter to any focused widget that is not a card (egui focuses by keyboard or code only, never on a click).
 - **R4. One width setting, `right_panel_width`,** replacing `json_outline_width` in `JsonUi` and `local_state`
   (`LocalState.json_outline_width` renames; no migration, per the no-migration rule: an old saved width is dropped).
   The outline's visibility toggle stays, JSON level only. The panel never takes more than half the window, so there is
