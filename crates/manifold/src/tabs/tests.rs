@@ -142,6 +142,21 @@ mod page_text {
     }
 
     #[test]
+    fn a_settled_state_with_no_text_arms_the_timer_without_a_load_end() {
+        let mut app = App::default();
+        let (id, mut peer) = tab(&mut app, URL);
+        let t0 = Instant::now();
+        app.note_settled(id, URL, false, t0);
+        app.note_settled(id, URL, false, t0 + Duration::from_secs(1));
+        app.poll_text_timers(t0 + TEXT_DELAY);
+        assert_eq!(text_queries(&mut peer), 1, "armed once; a second settled state does not push it back");
+        app.accept_page_text(id, "hello".into());
+        app.note_settled(id, URL, false, t0 + TEXT_DELAY * 3);
+        app.poll_text_timers(t0 + TEXT_DELAY * 6);
+        assert_eq!(text_queries(&mut peer), 0, "text for this url is stored, so a title update asks nothing");
+    }
+
+    #[test]
     fn a_navigation_before_the_timer_cancels_it() {
         let mut app = App::default();
         let (id, mut peer) = tab(&mut app, URL);

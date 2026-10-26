@@ -78,8 +78,8 @@ impl App {
                 if url_changed {
                     self.request_favicons([url.as_str()]);
                 }
-                if load_ended {
-                    self.note_load_end(tab_id, &url, std::time::Instant::now());
+                if !loading {
+                    self.note_settled(tab_id, &url, load_ended, std::time::Instant::now());
                 }
                 let restore = self.saved_scroll.get_mut(&tab_id).is_some_and(|s| s.on_loading(loading));
                 if restore {

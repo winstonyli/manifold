@@ -33,6 +33,16 @@ impl App {
         self.page_text.timers.insert(id, (url.to_owned(), now + TEXT_DELAY));
     }
 
+    /// A navigation state with `loading` false arrived for tab `id` on `url`. A load that just ended arms the timer;
+    /// so does a settled page whose text is missing or for another url, unless a timer or an ask is already pending,
+    /// because under load the engine can report a tab's first state already settled, so no load end is ever seen.
+    pub(crate) fn note_settled(&mut self, id: NodeId, url: &str, load_ended: bool, now: Instant) {
+        let pending = self.page_text.timers.contains_key(&id) || self.page_text.asked.contains_key(&id);
+        if load_ended || (!pending && self.text_wanted(id) && self.text_is_stale(id)) {
+            self.note_load_end(id, url, now);
+        }
+    }
+
     /// Asks the tabs whose timer is due and whose url is still the one the load ended on.
     pub(crate) fn poll_text_timers(&mut self, now: Instant) {
         self.sync_search_index(now);
