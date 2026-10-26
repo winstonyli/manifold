@@ -3,6 +3,10 @@
 //! commands stay in the right-click menu and the selection bar.
 
 use super::*;
+use crate::node_menu::{NodeAction, NodeMenuItem};
+
+/// The Text section's height before it scrolls.
+const TEXT_MAX_HEIGHT: f32 = 240.0;
 
 impl App {
     /// The one stored card the pane describes: the stored selection when it is a single card still shown, on a
@@ -29,18 +33,111 @@ impl App {
         }
     }
 
-    /// The pane: the count for several cards, the card's name for one, then the Labels section. Task 4 adds the rest.
+    /// The pane. One card: header, labels, place, links, text. Several: the count and the labels. Its rows step with
+    /// Up/Down while one has focus, and never take focus themselves (R5).
     pub(super) fn card_pane_contents(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
-        match self.pane_card() {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.pane_card() {
             Some(id) => {
-                ui.strong(self.accessible_name(id).unwrap_or_default());
+                self.pane_header(ui, actions, id);
                 self.pane_labels(ui, actions);
+                self.pane_place(ui, actions, id);
+                self.pane_text_section(ui, id);
             }
             None => {
                 ui.label(format!("{} selected", self.selected_stored_count()));
                 self.pane_labels(ui, actions);
             }
+        });
+        let rows = crate::popups::take_list_rows(ui);
+        crate::popups::step_focused_row(ui, &rows.rows, rows.partial);
+    }
+
+    /// Whether the pane shows the rename field for `id`: the one draft (`renaming_group`) is this card's and its
+    /// menu, which would show the same field, is not open on it.
+    pub(crate) fn pane_renaming(&self, id: NodeId) -> bool {
+        self.renaming_group.as_ref().is_some_and(|(of, _)| *of == id)
+            && self.menus.node_menu.open.as_ref().map(|(of, _)| *of) != Some(id)
+    }
+
+    /// The card's name as a screen reader says it, a pencil that starts a rename (the menu's `Rename`), and its URL
+    /// or path, selectable for copying.
+    fn pane_header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>, id: NodeId) {
+        if self.pane_renaming(id) {
+            let focus = crate::popups::take_focus(&mut self.pending_focus, crate::popups::FocusTarget::GroupRename);
+            let Some((_, draft)) = self.renaming_group.as_mut() else { return };
+            let field = crate::theme::toolbar_field(ui, |ui| {
+                ui.add(crate::theme::field_edit(draft).desired_width(f32::INFINITY))
+            });
+            if focus {
+                field.request_focus();
+            }
+            if field.lost_focus() {
+                let action = if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    NodeAction::CancelRename
+                } else {
+                    NodeAction::CommitRename(draft.clone())
+                };
+                actions.push(GraphAction::Node(id, action));
+            }
+        } else {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::Label::new(egui::RichText::new(self.accessible_name(id).unwrap_or_default()).strong()).wrap(),
+                );
+                if ui.small_button(egui_phosphor::light::PENCIL_SIMPLE).on_hover_text("Rename").clicked() {
+                    actions.push(GraphAction::Node(id, NodeAction::Rename));
+                }
+            });
         }
+        if let Some(url) = self.copyable_url(id) {
+            ui.add(egui::Label::new(egui::RichText::new(url).small().weak()).selectable(true).wrap());
+        }
+    }
+
+    /// Where the card sits: its group (with Remove from Group), a pinned mark, its jar rows, its links rows. The jar
+    /// and links rows are the menu's own items (`draw_menu_item`), so the two never list them differently.
+    fn pane_place(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>, id: NodeId) {
+        let mut clicked = None;
+        if let Some(group) = self.doc.mirror.group(id) {
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let name = self.accessible_name(group).unwrap_or_default();
+                ui.label(egui::RichText::new(format!("{} {name}", egui_phosphor::light::FOLDER)).weak());
+                if ui.small_button(egui_phosphor::light::X).on_hover_text("Remove from Group").clicked() {
+                    clicked = Some(NodeAction::RemoveFromGroup);
+                }
+            });
+        }
+        if self.doc.mirror.pinned(id) {
+            ui.label(egui::RichText::new(format!("{} Pinned", egui_phosphor::light::PUSH_PIN)).weak());
+        }
+        if let Some(jars) = self.jar_menu(id) {
+            crate::node_menu::draw_menu_item(ui, &NodeMenuItem::Jars { heading: "Jar", rows: jars.rows }, &mut clicked);
+        }
+        let edges = self.edge_menu(id);
+        if !edges.is_empty() {
+            crate::node_menu::draw_menu_item(ui, &NodeMenuItem::Edges(edges), &mut clicked);
+        }
+        if let Some(action) = clicked {
+            actions.push(GraphAction::Node(id, action));
+        }
+    }
+
+    /// The text the pane shows for `id`: a note's text (`note_text`), else the page text last stored for it
+    /// (`search::text_store`); none when both are empty.
+    pub(crate) fn pane_text(&self, id: NodeId) -> Option<&str> {
+        let stored = || self.search.texts.get(id).map_or("", |r| r.text.as_str());
+        Some(self.note_text(id)).filter(|t| !t.trim().is_empty()).or(Some(stored())).filter(|t| !t.trim().is_empty())
+    }
+
+    /// The Text section: read-only, capped in height, scrolled.
+    fn pane_text_section(&self, ui: &mut egui::Ui, id: NodeId) {
+        let Some(text) = self.pane_text(id) else { return };
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Text").small().weak());
+        egui::ScrollArea::vertical().id_salt("card_pane_text").max_height(TEXT_MAX_HEIGHT).show(ui, |ui| {
+            ui.add(egui::Label::new(text).selectable(true).wrap());
+        });
     }
 
     /// The Labels section's rows: every live label, its stored name and colour, and how much of the selection carries
@@ -173,6 +270,72 @@ mod tests {
         app.set_label(&[b], urgent, false);
         assert!(states(&app).contains(&(urgent, LabelState::Some)));
         assert!(states(&app).contains(&(later, LabelState::None)));
+    }
+
+    /// The Text section: a note's text, a page's stored text, else nothing.
+    #[test]
+    fn the_pane_text_is_a_notes_text_or_a_pages_stored_text() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let note = crate::session_sync::tests::add_note(&mut app, "milk and eggs");
+        assert_eq!(app.pane_text(note), Some("milk and eggs"));
+        let tab = app.alloc_node_id();
+        app.insert_placeholder_node(tab, egui::Vec2::ZERO, Kind::Tab, sleeping_tab("https://a.test/", "a"));
+        assert_eq!(app.pane_text(tab), None);
+        app.search.texts.put(crate::search::text_store::TextRecord {
+            id: tab,
+            url: "https://a.test/".into(),
+            title: "a".into(),
+            text: "page words".into(),
+            at: 0,
+        });
+        assert_eq!(app.pane_text(tab), Some("page words"));
+    }
+
+    /// One rename draft: the pane shows its field unless the card's menu is open on the card (the menu shows it).
+    #[test]
+    fn the_pane_shows_the_rename_field_only_when_the_menu_does_not() {
+        let mut app = App::default();
+        let note = crate::session_sync::tests::add_note(&mut app, "n");
+        assert!(!app.pane_renaming(note));
+        app.apply_node_action(&egui::Context::default(), note, crate::node_menu::NodeAction::Rename);
+        assert!(app.pane_renaming(note));
+        app.menus.node_menu.open(note, egui::Pos2::ZERO);
+        assert!(!app.pane_renaming(note), "the menu's field has it");
+    }
+
+    /// R5: opening the pane takes no focus, and Down with nothing focused stays the graph's.
+    #[test]
+    fn the_pane_takes_no_focus_when_it_opens() {
+        let mut app = App::default();
+        let group = app.alloc_node_id();
+        app.insert_group_at(group, None);
+        app.create_label("urgent", None).unwrap();
+        app.interaction.selected.insert(CardId::from(group));
+        let ctx = crate::theme::testutil::ctx(true);
+        let mut down_left = false;
+        for events in [
+            vec![],
+            vec![],
+            vec![egui::Event::Key {
+                key: egui::Key::ArrowDown,
+                physical_key: Some(egui::Key::ArrowDown),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            let mut actions = Vec::new();
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                app.build_right_panel(ui, &mut actions);
+                down_left = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            });
+            output.textures_delta.clear();
+        }
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        assert!(down_left, "the pane left Down to the graph");
     }
 
     /// A label rename in progress is dropped with the pane, not carried to the next selection.

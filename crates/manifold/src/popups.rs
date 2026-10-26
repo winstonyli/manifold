@@ -96,6 +96,42 @@ mod view_picker_tests {
         }
     }
 
+    /// The pane's half of the list navigation (card-pane spec R5): Up/Down step only while a row has focus, and
+    /// with none focused the keys are left alone.
+    #[test]
+    fn step_focused_row_moves_only_a_focused_list() {
+        let ctx = crate::theme::testutil::ctx(true);
+        let frame = |events: Vec<egui::Event>| -> (Vec<egui::Id>, bool) {
+            let mut rows = Vec::new();
+            let mut left = false;
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                for label in ["a", "b", "c"] {
+                    rows.push(list_row(ui, label).id);
+                }
+                let list = take_list_rows(ui);
+                step_focused_row(ui, &list.rows, list.partial);
+                left = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
+            });
+            output.textures_delta.clear();
+            (rows, left)
+        };
+        let (rows, _) = frame(vec![]);
+        frame(vec![]);
+        assert_eq!(ctx.memory(|m| m.focused()), None, "no row takes focus on its own");
+        let (_, left) = frame(vec![key(egui::Key::ArrowDown)]);
+        assert!(left && ctx.memory(|m| m.focused()).is_none(), "Down with nothing focused is not the list's");
+        ctx.memory_mut(|m| m.request_focus(rows[0]));
+        frame(vec![]);
+        frame(vec![key(egui::Key::ArrowDown)]);
+        frame(vec![]);
+        assert!(ctx.memory(|m| m.has_focus(rows[1])), "Down from a focused row steps");
+        frame(vec![key(egui::Key::ArrowUp)]);
+        frame(vec![key(egui::Key::ArrowUp)]);
+        frame(vec![]);
+        assert!(ctx.memory(|m| m.has_focus(rows[2])), "and wraps");
+    }
+
     /// One frame of a three-row list popup; returns the row clicked.
     fn list_frame(ctx: &egui::Context, events: Vec<egui::Event>) -> Option<usize> {
         let input = egui::RawInput {

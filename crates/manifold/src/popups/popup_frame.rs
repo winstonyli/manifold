@@ -191,14 +191,57 @@ pub(crate) fn popup_just_opened(ctx: &egui::Context, key: egui::Id, interactable
     just_opened
 }
 
+/// The rows a layer's widgets queued this pass (`nav_row`, `nav_stop`), with the popup's marks.
+pub(crate) struct ListRows {
+    pub(crate) rows: Vec<Vec<egui::Id>>,
+    opens_on: Option<egui::Id>,
+    /// The rows are only a window of the list (`mark_list_partial`): stepping stops at the ends.
+    pub(crate) partial: bool,
+    page: Option<egui::Id>,
+}
+
+/// Reads and clears what this layer's rows queued this pass. Call once per pass, after the rows.
+pub(crate) fn take_list_rows(ui: &egui::Ui) -> ListRows {
+    let key = list_rows_key(ui);
+    ListRows {
+        rows: ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default(),
+        opens_on: ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("opens_on"))).flatten(),
+        partial: ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false),
+        page: ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("page"))).flatten(),
+    }
+}
+
+/// While one of `rows` has focus, Up/Down move it (wrapping unless `partial`), every press counted; returns whether
+/// one had focus. With none focused it leaves the keys alone: the card pane's rows (spec R5) use only this.
+pub(crate) fn step_focused_row(ui: &egui::Ui, rows: &[Vec<egui::Id>], partial: bool) -> bool {
+    let Some(at) = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id)))) else {
+        return false;
+    };
+    // Presses that land in one frame (a slow frame, a key repeat) are each a step.
+    let (downs, ups) = ui.input_mut(|i| {
+        (
+            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+        )
+    });
+    // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
+    let next = step_index(at, downs as isize - ups as isize, rows.len(), !partial);
+    if next != at {
+        ui.memory_mut(|m| {
+            // A row focused last pass is not locked yet (`nav_stop` locks it once drawn focused), so egui would also
+            // move it by its own arrow search at the end of this pass.
+            m.move_focus(egui::FocusDirection::None);
+            m.request_focus(rows[next][0]);
+        });
+    }
+    true
+}
+
 /// After a list popup's rows are laid out: focuses the first row (or the `nav_row_opens_on` one) when the popup opens, and moves
 /// focus between rows on Up/Down (wrapping, unless the rows are a window: `mark_list_partial`).
 pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
     let key = list_rows_key(ui);
-    let rows: Vec<Vec<egui::Id>> = ui.data_mut(|d| d.remove_temp(key)).unwrap_or_default();
-    let opens_on: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("opens_on"))).flatten();
-    let partial = ui.data_mut(|d| d.remove_temp::<bool>(key.with("partial"))).unwrap_or(false);
-    let page: Option<egui::Id> = ui.data_mut(|d| d.remove_temp::<Option<egui::Id>>(key.with("page"))).flatten();
+    let ListRows { rows, opens_on, partial, page } = take_list_rows(ui);
     let page_changed = ui.data_mut(|d| {
         let last = d.get_temp::<Option<egui::Id>>(key.with("last_page"));
         d.insert_temp(key.with("last_page"), page);
@@ -212,37 +255,24 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0][0])));
         return;
     }
-    let at = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id))));
+    if step_focused_row(ui, &rows, partial) {
+        return;
+    }
     // Nothing focused (the focused row went away with a page swap, as in the node menu's Color page, or the popup
     // opened without focus): Down enters at the first row, Up at the last.
-    let Some(at) = at else {
-        let (down, up) = ui.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-                i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
-            )
-        });
-        if down || up {
-            let entry = if down { &rows[0] } else { &rows[rows.len() - 1] };
-            // egui's own arrow-key focus search would otherwise pick a widget at the end of the pass.
-            ui.memory_mut(|m| {
-                m.move_focus(egui::FocusDirection::None);
-                m.request_focus(entry[0]);
-            });
-        }
-        return;
-    };
-    // Presses that land in one frame (a slow frame, a key repeat) are each a step.
-    let (downs, ups) = ui.input_mut(|i| {
+    let (down, up) = ui.input_mut(|i| {
         (
-            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
         )
     });
-    // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
-    let next = step_index(at, downs as isize - ups as isize, rows.len(), !partial);
-    if next != at {
-        ui.memory_mut(|m| m.request_focus(rows[next][0]));
+    if down || up {
+        let entry = if down { &rows[0] } else { &rows[rows.len() - 1] };
+        // egui's own arrow-key focus search would otherwise pick a widget at the end of the pass.
+        ui.memory_mut(|m| {
+            m.move_focus(egui::FocusDirection::None);
+            m.request_focus(entry[0]);
+        });
     }
 }
 

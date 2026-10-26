@@ -252,7 +252,7 @@ pub(crate) fn build_node_context_menu(
 }
 
 /// One item of a node menu (or of one of its pages), reporting a click in `action`.
-fn draw_menu_item(ui: &mut egui::Ui, item: &NodeMenuItem, action: &mut Option<NodeAction>) {
+pub(crate) fn draw_menu_item(ui: &mut egui::Ui, item: &NodeMenuItem, action: &mut Option<NodeAction>) {
     match item {
         NodeMenuItem::Button(label, item_action) => {
             let mut response = menu_button(ui, *label, item_action.key_hint());
