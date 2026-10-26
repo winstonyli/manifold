@@ -612,3 +612,16 @@ fn a_follow_up_box_on_a_new_row_past_the_page_is_revealed() {
     assert_eq!(e.pointer, "/l/100");
     assert!(level.entry_rect("/l/100").is_some(), "its row is on screen, so the box is not cancelled");
 }
+
+#[test]
+fn f2_on_a_ref_row_renames_its_key_and_a_chip_click_selects_only_its_target() {
+    let target = NodeId { actor: crate::store::model::ActorId(1), counter: 77 };
+    let (mut app, _) = card_with_refs([target, target]);
+    assert_eq!(app.f2_target("/x"), Some(EditWhat::Key), "a Ref row is a link: F2 edits its key");
+    assert_eq!(app.f2_target("/l"), Some(EditWhat::Key), "a container too");
+    let note = crate::session_sync::tests::add_note(&mut app, "n");
+    let other = crate::session_sync::tests::add_note(&mut app, "o");
+    app.interaction.selected.insert(crate::card_id::CardId::from(other));
+    app.apply_json_edit(JsonEdit::OpenRef(note));
+    assert_eq!(app.interaction.selected.len(), 1, "{:?}", app.interaction.selected);
+}

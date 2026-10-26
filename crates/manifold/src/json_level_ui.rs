@@ -570,6 +570,14 @@ fn draw_row_edit(ui: &mut egui::Ui, node: NodeId, edit: &mut RowEdit, rect: egui
 }
 
 impl App {
+    /// What F2 edits on the entry at `pointer`: a scalar its value; a container, or a Ref (a link, not text), its key
+    /// when it has one.
+    pub(crate) fn f2_target(&self, pointer: &str) -> Option<EditWhat> {
+        let level = self.json_level.as_ref()?;
+        let value = (!level.refs.contains_key(pointer)).then(|| edit_target(&level.value, pointer, f32::MAX)).flatten();
+        value.or_else(|| edit_target(&level.value, pointer, 0.0))
+    }
+
     /// The chips of `card`'s shown rows: each `refs` pointer that is one of them, with its target's name.
     pub(crate) fn ref_chips(
         &self,
@@ -975,10 +983,7 @@ impl App {
             self.json_level.as_ref().filter(|l| self.json_editable(l.node_id)).and_then(|l| l.selected.clone());
         if let Some(pointer) = selected {
             if key(egui::Key::F2) {
-                let doc = self.json_level.as_ref().map(|l| l.value.clone()).unwrap_or_default();
-                // A scalar edits its value; a container, its key (when it has one).
-                let what = edit_target(&doc, &pointer, f32::MAX).or_else(|| edit_target(&doc, &pointer, 0.0));
-                if let Some(what) = what {
+                if let Some(what) = self.f2_target(&pointer) {
                     self.apply_json_edit(JsonEdit::Begin(pointer, what));
                 }
                 return;

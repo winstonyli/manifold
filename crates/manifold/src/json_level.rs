@@ -295,6 +295,7 @@ impl App {
             return;
         }
         self.show_level_of(target);
+        self.interaction.selected.clear();
         self.interaction.selected.insert(CardId::from(target));
     }
 
