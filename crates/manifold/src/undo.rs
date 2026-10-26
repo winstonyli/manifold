@@ -41,7 +41,7 @@ pub(crate) enum UndoKind {
     /// A file Json card detached to inline (`App::detach_json`): `stored` was its synced `PATH`, `shown` the file this
     /// machine read, and `body` the BODY tree the detach wrote. Undo applies only while the card still holds exactly
     /// `body`; redo detaches again.
-    Detach { node: NodeId, stored: String, shown: String, body: tree::Tree },
+    Detach { node: NodeId, stored: String, shown: String, url: String, body: tree::Tree },
 }
 
 pub(crate) struct UndoEntry {
@@ -123,8 +123,8 @@ impl App {
             UndoKind::Fold(groups) => self.replay_fold(groups, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
             UndoKind::Props(edits) => self.replay_props(edits, redo),
-            UndoKind::Detach { node, stored, shown, body } => {
-                (usize::from(self.replay_detach(*node, stored, shown, body, redo)), 1)
+            UndoKind::Detach { node, stored, shown, url, body } => {
+                (usize::from(self.replay_detach(*node, stored, shown, url, body, redo)), 1)
             }
         }
     }
@@ -132,7 +132,15 @@ impl App {
     /// A detach undone (the card is inline and still holds `body`: the BODY tree is deleted, the path restored and
     /// the file read again) or redone (the card is that file's again, and detaches once more). False when the card
     /// has moved on.
-    fn replay_detach(&mut self, node: NodeId, stored: &str, shown: &str, body: &mut tree::Tree, redo: bool) -> bool {
+    fn replay_detach(
+        &mut self,
+        node: NodeId,
+        stored: &str,
+        shown: &str,
+        url: &str,
+        body: &mut tree::Tree,
+        redo: bool,
+    ) -> bool {
         let Some(json) = self.nodes.get(&node).and_then(|n| n.as_json()) else { return false };
         if redo {
             if json.is_inline() || json.path() != shown {
@@ -147,6 +155,7 @@ impl App {
         // One tombstone at the root, so a leaf another replica wrote meanwhile is hidden too.
         self.edit_prop(node, field::BODY, crate::store::body::root(), None);
         self.edit_field(node, field::PATH, FieldValue::Str(stored.to_owned()));
+        self.edit_field(node, field::URL, FieldValue::Str(url.to_owned()));
         self.rebuild_file_json(node, shown.to_owned());
         true
     }

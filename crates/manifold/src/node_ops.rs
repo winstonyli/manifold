@@ -56,8 +56,12 @@ impl App {
             store::model::FieldValue::Str(s) => s,
             _ => shown.clone(),
         };
+        let url = match self.doc.mirror.get(id, store::model::field::URL) {
+            store::model::FieldValue::Str(s) => s,
+            _ => String::new(),
+        };
         let body = self.detach_json_untracked(id)?;
-        self.record_undo("Detach to inline".to_owned(), UndoKind::Detach { node: id, stored, shown, body });
+        self.record_undo("Detach to inline".to_owned(), UndoKind::Detach { node: id, stored, shown, url, body });
         Ok(())
     }
 
@@ -86,6 +90,8 @@ impl App {
         };
         self.set_body(id, tree.clone());
         self.edit_field(id, store::model::field::PATH, store::model::FieldValue::Str(String::new()));
+        // An inline card has no source: its url would send a restart back to a fetch.
+        self.edit_field(id, store::model::field::URL, store::model::FieldValue::Str(String::new()));
         self.refresh_inline(id);
         Ok(tree)
     }

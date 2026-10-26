@@ -111,4 +111,3 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 - **Why parked:** minor, found by the plan 2 final review (2026-10-24); no user-visible effect today.
 - **Trigger:** plan 4 for M1/M2; plan 3 for M5; any touch of `build_ops` for M3.
 - **Status:** parked.
-- **Inline Json 4b final-review minors (2026-10-25).** *What:* (M9) a detached URL-fetched card is inline live but a pending fetch after restart (detach keeps the URL). *Why parked:* small, none loses data; by decision 2026-10-25. *Trigger:* a report. *Evidence:* `undo.rs` `replay_detach`, `json_level_ui.rs` `ref_chips`/`draw_row_edit`, `remote.rs` `is_inline_card` (review 2026-10-25). *Status:* parked.

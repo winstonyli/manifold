@@ -912,3 +912,17 @@ fn undoing_a_redone_detach_works_after_the_file_changed_in_between() {
     let Runtime::Json(p) = &app.nodes[&id].runtime else { panic!() };
     assert!(!p.is_inline(), "and that detach can be undone");
 }
+
+#[test]
+fn detaching_clears_the_url_and_undo_restores_it() {
+    use store::model::{field, FieldValue};
+    let path = crate::store::testutil::temp_dir("detach-url").join("session.mnf");
+    let mut app = crate::session_sync::tests::app_on(&path, 1);
+    let (id, _) = json_file_card(&mut app, "detach-url", r#"{"k": [1]}"#);
+    let url = FieldValue::Str("https://example.com/d.json".into());
+    app.edit_field(id, field::URL, url.clone());
+    app.detach_json(id).unwrap();
+    assert_eq!(app.doc.mirror.get(id, field::URL), FieldValue::Str(String::new()), "an inline card has no source");
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.get(id, field::URL), url);
+}
