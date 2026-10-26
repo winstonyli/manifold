@@ -17,7 +17,7 @@ use super::model::{
     encode_field, field, field_by_name, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, VIEW_KINDS,
 };
 use super::ops::OpBody;
-use super::tree::{resolved, Trees, TREE_FIELDS};
+use super::tree::{resolved, Seg, Trees, TREE_FIELDS};
 use super::tree_json::{field_from_json, field_to_json};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -142,7 +142,7 @@ fn is_shown_card(doc: &Doc, id: NodeId) -> bool {
 
 /// `root` and its shown subtree, root first (a group export). The root
 /// is written without a group, since its group isn't exported. A link is
-/// included when both its ends are in the export.
+/// included when both its ends are in the export, and so is every live label a card in it carries.
 pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     let mut nodes = Vec::new();
     if let Some(node) = doc.nodes.get(&root).filter(|_| doc.is_shown(root)) {
@@ -156,6 +156,24 @@ pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
     let inside: std::collections::BTreeSet<String> = nodes.iter().map(|n| n.id.clone()).collect();
     for (id, node) in doc.shown() {
         if node.kind() == Kind::Link && link_ends_among(node, |end| inside.contains(&end.to_string())) {
+            nodes.push(node_to_json(id, node, None));
+        }
+    }
+    // The labels the exported cards carry (`PROPS/labels/@<id>`), so a membership names a node in the file.
+    let mut used = std::collections::BTreeSet::new();
+    for exported in &nodes {
+        let Some(node) = exported.id.parse::<NodeId>().ok().and_then(|id| doc.nodes.get(&id)) else { continue };
+        let trees = node.trees();
+        for (path, _) in trees.get(&field::PROPS).into_iter().flat_map(|tree| tree.iter()) {
+            if let [Seg::Key(k), Seg::Id(label)] = path.segments().as_slice() {
+                if k == crate::labels::LABELS_KEY {
+                    used.insert(*label);
+                }
+            }
+        }
+    }
+    for id in used {
+        if let Some(node) = doc.nodes.get(&id).filter(|n| !n.deleted && n.kind() == Kind::Label) {
             nodes.push(node_to_json(id, node, None));
         }
     }
@@ -733,6 +751,45 @@ mod tests {
         assert_eq!(tree.len(), 1);
         let (path, leaf) = tree.iter().next().unwrap();
         assert_eq!((leaf, path.segments().last()), (&Leaf::Int(5), Some(&Seg::Id(label))), "keyed by the new label id");
+    }
+
+    #[test]
+    fn a_group_export_carries_the_labels_its_cards_use_and_no_others() {
+        let json = r##"{"nodes": [
+            {"id": "g", "type": "application/vnd.manifold.group", "name": "G"},
+            {"id": "a", "type": "text/markdown", "text": "a", "group": "g", "props": {"labels": {"@used": 5}}},
+            {"id": "used", "type": "application/vnd.manifold.label", "name": "urgent"},
+            {"id": "other", "type": "application/vnd.manifold.label", "name": "unused"}
+        ]}"##;
+        let doc = doc_from(json, 1);
+        let g = doc.live().find(|(_, n)| n.kind() == Kind::Group).map(|(id, _)| id).unwrap();
+        let export = subtree_to_json(&doc, g);
+        let names: Vec<_> = export
+            .nodes
+            .iter()
+            .filter(|n| n.kind() == Some(Kind::Label))
+            .map(|n| n.fields["name"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(names, ["urgent"], "only the label a card in the subtree carries");
+        assert_eq!(export.nodes.last().unwrap().kind(), Some(Kind::Label), "labels come after the subtree");
+        let back = import(&export, ids(2), Trust::Foreign).unwrap();
+        let note = back.iter().find(|n| n.fields.get(&field::TEXT) == Some(&FieldValue::Str("a".into()))).unwrap();
+        assert_eq!(note.trees[&field::PROPS].len(), 1, "the membership survives a foreign import");
+    }
+
+    #[test]
+    fn a_deleted_label_is_not_exported() {
+        let json = r##"{"nodes": [
+            {"id": "g", "type": "application/vnd.manifold.group", "name": "G"},
+            {"id": "a", "type": "text/markdown", "text": "a", "group": "g", "props": {"labels": {"@l": 5}}},
+            {"id": "l", "type": "application/vnd.manifold.label", "name": "gone"}
+        ]}"##;
+        let mut doc = doc_from(json, 1);
+        let g = doc.live().find(|(_, n)| n.kind() == Kind::Group).map(|(id, _)| id).unwrap();
+        let l = doc.live().find(|(_, n)| n.kind() == Kind::Label).map(|(id, _)| id).unwrap();
+        doc.nodes.get_mut(&l).unwrap().deleted = true;
+        let export = subtree_to_json(&doc, g);
+        assert!(export.nodes.iter().all(|n| n.kind() != Some(Kind::Label)));
     }
 
     #[test]
