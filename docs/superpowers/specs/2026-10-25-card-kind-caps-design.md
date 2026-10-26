@@ -33,11 +33,14 @@ kind needs one row, not a dozen edits. It supersedes PARKED.md "One icon table f
 - **R3. Unknown needs no row.** `Caps::default()` becomes the unknown card: glyph `QUESTION`, kind word "Card",
   `omni_row` false. A type with no row, a link or a label, and an unknown type all read it. This deletes the
   `TYPE_UNKNOWN` glyph site as a special case.
-- **R4. The kind word reaches `GraphNode::accessible_name` as an argument.** That method sees only the `Runtime`, not
-  the type, and a unit test calls it with no `App`. `App::accessible_name(id)` reads the word from
-  `card_kind(id).caps().kind_name` and passes it in; the `Runtime` match keeps only the per-kind detail (file name,
-  first line, group name) and loses its first tuple element. The loaded and sleeping tab words come from the registry
-  by tag (`Tag::Loaded` row), the same tags `card_kind` already sets.
+- **R4. `GraphNode::accessible_name` becomes `accessible_detail`, and `App::accessible_name` joins the word to it.**
+  `GraphNode` sees only the `Runtime`, not the type, and a unit test calls it with no `App`. The `Runtime` match keeps
+  only the per-kind detail (file name, first line, group name) and returns `Option<String>`; `App::accessible_name(id)`
+  reads the word from `card_kind(id).caps().kind_name` and formats `"{word}: {detail}"` (a rename replaces the detail
+  for a non-container, as before; this also drops the old split-on-`": "` of the derived string). The loaded and
+  sleeping tab words come from the registry by tag (`Tag::Loaded` row), the same tags `card_kind` already sets.
+  (Refined 2026-10-25 while planning: the first draft passed the word in as an argument, which made the direct unit
+  tests assert a literal against itself.)
 
 ## Design
 
@@ -85,10 +88,9 @@ kind needs one row, not a dozen edits. It supersedes PARKED.md "One icon table f
   equals `Caps::default()` and every other kind's glyph differs from the default.
 - `kinds_cover_every_node_type` stays; the table test shares its fixture.
 - The existing omnibar tests (kind membership, labels) and the `accessible_name` tests (`node.rs`, `node_menu`,
-  `session_sync`) pass unchanged except for the argument in R4. The `node.rs` tests that call `GraphNode::accessible_name`
-  directly pass the word literally, so the word itself is pinned only by the `App`-level tests (`node_menu/tests.rs`
-  "Note: Groceries", `session_sync` "Card: Mine") and the table test; one `App`-level test per kind word
-  (`Tab`, `Sleeping tab`, `Cookie jar`, `Download`, `Group`) is added so no word is checked only by a literal.
+  `session_sync`) pass unchanged. The `node.rs` tests that call `GraphNode::accessible_name` directly now call
+  `accessible_detail` and assert the detail only; the words are pinned by `App`-level tests (the existing ones plus one
+  per word: `Tab`, `Sleeping tab`, `Cookie jar`, `Download`, `Group`) and the table test.
 - A test that `closed_entry_label`'s icon for a group, download and jar is `kind_caps(..).glyph` (the drift this
   removes), if the function's side-effecting `ui.label` can be read back; otherwise the table test carries it and the
   light gate's icon checks do.
