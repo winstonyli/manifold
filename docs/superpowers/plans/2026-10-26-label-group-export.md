@@ -155,7 +155,7 @@ git commit -m "json: a group export carries the labels its cards use"
         assert_eq!(imported[1].id, existing);
         let (path, _) = imported[0].trees[&field::PROPS].iter().next().unwrap();
         assert_eq!(path.segments().last(), Some(&Seg::Id(existing)), "the membership names the reused id");
-        assert_eq!(creates(&imported).len(), 1, "a reused slot creates nothing");
+        assert_eq!(creates(&imported).len(), 2, "a reused slot creates nothing: the note and its one membership");
     }
 ```
 

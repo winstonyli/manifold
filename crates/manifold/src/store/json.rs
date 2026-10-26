@@ -187,6 +187,8 @@ pub struct Imported {
     pub ty: String,
     pub fields: BTreeMap<u32, FieldValue>,
     pub trees: Trees,
+    /// The node is an existing one `import_with`'s `reuse` named: it keeps its slot but is not created.
+    pub reused: bool,
 }
 
 impl Imported {
@@ -225,10 +227,29 @@ pub enum Trust {
 /// the link itself is dropped.
 /// The result is in `json.nodes` order, so `imported[i]` is `json.nodes[i]`
 /// (callers map labels to fresh ids by index).
-pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust) -> Result<Vec<Imported>, String> {
+pub fn import(json: &JsonDoc, next_id: impl FnMut() -> NodeId, trust: Trust) -> Result<Vec<Imported>, String> {
+    import_with(json, next_id, trust, |_| None)
+}
+
+/// `import`, where `reuse` may name an existing node for a file node: its slot is flagged `reused`, keeps its place,
+/// and every reference to it resolves to that id.
+pub fn import_with(
+    json: &JsonDoc,
+    mut next_id: impl FnMut() -> NodeId,
+    trust: Trust,
+    reuse: impl Fn(&JsonNode) -> Option<NodeId>,
+) -> Result<Vec<Imported>, String> {
     let mut fresh = HashMap::new();
+    let mut reused = std::collections::HashSet::new();
     for node in &json.nodes {
-        if fresh.insert(node.id.as_str(), next_id()).is_some() {
+        let id = match reuse(node) {
+            Some(existing) => {
+                reused.insert(node.id.as_str());
+                existing
+            }
+            None => next_id(),
+        };
+        if fresh.insert(node.id.as_str(), id).is_some() {
             return Err(format!("node id {:?} appears twice", node.id));
         }
     }
@@ -314,7 +335,13 @@ pub fn import(json: &JsonDoc, mut next_id: impl FnMut() -> NodeId, trust: Trust)
                 }
             }
         }
-        out.push(Imported { id: fresh[node.id.as_str()], ty: ty.to_owned(), fields, trees });
+        out.push(Imported {
+            id: fresh[node.id.as_str()],
+            ty: ty.to_owned(),
+            fields,
+            trees,
+            reused: reused.contains(node.id.as_str()),
+        });
     }
     Ok(out)
 }
@@ -337,7 +364,7 @@ pub fn creates(imported: &[Imported]) -> Vec<OpBody> {
     let cards: std::collections::BTreeSet<NodeId> = imported.iter().filter(|n| n.kind().card()).map(|n| n.id).collect();
     imported
         .iter()
-        .filter(|n| !is_half_made_link(n, |id| cards.contains(&id)))
+        .filter(|n| !n.reused && !is_half_made_link(n, |id| cards.contains(&id)))
         .flat_map(|n| std::iter::once(create_op(n)).chain(tree_sets(n)))
         .collect()
 }
@@ -790,6 +817,23 @@ mod tests {
         doc.nodes.get_mut(&l).unwrap().deleted = true;
         let export = subtree_to_json(&doc, g);
         assert!(export.nodes.iter().all(|n| n.kind() != Some(Kind::Label)));
+    }
+
+    #[test]
+    fn a_reused_node_takes_the_existing_id_and_keeps_its_slot() {
+        let json = r##"{"nodes": [
+            {"id": "a", "type": "text/markdown", "text": "a", "props": {"labels": {"@l": 5}}},
+            {"id": "l", "type": "application/vnd.manifold.label", "name": "urgent"}
+        ]}"##;
+        let parsed: JsonDoc = serde_json::from_str(json).unwrap();
+        let existing = NodeId { actor: ActorId(9), counter: 9 };
+        let imported = import_with(&parsed, ids(1), Trust::Foreign, |n| (n.id == "l").then_some(existing)).unwrap();
+        assert_eq!(imported.len(), parsed.nodes.len(), "one slot per file node");
+        assert!(!imported[0].reused && imported[1].reused);
+        assert_eq!(imported[1].id, existing);
+        let (path, _) = imported[0].trees[&field::PROPS].iter().next().unwrap();
+        assert_eq!(path.segments().last(), Some(&Seg::Id(existing)), "the membership names the reused id");
+        assert_eq!(creates(&imported).len(), 2, "a reused slot creates nothing: the note and its one membership");
     }
 
     #[test]
