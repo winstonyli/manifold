@@ -74,6 +74,8 @@ mod tests {
             rig.app.camera.jump_to(rig.app.fit_all_nodes_scene_rect());
             rig.frame(vec![], egui::Modifiers::NONE);
             rig.app.interaction.selected.extend(rig.ids.iter().map(|i| CardId::from(*i)));
+            // The frame that opens the card pane, as the app draws one after any selection.
+            rig.frame(vec![], egui::Modifiers::NONE);
             rig
         }
 

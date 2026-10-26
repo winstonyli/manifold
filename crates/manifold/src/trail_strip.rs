@@ -946,7 +946,8 @@ mod tests {
                 checked += 1;
                 kinds.insert(title[..4].to_string());
                 // `bounds` is the text's line box, taller than its ink: a card edge within a pixel of it is not a show-through.
-                let ink = bounds.shrink2(egui::vec2(0.0, 1.0));
+                // Only the scene area counts: the card pane beside it names the selected card over cards it covers.
+                let ink = bounds.intersect(rig.app.graph_scene_outer_rect()).shrink2(egui::vec2(0.0, 1.0));
                 // Text that sticks out past a later card's edge is fine: only the part inside that card must be hidden.
                 let shows = |h: &&crate::level::CardEntry| {
                     shared_area(ink, screen(h)) >= 1.0 && !painted_over(shapes, at, bounds.intersect(screen(h)))

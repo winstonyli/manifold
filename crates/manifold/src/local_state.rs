@@ -46,9 +46,9 @@ pub(crate) struct LocalState<K = NodeId> {
     /// The JSON outline panel is hidden.
     #[serde(default)]
     pub json_outline_hidden: bool,
-    /// The JSON outline panel's width, once resized.
+    /// The right panel's width (the JSON outline and the card pane), once resized.
     #[serde(default)]
-    pub json_outline_width: Option<f32>,
+    pub right_panel_width: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -175,7 +175,7 @@ impl<K> Default for LocalState<K> {
             nodes: BTreeMap::new(),
             json_accessor_paths: false,
             json_outline_hidden: false,
-            json_outline_width: None,
+            right_panel_width: None,
         }
     }
 }
@@ -198,7 +198,7 @@ impl LocalState<String> {
             groups_collapsed: self.groups_collapsed,
             json_accessor_paths: self.json_accessor_paths,
             json_outline_hidden: self.json_outline_hidden,
-            json_outline_width: self.json_outline_width,
+            right_panel_width: self.right_panel_width,
         }
     }
 }
@@ -207,7 +207,7 @@ impl LocalState {
     fn all_finite(&self) -> bool {
         self.nodes.values().all(|n| n.pos.iter().all(|v| v.is_finite()))
             && self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
-            && self.json_outline_width.is_none_or(f32::is_finite)
+            && self.right_panel_width.is_none_or(f32::is_finite)
     }
 
     /// serde_json writes NaN and infinity as `null`, which a plain `f32`
@@ -222,7 +222,7 @@ impl LocalState {
         if clean.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
             clean.camera = None;
         }
-        clean.json_outline_width = clean.json_outline_width.filter(|w| w.is_finite());
+        clean.right_panel_width = clean.right_panel_width.filter(|w| w.is_finite());
         serde_json::to_vec(&clean).expect("personal state serializes")
     }
 
@@ -397,7 +397,7 @@ impl App {
             nodes,
             json_accessor_paths: self.json_ui.json_accessor_paths,
             json_outline_hidden: !self.json_ui.json_outline_visible,
-            json_outline_width: Some(self.json_ui.json_outline_width),
+            right_panel_width: Some(self.right_panel_width),
         }
     }
 
@@ -431,8 +431,8 @@ impl App {
         self.groups_collapsed = state.groups_collapsed;
         self.json_ui.json_accessor_paths = state.json_accessor_paths;
         self.json_ui.json_outline_visible = !state.json_outline_hidden;
-        if let Some(width) = state.json_outline_width {
-            self.json_ui.json_outline_width = width;
+        if let Some(width) = state.right_panel_width {
+            self.right_panel_width = width;
         }
         // Item view showing a tab still spawning (`focused` names it, but
         // it's not in `self.nodes` yet -- a tab's restore is always async):
@@ -609,11 +609,11 @@ mod tests {
         let mut state = with_pos(f32::NAN);
         state.nodes.insert(node(2), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
         state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
-        state.json_outline_width = Some(f32::NAN);
+        state.right_panel_width = Some(f32::NAN);
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
         assert_eq!(back.nodes[&node(1)].pos, [0.0, 0.0], "the bad position is zeroed, the node kept");
         assert_eq!(back.nodes[&node(2)].title, "kept");
-        assert_eq!((back.camera, back.json_outline_width), (None, None));
+        assert_eq!((back.camera, back.right_panel_width), (None, None));
     }
 
     #[test]
@@ -641,15 +641,15 @@ mod tests {
         let state = LocalState {
             json_accessor_paths: true,
             json_outline_hidden: true,
-            json_outline_width: Some(310.0),
+            right_panel_width: Some(310.0),
             ..LocalState::default()
         };
         let back = LocalState::from_bytes(&state.to_bytes()).unwrap();
         assert_eq!(
-            (back.json_accessor_paths, back.json_outline_hidden, back.json_outline_width),
+            (back.json_accessor_paths, back.json_outline_hidden, back.right_panel_width),
             (true, true, Some(310.0))
         );
         let old = LocalState::from_bytes(br#"{}"#).unwrap();
-        assert_eq!((old.json_accessor_paths, old.json_outline_hidden, old.json_outline_width), (false, false, None));
+        assert_eq!((old.json_accessor_paths, old.json_outline_hidden, old.right_panel_width), (false, false, None));
     }
 }

@@ -216,7 +216,7 @@ impl App {
         // excluded from all of this — those represent actual zoomable
         // content, not chrome, so they're meant to scale (and blur like
         // any other magnified image would, which is normal/expected).
-        self.build_json_outline(ui);
+        self.build_right_panel(ui, &mut actions);
         let scene_outer_rect = ui.available_rect_before_wrap();
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
         // Advance first: everything below (strokes, `zoom_pct`, the new-node

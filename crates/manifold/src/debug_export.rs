@@ -302,6 +302,19 @@ impl App {
         });
         // Apart from the literal above, which is at the macro recursion limit.
         state["labels"] = labels.into();
+        // The right panel: what it shows and the cards the pane describes (the gate's card-pane checks).
+        state["right_panel"] = match self.right_panel() {
+            None => serde_json::Value::Null,
+            Some(crate::graph_ui::RightPanel::Outline) => serde_json::json!({"shows": "outline"}),
+            Some(crate::graph_ui::RightPanel::Cards) => {
+                // Ids written as `selected` writes them, so the gate compares them with its card ids.
+                let mut cards: Vec<String> =
+                    self.interaction.selected.iter().filter(|c| c.node().is_some()).map(|c| c.to_string()).collect();
+                cards.sort();
+                let card = self.pane_card().map(|id| id.to_string());
+                serde_json::json!({"shows": "cards", "cards": cards, "card": card})
+            }
+        };
         state
     }
 

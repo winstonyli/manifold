@@ -124,7 +124,7 @@ fn screen_to_world_inverts_world_to_screen_with_the_outline_open() {
     let (mut app, j) = app_with_json("inverse", r#"{"a": 1}"#);
     app.switch_group_level(Some(j));
     app.json_ui.json_outline_visible = true;
-    app.json_ui.json_outline_width = 300.0;
+    app.right_panel_width = 300.0;
     let world = egui::Rect::from_min_size(egui::pos2(40.0, 60.0), egui::vec2(10.0, 10.0));
     let screen = app.graph_world_rect_to_screen(world);
     let back = app.graph_screen_point_to_world(screen.min);

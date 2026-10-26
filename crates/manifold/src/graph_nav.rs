@@ -44,6 +44,8 @@ pub(crate) struct GraphInteraction {
     /// (a plain click on empty background, or Escape).
     pub(crate) rect_select_start: Option<egui::Pos2>,
     pub(crate) selected: HashSet<CardId>,
+    /// The card the pane described last frame (`App::track_pane_card`), to reveal one it starts describing.
+    pub(crate) pane_card: Option<NodeId>,
     /// The selection bar's Label menu, open while `Some`.
     pub(crate) label_menu: Option<crate::labels::LabelMenu>,
     /// World position of the small "New Tab/Note/Group/File" card shown
@@ -86,6 +88,9 @@ impl GraphInteraction {
             self.focus_new_note = None;
         }
         self.selected.remove(&id);
+        if id.node().is_some() && self.pane_card == id.node() {
+            self.pane_card = None;
+        }
     }
 }
 

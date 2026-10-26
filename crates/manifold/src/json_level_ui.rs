@@ -46,15 +46,13 @@ const PATH_LABEL_MAX_WIDTH: f32 = 240.0;
 pub(crate) struct JsonLevelUi {
     /// The JSON outline panel shows (local state).
     pub(crate) json_outline_visible: bool,
-    /// Its width in points, as last drawn (local state).
-    pub(crate) json_outline_width: f32,
     /// Copy path's form on a JSON level (local state).
     pub(crate) json_accessor_paths: bool,
 }
 
 impl Default for JsonLevelUi {
     fn default() -> Self {
-        Self { json_outline_visible: true, json_outline_width: 260.0, json_accessor_paths: false }
+        Self { json_outline_visible: true, json_accessor_paths: false }
     }
 }
 
@@ -1012,23 +1010,9 @@ impl App {
         }
     }
 
-    /// The outline (spec "Outline"): a resizable right panel holding the
-    /// search box and the value as an indented list, virtualized with
-    /// `show_rows`. Drawn before the canvas takes the remaining space.
-    pub(crate) fn build_json_outline(&mut self, ui: &mut egui::Ui) {
-        if self.json_level.is_none() || !self.json_ui.json_outline_visible {
-            return;
-        }
-        self.poll_json_search();
-        let panel = egui::Panel::right("json_outline")
-            .resizable(true)
-            .default_size(self.json_ui.json_outline_width)
-            .size_range(160.0..=640.0)
-            .show(ui, |ui| self.json_outline_contents(ui));
-        self.json_ui.json_outline_width = panel.response.rect.width();
-    }
-
-    fn json_outline_contents(&mut self, ui: &mut egui::Ui) {
+    /// The outline (spec "Outline"): the search box and the value as an indented list, virtualized with `show_rows`.
+    /// Drawn in the right panel (`App::build_right_panel`).
+    pub(crate) fn json_outline_contents(&mut self, ui: &mut egui::Ui) {
         let root_name = self.current_group.map(|g| self.json_root_name(g)).unwrap_or_default();
         let Some(level) = self.json_level.as_mut() else { return };
         let mut query = level.search.query.clone();

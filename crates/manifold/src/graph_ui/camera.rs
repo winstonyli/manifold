@@ -86,21 +86,25 @@ impl GraphCamera {
         if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
             return; // `Scene` resets a bad rect itself.
         }
-        let last = self.area.replace(outer);
-        match last.filter(|l| l.min == outer.min && l.height() == outer.height() && l.width() != outer.width()) {
-            Some(last) => {
-                self.fit(last);
-                let scale = last.width() / self.rect.width();
-                self.rect = egui::Rect::from_min_size(self.rect.min, outer.size() / scale);
-            }
-            None => self.fit(outer),
-        }
+        self.rect = self.filled(outer);
+        self.area = Some(outer);
     }
 
-    /// `rect` refitted to `outer`'s shape about its centre, at the scale `Scene` shows it with.
-    fn fit(&mut self, outer: egui::Rect) {
-        let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        self.rect = egui::Rect::from_center_size(self.rect.center(), outer.size() / scale);
+    /// The rect `fill(outer)` would leave, without filling: `transform` maps through it, so a point converted after
+    /// the area changed and before the next frame's `fill` lands where that frame draws it.
+    fn filled(&self, outer: egui::Rect) -> egui::Rect {
+        if !self.rect.is_finite() || !self.rect.is_positive() || !outer.is_positive() {
+            return self.rect;
+        }
+        let last =
+            self.area.filter(|l| l.min == outer.min && l.height() == outer.height() && l.width() != outer.width());
+        match last {
+            Some(last) => {
+                let shown = fit(self.rect, last);
+                egui::Rect::from_min_size(shown.min, outer.size() * (shown.width() / last.width()))
+            }
+            None => fit(self.rect, outer),
+        }
     }
 
     /// Replicates `egui::Scene`'s own internal `fit_to_rect_in_scene`
@@ -116,8 +120,9 @@ impl GraphCamera {
     /// mid-animation frame and confirming the content quad visually lines
     /// up with the target node's real on-screen position.
     pub(crate) fn transform(&self, outer: egui::Rect) -> (f32, egui::Vec2) {
-        let scale = (outer.size() / self.rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        (scale, outer.center().to_vec2() - scale * self.rect.center().to_vec2())
+        let rect = self.filled(outer);
+        let scale = (outer.size() / rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+        (scale, outer.center().to_vec2() - scale * rect.center().to_vec2())
     }
 
     /// A frame's camera work before its `Scene`: advance any tween or glide, keep repainting while one runs, fill
@@ -139,6 +144,12 @@ impl GraphCamera {
             self.ease_to(egui::Rect::from_center_size(card.center(), self.rect.size()));
         }
     }
+}
+
+/// `rect` refitted to `outer`'s shape about its centre, at the scale `Scene` shows it with.
+fn fit(rect: egui::Rect, outer: egui::Rect) -> egui::Rect {
+    let scale = (outer.size() / rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+    egui::Rect::from_center_size(rect.center(), outer.size() / scale)
 }
 
 /// The graph's `Scene`: its zoom range, and the primary button pans unless `drag_pan` is off (while a link retargets).
@@ -186,20 +197,16 @@ impl App {
     }
 
     /// The Graph view's scene area in window points: below the toolbar,
-    /// minus a JSON level's outline on the right (plan ruling 12). The one
+    /// minus the right panel (`App::right_panel_width_shown`). The one
     /// definition both screen<->world conversions use; `build_graph_ui`
     /// reads the live layout rect instead, which this mirrors for code
     /// outside the frame.
     pub(crate) fn graph_scene_outer_rect(&self) -> egui::Rect {
         let screen = self.screen_size_points();
-        let outline = if self.json_level.is_some() && self.json_ui.json_outline_visible {
-            self.json_ui.json_outline_width
-        } else {
-            0.0
-        };
+        let panel = self.right_panel_width_shown();
         egui::Rect::from_min_size(
             egui::pos2(0.0, GRAPH_TOOLBAR_HEIGHT_POINTS),
-            egui::vec2((screen.x - outline).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
+            egui::vec2((screen.x - panel).max(0.0), (screen.y - GRAPH_TOOLBAR_HEIGHT_POINTS).max(0.0)),
         )
     }
 
@@ -583,6 +590,20 @@ mod tests {
         camera.fill(narrow);
         assert_eq!(camera.rect.min, egui::pos2(-500.0, -300.0), "the left edge `wide` showed");
         assert_eq!(camera.rect.size(), egui::vec2(700.0, 600.0));
+    }
+
+    /// Between the panel opening and the next frame's `fill`, a conversion already maps points the way that frame
+    /// will draw them (a click computed from the selection's change lands where the card is drawn).
+    #[test]
+    fn the_transform_maps_a_narrower_area_as_the_next_fill_will() {
+        let wide = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));
+        let narrow = egui::Rect::from_min_size(wide.min, egui::vec2(700.0, 600.0));
+        let mut camera = GraphCamera::new();
+        camera.jump_to(egui::Rect::from_min_size(egui::pos2(-500.0, -300.0), egui::vec2(1000.0, 600.0)));
+        camera.fill(wide);
+        let early = camera.transform(narrow);
+        camera.fill(narrow);
+        assert_eq!(early, camera.transform(narrow));
     }
 
     /// R1 leaves every other change to today's centred fit: a taller area keeps the centre.

@@ -430,6 +430,8 @@ struct App {
     debug_commands: bool,
     /// JSON level view settings (see `json_level_ui::JsonLevelUi`).
     json_ui: json_level_ui::JsonLevelUi,
+    /// The right panel's width (`App::build_right_panel`), shared by the JSON outline and the card pane.
+    right_panel_width: f32,
     /// Bookmarks and history popup state (see `history::HistoryUi`).
     history_ui: history::HistoryUi,
     /// Engine install jobs, failures and the Settings drafts for them (see `view_install::ViewInstallUi`).
@@ -611,6 +613,7 @@ impl Default for App {
             headless: false,
             debug_commands: false,
             json_ui: json_level_ui::JsonLevelUi::default(),
+            right_panel_width: 260.0,
             history_ui: history::HistoryUi::default(),
             view_ui: view_install::ViewInstallUi::default(),
             menus: popups::MenuPopups::default(),

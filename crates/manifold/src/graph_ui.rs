@@ -5,11 +5,13 @@ use super::*;
 use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
 
 mod camera;
+mod card_pane;
 mod cards;
 mod hints;
 mod keys;
 mod label_menu;
 mod overlays;
+mod right_panel;
 mod scene;
 mod selection_bar;
 mod suggestions;
@@ -19,6 +21,7 @@ pub(crate) use camera::*;
 use hints::*;
 pub(crate) use keys::*;
 pub(crate) use overlays::*;
+pub(crate) use right_panel::RightPanel;
 pub(crate) use scene::*;
 pub(crate) use toolbar::*;
 
