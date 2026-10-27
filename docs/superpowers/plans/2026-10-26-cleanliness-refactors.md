@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Cleanliness refactors (survey of 2026-10-26)
@@ -53,6 +53,8 @@ here with its commit.
   `handle_rect_select` no longer has).
 
 A design note worth keeping moves to the doc it belongs in; a measurement moves to `docs/runs.md` or the commit.
+
+Done: 66c7d40. Comments outside these files that still read as history are in `PARKED.md`.
 
 ### B2. `Caps` holds the per-kind card facts
 
@@ -180,7 +182,11 @@ Done: 76efb88
   trio: each differs on purpose.
 - The `forget_id` tables: only as part of M1, if at all.
 
-## Open
+## Final review (2026-10-27)
 
-- `store/` `pub fn` dead-code sweep did not finish (grep loop timed out); the compiler's dead-code lint after M2 is
-  the cheaper route.
+One whole-branch review of fe35568..10f13e6, and the full gate passed on 10f13e6 (run
+`2026-10-27-cleanliness-full-2`). Fixed: a JSON card with no parsed payload entered on Enter, because B2's merged
+`Click::Enter` arm let it through (test `enter_on_a_json_card_without_its_payload_stays_put`), and stale doc comments
+naming `App::default()` as the loader. Not a finding: the `EXPORTSTATE` key reference moved beside the code that writes
+each key (E5). Leftovers, UI8, the store dead-code sweep and the review's minors are in `PARKED.md`, "Cleanliness
+refactors leftovers".
