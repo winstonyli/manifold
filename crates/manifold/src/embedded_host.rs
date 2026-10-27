@@ -1,4 +1,4 @@
-//! The hosts carried inside `manifold.exe` (bare-exe plan Task 3, Decision 2): `build.rs` embeds each when its
+//! The hosts carried inside `manifold.exe`: `build.rs` embeds each when its
 //! `MANIFOLD_*_HOST` variable names a file, and `Embedded::ensure` puts it at a stable path under `engine-hosts/` so a
 //! bare `manifold.exe` works offline. A build without the variable embeds nothing: `ensure` returns `None` and the
 //! sibling exe is used, as before.
@@ -145,8 +145,8 @@ pub(crate) fn retry_busy<T>(attempts: u32, delay: Duration, mut op: impl FnMut()
     }
 }
 
-/// `command.spawn()` for a host just extracted: 3 attempts, 100 ms apart (Task 0 saw 0 failures in 52 spawns with
-/// Defender off; this is insurance for machines with real-time protection on).
+/// `command.spawn()` for a host just extracted: 3 attempts, 100 ms apart, as insurance for machines with
+/// real-time protection on (no failures in 52 spawns with Defender off).
 pub(crate) fn spawn_fresh(command: &mut Command) -> io::Result<Child> {
     retry_busy(3, Duration::from_millis(100), || command.spawn())
 }

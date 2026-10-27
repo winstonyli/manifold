@@ -72,7 +72,7 @@ impl App {
                 lost_focus = edit.lost_focus();
             }
             // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on
-            // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O (2b-4 Ruling 6).
+            // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O.
             if lost_focus {
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
@@ -91,7 +91,7 @@ impl App {
             // its live `TextEdit` yanked out from under the
             // user just because the rest of the graph got
             // busy.
-            // Borrowed, not cloned (2b-4 Ruling 6): `text` borrows `self.doc.mirror` and `cache` `self.commonmark_cache`,
+            // Borrowed, not cloned: `text` borrows `self.doc.mirror` and `cache` `self.commonmark_cache`,
             // two disjoint fields. Not being typed in, the note shows the mirror's text (`App::note_text`).
             let text = self.doc.mirror.text(id);
             let cache = &mut self.commonmark_cache;

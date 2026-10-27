@@ -175,7 +175,7 @@ pub enum Kind {
 /// aside (spec, "The shared document"). `parent` ("opened from") is on every kind a page can make: a tab, a download,
 /// and content a tab became. Older builds don't write it for the non-tab kinds, but keep it (`Node` holds every
 /// register, and a `Create` only writes the fields listed here). Fields a type does not list stay raw in the document
-/// untouched (2b-5 Ruling 2).
+/// untouched.
 #[rustfmt::skip]
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
@@ -204,7 +204,7 @@ impl Kind {
     }
 
     /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
-    /// replica's change hands the app (2b-5 Ruling 11), and what a snapshot of the node holds. `GENERIC` for
+    /// replica's change hands the app, and what a snapshot of the node holds. `GENERIC` for
     /// `Unknown`.
     /// Whether a node of this kind is a graph card; a stored-only kind (a link, a label) never is.
     pub fn card(self) -> bool {
@@ -267,14 +267,14 @@ pub mod field {
     pub const VIEW_KIND: u32 = 6;
     pub const PINNED: u32 = 7;
     pub const NAME: u32 = 8;
-    // 9, 12 and 13 were `from_json`, `key` and `value` (the JSON leaf, retired 2026-10-12): never reuse them. A
-    // document that still holds them keeps them raw, like any field a type does not list.
+    // Never reuse 9, 12 and 13 (the retired JSON leaf's `from_json`, `key` and `value`). A document that still holds
+    // them keeps them raw, like any field a type does not list.
     pub const TEXT: u32 = 10;
     pub const PATH: u32 = 11;
     /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
     pub const VIEW: u32 = 14;
     /// The `jar` edge of a tab or group: the `Kind::Jar` node it uses; absent to inherit (`App::effective_jar`).
-    /// Numbers 16 and 17 were a tab's `jar_set` and a group's `default_jar` (`RESERVED`).
+    /// Never reuse 16 and 17 (`RESERVED`).
     pub const JAR: u32 = 15;
     /// A jar with no file: dropped at quit.
     pub const EPHEMERAL: u32 = 18;
@@ -672,7 +672,7 @@ impl Doc {
     }
 
     /// Where `id` would be shown: `Hidden` when any non-deleted closed node is above it on the raw `group` chain
-    /// (checked first; any node, group or not, plan D1), else `Shown(effective_group)`. `id`'s own `closed` is
+    /// (checked first; any node, group or not), else `Shown(effective_group)`. `id`'s own `closed` is
     /// not read: a closed root's place is its group's (`is_shown` reads it). A missing node or a cycle is
     /// `Shown`, as `effective_group` answers.
     pub fn placement(&self, id: NodeId) -> Placement {
@@ -687,8 +687,8 @@ impl Doc {
         Placement::Shown(self.effective_group(id))
     }
 
-    /// Shown in the graph: live, not itself closed, and not under a closed node. A live link is always shown
-    /// (plan D2): the mirror keeps every one, and drawing asks for both ends.
+    /// Shown in the graph: live, not itself closed, and not under a closed node. A live link is always shown:
+    /// the mirror keeps every one, and drawing asks for both ends.
     pub fn is_shown(&self, id: NodeId) -> bool {
         let Some(node) = self.nodes.get(&id).filter(|n| n.is_live()) else { return false };
         !node.kind().card() || (!node.closed() && self.placement(id) != Placement::Hidden)
@@ -886,7 +886,7 @@ mod tests {
         assert_eq!(Kind::from_type("image/jpeg"), Kind::Image);
         assert_eq!(Kind::from_type("IMAGE/webp"), Kind::Image);
         assert_eq!(Kind::from_type("video/mp4"), Kind::Unknown);
-        // The retired JSON leaf: an old document's leaf is now a type this build doesn't know (an unknown-type card).
+        // The retired JSON leaf's type is one this build doesn't know (an unknown-type card).
         assert_eq!(Kind::from_type("application/vnd.manifold.json-leaf"), Kind::Unknown);
         assert_eq!(Kind::from_type(""), Kind::Unknown);
     }
@@ -979,7 +979,7 @@ mod tests {
             (1, Kind::Group, None, false),
             (2, Kind::Group, Some(1), true),
             (3, Kind::Tab, Some(2), false),
-            (4, Kind::Group, Some(3), false), // under a tab: still hidden by 2 (D1)
+            (4, Kind::Group, Some(3), false), // under a tab: still hidden by 2
             (5, Kind::Note, Some(1), false),
         ]);
         assert!(doc.nodes[&id(2)].closed());

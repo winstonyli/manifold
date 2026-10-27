@@ -282,7 +282,7 @@ impl App {
     /// Where a new node goes (spec "Level sources"): the level being
     /// viewed, except on a JSON level, where it's the Json node's own
     /// group. Based on `current_group`, not `json_level`, so it is right
-    /// before the first frame builds the level (plan ruling 3).
+    /// before the first frame builds the level.
     pub(crate) fn insertion_group(&self) -> Option<NodeId> {
         if self.current_json_node().is_some() {
             return self.group_of(self.current_group);

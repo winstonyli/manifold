@@ -53,17 +53,10 @@ impl App {
         toolbar_panel("graph_toolbar", ui, |ui| {
             ui.horizontal_centered(|ui| {
                 leave_group_button_rect = self.toolbar_breadcrumb(ui, on_json_level, &mut actions);
-                // "+ New Tab" is the only toolbar spawn action kept --
-                // it's also the sole recovery path when `self.nodes` is
-                // completely empty (see `build_graph_ui`'s early return),
-                // where the right-click empty-canvas card can't appear
-                // yet. New Note/Add File/New Group used to sit here too,
-                // but that card already offers all three identically
-                // once any node exists, and while the graph is fully
-                // empty those buttons' own flags were silently dropped
-                // anyway (their sole consumption site is unreachable
-                // from the early-return branch) -- removing them is a
-                // pure simplification, not a capability loss.
+                // "+ New Tab" is the only toolbar spawn action: it's also the sole recovery path when
+                // `self.nodes` is completely empty (see `build_graph_ui`'s early return), where the
+                // right-click empty-canvas card can't appear yet. That card offers the other spawns
+                // (note, file, group) once any node exists.
                 if !on_json_level && primary_button(ui, "+ New Tab").on_hover_text("New tab (Ctrl+T)").clicked() {
                     actions.push(GraphAction::NewTab(self.focused));
                 }
@@ -136,12 +129,9 @@ impl App {
                 // width limit of its own in this horizontal,
                 // non-wrapping row, so a deeply-nested chain of
                 // long names could push clean off the toolbar's
-                // own visible edge -- the exact overflow this
-                // toolbar's other buttons were already
-                // confirmed live to hit once before (see the
-                // icon-only button conversion elsewhere in this
-                // file). So it is drawn by the display rule and
-                // cut to `CRUMB_UNITS` by `names::shorten` (small
+                // own visible edge -- the overflow the icon-only
+                // buttons elsewhere in this file avoid. So it is drawn
+                // by the display rule and cut to `CRUMB_UNITS` by `names::shorten` (small
                 // fixed chrome, not a place for arbitrarily long
                 // text), where a placeholder counts as one unit
                 // and cannot dodge the bound; the hover gives the
@@ -213,35 +203,16 @@ impl App {
 
     /// Import / Ungroup All / Collapse chip for the groups at this level.
     fn toolbar_group_chip(&mut self, ui: &mut egui::Ui, groups_at_level: &[NodeId], actions: &mut Vec<GraphAction>) {
-        // These three buttons used to carry full text labels
-        // ("Import Group...", "Ungroup All", "Collapse Groups"/
-        // "Expand Groups") and, together with "+ New Group"/
-        // "+ New Tab"/"Reset View", made this toolbar cramped
-        // enough to confirm live (text touching the window
-        // edge at 1300pt wide). Switched to `egui_phosphor`
-        // icons instead of folding into a dropdown -- each
-        // stays a one-click action, just narrower, with the
-        // old label preserved as a hover tooltip so the action
-        // is still discoverable. All three now work at any
-        // level, not just the top -- see `App::current_group`'s own
-        // doc comment on nesting; each already acts on
-        // `self.current_group`/the level's groups (`level_scan`,
-        // its own level), never hardcoding the top level.
+        // The three buttons are `egui_phosphor` icons, each a one-click action with its name as a hover
+        // tooltip, to keep the toolbar narrow. All three work at any level, not just the top: each acts on
+        // `self.current_group` and the level's groups (`level_scan`), never hardcoding the top level
+        // (see `App::current_group` on nesting).
         //
-        // The rule this toolbar actually follows, for any
-        // future addition: the identity/entry-point action that
-        // defines what this toolbar *is* ("+ New Tab") stays
-        // full text; everything else added later to relieve
-        // crowding goes icon-only with a hover tooltip carrying
-        // the old label, per this paragraph's own history.
-        // "Reset View" was the other text holdout until it
-        // became the zoom chip's Fit button (hover text keeps
-        // the name).
+        // The toolbar's rule: the entry-point action that defines it ("+ New Tab") stays full text;
+        // anything else goes icon-only with its name as a hover tooltip.
         //
-        // Same "real file dialog blocks on OS/human input
-        // neither exists in headless mode" reasoning as every
-        // other Export/Import button -- `IMPORTGROUP <path>`
-        // calls the same underlying import directly instead.
+        // A real file dialog blocks on OS/human input, which doesn't exist in headless mode, as for every
+        // other Export/Import button: `IMPORTGROUP <path>` calls the same underlying import directly.
         toolbar_chip(ui, |ui| {
             let mut bounds: Option<egui::Rect> = None;
             let mut grow = |r: egui::Rect| {

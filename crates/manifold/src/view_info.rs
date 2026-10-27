@@ -254,9 +254,7 @@ pub(crate) fn draw_view_card(
 /// comment for each card's content. Used by all three places this app lets
 /// you choose an engine (Settings' "Default starting engine," Settings'
 /// "Current Tab" swap, and the Tab toolbar's "Split" picker), each through
-/// `App::build_anchored_view_picker`, replacing what used to be three
-/// separate plain `egui::ComboBox`es with no tier/tradeoff information at
-/// all. Returns the popup's own drawn rect (for the caller's
+/// `App::build_anchored_view_picker`. Returns the popup's own drawn rect (for the caller's
 /// `clicked_outside_popup` check) and whichever engine was clicked this
 /// frame, if any. `interactable` is whether the popup is open, same as
 /// `build_list_popup_frame`'s.
@@ -285,7 +283,7 @@ pub(crate) fn build_view_picker_popup(
                 // already use -- four cards this rich run well past a
                 // short window's own height otherwise, with the last
                 // one (WebKit, usually) silently unreachable past the
-                // window's bottom edge (confirmed live).
+                // window's bottom edge.
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     // Unavailable cards are not focusable, so the keyboard skips them: the popup opens on
                     // the selected card, or the first available one when the selection is not usable.

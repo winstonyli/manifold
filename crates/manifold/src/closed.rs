@@ -82,7 +82,7 @@ impl App {
             self.queue_toast("Couldn't save the session, so nothing was closed".to_string());
             return;
         }
-        // Where each card was drawn becomes its document pos (2b-4 Ruling 10: a reopen lands where it was shown).
+        // Where each card was drawn becomes its document pos (a reopen lands where it was shown).
         for &key in &kept {
             let carries_pos = Kind::from_type(self.doc.mirror.ty(key)).fields().contains(&field::POS);
             if carries_pos && self.layout.contains_key(&key) {
@@ -111,7 +111,7 @@ impl App {
     /// Reopen (spec decision 7): clears `closed` on `id` and re-stamps each closed root directly under it, oldest
     /// first, so they enter the history newest in their old order. The save's visibility pass shows what is no
     /// longer hidden (`apply_visibility`), and `apply_remote` sweeps the jar switches. A node that stays hidden
-    /// (its group is closed) or lands at another level says so (plan D8).
+    /// (its group is closed) or lands at another level says so.
     pub(crate) fn reopen_node(&mut self, id: NodeId) {
         let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) else { return };
         // A closed node `d` under `id` with no other closed node between them.
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(defaults, 1, "no second Default was made");
     }
 
-    /// Defect 1: the replica id outlives a launch (the actor does not), so `Ctrl+Shift+T` finds, after a restart,
+    /// The replica id outlives a launch (the actor does not), so `Ctrl+Shift+T` finds, after a restart,
     /// what this installation closed -- and only that.
     #[test]
     fn a_close_survives_an_app_restart_with_the_same_replica_id_and_the_shortcut_finds_it() {
@@ -572,7 +572,7 @@ mod tests {
         assert_eq!(stored(&second, closed, field::CLOSED), FieldValue::Replica(0));
     }
 
-    /// Defect 1: reopening a group re-stamps the roots nested under it as the replicas that closed them, not as the
+    /// Reopening a group re-stamps the roots nested under it as the replicas that closed them, not as the
     /// reopener.
     #[test]
     fn a_reopen_keeps_each_nested_roots_original_closer() {
@@ -594,7 +594,7 @@ mod tests {
         assert_eq!(stored(&app, g, field::CLOSED), FieldValue::Replica(0));
     }
 
-    /// Defect 3: the save that commits a reopen may first apply remote ops; the eviction they trigger must not count
+    /// The save that commits a reopen may first apply remote ops; the eviction they trigger must not count
     /// the node being reopened as still closed.
     #[test]
     fn a_reopen_is_not_evicted_by_a_remote_close_arriving_in_the_same_save() {
@@ -617,7 +617,7 @@ mod tests {
         assert!(closed_ids(&app).contains(&notes[MAX_CLOSED]));
     }
 
-    /// Defect 4: a close whose flush of the pending creates fails leaves the node shown and unclosed, and a later
+    /// A close whose flush of the pending creates fails leaves the node shown and unclosed, and a later
     /// save creates it.
     #[test]
     fn a_close_aborts_when_the_flush_of_pending_creates_fails() {

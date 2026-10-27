@@ -91,16 +91,10 @@ fn main() {
             windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
     }
 
-    // DEVIATION from the brief: not called out in Task 3's brief text, but
-    // required for `composition::create_composition_target` (Task 1) to
-    // work at all in this real process -- confirmed live: without this,
-    // `ICompositorDesktopInterop::CreateDesktopWindowTarget` fails with
-    // `HRESULT(0x80070005)` ("Access is denied.") on every single launch,
-    // crashing the view-host in a respawn loop. `examples/
-    // composition_capture_spike.rs` (Task 1's own verification vehicle,
-    // since deleted by Task 6 along with the other throwaway spikes)
-    // already did exactly this before creating its `Compositor` -- a plain
-    // Win32 desktop app (unlike a packaged UWP app) has no `DispatcherQueue`
+    // Required for `composition::create_composition_target` to work at all:
+    // without it, `ICompositorDesktopInterop::CreateDesktopWindowTarget` fails with
+    // `HRESULT(0x80070005)` ("Access is denied.") on every launch.
+    // A plain Win32 desktop app (unlike a packaged UWP app) has no `DispatcherQueue`
     // on its thread by default, and `Windows.UI.Composition`'s interop
     // requires one to exist. `_dispatcher_queue_controller`'s only purpose
     // is to stay alive for the whole process lifetime, same as `_job` below.
@@ -156,10 +150,7 @@ fn main() {
 
     // Composition hosting against a real, off-screen host window -- see
     // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md
-    // for why this replaced the plain windowed hosting `window.rs`'s own
-    // doc comment used to describe here (that doc comment was itself
-    // written expecting this exact migration -- see `create_composition_controller`'s
-    // own doc comment).
+    // for why this replaced plain windowed hosting.
     let hwnd = window::create_hidden_window().expect("create hidden host window");
     let (_composition_target, root_visual) =
         composition::create_composition_target(hwnd, DEFAULT_WIDTH, DEFAULT_HEIGHT).expect("create composition target");
@@ -176,29 +167,19 @@ fn main() {
 
     resize_controller(&controller, &root_visual, DEFAULT_WIDTH, DEFAULT_HEIGHT);
 
-    // Suppresses Chromium's own native right-click context menu. Confirmed
-    // live (see Task 4's follow-up report): once `input.rs` started sending
-    // genuine native `SendMouseInput` right-button events, WebView2's
-    // browser process really did pop up its native "Back/Refresh/Save
-    // as/.../Inspect" context menu as a real top-level `Chrome_WidgetWin_1`
-    // window -- and since this host window is a real (if off-screen) window,
-    // that popup renders at real, on-screen coordinates, landing right on
-    // top of `manifold`'s own visible window in a real desktop screen
-    // capture (invisible in `manifold`'s own composited-frame screenshots,
-    // since it's a separate top-level window, not part of the captured
-    // visual tree). `manifold` already has its own complete
-    // link-context-menu UI built on this tab's JS-based `elementFromPoint`
-    // href-detection (`input.rs`'s `MouseUp` right-click arm; see
-    // `manifold_view_protocol::ViewToHost::ContextMenuLink`) -- live-verified after
-    // this fix to still work correctly (the custom "Open in new tab" pill
-    // still appears right where expected) -- so Chromium's native menu is
-    // pure downside: a second, wrongly-positioned menu with no corresponding
-    // custom-menu upside.
+    // Suppresses Chromium's own native right-click context menu. With native
+    // `SendMouseInput` right-button events, WebView2's browser process pops up its
+    // "Back/Refresh/Save as/.../Inspect" menu as a real top-level `Chrome_WidgetWin_1`
+    // window. This host window is a real (if off-screen) window, so that popup
+    // lands at real screen coordinates on top of `manifold`'s own window, and it is
+    // not part of the captured visual tree. `manifold` has its own link-context-menu
+    // UI built on this tab's JS-based `elementFromPoint` href-detection (`input.rs`'s
+    // `MouseUp` right-click arm; see `manifold_view_protocol::ViewToHost::ContextMenuLink`),
+    // so Chromium's menu would be a second, wrongly-positioned menu.
     //
     // Hard-failed rather than `let _ =`'d, same reasoning as
     // `SetRootVisualTarget` above: a one-time startup call whose silent
-    // failure resurrects a real, already-diagnosed bug for the whole
-    // process lifetime.
+    // failure would leave the bug in place for the whole process lifetime.
     unsafe {
         webview
             .Settings()
@@ -209,18 +190,13 @@ fn main() {
     // Gives the webview logical focus programmatically -- no real OS window
     // activation (`SetForegroundWindow`) needed or wanted, this project's
     // off-screen host window deliberately never becomes the real foreground
-    // window. Tried (unsuccessfully on its own) as a fix for raw WM_*
-    // message injection in an earlier round -- see input.rs's doc comment
-    // for the full history.
+    // window.
     //
-    // **Once at startup is enough**, despite the migration spec's original
-    // expectation that native `SendMouseInput` would need this on every
-    // mouse-down: confirmed live in Task 5 that a native click focuses a
-    // plain `<input>` on its own (`:focus` outline appeared, and subsequent
-    // `Char` events typed into it), with no per-dispatch `MoveFocus`
-    // anywhere. Kept here because some WebView2 behaviors genuinely do
-    // depend on the control having logical focus at all, which this
-    // establishes once for the process lifetime.
+    // **Once at startup is enough**: a native click focuses a plain `<input>`
+    // on its own, and subsequent `Char` events type into it, with no
+    // per-dispatch `MoveFocus`. This call stays because some WebView2
+    // behaviors depend on the control having logical focus at all, which
+    // this establishes once for the process lifetime.
     unsafe {
         let _ = controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }

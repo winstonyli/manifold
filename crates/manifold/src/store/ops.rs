@@ -256,7 +256,7 @@ mod tests {
     }
 
     /// A `Set` of a generic field on a node of an unknown type leaves a newer client's field byte-identical (spec
-    /// "Testing", 2b-5 Ruling 2).
+    /// "Testing").
     #[test]
     fn a_set_on_an_unknown_node_leaves_its_raw_fields_alone() {
         let t = id(1, 0);

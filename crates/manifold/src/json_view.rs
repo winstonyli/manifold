@@ -72,7 +72,7 @@ impl CardOverride {
 /// The keys `CardOverride` reads; any other key of a stored override is kept as it was (`Unread::extra`).
 const CARD_OVERRIDE_KEYS: [&str; 5] = ["pos", "collapsed", "color", "pages", "first"];
 
-/// What a view's stored text held that this build can't read (M5), kept so an edit here writes it back untouched
+/// What a view's stored text held that this build can't read, kept so an edit here writes it back untouched
 /// (`JsonView::to_field`) rather than wiping it on every replica: whole entries that don't read as a `CardOverride`
 /// (a newer build changed a field's shape), the unknown keys of entries that do, and text that isn't an object of
 /// overrides at all, which no edit may overwrite (`JsonView::is_opaque`).
@@ -429,8 +429,8 @@ pub(crate) fn hit_rows_by_parent(root: &Value, hits: &HashSet<String>) -> HashMa
         .collect()
 }
 
-/// Whether a child gets its own card: non-empty containers only (plan
-/// ruling 6); `{}` and `[]` show inline.
+/// Whether a child gets its own card: non-empty containers only;
+/// `{}` and `[]` show inline.
 pub(crate) fn is_card(value: &Value) -> bool {
     entry_count(value) > 0
 }
@@ -479,7 +479,7 @@ impl Card {
 /// The cards a value opens with (spec "Default expansion"): breadth-first
 /// from the root, each card expanded while the visible count stays within
 /// `EXPANSION_BUDGET` and it is shallower than `EXPANSION_DEPTH`. The root
-/// is always expanded. Depends on the value alone (plan ruling 5).
+/// is always expanded. Depends on the value alone, so expanding one card never collapses another.
 pub(crate) fn default_expanded(root: &Value) -> HashSet<String> {
     let mut expanded = HashSet::new();
     let mut visible = 1;
@@ -631,7 +631,7 @@ pub(crate) struct SearchResult {
 pub(crate) const MAX_MATCHES: usize = 10_000;
 
 /// Case-insensitive substring search over object keys and scalar values
-/// (spec "Search", plan ruling 9), across the whole value.
+/// (not array indices), across the whole value.
 pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
     search_with(root, query, &|| false).expect("never cancelled")
 }
@@ -758,7 +758,7 @@ pub(crate) struct OutlineRow {
     pub(crate) depth: usize,
 }
 
-/// The outline flattened (plan ruling 8): the root, then every entry of
+/// The outline flattened: the root, then every entry of
 /// each open container. With a search (`keep`), exactly the kept rows,
 /// all open.
 pub(crate) fn outline_rows(root: &Value, open: &HashSet<String>, keep: Option<&HashSet<String>>) -> Vec<OutlineRow> {

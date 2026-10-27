@@ -96,7 +96,7 @@ mod view_picker_tests {
         }
     }
 
-    /// The pane's half of the list navigation (card-pane spec R5): Up/Down step only while a row has focus, and
+    /// The pane's half of the list navigation: Up/Down step only while a row has focus, and
     /// with none focused the keys are left alone.
     #[test]
     fn step_focused_row_moves_only_a_focused_list() {

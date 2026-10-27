@@ -157,7 +157,7 @@ impl App {
                     ui.memory_mut(|m| m.request_focus(entry.id.editor()));
                 }
                 // Enters the node's JSON level, unless its file failed to
-                // load (plan ruling 10) or it's still being refetched (`JsonPayload::enterable`).
+                // load or it's still being refetched (`JsonPayload::enterable`).
                 (TYPE_JSON, _)
                     if activated && self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
                 {
@@ -266,14 +266,9 @@ impl App {
             self.interaction.peek_suppressed = None;
         }
         let peek_target = self.interaction.hovered.filter(|id| self.interaction.peek_suppressed != Some(*id));
-        // Polled every frame regardless of `peek_target`, same
-        // "continuous polling, not just while shown" reasoning the
-        // dropdown popups' own fade needs -- a plain `if let Some`
-        // gate here would only ever call `theme::animate` while a
-        // peek is actually showing, and the real-elapsed-time gap
-        // since the last poll (however long the pointer sat
-        // elsewhere) would make it jump straight to fully visible
-        // the instant it reappears instead of visibly fading in.
+        // Polled every frame regardless of `peek_target`, as the dropdown popups' fades are: polling only
+        // while a peek shows would let the elapsed time since the last poll make it jump to fully visible
+        // when it reappears instead of fading in.
         let peek_fade = crate::theme::animate(
             ui.ctx(),
             egui::Id::new("peek_preview_fade"),

@@ -447,7 +447,7 @@ mod tests {
         assert_eq!(digits_ready("0", 15, 1.0), Some(0), "0 names no card; the caller finds none");
     }
 
-    /// Review C-B1: Escape (or Enter, or an arrow) typed into a text field is the field's, not the graph's.
+    /// Escape (or Enter, or an arrow) typed into a text field is the field's, not the graph's.
     #[test]
     fn keys_typed_into_a_text_field_stay_out_of_graph_navigation() {
         let mut app = App::default();
@@ -516,7 +516,7 @@ mod tests {
         assert_eq!(app.focused, Some(ids[2]));
     }
 
-    /// Review I1: while a widget other than a card has focus (a card pane row, a toolbar button), the arrows and Enter
+    /// While a widget other than a card has focus (a card pane row, a toolbar button), the arrows and Enter
     /// are its own: the graph focus stays and nothing opens.
     #[test]
     fn a_focused_widget_keeps_the_arrows_and_enter_from_the_graph() {

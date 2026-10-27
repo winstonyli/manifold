@@ -1,6 +1,6 @@
 //! Virtual cards (spec `2026-10-16-virtual-cards-design.md`): cards that no stored node backs. A `VirtualSource`
-//! supplies a level's extra `CardEntry`s, which draw after the stored ones, so on top. The trait grows with the plan:
-//! each handler is added by the task that first calls it (the pre-commit clippy rejects dead code).
+//! supplies a level's extra `CardEntry`s, which draw after the stored ones, so on top. The trait holds only
+//! handlers something calls (the pre-commit clippy rejects dead code).
 
 use crate::card::{CardBody, CardPass, DropEffect};
 use crate::card_id::CardId;
@@ -643,7 +643,7 @@ mod reach_tests {
         assert!(stored.get("virtual").is_none());
     }
 
-    /// Review Focus 5: EXPORTSTATE prints a card's id as `Display` and `FromStr` reads it back to the same id, for
+    /// EXPORTSTATE prints a card's id as `Display` and `FromStr` reads it back to the same id, for
     /// stored and virtual cards alike (a script drives the app with the text it was given).
     #[test]
     fn exportstate_prints_a_card_id_that_parses_back() {
@@ -916,7 +916,7 @@ mod selection_rule_tests {
         assert_eq!(app.interaction.selected, std::collections::HashSet::from([gone]));
     }
 
-    /// Review Focus 4: a selected virtual id whose source is not registered is pruned with the rest of a stale
+    /// A selected virtual id whose source is not registered is pruned with the rest of a stale
     /// selection, so no action ever sees a card nothing draws.
     #[test]
     fn selection_prunes_a_virtual_id_whose_source_is_unregistered() {

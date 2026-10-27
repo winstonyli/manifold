@@ -51,7 +51,7 @@ pub fn environment_options() -> windows::core::Result<ICoreWebView2EnvironmentOp
 /// `manifold://` pages. Called once per tab, right after the webview is
 /// created -- same call shape as `find::register`/`download::register`
 /// elsewhere in this crate. Best-effort: if this fails (e.g. an older
-/// WebView2 Runtime missing the interface Task 1's environment-options
+/// WebView2 Runtime missing the interface the environment-options
 /// path needs), `manifold://` pages simply won't render for this tab,
 /// same soft-degradation posture `find::register`'s own caller already
 /// gives its own best-effort registration.

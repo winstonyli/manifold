@@ -17,8 +17,8 @@ pub(super) const JAR_CHIP_NAME_END: f32 = 6.0;
 pub(super) const JAR_CHIP_NAME_GAP: f32 = 4.0;
 
 /// The chip's black scrim, so its light name reads on a white page. The frame blends in linear light, which makes a
-/// scrim look far thinner than its alpha suggests: measured on a white thumbnail (2026-10-03), alpha 210 came out
-/// sRGB grey 123 (about 3.7:1 against the name), so it is 240 (about grey 69, 8:1).
+/// scrim look far thinner than its alpha suggests: on a white thumbnail alpha 240 comes out about sRGB grey 69, 8:1
+/// against the name (alpha 210 gave grey 123, 3.7:1).
 const JAR_CHIP_SCRIM_ALPHA: u8 = 240;
 
 /// Narrower than this, a chip's name (about one letter and "…") is left out rather than squeezed.

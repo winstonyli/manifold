@@ -84,23 +84,23 @@ impl App {
     /// (allocated when `None`) and appends it to `node_order`. Its card is drawn at `at.pos` (`App::layout`).
     /// `at.group`, `at.pos`, a note's text, its type (`Mirror::ty`, from `kind`) and a file card's path seed the
     /// mirror only for an id with no entry yet (`Mirror::seed`; the type also lands on an entry that lacks one): a
-    /// new node's document pos is its placement, which its `Create` carries (2b-4 Ruling 3), while a node shown again
-    /// (a placeholder for a stored node, a reload) keeps its group, document pos, text and stored path (2b-5 Ruling
-    /// 5). A content node's web source is seeded by its caller (`insert_content`, `insert_download_node`).
+    /// new node's document pos is its placement, which its `Create` carries, while a node shown again
+    /// (a placeholder for a stored node, a reload) keeps its group, document pos, text and stored path.
+    /// A content node's web source is seeded by its caller (`insert_content`, `insert_download_node`).
     /// Doesn't save: the caller does, as `apply_graph_action` does once per action.
     pub(crate) fn place_node(&mut self, id: Option<NodeId>, kind: Kind, runtime: Runtime, at: Placement) -> NodeId {
         let id = id.unwrap_or_else(|| self.alloc_node_id());
-        // A tab's shared url starts as the one it is shown at (2b-3 Ruling 10). A stored tab's entry already holds
+        // A tab's shared url starts as the one it is shown at. A stored tab's entry already holds
         // the document's (`materialize` runs `mirror_remote` first), so a live url it reopens at isn't taken for it.
         // A live tab's engine is the one it runs; an unloaded card has none of its own (`Mirror::engine`).
         let url = runtime.saved_tab().map(str::to_owned).unwrap_or_default();
         let view_kind = runtime.as_tab().map_or(0, |t| crate::session_sync::view_code(t.tab.kind));
-        // A new note's text starts as what it was made with (its payload, the edit buffer, 2b-4 Ruling 6).
+        // A new note's text starts as what it was made with (its payload, the edit buffer).
         let text = runtime.as_note().map(|n| n.text.clone()).unwrap_or_default();
         let ty = kind.type_str().unwrap_or_default().to_owned();
         let path = runtime.file_path().unwrap_or_default().to_owned();
         self.nodes.insert(id, GraphNode { runtime });
-        // The one way a node enters `nodes`: the next save creates it if the document lacks it (Ruling 3).
+        // The one way a node enters `nodes`: the next save creates it if the document lacks it.
         self.queue_create(id);
         self.snap_layout(id, at.pos);
         let carried = crate::mirror::Carried::default()
@@ -386,7 +386,7 @@ impl App {
         self.edit_parent(id, parent);
         self.edit_group(id, group);
         // The url and stored path are the mirror's, which the remove and reinsert leave alone: the payload holds the
-        // new file (2b-5 Ruling 5). The view is the mirror's too (2b-4 Ruling 8). Overrides the new
+        // new file. The view is the mirror's too. Overrides the new
         // value can't resolve are dropped; an error card's view is left unpruned, since pruning against its `Null`
         // would wipe, and sync away, every override a Retry should get back.
         let value = self.nodes.get(&id).and_then(|n| n.as_json()).filter(|_| result.is_ok()).map(|j| j.value.clone());
@@ -609,7 +609,7 @@ impl App {
     /// position and group (`reopen_node`), among others. Returns `Err`
     /// (doing nothing) if the file doesn't exist or isn't valid JSON, same
     /// fail-fast posture (a JSON parse on the UI thread is bounded by the
-    /// body cap; moving it to a worker like `ImageDecoder` is parked as D-R6).
+    /// body cap; moving it to a worker like `ImageDecoder` is parked).
     pub(crate) fn insert_json_node_with_id(
         &mut self,
         id: NodeId,

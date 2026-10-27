@@ -320,8 +320,7 @@ impl App {
     ///   dropped, unless `keep_live_parents` and that node is live.
     ///
     /// - A jar in the file is always a new jar under its fresh id, never
-    ///   matched to an existing one by name (jar name labels, retiring
-    ///   per-tab jars deviation 4): `import` already rewrote the file's
+    ///   matched to an existing one by name (jar name labels): `import` already rewrote the file's
     ///   tabs' `jar` and groups' `default_jar` to that id (and, for a
     ///   `Trust::Foreign` file, dropped any naming a jar outside it).
     ///   Same-named jars
@@ -432,9 +431,9 @@ impl App {
     }
 
     /// Replaces the running session with `json`'s nodes under fresh ids
-    /// (Import Session; Task 9 adds Open). The save at the end deletes
+    /// (Import Session). The save at the end deletes
     /// every node that was live from the store. Returns the label map
-    /// (file id → new id) for remapping personal state (Task 7). A file
+    /// (file id → new id) for remapping personal state. A file
     /// with no tabs changes nothing, so a bad import can't wipe a working
     /// session. `trust` is `Own` for a named session this profile saved,
     /// `Foreign` for an imported file (see `store::json::Trust`).

@@ -196,7 +196,7 @@ struct App {
     /// node click/drag targeting flaky if used directly).
     nodes: NodeMap,
     node_order: Vec<NodeId>,
-    /// Where each node's card is drawn, by id (`Layout`, 2b-4 Ruling 1): runtime and personal, never the document's
+    /// Where each node's card is drawn, by id (`Layout`): runtime and personal, never the document's
     /// pos (`Mirror::pos`). Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
     /// its place; pruned with the mirror at a save. Read through `layout_pos`: a node without an entry (a hand-built
     /// test node) is at the origin.
@@ -230,14 +230,10 @@ struct App {
     /// `color`; the drawn position is `App::layout`.
     ///
     /// **Groups nest.** A group's own group (`Mirror::group`) can itself be
-    /// `Some(parent_group_id)` -- the "no nesting, a node's group is a
-    /// single `Option<String>` not a path" limitation this doc comment used to
-    /// describe no longer applies: a single `Option<String>` *is* enough to
-    /// nest, since walking group links upward from any node already forms
-    /// the whole ancestor chain (`App::group_breadcrumb`), with no separate
-    /// path/stack type needed. This field names whichever group's
-    /// subgraph is currently showing (`None` at the true top level, same as
-    /// before); leaving a group (the toolbar's "◀" button) goes to that
+    /// `Some(parent_group_id)`: walking group links upward from any node
+    /// forms the whole ancestor chain (`App::group_breadcrumb`), with no
+    /// separate path/stack type. This field names whichever group's
+    /// subgraph is currently showing (`None` at the true top level); leaving a group (the toolbar's "◀" button) goes to that
     /// group's own parent, not straight to the top, so leaving a deeply-nested
     /// group takes as many "◀" clicks as it took to get there (or one
     /// breadcrumb click to jump straight to any ancestor). Dissolving a nested

@@ -181,41 +181,18 @@ impl App {
 
         self.handle_graph_keys(ui, typing);
 
-        // Pan (drag empty background) + zoom (scroll wheel, centered on the
-        // cursor) via egui's built-in `Scene` container — everything drawn
-        // inside `add_contents` below is in the same world-space coordinates
-        // `App::layout` positions use; egui's transform layer handles converting
-        // to/from screen space (including for nested widgets' own
-        // hover/click/drag responses, e.g. a node's own drag below), so none
-        // of that logic needs to know pan/zoom exists at all. `scene_rect`
-        // must live outside `self` while the closure below also borrows
-        // `self` mutably, so it's round-tripped through a local instead of
-        // borrowed from `self.camera.rect` directly.
-        // Everything painted inside `Scene`'s closure lives in world-space
-        // coordinates that `Scene` itself then scales uniformly by the
-        // current zoom factor — a *shape* (rect/circle/stroke/image) sized
-        // in world units would shrink to illegible at `GRAPH_ZOOM_MIN` and
-        // balloon at `GRAPH_ZOOM_MAX` right along with the card, so those
-        // are sized as `desired_screen_px * inv_zoom` below (vector
-        // geometry re-tessellates at any final scale with no quality
-        // loss, so this alone is enough for them). Text is different:
-        // egui rasterizes each glyph into its font atlas *at the
-        // requested world-space size*, and `Scene`'s transform then just
-        // scales that already-rasterized quad — so text sized the same
-        // `* inv_zoom` way rasterizes tiny (and blurs badly once
-        // magnified back up) at high zoom, since a small `inv_zoom` asks
-        // for a tiny atlas glyph. `overlay_painter`/`project` below paint
-        // text directly onto an *untransformed* foreground layer instead,
-        // at real fixed screen coordinates and a real fixed font size —
-        // this is the actual "achieve constant size directly" fix, not
-        // just another scale factor. `zoom_scale`/`translation` are the
-        // same pair `GraphCamera::transform` already derives for
-        // the Tab<->Graph transition animation (`screen = translation +
-        // zoom_scale * world`). The node card itself (`GRAPH_NODE_SIZE`)
-        // and the hover peek preview (`GRAPH_PEEK_SIZE`) are deliberately
-        // excluded from all of this — those represent actual zoomable
-        // content, not chrome, so they're meant to scale (and blur like
-        // any other magnified image would, which is normal/expected).
+        // Pan (drag empty background) + zoom (scroll wheel, centered on the cursor) via egui's built-in `Scene`
+        // container. Everything drawn inside `add_contents` below is in the world-space coordinates `App::layout`
+        // positions use; egui's transform layer converts to and from screen space (including nested widgets'
+        // own hover/click/drag responses), so none of that logic knows pan/zoom exists. `scene_rect` must live
+        // outside `self` while the closure below also borrows `self` mutably, so it's round-tripped through a
+        // local instead of borrowed from `self.camera.rect` directly.
+        // `Scene` scales everything in its closure by the zoom factor, so chrome (shapes, text) is sized
+        // `desired_screen_px * inv_zoom` to keep a constant screen size; text instead goes through
+        // `overlay_painter`/`project` (see `DeferredOverlays`). `zoom_scale`/`translation` are the pair
+        // `GraphCamera::transform` derives (`screen = translation + zoom_scale * world`). The node card itself
+        // (`GRAPH_NODE_SIZE`) and the hover peek preview (`GRAPH_PEEK_SIZE`) are zoomable content, not chrome,
+        // so they scale with the zoom.
         self.build_right_panel(ui, &mut actions);
         let scene_outer_rect = ui.available_rect_before_wrap();
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);

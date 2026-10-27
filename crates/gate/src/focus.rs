@@ -1,7 +1,7 @@
 //! `gate focus-loss` (was scripts/focus-loss-probe.sh; `CASES="connect card"`, `NO_STEAL=1` is the control run that must
 //! FAIL): losing window focus mid-drag ends the drag. winit's `WindowEvent::Focused(false)` reaches
 //! `App::on_window_focus`, so the button-up that went to another window cannot act when it arrives (spec
-//! 2026-10-07-link-gestures, final review I2 and Task 2 M3). Each case is one headless instance on its own fresh profile
+//! 2026-10-07-link-gestures). Each case is one headless instance on its own fresh profile
 //! seeded with two about:blank tabs, a (left) and b.
 //!
 //! - `connect`: a MOUSEDOWN on a's right handle and MOUSEMOVEs halfway to b: `connect_drag` is a. The steal; then,

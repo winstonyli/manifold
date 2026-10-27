@@ -7,11 +7,8 @@ use super::*;
 /// points — kept as a constant rather than read back from egui's layout so
 /// the compositor's content viewport (see `gpu::GpuState::render`'s
 /// `content_top_px`) always agrees with where egui actually painted,
-/// without a frame of lag. Was two stacked bars (a tab-identity strip above
-/// a separate navigation toolbar) until they were merged into one row —
-/// the identity info (favicon/spinner, engine dot) now lives inline with
-/// navigation controls in the same bar, and the separate page-title label
-/// was dropped as redundant with the address bar's URL.
+/// without a frame of lag. One row: the identity info (favicon/spinner,
+/// engine dot) sits inline with the navigation controls.
 pub(crate) const CHROME_HEIGHT_POINTS: f32 = 38.0;
 
 /// Fixed tag-color choices for a label's colour (see `free_tag_color`) -- vermillion/orange/yellow/bluish
@@ -20,9 +17,8 @@ pub(crate) const CHROME_HEIGHT_POINTS: f32 = 38.0;
 /// Used via `Mirror::color` for `Label` and jar nodes. These are the Okabe-Ito colorblind-safe palette values
 /// (Okabe & Ito, 2008) -- every swatch here is rendered as a plain
 /// filled circle with no secondary encoding (shape, letter, pattern) to
-/// distinguish them, confirmed live: the original arbitrary red/orange/
-/// yellow/green/cyan/purple choice had several genuinely confusable
-/// pairs (red/orange, green/cyan) for common colorblindness types.
+/// distinguish them, so the palette must avoid confusable pairs
+/// (red/orange, green/cyan) for common colorblindness types.
 /// Swapping the six RGB values keeps the same visual role per slot and
 /// needs no rendering changes at all.
 pub(crate) const TAG_COLOR_PALETTE: [egui::Color32; 6] = [
@@ -620,11 +616,8 @@ pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
 }
 
 /// Per-channel linear interpolation between two colors -- `egui`/`epaint`
-/// has no built-in `Color32::lerp`. Used to ease a card's border color
-/// between its resting and hovered tint instead of snapping instantly,
-/// matching the same eased feel `animate` with `cubic_out` already gives
-/// the hover glow. Interpolates the premultiplied channels `Color32` stores, so easing in from `TRANSPARENT` fades
-/// the target's own color in rather than passing through a darker tint of it.
+/// has no built-in `Color32::lerp`. Interpolates the premultiplied channels `Color32` stores, so easing in from
+/// `TRANSPARENT` fades the target's own color in rather than passing through a darker tint of it.
 pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
     let t = t.clamp(0.0, 1.0);
     let lerp_u8 = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
@@ -636,31 +629,13 @@ pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::
     )
 }
 
-/// Every fixed-height toolbar-style row in this app (Tab view's own
-/// address-bar row, Graph view's own row, the Settings page's back-button
-/// row, and the tab-respawn placeholder) goes through this one function
-/// now, instead of each hand-rolling the same `Panel::top(id).exact_size
-/// (CHROME_HEIGHT_POINTS).frame(...)` shell separately. That duplication
-/// was never just repetition -- three of these four had already silently
-/// drifted out of sync with each other at least once: the Graph toolbar
-/// got a compact-spacing override during a later palette pass (`apply_
-/// style` bumped the app-wide default spacing airier, which this fixed
-/// row height was never resized for), but the Tab toolbar and the
-/// Settings page's own back-button row didn't get the same override --
-/// both later overflowed the fixed row height for it, found live on two
-/// separate occasions, each requiring its own investigation to notice.
-/// A single shared constructor makes that whole *class* of bug
-/// structurally impossible to reintroduce one toolbar at a time again:
-/// every future toolbar automatically gets the same compact spacing this
-/// row height needs, and the same horizontal-scroll overflow safety (see
-/// the Graph toolbar's own former comment on this, now here instead) --
-/// without a fresh author needing to already know why, or remembering to
-/// copy it from whichever toolbar they happened to look at first.
+/// Every fixed-height toolbar row goes through this one function, so the
+/// `Panel::top(id).exact_size(CHROME_HEIGHT_POINTS).frame(...)` shell, the
+/// compact spacing that row height needs and the horizontal-scroll overflow
+/// safety can't drift apart between toolbars.
 ///
-/// `content` still owns its own internal layout (`horizontal_centered`
-/// vs. `with_layout(.., Align::Min)`, etc.) -- callers differ there for
-/// reasons specific to each row (see the Tab toolbar's own `Align::Min`
-/// doc comment), so this only ever provides the shared *shell* around it.
+/// `content` owns its own internal layout (`horizontal_centered` vs.
+/// `with_layout(.., Align::Min)`, etc.); this only provides the shared shell.
 pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
     egui::Panel::top(id)
         .exact_size(CHROME_HEIGHT_POINTS)
@@ -712,23 +687,14 @@ pub(crate) fn toolbar_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui
 
 /// A toolbar icon button whose hover fill/text color eases in/out instead
 /// of snapping -- egui's stock `Button` picks its resting/hovered colors
-/// fresh every frame with no built-in transition of its own (same reason
-/// the graph cards needed their own `hover_t` easing earlier this
-/// session). `id` must be unique per button *concept*, not per call site --
-/// the same id reused across, say, the Tab and Graph toolbars' own gear
-/// buttons is fine, since only one of those toolbars is ever showing in a
-/// given frame to begin with. One frame of hover-state lag: this frame's
-/// color comes from *last* frame's hover (stashed in `ctx` memory), since
-/// a button's fill has to be picked before `ui.add` reveals whether the
-/// pointer is actually over its not-yet-laid-out rect -- imperceptible at
-/// any real frame rate, same "acceptable one-frame lag" the zoom-%
-/// toolbar readout and the dot-grid background already accept elsewhere.
-/// Deliberately scoped to every *icon-only* toolbar button (Reload/Home/
-/// Screenshot/Print-to-PDF/Settings/Keyboard-Shortcuts/Settings-page-Back/
-/// Close-Split/Import-Group/Ungroup-All/Collapse-Expand-Groups) rather than
-/// every `ui.button` call in the app -- see README.md's own "Toolbar
-/// icon-button hover easing" paragraph for why a full sweep
-/// wasn't attempted.
+/// fresh every frame with no built-in transition of its own. `id` must be
+/// unique per button *concept*, not per call site -- the same id reused
+/// across the Tab and Graph toolbars' gear buttons is fine, since only one
+/// of those toolbars shows in a given frame. One frame of hover-state lag:
+/// this frame's color comes from *last* frame's hover (stashed in `ctx`
+/// memory), since a button's fill has to be picked before `ui.add` reveals
+/// whether the pointer is over its not-yet-laid-out rect. For icon-only
+/// toolbar buttons, not every `ui.button` in the app.
 pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
     let hover_t = animate(ui.ctx(), id, was_hovered, egui::emath::easing::cubic_out);
@@ -758,14 +724,12 @@ pub(crate) fn chip_icon_button(ui: &mut egui::Ui, id: egui::Id, icon: impl Into<
 /// border ever (idle or hovered) and a transparent idle fill -- for icons
 /// already sitting inside a shared background chip (see `toolbar_chip`),
 /// where `icon_button_eased`'s own always-drawn box reads as a border
-/// nested inside the chip's own border. Deliberately still a real,
-/// fully-framed `egui::Button` (not `.frame(false)`, which shrinks the
-/// widget's own allocated size well below a normal button's and was
-/// found live to make a chip noticeably shorter than its "+ New Tab"/
-/// "Reset View" neighbors) -- keeping the frame but making it invisible
-/// at rest matches every sibling button's sizing exactly while still
-/// hiding the box until the icon is hovered, at which point a soft fill
-/// (no stroke) confirms the hit target.
+/// nested inside the chip's own border. Still a real, fully-framed
+/// `egui::Button` (not `.frame(false)`, which shrinks the widget's
+/// allocated size well below a normal button's and makes a chip shorter
+/// than its neighbors): the frame is invisible at rest, so sizing matches
+/// every sibling button, and a soft fill (no stroke) on hover confirms
+/// the hit target.
 pub(crate) fn chip_icon_button_enabled(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -799,11 +763,8 @@ pub(crate) fn chip_icon_button_enabled(
 /// inside its own nested `ui.horizontal`/`ui.new_child`. A nested Ui
 /// becomes an independently-sized layout block that the OUTER row then
 /// centers (or top-aligns) using its own possibly-smaller reported
-/// height, which is exactly what caused a confirmed-live ~5px vertical
-/// misalignment in the `toolbar-chip-wip` prototype: the outer row
-/// centered the nested block within its own taller row height, and no
-/// amount of forcing the nested block's *height* fixed it, because the
-/// bug was the block's *existence*, not its size. `content` must instead
+/// height, which misaligns the chip vertically; forcing the nested
+/// block's height doesn't fix it. `content` must instead
 /// call the SAME `ui` for every widget (making them direct siblings of
 /// whatever sits before/after the chip in the row) and return the union
 /// of its own widgets' rects -- exact by construction, since each
@@ -994,7 +955,7 @@ mod tests {
     }
 
     /// A button cluster is padded evenly: the first button sits as far from the chip's left edge as the last does
-    /// from its right (the lead padding used to be followed by a full `item_spacing`).
+    /// from its right.
     #[test]
     fn a_toolbar_chip_pads_both_sides_alike() {
         let ctx = egui::Context::default();

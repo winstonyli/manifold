@@ -26,11 +26,8 @@ pub(crate) use toolbar::*;
 
 /// Graph view's chrome is just the "+ New Tab" toolbar — no address bar,
 /// no per-tab back/forward, since there's no single focused tab there.
-/// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned — a shorter
-/// value here used to fit the old bundled Ubuntu-Light font's line height
-/// but clipped button labels once `apply_fonts` switched to IBM Plex
-/// Serif's taller metrics (confirmed live: "+ New Group"/"Reset View"
-/// visibly cut off at the old 26.0).
+/// Equal to `CHROME_HEIGHT_POINTS`, not independently tuned: a shorter
+/// value clips button labels at IBM Plex Serif's line height.
 pub(crate) const GRAPH_TOOLBAR_HEIGHT_POINTS: f32 = CHROME_HEIGHT_POINTS;
 
 pub(crate) const GRAPH_PEEK_SIZE: egui::Vec2 = egui::vec2(360.0, 240.0);
@@ -189,7 +186,7 @@ pub(crate) struct GraphCamera {
     /// write that reopens it, wherever the layout put it.
     pub(crate) reveal: Option<NodeId>,
     /// The scene area `fill` last fitted `rect` to. When the next area differs only in width (the right panel
-    /// opening, closing or resized, or the window resized sideways), `fill` keeps the scale and left edge (R1).
+    /// opening, closing or resized, or the window resized sideways), `fill` keeps the scale and left edge.
     pub(crate) area: Option<egui::Rect>,
 }
 

@@ -47,8 +47,8 @@ fn a_failed_split_spawn_toasts_and_makes_no_card() {
     assert!(app.toasts.save_toast_queue.iter().any(|toast| toast.contains("Couldn't start split view")));
 }
 
-/// Defect 2: a tab closed while its wake is in flight lands hidden; reopened before it lands, it shows when it does
-/// (the landing used to find no node, and the document showed a tab the graph lacked).
+/// A tab closed while its wake is in flight lands hidden; reopened before it lands, it shows when it does
+/// (the landing must find its node, or the document would show a tab the graph lacks).
 #[test]
 fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     let path = temp_dir("sync-close-reopen-waking").join("session.mnf");
@@ -76,7 +76,7 @@ fn closing_and_reopening_a_tab_while_it_wakes_shows_it_when_the_wake_lands() {
     assert!(app.doc.journal.as_ref().unwrap().doc().nodes[&other].closed());
 }
 
-/// Defect 2: the same for a tab mid-respawn (no `nodes` entry), where the close parks `Remote::Hidden`: a reopen
+/// The same for a tab mid-respawn (no `nodes` entry), where the close parks `Remote::Hidden`: a reopen
 /// supersedes it instead of the landing hiding the reopened tab again.
 #[test]
 fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() {
@@ -105,7 +105,7 @@ fn closing_and_reopening_a_tab_mid_respawn_is_not_hidden_again_by_the_landing() 
     assert!(!app.doc.journal.as_ref().unwrap().doc().nodes[&id].closed());
 }
 
-/// Ruling 1: the layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no
+/// The layout table is keyed by id and outlives a respawn's remove-and-reinsert; `TabSpawn` carries no
 /// position for it (this respawn starts at the origin), and a save mid-respawn keeps the entry.
 #[test]
 fn a_respawn_keeps_the_layout_position() {
@@ -122,7 +122,7 @@ fn a_respawn_keeps_the_layout_position() {
 }
 
 /// A new tab has no layout entry or mirror entry until it lands: it lands at its spawn position, which is its
-/// document pos too (Ruling 3).
+/// document pos too.
 #[test]
 fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
     let path = temp_dir("pos-new-spawn").join("session.mnf");
@@ -173,10 +173,9 @@ fn a_restore_starts_only_the_focused_tab() {
 }
 
 /// A restored split session wakes both halves -- the focused tab and
-/// the saved split tab -- leaving every other tab asleep (Fix 2,
-/// final-review: `apply_local` restores `split_tab` even though only
-/// `wake_focused` used to actually start an engine, leaving the split
-/// pane empty).
+/// the saved split tab -- leaving every other tab asleep (`apply_local`
+/// restores `split_tab`, so waking only the focused tab would leave the
+/// split pane empty).
 #[test]
 fn restoring_a_split_session_wakes_both_the_focused_and_split_tab() {
     let path = temp_dir("lazy-restore-split").join("session.mnf");
@@ -261,7 +260,7 @@ fn a_failed_wake_leaves_a_failed_card() {
 /// Closing a waking tab clears `pending_respawn_focus` when it names
 /// the removed id -- otherwise it keeps pointing at a gone node, which
 /// `build_tab_view_ui`'s guard reads to decide whether Item view stays
-/// put during a respawn (Fix 6, final-review).
+/// put during a respawn.
 #[test]
 fn removing_a_tab_clears_its_stale_pending_respawn_focus() {
     let mut app = app_on(&temp_dir("remove-pending-focus").join("session.mnf"), 1);
@@ -483,7 +482,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
 }
 
-/// Final review I1, remote: another replica deletes G while T respawns here. The cascade reaches T in the mirror
+/// Remote: another replica deletes G while T respawns here. The cascade reaches T in the mirror
 /// only, and its landing commits no move: T is in O on every replica, as the store shows it.
 #[test]
 fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_move() {
@@ -503,7 +502,7 @@ fn a_remote_group_delete_during_a_respawn_lands_the_tab_in_its_group_without_a_m
     assert_eq!(doc.nodes[&t].group, Some(g), "no move was committed");
 }
 
-/// Final review I1, local dissolve: a member mid-respawn moves up to the dissolved group's group.
+/// Local dissolve: a member mid-respawn moves up to the dissolved group's group.
 #[test]
 fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
     let path = temp_dir("respawn-local-dissolve").join("session.mnf");
@@ -519,7 +518,7 @@ fn a_local_dissolve_during_a_respawn_moves_the_tab_up_a_level() {
     assert_eq!(doc.effective_group(t), Some(outer));
 }
 
-/// Final review I1, local merge: a member of the merged group mid-respawn lands in the target.
+/// Local merge: a member of the merged group mid-respawn lands in the target.
 #[test]
 fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     let path = temp_dir("respawn-local-merge").join("session.mnf");
@@ -538,7 +537,7 @@ fn a_local_merge_during_a_respawn_moves_the_tab_into_the_target() {
     assert_eq!(doc.effective_group(m), Some(target));
 }
 
-/// Final review I1, parent: removing P locally while its child C respawns passes C up to P's parent, and commits it.
+/// Parent: removing P locally while its child C respawns passes C up to P's parent, and commits it.
 #[test]
 fn a_local_removal_during_a_respawn_reparents_the_tab() {
     let path = temp_dir("respawn-local-parent").join("session.mnf");
@@ -554,7 +553,7 @@ fn a_local_removal_during_a_respawn_reparents_the_tab() {
     assert_eq!(stored(&app, c, field::PARENT), FieldValue::Id(Some(a)));
 }
 
-/// Final review I1, parent: another replica deleting P while C respawns here passes C up in the mirror only.
+/// Parent: another replica deleting P while C respawns here passes C up in the mirror only.
 #[test]
 fn a_remote_removal_during_a_respawn_reparents_the_tab_in_the_mirror_only() {
     let path = temp_dir("respawn-remote-parent").join("session.mnf");
@@ -723,7 +722,7 @@ fn the_tabs_under_a_group_all_get_shutdown_together() {
     drop(app);
 }
 
-/// Ruling 5: waking a tab into another engine saves that engine when the wake starts, not when it lands. A wake
+/// Waking a tab into another engine saves that engine when the wake starts, not when it lands. A wake
 /// ignored because one is in flight changes nothing.
 #[test]
 fn a_wake_into_another_view_is_saved_at_wake_start() {

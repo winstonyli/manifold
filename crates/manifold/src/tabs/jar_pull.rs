@@ -58,7 +58,7 @@ impl App {
     /// Folds tab `tab_id`'s cookie dump into the jar its host was spawned with, and marks that jar dirty when it
     /// changed (`flush_dirty_jars` saves it) (spec: "Its pulls merge into that jar and save only that jar's file").
     /// Merged against that tab's own `jar_tabs` entry (`jar::Jar::merge`). `false` for a dump that does not parse
-    /// (logged), a tab with no `jar_tabs` entry (closed or replaced since it was asked; deviation 5), a named jar
+    /// (logged), a tab with no `jar_tabs` entry (closed or replaced since it was asked), a named jar
     /// deleted while it ran, or a host whose jar was cleared under it (`jar_reseed`): it still holds the old cookies,
     /// and they must not refill the cleared jar.
     pub(crate) fn apply_pulled_cookies(&mut self, tab_id: NodeId, json: &str) -> bool {
@@ -174,7 +174,7 @@ impl App {
     /// the jar this one was spawned with and its seed. `seed_clears` is that jar's clear count when the seed was read
     /// (`None`: never seeded). A Clear Cookies since then, while the spawn or wake was in flight, found no `jar_tabs`
     /// entry to mark; a host seeded with cookies it cleared is marked now, like the hosts running at the clear, so it
-    /// switches and its pulls cannot refill the jar (final review I3). Marked after the wipe, which would drop it.
+    /// switches and its pulls cannot refill the jar. Marked after the wipe, which would drop it.
     pub(crate) fn note_spawned_jar(
         &mut self,
         id: NodeId,

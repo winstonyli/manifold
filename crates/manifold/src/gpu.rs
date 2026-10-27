@@ -145,8 +145,7 @@ fn non_srgb_view_format(format: wgpu::TextureFormat) -> wgpu::TextureFormat {
 /// One visible tab's frame as a GPU texture for the hand-rolled content
 /// pipeline. Keyed by tab id in `GpuState::tab_textures` -- split view needs
 /// two of these live at once (the primary and secondary pane), so a single
-/// slot no longer suffices the way it did when only ever one tab could be
-/// `SetVisible(true)` at a time. `texture`/`width`/`height`/`format` are
+/// slot does not suffice. `texture`/`width`/`height`/`format` are
 /// kept (not just the `bind_group`) so `upload_frame` can tell whether a new
 /// frame's dimensions match this one closely enough to reuse it in place via
 /// `queue.write_texture` instead of allocating a brand new GPU texture --
@@ -671,51 +670,20 @@ impl GpuState {
         (out_w, out_h)
     }
 
-    /// GPU-side replacement for the old CPU `to_thumbnail_rgba`/
-    /// `downscale_rgba` pair -- downsamples `tab_id`'s own already-uploaded
-    /// main frame texture directly into its thumbnail texture via a render
-    /// pass (`fs_downsample` in `SHADER`), instead of downloading pixels to
-    /// the CPU, box-filtering them there, and re-uploading the result.
-    /// Found on the same "app feels slow" investigation as the persistent-
-    /// texture fix above: with that fix landed, this pixel conversion/
-    /// downscale was the one remaining per-frame cost of any real size,
-    /// and it's exactly the kind of embarrassingly-parallel, per-pixel
-    /// work a GPU does far more cheaply than a CPU loop -- doubly so in a
-    /// debug build, where the CPU loop pays for zero compiler optimization
-    /// but the GPU's own fixed-function/shader-core work doesn't care what
-    /// profile the *driver* was compiled under.
+    /// Downsamples `tab_id`'s already-uploaded main frame texture directly into its thumbnail texture via a render
+    /// pass (`fs_downsample` in `SHADER`), with no pixel download to the CPU.
     ///
-    /// Two real correctness details this has to get right that a naive
-    /// "just sample the main texture" attempt wouldn't:
+    /// - **sRGB.** The main texture is `Bgra8UnormSrgb`/`Rgba8UnormSrgb` (see `upload_frame`'s doc on `format`),
+    ///   and sampling an sRGB texture linearizes the color. Writing that into the thumbnail's plain (non-sRGB)
+    ///   `Rgba8Unorm` target would store linear-light bytes where gamma-encoded ones belong. So the pass samples
+    ///   through a *reinterpreting* view in the non-sRGB counterpart format (`Bgra8Unorm`/`Rgba8Unorm`, via
+    ///   `non_srgb_view_format`), which returns the stored bytes unconverted. That needs the main texture's
+    ///   `view_formats` to declare the counterpart at creation time (see `upload_frame`).
+    /// - **BGRA vs RGBA.** Not handled here: `textureSample` returns `(r,g,b,a)` order whatever the bound
+    ///   texture's channel layout, so no byte swap is needed.
     ///
-    /// - **sRGB.** The main texture is `Bgra8UnormSrgb`/`Rgba8UnormSrgb`
-    ///   (see `upload_frame`'s own doc comment on `format`), and sampling
-    ///   an sRGB texture auto-*linearizes* the color -- writing that
-    ///   straight into the thumbnail's plain (non-sRGB) `Rgba8Unorm`
-    ///   target would silently store linear-light bytes where gamma-
-    ///   encoded ones belong, visibly shifting brightness/contrast versus
-    ///   the real tab content. Sampled instead through a *reinterpreting*
-    ///   view in the non-sRGB counterpart format (`Bgra8Unorm`/
-    ///   `Rgba8Unorm`, via `non_srgb_view_format`) -- returns the raw
-    ///   stored bytes unconverted, exactly matching what the old CPU
-    ///   path's plain byte copy already did. Requires the main texture's
-    ///   own `view_formats` to declare that counterpart at creation time
-    ///   (see `upload_frame`'s texture creation above).
-    /// - **BGRA vs RGBA channel order.** *Not* handled here at all, on
-    ///   purpose -- unlike the CPU path's manual byte swap
-    ///   (`to_thumbnail_rgba`), `textureSample` already returns color in a
-    ///   consistent `(r,g,b,a)` order regardless of the bound texture's
-    ///   own declared channel layout; the GPU/driver handles that
-    ///   remapping as part of what a texture *format* means.
-    ///
-    /// Deliberately reproduces, not fixes, the old CPU path's own
-    /// previously-accepted cosmetic gap: bypassing sRGB decoding on the way
-    /// in (rather than decoding then re-encoding, a real color-correct
-    /// path) means the thumbnail still renders very slightly washed out
-    /// compared to the live content pipeline, exactly as the removed
-    /// `to_thumbnail_rgba`'s own doc comment already called out and
-    /// accepted -- this pass changes *where* that gap's bytes get produced
-    /// (GPU instead of CPU), not what they are.
+    /// Skipping sRGB decoding (rather than decoding, then re-encoding) leaves the thumbnail very slightly washed
+    /// out compared to the live content pipeline. That gap is accepted.
     ///
     /// Records into the caller's `encoder` (no submit of its own): `render` flushes the thumbnails egui draws that
     /// frame, `free_tab_texture` the one about to lose its source.
@@ -1366,7 +1334,7 @@ mod frame_tests {
     }
 }
 
-/// Frame-path Task 1, M2b: what a frame upload and a thumbnail pass cost on the real adapter (survey E2).
+/// What a frame upload and a thumbnail pass cost on the real adapter.
 /// `cargo test --release -p manifold --bins frame_upload_timing -- --ignored --nocapture`.
 #[cfg(test)]
 mod upload_timing {

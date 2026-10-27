@@ -79,7 +79,8 @@ impl App {
 
     /// The card `id` was opened from (decision 6): its `PARENT` from the mirror (which sees an edit or a Create not yet
     /// in the document), else from the document (the mirror has no links for a hidden node); while that one is not
-    /// live, its own `PARENT` from the document. `None` when no live ancestor is left (plan D16 for a remote delete).
+    /// live, its own `PARENT` from the document. `None` when no live ancestor is left (a
+    /// remote delete leaves a child's `PARENT` naming the deleted node).
     pub(crate) fn trail_parent(&self, id: NodeId) -> Option<NodeId> {
         let doc = self.doc.journal.as_ref().map(|j| j.doc());
         let mut p = match self.doc.mirror.parent(id) {
@@ -190,7 +191,7 @@ impl App {
     }
 
     /// `id` is in `nodes`: a tab or image opens in the Item view on its level; any other card is selected on its
-    /// level in the Graph view (plan D14).
+    /// level in the Graph view.
     fn finish_trail_focus(&mut self, id: NodeId) {
         let ty = self.card_kind(id).map(|k| k.ty);
         if matches!(ty, Some(crate::store::model::TYPE_TAB | crate::store::model::TYPE_IMAGE)) {

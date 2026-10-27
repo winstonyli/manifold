@@ -4,11 +4,8 @@ use super::*;
 
 impl App {
     /// Applies a finished `spawn_tab_async` call — inserts the new tab node
-    /// (or leaves a failed card, or toasts for a split), with per-`SpawnPurpose` follow-up
-    /// matching what `spawn_root_tab`/`spawn_new_tab`/`respawn_tab` used to
-    /// do synchronously right after `process_manager::spawn_tab` returned.
-    /// Focus/visibility for `Respawn` is decided here, at completion time —
-    /// same moment the old inline code decided it, just later in wall time.
+    /// (or leaves a failed card, or toasts for a split), with per-`SpawnPurpose` follow-up.
+    /// Focus/visibility for `Respawn` is decided here, at completion time.
     pub(crate) fn handle_tab_spawn_result(&mut self, outcome: TabSpawnOutcome) {
         let TabSpawnOutcome {
             spawn: TabSpawn { id, url, kind, parent, group, jar: spawn_jar, pos, purpose, carry, fallback_kind },
@@ -183,7 +180,7 @@ impl App {
             Err(err) => {
                 eprintln!("spawn tab failed for {id}: {err}");
                 if let Some(fallback) = fallback_kind {
-                    // The switch failed: the old engine is written back (2b-3 Ruling 5).
+                    // The switch failed: the old engine is written back.
                     self.edit_view_kind(id, fallback);
                     self.queue_toast(format!(
                         "Couldn't switch to {}: {err}. Kept {}.",
@@ -270,7 +267,7 @@ impl App {
                 }
                 self.queue_toast(format!("Couldn't start split view: {err}"));
                 // A save while it was in flight may have created it
-                // (`spawning`); it's gone now (Ruling 4). One never
+                // (`spawning`); it's gone now. One never
                 // created is just forgotten.
                 self.queue_delete(id);
                 self.save_session();
@@ -301,14 +298,14 @@ impl App {
     }
 
     /// Seeds a landing tab's mirror entry (`Mirror::seed`: only an id with none) and its layout entry, both at
-    /// `carried.pos` (a new tab's spawn position, 2b-4 Ruling 3). A tab mid-respawn or waking keeps both: its layout
-    /// entry is keyed by id, so the respawn's remove-and-reinsert leaves it where it was drawn (Ruling 1).
+    /// `carried.pos` (a new tab's spawn position). A tab mid-respawn or waking keeps both: its layout
+    /// entry is keyed by id, so the respawn's remove-and-reinsert leaves it where it was drawn.
     ///
     /// A tab mid-respawn keeps its mirror entry
     /// and the link cascades reach it (`App::linked_ids`), but a new spawn has none until here: one whose group was
     /// removed while it was in flight would land in a group nothing can navigate into. It lands where the document
     /// shows it instead, in the mirror only (`follow_remote_group`): the removal was a cascade, not a move of this
-    /// tab, and a queued move would override another replica's placement of it (final review I1).
+    /// tab, and a queued move would override another replica's placement of it.
     ///
     /// A jar deleted while a new spawn was in flight needs no fix-up: the edge dangles and resolves to the Default.
     fn seed_landing(&mut self, id: NodeId, carried: Carried) {

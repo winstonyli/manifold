@@ -19,7 +19,7 @@ impl App {
         }
     }
 
-    /// R2: when the pane starts describing another card, the camera brings it into view (`camera.reveal`, eased by
+    /// When the pane starts describing another card, the camera brings it into view (`camera.reveal`, eased by
     /// `pan_to` only when it is not fully visible; never during a drag, `apply_camera_requests`).
     pub(super) fn track_pane_card(&mut self) {
         let card = self.pane_card();
@@ -33,7 +33,7 @@ impl App {
     }
 
     /// The pane. One card: header, labels, place, links, text. Several: the count and the labels. Its rows step with
-    /// Up/Down while one has focus, and never take focus themselves (R5).
+    /// Up/Down while one has focus, and never take focus themselves.
     pub(super) fn card_pane_contents(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.pane_card() {
             Some(id) => {
@@ -242,7 +242,7 @@ mod tests {
     use super::*;
     use crate::card_id::CardId;
 
-    /// R2: the card the pane starts describing is revealed once; a second selected card is not. (A drag refuses the
+    /// The card the pane starts describing is revealed once; a second selected card is not. (A drag refuses the
     /// ease itself: `a_drag_stops_and_refuses_camera_eases`.)
     #[test]
     fn the_pane_reveals_the_card_it_starts_describing() {
@@ -347,7 +347,7 @@ mod tests {
         assert!(!app.pane_renaming(note), "the menu's field has it");
     }
 
-    /// R5: opening the pane takes no focus, and Down with nothing focused stays the graph's.
+    /// Opening the pane takes no focus, and Down with nothing focused stays the graph's.
     #[test]
     fn the_pane_takes_no_focus_when_it_opens() {
         let mut app = App::default();
@@ -380,7 +380,7 @@ mod tests {
         assert!(down_left, "the pane left Down to the graph");
     }
 
-    /// Review I2: a label rename takes the keys once; a click away cancels it and leaves the keys to the graph.
+    /// A label rename takes the keys once; a click away cancels it and leaves the keys to the graph.
     #[test]
     fn a_click_away_cancels_a_label_rename() {
         let mut app = App::default();

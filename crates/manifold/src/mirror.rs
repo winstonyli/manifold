@@ -16,19 +16,20 @@ use crate::session_sync::{color_of, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 use crate::store::tree::{self, Leaf, Seg, Tree, TreePath, Trees, TREE_FIELDS};
 
-/// Every field of a node's type (`Kind::fields`, 2b-5 Ruling 2) but the two links, `parent` and `group`, which are
+/// Every field of a node's type (`Kind::fields`) but the two links, `parent` and `group`, which are
 /// `links`. A `Create` carries them, and on an existing node only `App::pending` writes them (nothing compares the
 /// mirror with the document). `URL` is a tab's shared url
-/// (2b-3 Ruling 2) and a content node's web source (`App::source_url`), seeded at creation since 2b-5. `JAR` is
+/// and a content node's web source (`App::source_url`), seeded at creation. `JAR` is
 /// a tab's or group's jar edge (`jar`), written by `App::set_jar_edge`. `VIEW_KIND` is a tab's engine as
 /// its stored code (`view_kind`), written by `App::edit_view_kind`. `POS` is the document pos (`pos`), written by
-/// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads (2b-4 Ruling 1). `TEXT` is a
+/// `App::edit_pos`; where a card is drawn is `App::layout`, which the document never reads. `TEXT` is a
 /// note's text (`text`), written by `App::edit_text` at a save or blur; the note's payload is its edit buffer. `VIEW`
 /// is a Json node's view (`view`, decoded), written by `App::edit_view`. `NAME` is a group's name (`name`), written by
 /// `App::edit_name`. A jar's `NAME`, `COLOR` and `EPHEMERAL` are its definition (`jar_def`), written by
-/// `App::create_jar`, the generic rename (`App::commit_rename`) and `App::set_jar_ephemeral` (2b-5 Ruling 7).
+/// `App::create_jar`, the generic rename (`App::commit_rename`) and `App::set_jar_ephemeral`.
 /// `PATH` is the stored, create-time path (`path`), never rewritten: the payload holds the
-/// path resolved on this machine (2b-5 Ruling 5). `TYPE` is the node's type string (`ty`), seeded at every creation and never changed (Ruling 10).
+/// path resolved on this machine. `TYPE` is the node's type string (`ty`), seeded at every creation and never
+/// changed.
 #[derive(Default)]
 pub(crate) struct Mirror {
     nodes: HashMap<NodeId, Fields>,
@@ -270,7 +271,7 @@ impl Mirror {
         (end(field::FROM), end(field::TO))
     }
 
-    /// A jar's definition, decoded from its mirrored fields (2b-5 Ruling 7).
+    /// A jar's definition, decoded from its mirrored fields.
     pub(crate) fn jar_def(&self, id: NodeId) -> JarDef {
         JarDef {
             name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `JarDef` holds it
@@ -333,25 +334,25 @@ impl Mirror {
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
     /// it. `None` when it has none. Pos (0,0) is the field's absent value in the encoding, so a node at the exact
-    /// origin reads as `None` too (2b-4 Ruling 5). Where the card is drawn is `App::layout`.
+    /// origin reads as `None` too. Where the card is drawn is `App::layout`.
     pub(crate) fn pos(&self, id: NodeId) -> Option<egui::Vec2> {
         self.nodes.get(&id).and_then(pos_in)
     }
 
     /// A note's text: the document's, or what the last save or blur committed (`App::edit_text`). "" when the mirror
     /// has none. Borrowed from the stored string, never a copy: a note can reach 1 MB and the card reads it every
-    /// frame (2b-4 Ruling 6). While the note is typed in, the card shows its edit buffer instead (`App::note_text`).
+    /// frame. While the note is typed in, the card shows its edit buffer instead (`App::note_text`).
     pub(crate) fn text(&self, id: NodeId) -> &str {
         self.str_field(id, field::TEXT)
     }
 
     /// A Json node's view overrides (`field::VIEW`), decoded: the cache `set` refreshes whenever the mirror's view
-    /// changes (2b-4 Ruling 8), so the per-frame readers never parse. `None` when the node has no overrides.
+    /// changes, so the per-frame readers never parse. `None` when the node has no overrides.
     pub(crate) fn view(&self, id: NodeId) -> Option<&JsonView> {
         self.views.get(&id)
     }
 
-    /// A group's stored name (`field::NAME`, 2b-4 Ruling 9): the document's, or the rename about to be written
+    /// A group's stored name (`field::NAME`): the document's, or the rename about to be written
     /// (`App::edit_name`). "" when the mirror has none. Raw: drawn only through a name rule (`names.rs`). A jar's
     /// name is read through its `JarDef` (`jar_def`).
     pub(crate) fn name(&self, id: NodeId) -> &str {
@@ -368,7 +369,7 @@ impl Mirror {
         self.nodes.get(&id).is_some_and(pinned_in)
     }
 
-    /// A tab's shared url: the document's, or the one a local edit is about to write (Ruling 1). Its live url, which
+    /// A tab's shared url: the document's, or the one a local edit is about to write. Its live url, which
     /// every engine report moves, is `TabPayload::url` / `UnloadedTabPayload::url`. For a content node (a note, image,
     /// PDF, Json file or download) it is the web source it came from (`App::source_url`), set at creation. "" when the
     /// mirror has none.
@@ -391,7 +392,7 @@ impl Mirror {
 
     /// A tab's engine: the one it runs or is switching to (`App::edit_view_kind`), the document's otherwise. The mirror
     /// holds the stored code as is, so a code from a newer build survives a save; it, and an absent one, read as
-    /// Servo (`view_kind_of`, 2b-3 Ruling 6). `ViewTab::kind` is the engine actually running.
+    /// Servo (`view_kind_of`). `ViewTab::kind` is the engine actually running.
     pub(crate) fn view_kind(&self, id: NodeId) -> ViewKind {
         view_kind_of(self.view_code(id))
     }
@@ -421,7 +422,7 @@ impl Mirror {
     /// `init` for everything a node carries; absent values (no pos, an empty string, engine code 0, `false`, no jar) are
     /// left out, as `Carried::with` never holds them. The type alone is `init_field`: an entry made before the node
     /// was placed (a remote op naming it ahead of its `Create`, a link cascade) must not leave the placed node
-    /// untyped, and the store never changes a type (2b-5 Ruling 10). The entry exists afterwards even when nothing was
+    /// untyped, and the store never changes a type. The entry exists afterwards even when nothing was
     /// seeded: a placed node is known here.
     pub(crate) fn seed(&mut self, id: NodeId, carried: &Carried) {
         if let std::collections::hash_map::Entry::Vacant(e) = self.nodes.entry(id) {
@@ -615,7 +616,7 @@ mod tests {
         mirror.seed(node(7), &Carried::default().with_str(field::URL, "https://b/"));
         assert_eq!(mirror.carried(node(7)), first);
         mirror.seed(node(8), &Carried::default().with(field::POS, pos_value(egui::Vec2::ZERO)));
-        assert_eq!(mirror.pos(node(8)), None, "pos (0,0) is the absent value (Ruling 5)");
+        assert_eq!(mirror.pos(node(8)), None, "pos (0,0) is the absent value");
     }
 
     /// An entry that exists without a type (a remote op named the node before it was placed) takes the placed
@@ -704,7 +705,7 @@ mod tests {
         mirror.set(node(7), field::TEXT, FieldValue::Str("hello".into()));
         assert_eq!(mirror.text(node(7)), "hello");
         let FieldValue::Str(stored) = &mirror.nodes[&node(7)][&field::TEXT] else { panic!("a Str") };
-        assert_eq!(mirror.text(node(7)).as_ptr(), stored.as_ptr(), "the stored string, not a copy (2b-4 Ruling 6)");
+        assert_eq!(mirror.text(node(7)).as_ptr(), stored.as_ptr(), "the stored string, not a copy");
     }
 
     #[test]
@@ -759,7 +760,7 @@ mod tests {
         assert_eq!(mirror.color(node(2)), None);
     }
 
-    /// 2b-5 Ruling 7: a jar's definition is decoded from its mirrored fields on every read.
+    /// A jar's definition is decoded from its mirrored fields on every read.
     #[test]
     fn a_jar_def_reads_its_mirrored_fields() {
         let mut mirror = Mirror::default();

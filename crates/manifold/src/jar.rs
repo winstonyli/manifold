@@ -472,7 +472,7 @@ impl CookieState {
 }
 
 /// The copy of the loaded jars spawn threads seed new hosts from (`CookieState::jar_snapshots`), with how many times each jar
-/// was cleared. Both sit under one lock, so a seed and the clear count it was read at agree (final review I3).
+/// was cleared. Both sit under one lock, so a seed and the clear count it was read at agree.
 #[derive(Debug, Default)]
 pub struct Snapshots {
     jars: BTreeMap<NodeId, Jar>,

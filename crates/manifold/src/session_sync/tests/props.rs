@@ -162,7 +162,7 @@ fn a_tab_duplicate_keeps_the_tree() {
     assert_eq!(doc_trees(&app, copy), app.doc.mirror.trees_of(copy), "and the save commits it");
 }
 
-/// Final review I1: a remote change parked for a waking tab predates a tree edit committed after it; the landing
+/// A remote change parked for a waking tab predates a tree edit committed after it; the landing
 /// must not drop that edit from the mirror.
 #[test]
 fn a_committed_tree_edit_survives_the_landing_of_a_parked_remote_change() {

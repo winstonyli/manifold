@@ -3,7 +3,7 @@
 
 use super::*;
 
-/// The right panel's narrowest and widest (before the half-window cap, R4).
+/// The right panel's narrowest and widest (before the half-window cap).
 const RIGHT_PANEL_MIN: f32 = 160.0;
 const RIGHT_PANEL_MAX: f32 = 640.0;
 
@@ -26,7 +26,7 @@ impl App {
         (self.selected_stored_count() > 0).then_some(RightPanel::Cards)
     }
 
-    /// The widest the panel may be: `RIGHT_PANEL_MAX`, or half the window when that is less (R4), never under the
+    /// The widest the panel may be: `RIGHT_PANEL_MAX`, or half the window when that is less, never under the
     /// minimum.
     fn right_panel_max(&self) -> f32 {
         (self.screen_size_points().x / 2.0).clamp(RIGHT_PANEL_MIN, RIGHT_PANEL_MAX)
@@ -41,7 +41,7 @@ impl App {
     }
 
     /// The right panel, before the canvas takes the remaining space. Also keeps the pane's state with the selection:
-    /// a newly described card is revealed (R2).
+    /// a newly described card is revealed.
     pub(super) fn build_right_panel(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>) {
         let shown = self.right_panel();
         if shown != Some(RightPanel::Cards) {
@@ -83,7 +83,7 @@ mod tests {
         assert_eq!((app.right_panel(), app.right_panel_width_shown()), (None, 0.0));
     }
 
-    /// R4: the panel never takes more than half the window (1024 points wide with no window).
+    /// The panel never takes more than half the window (1024 points wide with no window).
     #[test]
     fn the_panel_takes_at_most_half_the_window() {
         let mut app = App::default();

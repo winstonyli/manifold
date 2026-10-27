@@ -289,7 +289,7 @@ fn toggling_stores_only_a_difference_from_the_default() {
     assert!(is_collapsed(&view, &expanded, "/users"));
     toggle(&mut view, &expanded, "/users");
     assert_eq!(view.to_field(), "");
-    // Expanding one card never collapses another (plan ruling 5):
+    // Expanding one card never collapses another:
     // `/meta/bbox/0` (depth 3, collapsed by default) holds only
     // scalars, so exactly one fewer card is collapsed afterwards.
     let collapsed = |view: &JsonView| visible_cards(&root, view, &expanded).iter().filter(|c| c.collapsed).count();
@@ -344,12 +344,12 @@ fn search_matches_keys_and_scalars_in_hidden_pages_and_keeps_ancestors() {
     }
     assert_eq!(search(&root, "bbox").matches, ["/meta/bbox"]);
     assert!(search(&root, "").matches.is_empty());
-    // Array indices don't match (plan ruling 9).
+    // Array indices don't match.
     assert!(search(&json!(["x"]), "0").matches.is_empty());
     assert_eq!(count_nodes(&json!({"a": [1, 2]})), 4);
 }
 
-/// Review D-R7: results stop at MAX_MATCHES, and a cancelled search returns nothing.
+/// Results stop at MAX_MATCHES, and a cancelled search returns nothing.
 #[test]
 fn search_is_capped_and_cancellable() {
     let big = serde_json::Value::Array((0..MAX_MATCHES + 50).map(|i| serde_json::json!(format!("x{i}"))).collect());

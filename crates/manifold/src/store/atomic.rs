@@ -80,9 +80,8 @@ fn write_new(path: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
 }
 
 /// Targets whose `replace_with` fails as if its temp couldn't be created.
-/// Tests used to force that by putting a directory at the fixed `<path>.tmp`;
-/// per-call temp names can't be blocked that way. Keyed by the target path,
-/// which each test makes unique with `temp_dir`.
+/// Temp names differ per call, so a test can't force the failure by blocking a fixed `<path>.tmp`.
+/// Keyed by the target path, which each test makes unique with `temp_dir`.
 #[cfg(test)]
 static BLOCKED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 

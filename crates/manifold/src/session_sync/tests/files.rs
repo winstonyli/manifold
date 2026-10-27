@@ -112,7 +112,7 @@ fn startup_deletes_the_files_of_jars_the_document_no_longer_has() {
     assert_eq!(left(), [format!("{w}.json")], "the deleted jar's files and an old default.json go");
 }
 
-/// Jar name labels (retiring per-tab jars deviation 4): a jar is its id, never its name, so an imported jar is
+/// Jar name labels: a jar is its id, never its name, so an imported jar is
 /// always a new jar, even beside one with the same name, and the imported tab and group name the new one. The
 /// old session's jar card goes with the rest of its cards.
 #[test]

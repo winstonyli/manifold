@@ -1,7 +1,6 @@
 //! A JSON level's painter and input (spec "Cards"): record cards drawn
-//! in the Scene, their text queued through `deferred_overlays` (plan
-//! ruling 11). The bar, the menu, keys (Task 7) and the outline (Task 8)
-//! live here too.
+//! in the Scene, their text queued through `deferred_overlays`. The bar,
+//! the menu, keys and the outline live here too.
 
 use serde_json::Value;
 
@@ -12,7 +11,7 @@ use crate::json_edit::{json_menu_rows, type_default, EditWhat, JsonOp, JsonType,
 use crate::json_level::{CopyWhat, JsonEdit};
 use crate::json_view::{self, Card};
 
-/// Text height in world units (plan ruling 11).
+/// Text height in world units (painted at `12 x zoom` screen points).
 const TEXT_SIZE: f32 = 12.0;
 use crate::card::{
     HEADER_CENTER_Y, HEADER_ICON_SIZE, HEADER_ICON_X, HEADER_SOURCE_SIZE, HEADER_SOURCE_Y, HEADER_TEXT_X,
@@ -618,7 +617,7 @@ impl App {
             return;
         }
         let root_name = self.json_root_name(level.node_id);
-        let view = self.doc.mirror.view(level.node_id); // the decoded cache: no parse per frame (2b-4 Ruling 8)
+        let view = self.doc.mirror.view(level.node_id); // the decoded cache: no parse per frame
         let pal = palette(ui.visuals().dark_mode);
         let base_fill = ui.visuals().extreme_bg_color;
         let idle_border = ui.visuals().weak_text_color();
@@ -959,7 +958,7 @@ impl App {
     /// Keys on a JSON level, in place of the graph's arrow-key focus
     /// moves: Up/Down select the previous/next outline row, Enter expands or collapses the
     /// selected card, Right/Left open/close its outline row (Left on a closed one selects the
-    /// parent), copy (plan ruling 13) and Escape to clear the selection (Ctrl+F is
+    /// parent), copy (`Event::Copy`, shift for the second form) and Escape to clear the selection (Ctrl+F is
     /// `focus_json_search`). Skipped while a text field has this pass's keys (`typing`, from
     /// `shortcuts::text_field_has_keys` at the frame's start: on the Escape frame the field has
     /// already let go) or any widget has focus.

@@ -319,7 +319,7 @@ fn two_links_on_one_pair_go_one_click_at_a_time_newest_first() {
     assert!(app.links_naming(a).is_empty());
 }
 
-/// Final review M1: the second click of a double-click (or a triple-click's third) on a pair's line takes nothing.
+/// The second click of a double-click (or a triple-click's third) on a pair's line takes nothing.
 #[test]
 fn a_double_or_triple_click_on_a_line_deletes_one_link() {
     let (h, mut app, [a, b, _]) = three_notes();
@@ -352,7 +352,7 @@ fn right_press_at(at: egui::Pos2) -> Vec<egui::Event> {
     vec![egui::Event::PointerMoved(at), right(at, true)]
 }
 
-/// Task 2 review M2: during a connect-drag a right-press on a card opens no menu and one on the canvas starts no
+/// During a connect-drag a right-press on a card opens no menu and one on the canvas starts no
 /// marquee; the drag still links where it is released.
 #[test]
 fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
@@ -368,7 +368,7 @@ fn a_right_press_during_a_connect_drag_opens_no_menu_and_starts_no_marquee() {
     assert_eq!(app.links_naming(a).len(), 2, "linked to c");
 }
 
-/// Task 2 review M2, card-drag half: a right-press while a card is dragged opens no menu and starts no marquee.
+/// Card-drag half: a right-press while a card is dragged opens no menu and starts no marquee.
 #[test]
 fn a_right_press_during_a_card_drag_opens_no_menu_and_starts_no_marquee() {
     let (h, mut app, [a, b, c]) = three_notes();
@@ -920,7 +920,7 @@ fn an_opened_from_line_is_not_draggable() {
     assert_eq!(app.doc.mirror.parent(c), Some(a));
 }
 
-/// Review I1: Recently Closed and the shortcuts help close on a click outside them without consuming it, so the
+/// Recently Closed and the shortcuts help close on a click outside them without consuming it, so the
 /// dismissing click must not also take the line under it.
 #[test]
 fn a_click_dismissing_recently_closed_or_the_shortcuts_help_deletes_nothing() {
@@ -944,7 +944,7 @@ fn a_click_dismissing_recently_closed_or_the_shortcuts_help_deletes_nothing() {
     assert!(app.links_naming(a).is_empty(), "with neither open the same click takes it");
 }
 
-/// Review I2: a tap that stops a glide or a camera animation ("grab it to stop it") takes no line, though a line
+/// A tap that stops a glide or a camera animation ("grab it to stop it") takes no line, though a line
 /// may have moved under the pointer by its release.
 #[test]
 fn a_tap_during_a_glide_or_a_camera_tween_deletes_nothing() {
@@ -1300,7 +1300,7 @@ fn a_drag_on_the_card_body_still_moves_the_card() {
     assert!(app.link.connect_drag.is_none() && app.links_naming(a).is_empty());
 }
 
-/// Review I1: a focused text field (a note being edited) keeps its keys, but Esc still cancels a connect-drag.
+/// A focused text field (a note being edited) keeps its keys, but Esc still cancels a connect-drag.
 #[test]
 fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
     let (h, mut app, [a, b, c]) = three_notes();
@@ -1319,7 +1319,7 @@ fn escape_cancels_a_handle_drag_while_a_note_is_being_edited() {
     drag_from_handle(&h, &mut app, b, HandleSide::Bottom, onto, vec![escape]);
     assert!(app.links_naming(b).is_empty(), "Esc cancelled it");
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
-    // Final review M5: egui drops keyboard focus on Esc, so the same Esc also ended a's edit.
+    // egui drops keyboard focus on Esc, so the same Esc also ended a's edit.
     assert!(!app.nodes[&a].as_note().unwrap().editing, "the same Esc ended the note edit");
 }
 
@@ -1332,7 +1332,7 @@ fn minimap_rect(app: &App) -> egui::Rect {
     )
 }
 
-/// Review M1: the bright ring and the release read one function, so a card under the minimap (painted over the
+/// The bright ring and the release read one function, so a card under the minimap (painted over the
 /// Scene) is neither ringed nor linked.
 #[test]
 fn a_card_under_the_minimap_is_neither_ringed_nor_linked() {
@@ -1358,7 +1358,7 @@ fn a_card_under_the_minimap_is_neither_ringed_nor_linked() {
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
-/// Review M5: handles exist only on a hovered card. A drag from where a's right handle would be, off the card and
+/// Handles exist only on a hovered card. A drag from where a's right handle would be, off the card and
 /// with a not hovered, pans.
 #[test]
 fn a_drag_from_a_handle_spot_on_an_unhovered_card_pans() {
@@ -1371,7 +1371,7 @@ fn a_drag_from_a_handle_spot_on_an_unhovered_card_pans() {
     assert!(app.link.connect_drag.is_none() && app.links_naming(a).is_empty());
 }
 
-/// Review M5: released where two cards overlap, the connect-drag links the one drawn on top.
+/// Released where two cards overlap, the connect-drag links the one drawn on top.
 #[test]
 fn the_topmost_of_overlapping_cards_takes_the_release() {
     let (h, mut app, [a, b, _]) = three_notes();
@@ -1393,7 +1393,7 @@ fn the_topmost_of_overlapping_cards_takes_the_release() {
     assert_eq!(app.doc.mirror.link_ends(links[0]), (Some(a), Some(d)), "a -> d, the top card");
 }
 
-/// Review M4: pressing a handle stops a glide ("grab it to stop it"), as any press on the graph does, so the
+/// Pressing a handle stops a glide ("grab it to stop it"), as any press on the graph does, so the
 /// cards hold still under the rubber band; the drag itself starts none.
 #[test]
 fn a_handle_press_stops_a_glide_and_the_drag_starts_none() {
@@ -1423,7 +1423,7 @@ fn a_handle_press_stops_a_glide_and_the_drag_starts_none() {
     assert_eq!(app.links_naming(a).len(), 1);
 }
 
-/// Final review I1: while a text field has the keys, a click outside it only ends the edit (egui hands focus
+/// While a text field has the keys, a click outside it only ends the edit (egui hands focus
 /// back on that click), so it takes no line.
 #[test]
 fn a_click_that_ends_a_note_edit_deletes_no_line() {
@@ -1442,7 +1442,7 @@ fn a_click_that_ends_a_note_edit_deletes_no_line() {
     assert!(app.links_naming(a).is_empty(), "with no edit running the same click takes it");
 }
 
-/// Final review I2: losing window focus mid-drag cancels it (the button-up may never arrive), so a later
+/// Losing window focus mid-drag cancels it (the button-up may never arrive), so a later
 /// ordinary click on a card links nothing.
 #[test]
 fn losing_window_focus_cancels_a_connect_drag() {
@@ -1480,7 +1480,7 @@ fn note_and_group_on_app_ctx() -> (Harness, App, NodeId, NodeId) {
     (h, app, note, group)
 }
 
-/// Task 2 M3, card half: losing window focus mid card drag ends it as a release where the card is (its pos
+/// Card half: losing window focus mid card drag ends it as a release where the card is (its pos
 /// saved, as `release_drag` saves it), never as a drop onto what is under it. egui keeps the button down across
 /// the focus loss, so the card must also stop following the pointer until a real release, which drops nothing.
 #[test]
@@ -1524,7 +1524,7 @@ fn losing_window_focus_ends_a_card_drag_in_place() {
     assert!(app.nodes.contains_key(&note) && app.in_level(note), "still on this level");
 }
 
-/// Final review nit: a level change drops a line press, as it drops a connect-drag.
+/// A level change drops a line press, as it drops a connect-drag.
 #[test]
 fn a_level_change_drops_a_line_press() {
     let (mut app, a, _) = two_notes();
@@ -1534,7 +1534,7 @@ fn a_level_change_drops_a_line_press() {
     assert!(app.link.line_press.is_none() && app.link.connect_drag.is_none());
 }
 
-/// Final review I2: a connect-drag whose button-up was lost (the button is up, yet no release came this frame)
+/// A connect-drag whose button-up was lost (the button is up, yet no release came this frame)
 /// cancels, so the next ordinary click on a card links nothing.
 #[test]
 fn a_connect_drag_without_its_button_down_cancels() {
@@ -1547,7 +1547,7 @@ fn a_connect_drag_without_its_button_down_cancels() {
     assert!(app.links_naming(a).is_empty());
 }
 
-/// Final review M2: a plain click (no movement) on a handle's outer half, where it lies over a neighbouring card
+/// A plain click (no movement) on a handle's outer half, where it lies over a neighbouring card
 /// drawn earlier, ends the gesture: it links nothing.
 #[test]
 fn a_click_on_a_handle_over_a_neighbour_links_nothing() {
@@ -1572,7 +1572,7 @@ fn a_click_on_a_handle_over_a_neighbour_links_nothing() {
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none());
 }
 
-/// Final review M3: a release over an interactable egui Area (a popup) links nothing under it, as a click there
+/// A release over an interactable egui Area (a popup) links nothing under it, as a click there
 /// reaches no card.
 #[test]
 fn a_release_over_a_popup_links_nothing_under_it() {

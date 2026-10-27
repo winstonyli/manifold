@@ -27,7 +27,7 @@ fn paint_card_title(
 impl App {
     /// Unloaded (see `UnloadedTabPayload`), by state: **Sleeping** draws the
     /// title (or url) and host dimmed, no icon; **Waking** adds the spinner
-    /// over the same dimmed labels; **Failed** keeps the Task 1 look -- a
+    /// over the same dimmed labels; **Failed** draws a
     /// warning icon, the url at the bottom, and which engine failed and why
     /// as the tooltip. LOD: skipped once simplified, as for
     /// `paint_download_body`.

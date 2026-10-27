@@ -7,8 +7,8 @@ impl App {
     /// Queues `message` behind whatever toast is showing. `build_save_toast`
     /// takes it off the queue when it first draws it, and its
     /// `SAVE_TOAST_DURATION` starts then, not here: a toast queued during
-    /// startup (an unreadable settings/session file) used to spend part of
-    /// its time before the first frame.
+    /// startup (an unreadable settings/session file) would otherwise spend
+    /// part of its time before the first frame.
     pub(crate) fn queue_toast(&mut self, message: String) {
         self.toasts.save_toast_queue.push_back(message);
     }
@@ -50,9 +50,7 @@ impl App {
     /// not `ctx.animate_bool` -- unlike the toggle-bool dropdown popups,
     /// this already has a real wall-clock lifetime to derive opacity from
     /// directly. Despite the field's own name, the message is the caller's
-    /// full text now, not just a path this function used to prepend
-    /// "Saved " to -- every original "Saved <path>" call site now includes
-    /// that itself, freeing this up for unrelated short-lived messages too
+    /// full text, so it also carries unrelated short-lived messages
     /// (e.g. a crash/respawn notice, see `ViewToHost` handling below).
     fn build_save_toast(&mut self, ui: &mut egui::Ui) {
         const TOAST_FADE_IN: std::time::Duration = std::time::Duration::from_millis(150);

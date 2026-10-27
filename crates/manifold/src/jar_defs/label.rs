@@ -50,7 +50,7 @@ impl JarChip {
 pub(crate) const SWITCH_NOW_HINT: &str = "right-click for Switch Jar Now";
 
 /// The chip's hover text while a live tab waits to switch. `cleared`: its jar's cookies were cleared under it, so its
-/// pulls are dropped until it restarts (Task 6 ruling), and `target` is where it restarts. `can_switch_now`: offer
+/// pulls are dropped until it restarts, and `target` is where it restarts. `can_switch_now`: offer
 /// "Switch Jar Now" (not while another host change is on its way, when the menu hides the item too).
 pub(crate) fn will_switch_tooltip(cleared: bool, target: &str, can_switch_now: bool) -> String {
     let text = if cleared {

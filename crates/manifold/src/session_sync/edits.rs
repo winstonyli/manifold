@@ -50,7 +50,7 @@ impl App {
         self.doc.mirror.set(id, no, value);
     }
 
-    /// The one writer of a tab's shared url (2b-3 Ruling 4): called with the url at the moment it is shared (a typed
+    /// The one writer of a tab's shared url: called with the url at the moment it is shared (a typed
     /// navigation, or a report `shares_url_change` accepts). A move that is not shared (a report labelled not
     /// user-started, or a redirect during a load the host started, `note_host_load`) changes only the live url; an
     /// unlabelled redirect report after a link click is shared.
@@ -58,7 +58,7 @@ impl App {
         self.edit_field(id, field::URL, FieldValue::Str(url.to_owned()));
     }
 
-    /// The one writer of a note's text (2b-4 Ruling 6): what its box holds, committed at the blur (`end_note_edit`)
+    /// The one writer of a note's text: what its box holds, committed at the blur (`end_note_edit`)
     /// and by every save (`commit_note_buffers`), never per keystroke, since a note can reach 1 MB. Text the mirror
     /// already shows queues nothing and copies nothing.
     pub(crate) fn edit_text(&mut self, id: NodeId, text: &str) {
@@ -67,14 +67,14 @@ impl App {
         }
     }
 
-    /// The one writer of a Json node's view (2b-4 Ruling 8): `view` is the stored text (`JsonView::to_field`). The
+    /// The one writer of a Json node's view: `view` is the stored text (`JsonView::to_field`). The
     /// mirror's decoded cache (`Mirror::view`) follows at once. Written by a level edit (`edit_json_view`) and by a
     /// reload that prunes overrides its new value can't resolve (`reload_fetched_node`).
     pub(crate) fn edit_view(&mut self, id: NodeId, view: &str) {
         self.edit_field(id, field::VIEW, FieldValue::Str(view.to_owned()));
     }
 
-    /// The one writer of a group's name (2b-4 Ruling 9): the rename commit (`NodeAction::CommitRename`), with the
+    /// The one writer of a group's name: the rename commit (`NodeAction::CommitRename`), with the
     /// name already cleaned. A new group's is seeded at placement instead (`place_group`). A jar's is `commit_rename`'s.
     pub(crate) fn edit_name(&mut self, id: NodeId, name: &str) {
         // name rule: compares stored names
@@ -83,7 +83,7 @@ impl App {
         }
     }
 
-    /// What a note's card shows, borrowed (Ruling 6): the box's edit buffer while it is typed in, the mirror's text
+    /// What a note's card shows, borrowed: the box's edit buffer while it is typed in, the mirror's text
     /// otherwise. "" for a node that isn't a note.
     pub(crate) fn note_text(&self, id: NodeId) -> &str {
         match self.nodes.get(&id).and_then(|n| n.as_note()) {
@@ -108,7 +108,7 @@ impl App {
         self.note_text(id)
     }
 
-    /// Whether `id` is a note being typed in: its box holds the text, and another replica's is held (Ruling 7).
+    /// Whether `id` is a note being typed in: its box holds the text, and another replica's is held.
     pub(super) fn is_typed_in(&self, id: NodeId) -> bool {
         self.nodes.get(&id).and_then(|n| n.as_note()).is_some_and(|n| n.editing)
     }
@@ -130,7 +130,7 @@ impl App {
 
     /// Ends the edit of note `id` (its box lost focus, or stopped being laid out: `end_note_edits`). What the user
     /// typed since the last commit wins, as a pending local edit does, and another replica's text held meanwhile
-    /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box (Ruling 7). The
+    /// (`held_text`) is dropped; with nothing typed, the held text applies to the mirror and the box. The
     /// caller saves.
     pub(crate) fn end_note_edit(&mut self, id: NodeId) {
         let held = self.doc.writes.held_text.remove(&id);
@@ -159,16 +159,16 @@ impl App {
         self.save_session();
     }
 
-    /// The one writer of a node's document pos (2b-4 Ruling 2): a drag release, with where the card was dropped
+    /// The one writer of a node's document pos: a drag release, with where the card was dropped
     /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
     /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
     pub(crate) fn edit_pos(&mut self, id: NodeId, pos: Option<egui::Vec2>) {
         self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value));
     }
 
-    /// The one writer of a tab's engine (2b-3 Ruling 5): called when a switch starts (`start_swap_to`, a wake into
+    /// The one writer of a tab's engine: called when a switch starts (`start_swap_to`, a wake into
     /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
-    /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know (Ruling 6).
+    /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know.
     pub(crate) fn edit_view_kind(&mut self, id: NodeId, kind: ViewKind) {
         if self.doc.mirror.view_kind(id) != kind {
             self.edit_field(id, field::VIEW_KIND, FieldValue::ViewCode(view_code(kind)));
@@ -184,7 +184,7 @@ impl App {
         self.doc.mirror.set_parent(id, parent);
     }
 
-    /// The one writer of a node's group (Ruling 2): shown at once, committed as a `Move` by the next save.
+    /// The one writer of a node's group: shown at once, committed as a `Move` by the next save.
     pub(crate) fn edit_group(&mut self, id: NodeId, group: Option<NodeId>) {
         if self.doc.mirror.group(id) == group {
             return;

@@ -64,9 +64,9 @@ pub(crate) fn transition_eased_rect(
 }
 
 /// An in-progress eased pan/zoom from one `camera.rect` to another --
-/// entering/leaving a group used to snap the camera to the new level's
-/// `fit_all_nodes_scene_rect()` instantly; this animates the same jump over
-/// `TRANSITION_DURATION` instead, same smoothstep easing as `Transition`
+/// entering/leaving a group moves the camera to the new level's
+/// `fit_all_nodes_scene_rect()` over
+/// `TRANSITION_DURATION` rather than instantly, with the same smoothstep easing as `Transition`
 /// above (see `GraphCamera::advance`). Deliberately a separate,
 /// simpler mechanism rather than reusing `Transition` itself: `Transition`
 /// morphs *one tab's* rendered content quad between two rects, but entering
@@ -259,7 +259,7 @@ impl App {
             return; // no-op swap
         }
         node.swap_target = Some(target);
-        // Saved as the swap starts (2b-3 Ruling 5): a save before the snapshot writes the target, and a failure
+        // Saved as the swap starts: a save before the snapshot writes the target, and a failure
         // that falls back writes the old engine back (`handle_tab_spawn_result`).
         self.edit_view_kind(tab_id, target);
         // Cookies first: the old host is dropped once its snapshot arrives (`hold_for_cookies` waits for them).

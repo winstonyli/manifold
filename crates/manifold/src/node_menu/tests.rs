@@ -239,7 +239,7 @@ fn node_menu_config_matches_each_kinds_menu() {
     assert_eq!(page(&unloaded), ["<jars>", "New Jar..."]);
     assert_eq!(page(&group), ["<jars>", "New Jar..."]);
     assert!(page(&view_of(loaded_tab())).is_empty(), "no jar menu, no page");
-    // Links (links plan, Task 6): their section follows the colours, on every kind.
+    // Links: their section follows the colours, on every kind.
     let row = EdgeMenuRow { action: NodeAction::Connect(crate::caps::LINK), label: "Link to…".into(), hover: None };
     let linked = |kind| NodeMenuView { edges: vec![row.clone()], has_group: true, ..view_of(kind) };
     assert_eq!(

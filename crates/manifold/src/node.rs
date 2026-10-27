@@ -7,12 +7,8 @@ use crate::store::model::NodeId;
 /// What a node holds on this machine beyond its stored fields (which are the
 /// `Mirror`'s): the live state its card shows and works from. A node's type
 /// is `Mirror::ty`, not the variant; the variant is the runtime shape that
-/// type's card needs, and `None` for a kind with none (a group: its name,
-/// `from_json` and default jar are all the mirror's). Tab/Download were the
-/// migration off separate hardcoded node types (the old
-/// `TabNode`/`DownloadNode`/`GroupNode`); `Note`/`Image`/`Pdf`/`Json` are
-/// genuinely new kinds added on top of that unified model -- see each one's
-/// own `*Payload` doc comment.
+/// type's card needs, and `None` for a kind with none (a group: its name
+/// and jar are all the mirror's). See each variant's own `*Payload` doc comment.
 pub(crate) enum Runtime {
     Tab(TabPayload),
     Unloaded(UnloadedTabPayload),
@@ -97,7 +93,7 @@ impl Runtime {
 
     /// The file a content card shows on this machine (an image, PDF, Json file, or download): its stored
     /// path resolved here (`ContentIndex::resolve`), or a reload's new file. `None` for other kinds. The stored path is
-    /// the mirror's (`Mirror::path`, 2b-5 Ruling 5).
+    /// the mirror's (`Mirror::path`).
     /// A Json card whose document lives in the synced document, not a file.
     pub(crate) fn json_is_inline(&self) -> bool {
         matches!(self, Runtime::Json(p) if p.is_inline())
@@ -146,7 +142,7 @@ impl Runtime {
 /// or a group's own membership -- losing it on restart would defeat the
 /// point of writing one down.
 pub(crate) struct NotePayload {
-    /// The text box's edit buffer (2b-4 Ruling 6). The text is the mirror's (`Mirror::text`); this copy follows it
+    /// The text box's edit buffer. The text is the mirror's (`Mirror::text`); this copy follows it
     /// (`update_live_node`, `end_note_edit`) except while the box is typed in, when it holds what the user typed until
     /// a save or the blur commits it (`App::edit_text`). Read through `App::note_text`.
     pub(crate) text: String,
@@ -299,8 +295,8 @@ impl JsonPayload {
     }
 
     /// Whether this node has a level to enter and a view to edit: a file's
-    /// node whose value parsed. Not an error card (plan ruling
-    /// 10), and not a refetch placeholder (`Null`, no error, its file not
+    /// node whose value parsed. Not an error card,
+    /// and not a refetch placeholder (`Null`, no error, its file not
     /// here yet), whose view must outlive the fetch. A file that really
     /// holds `null` is still on disk, so the stat runs only for `Null`.
     pub(crate) fn enterable(&self) -> bool {
@@ -432,7 +428,7 @@ pub(crate) struct GraphNode {
     pub(crate) runtime: Runtime,
 }
 
-/// Where a node's card is drawn and how fast physics is moving it (`App::layout`, 2b-4 Ruling 1): runtime state,
+/// Where a node's card is drawn and how fast physics is moving it (`App::layout`): runtime state,
 /// personal to this replica. The force-directed settle and drags move it; it starts at the node's placement, a
 /// remote pos snaps it, and personal state (`LocalNode::pos`) restores it. The document never reads it: only a drag
 /// release (`App::edit_pos`) writes the document pos.
@@ -465,7 +461,7 @@ impl GraphNode {
             Runtime::Tab(t) => first_nonempty(&[&t.title, &t.url]),
             Runtime::Unloaded(t) => first_nonempty(&[&t.title, &t.url]),
             Runtime::Download(d) => file_name(&d.path),
-            // A group has no runtime of its own (2b-6 Ruling 8); its name is `text`. A jar is named like a group: its
+            // A group has no runtime of its own; its name is `text`. A jar is named like a group: its
             // stored name is `text` (`App::own_text`).
             Runtime::None | Runtime::Jar => {
                 Some(crate::names::to_plain(&crate::names::display_name(text, crate::names::UNTITLED)))
@@ -573,7 +569,7 @@ second"
         assert_eq!(app.nodes[&n].as_note().unwrap().text, raw, "the note's text is not cleaned");
     }
 
-    /// Review C-B12: a local file's card is named by its file name; a web source still wins.
+    /// A local file's card is named by its file name; a web source still wins.
     #[test]
     fn a_local_file_card_has_an_accessible_detail() {
         let node = |runtime| GraphNode { runtime };

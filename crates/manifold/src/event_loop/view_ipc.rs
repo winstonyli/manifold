@@ -115,13 +115,10 @@ impl App {
             };
             let url_changed = self.handle_view_message(tab_id, msg);
             if url_changed && self.shares_url_change(tab_id, user_started) {
-                // Ruling 3: every reported url change is shared, whichever
-                // tab it came from -- share it here rather than leaving it
-                // to `navigate_tab` (that only handles this instance's own
-                // address-bar navigations, not the engine's own
-                // confirmation this responds to, nor back/forward) --
-                // except one a script or the store started. Shared as reported
-                // now: a later unshared move (a redirect) is not (2b-3 Ruling 4).
+                // Every reported url change is shared, whichever tab it came from -- share it here rather than
+                // leaving it to `navigate_tab` (that only handles this instance's own address-bar navigations,
+                // not the engine's own confirmation this responds to, nor back/forward) -- except one a script
+                // or the store started. Shared as reported: a later unshared move (a redirect) is not.
                 if let Some(url) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) {
                     self.edit_url(tab_id, &url);
                 }

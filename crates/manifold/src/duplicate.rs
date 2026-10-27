@@ -34,8 +34,8 @@ pub(crate) fn tab_title(app: &App, id: NodeId) -> Option<String> {
 /// `fields` (`id`'s snapshot's, `App::snapshot`) as the user saw the node: a tab's `url` replaced by its live one, a note's
 /// `text` by what its card shows (`App::note_text`: a box being typed in holds text no save has committed), and `pos`
 /// by where its card was drawn (`App::layout`), and a file card's `path` by the one resolved on this machine (the
-/// payload's). A copy is the page that was shown, not the shared url the mirror holds (2b-3 Ruling 1), where it was
-/// shown, not at its document pos (2b-4 Ruling 10), from the file this machine read (2b-5 Ruling 5).
+/// payload's). A copy is the page that was shown, not the shared url the mirror holds, where it was
+/// shown, not at its document pos, from the file this machine read.
 fn live_fields(app: &App, id: NodeId, fields: &session_sync::Fields) -> session_sync::Fields {
     let mut fields = fields.clone();
     // Never recorded: a Duplicate of the Default is an ordinary jar (only one jar is the Default).

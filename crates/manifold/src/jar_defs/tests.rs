@@ -171,7 +171,7 @@ fn a_new_tab_inherits_and_an_opened_tab_copies_its_openers_edge() {
     app.set_jar_edge(opener, Some(home));
     app.spawn_tab_from(opener, "https://opened/", None);
     let (spawn, _) = app.test_spawns.last().unwrap();
-    assert_eq!(spawn.jar, Some(home), "deviation 3");
+    assert_eq!(spawn.jar, Some(home), "a tab opened from another takes its opener's jar");
     assert_eq!(spawn.parent, Some(opener));
     assert_eq!(spawn.group, Some(g));
     app.duplicate_tab(opener);
@@ -242,7 +242,7 @@ fn the_chip_follows_while_the_tab_has_no_edge_of_its_own() {
     assert!(app.jar_chip(t).unwrap().following);
 }
 
-/// `SETJAR` (Task 8 review): makes a jar only for a focused tab, reuses one by name, and "default" picks Default.
+/// `SETJAR`: makes a jar only for a focused tab, reuses one by name, and "default" picks Default.
 #[test]
 fn setjar_acts_only_on_a_focused_tab() {
     let mut app = App::default();
@@ -523,7 +523,7 @@ fn the_chip_and_confirms_show_the_label() {
     assert_eq!(app.jar_confirm_text(JarConfirm::Ephemeral(w2)).unwrap().0, format!("Make {l2} ephemeral?"));
 }
 
-/// Task 6 review M3: "Switch Jar Now" waits out an engine swap or a sleep already on its way, since either
+/// "Switch Jar Now" waits out an engine swap or a sleep already on its way, since either
 /// replaces the host anyway and a second hold would cancel the first.
 #[test]
 fn a_pending_sleep_or_hold_blocks_switch_jar_now() {

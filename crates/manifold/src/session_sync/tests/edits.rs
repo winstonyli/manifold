@@ -23,7 +23,7 @@ fn a_json_nodes_view_round_trips_through_the_store() {
     assert_eq!(restored.doc.mirror.view(node).unwrap().get("/users").unwrap().collapsed, Some(true));
 }
 
-/// Ruling 6: typing writes the mirror only when a save or the blur commits it, never per keystroke.
+/// Typing writes the mirror only when a save or the blur commits it, never per keystroke.
 #[test]
 fn typing_commits_on_blur_and_at_save() {
     let path = temp_dir("text-commit").join("session.mnf");
@@ -45,7 +45,7 @@ fn typing_commits_on_blur_and_at_save() {
     assert_eq!((app.doc.mirror.text(note), app.note_text(note)), ("v3", "v3"));
 }
 
-/// Ruling 9: the rename commit is the group name's writer (`edit_name`), and another replica's rename reaches the
+/// The rename commit is the group name's writer (`edit_name`), and another replica's rename reaches the
 /// mirror.
 #[test]
 fn a_rename_saves_and_a_remote_rename_reaches_the_mirror() {
@@ -65,7 +65,7 @@ fn a_rename_saves_and_a_remote_rename_reaches_the_mirror() {
     assert_eq!(stored(&app, g, field::NAME), FieldValue::Str("Theirs".into()), "not diffed back");
 }
 
-/// Ruling 8: a view edit (`edit_view`) saves, and the decoded cache follows every change of the mirror's view,
+/// A view edit (`edit_view`) saves, and the decoded cache follows every change of the mirror's view,
 /// another replica's too.
 #[test]
 fn a_json_view_edit_saves_and_a_remote_one_refreshes_the_decoded_cache() {
@@ -85,7 +85,7 @@ fn a_json_view_edit_saves_and_a_remote_one_refreshes_the_decoded_cache() {
     assert!(view.get("/users").is_none(), "and only theirs");
 }
 
-/// Ruling 2: a drag release writes the document pos; physics (a settle) moves only the layout.
+/// A drag release writes the document pos; physics (a settle) moves only the layout.
 #[test]
 fn a_drag_release_saves_the_dropped_position() {
     let path = temp_dir("pos-drag").join("session.mnf");
@@ -113,9 +113,8 @@ fn a_drag_release_saves_the_dropped_position() {
 
 /// Closing a tab while its wake is in flight deletes it from the store
 /// once the (now-moot) spawn result lands -- the landing's "closed
-/// while waking" branch used to return without saving, and a save
-/// while the wake was in flight kept the id anyway (`spawning`), so it
-/// lingered in the store forever (Fix 3, final-review).
+/// while waking" branch must save, since a save while the wake was in
+/// flight kept the id (`spawning`) and it would linger in the store forever.
 #[test]
 fn closing_a_tab_while_it_wakes_deletes_it_from_the_store() {
     let path = temp_dir("close-waking").join("session.mnf");
@@ -307,7 +306,7 @@ fn a_move_the_store_refuses_as_a_cycle_leaves_the_document_acyclic() {
     }
 }
 
-/// Ruling 4: a navigation is saved as it started (`navigate_tab` calls `edit_url` with the typed url), so a redirect
+/// A navigation is saved as it started (`navigate_tab` calls `edit_url` with the typed url), so a redirect
 /// the page makes before the save stays the live url only.
 #[test]
 fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
@@ -324,7 +323,7 @@ fn a_navigation_saves_the_url_it_started_with_not_the_redirect() {
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().url, "https://b/", "the live url is the page's");
 }
 
-/// Ruling 7: one writer for the field, queuing it only when it changed. Re-picking the same jar queues nothing.
+/// One writer for the field, queuing it only when it changed. Re-picking the same jar queues nothing.
 #[test]
 fn a_jar_pick_saves_the_field_and_only_when_it_changed() {
     let path = temp_dir("jar-pick").join("session.mnf");
@@ -346,7 +345,7 @@ fn a_jar_pick_saves_the_field_and_only_when_it_changed() {
     assert_eq!(stored(&app, tab, field::JAR), FieldValue::Id(None));
 }
 
-/// Closing a jar leaves a saved tab and a tab mid-respawn (its mirror entry outlives the respawn, Ruling 9) naming it,
+/// Closing a jar leaves a saved tab and a tab mid-respawn (its mirror entry outlives the respawn) naming it,
 /// and both resolve to the Default jar by the read rule (`resolve_jar`).
 #[test]
 fn closing_a_jar_leaves_saved_and_respawning_tabs_resolving_to_the_default_jar() {

@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Ruling 5: a swap queues its target when it starts (`start_swap_to`), so a save before the old engine's state
+/// A swap queues its target when it starts (`start_swap_to`), so a save before the old engine's state
 /// arrives writes the target (as `swap_target.unwrap_or(kind)` did before), while the old engine still runs.
 #[test]
 fn a_swap_saves_its_target_before_the_state_snapshot() {
@@ -21,7 +21,7 @@ fn a_swap_saves_its_target_before_the_state_snapshot() {
     assert_eq!(swap_target(&app, tab), Some(ViewKind::Cef));
 }
 
-/// Ruling 5: a switch whose new engine fails to start falls back to the old one, and writes it back when the
+/// A switch whose new engine fails to start falls back to the old one, and writes it back when the
 /// fallback starts; a fallback that fails too leaves a failed card on the old engine.
 #[test]
 fn a_failed_swap_writes_the_old_view_back() {
@@ -85,7 +85,7 @@ fn a_crash_mid_swap_restarts_on_the_target_with_the_old_view_as_fallback() {
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Servo));
 }
 
-/// Review I1: once the old engine's snapshot arrives, `swap_target` is gone but the swap is still in flight, parked
+/// Once the old engine's snapshot arrives, `swap_target` is gone but the swap is still in flight, parked
 /// until the host's cookies arrive (`hold_for_cookies`). Neither a local pick nor another replica's engine starts a
 /// second swap then (whose snapshot would never come once the first drops the host), and the tab lands on the engine
 /// the document holds.

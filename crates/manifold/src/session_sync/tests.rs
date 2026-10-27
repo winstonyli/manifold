@@ -170,7 +170,7 @@ fn remote_close(other: &mut Journal, node: NodeId, closed: bool) {
     remote_set(other, node, field::CLOSED, FieldValue::Replica(if closed { 99 } else { 0 }));
 }
 
-/// The note's text box has focus and holds `text` (2b-4 Ruling 6: the payload is the edit buffer).
+/// The note's text box has focus and holds `text` (the payload is the edit buffer).
 fn type_into(app: &mut App, note: NodeId, text: &str) {
     let n = app.nodes.get_mut(&note).unwrap().as_note_mut().unwrap();
     n.editing = true;

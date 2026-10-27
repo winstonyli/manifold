@@ -269,7 +269,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
     assert_eq!(app.doc.mirror.get(note, field::NAME), one());
 }
 
-/// Ruling 7: a remote text change that arrives while the note is typed in leaves the box alone and is held. At the
+/// A remote text change that arrives while the note is typed in leaves the box alone and is held. At the
 /// blur, what the user typed wins and the held value is dropped; with nothing typed, the held value applies.
 #[test]
 fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
@@ -298,7 +298,7 @@ fn a_remote_text_change_is_held_while_the_note_is_typed_in() {
     }
 }
 
-/// Ruling 7, a commit between: text a save already committed is older than a remote change held after it, so with
+/// A commit between: text a save already committed is older than a remote change held after it, so with
 /// nothing typed since, the held value applies at the blur. A remote change that arrives while a typed edit is
 /// pending loses to it, as any pending edit wins.
 #[test]
@@ -324,7 +324,7 @@ fn a_held_text_change_follows_the_order_of_the_commits() {
     assert_eq!(stored(&app, note, field::TEXT), FieldValue::Str("after".into()));
 }
 
-/// Ruling 7: a remote text held while the note is typed in is older than a local commit that follows it, so that
+/// A remote text held while the note is typed in is older than a local commit that follows it, so that
 /// commit drops it (`save_session`), and the blur keeps what was typed.
 #[test]
 fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
@@ -346,7 +346,7 @@ fn a_held_remote_text_is_dropped_by_a_later_local_commit() {
     assert_eq!(stored(&app, note, field::TEXT), FieldValue::Str("mine".into()));
 }
 
-/// As before 2b-4: a note nobody is typing in shows another replica's text at once.
+/// A note nobody is typing in shows another replica's text at once.
 #[test]
 fn a_remote_text_change_updates_an_idle_note() {
     let path = temp_dir("text-idle").join("session.mnf");
@@ -361,7 +361,7 @@ fn a_remote_text_change_updates_an_idle_note() {
     assert!(app.doc.writes.held_text.is_empty());
 }
 
-/// Ruling 9 with 2b-3 Ruling 3: a rename waiting for a save wins over another replica's.
+/// A rename waiting for a save wins over another replica's.
 #[test]
 fn a_pending_local_rename_wins_over_a_remote_one() {
     let path = temp_dir("name-pending").join("session.mnf");
@@ -398,7 +398,7 @@ fn the_view_kinds_cause_decides_whether_a_url_change_is_shared() {
     assert!(app.spawns.host_loads.is_empty(), "and ends the host's load");
 }
 
-/// Ruling 4: an unsaved local pos beats another replica's; their other fields still arrive, and the layout is not
+/// An unsaved local pos beats another replica's; their other fields still arrive, and the layout is not
 /// snapped to theirs.
 #[test]
 fn a_local_pos_edit_wins_over_a_remote_one() {
@@ -419,7 +419,7 @@ fn a_local_pos_edit_wins_over_a_remote_one() {
     assert_eq!(app.doc.mirror.get(note, field::NAME), one(), "their other field arrives");
 }
 
-/// Ruling 4: another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
+/// Another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
 #[test]
 fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
     let path = temp_dir("pos-remote").join("session.mnf");
@@ -438,7 +438,7 @@ fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
     assert_eq!(pos_stamp(app.doc.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
 }
 
-/// Ruling 4: a card the user is dragging is not snapped by a remote pos; its release then wins.
+/// A card the user is dragging is not snapped by a remote pos; its release then wins.
 #[test]
 fn a_remote_pos_does_not_snap_a_node_being_dragged() {
     let path = temp_dir("pos-remote-drag").join("session.mnf");
@@ -499,7 +499,7 @@ fn remote_jar_create_rename_and_delete_reach_jar_defs() {
     assert!(!app.jar_defs().contains_key(&jar));
 }
 
-/// Final review M1: a jar deleted here whose delete is not saved yet must not come back (nameless, from an
+/// A jar deleted here whose delete is not saved yet must not come back (nameless, from an
 /// ephemeral-only change, or whole) when the save's first round applies another device's edit to it.
 #[test]
 fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
@@ -522,7 +522,7 @@ fn a_remote_edit_does_not_bring_back_a_jar_deleted_here() {
     }
 }
 
-/// Ruling 9, extended to graph nodes (Task 4): a node closed here whose delete is not saved yet must not come back
+/// The same holds for graph nodes: a node closed here whose delete is not saved yet must not come back
 /// when the save's first round applies another replica's edit to it; the delete then commits. Without the guard the
 /// edit re-shows the node and its queued delete is lost.
 #[test]
@@ -546,7 +546,7 @@ fn a_remote_edit_does_not_bring_back_a_node_closed_here() {
     assert!(!app.doc.writes.has_deletes());
 }
 
-/// `mirror_remote` (Ruling 9) returns the fields another replica changed (old mirror value != new), so
+/// `mirror_remote` returns the fields another replica changed (old mirror value != new), so
 /// `update_live_node` can act on them, leaving out those a pending local edit holds back, which keep the local value.
 #[test]
 fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
@@ -581,7 +581,7 @@ fn a_pending_local_jar_rename_wins_over_a_remote_one() {
     assert_eq!(stored(&app, jar, field::NAME), FieldValue::Str("Job".into()));
 }
 
-/// Ruling 7: another device's ephemeral toggle has the local one's file side effects (`set_jar_ephemeral`): on deletes
+/// Another device's ephemeral toggle has the local one's file side effects (`set_jar_ephemeral`): on deletes
 /// the jar's file, off saves it back. It is applied, not queued as a local edit.
 #[test]
 fn a_remote_ephemeral_change_deletes_and_saves_the_jar_file() {
@@ -984,7 +984,7 @@ fn a_pending_move_into_a_remotely_deleted_group_lands_in_its_group() {
     assert_eq!(doc.effective_group(m), Some(outer));
 }
 
-/// Ruling 3: an unsaved local url beats another replica's edit to it; their other fields still arrive. The tab is not
+/// An unsaved local url beats another replica's edit to it; their other fields still arrive. The tab is not
 /// moved to their url (a live tab is sent no `Navigate`: `update_live_node` uses the one verdict for both).
 #[test]
 fn a_local_url_edit_wins_over_a_remote_one() {
@@ -1026,7 +1026,7 @@ fn a_remote_url_change_reaches_the_mirror_and_moves_a_sleeping_tab() {
     assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://moved/".into()));
 }
 
-/// Ruling 3: an unsaved local jar pick beats another replica's; their other fields still arrive.
+/// An unsaved local jar pick beats another replica's; their other fields still arrive.
 #[test]
 fn a_local_jar_pick_wins_over_a_remote_one() {
     let path = temp_dir("jar-local-wins").join("session.mnf");
@@ -1044,7 +1044,7 @@ fn a_local_jar_pick_wins_over_a_remote_one() {
     assert!(app.doc.mirror.pinned(tab), "their other field arrives");
 }
 
-/// Ruling 3: another replica's engine reaches the mirror and switches a live tab to it; nothing is written back.
+/// Another replica's engine reaches the mirror and switches a live tab to it; nothing is written back.
 #[test]
 fn a_remote_view_change_on_a_live_tab_starts_a_swap() {
     let path = temp_dir("engine-remote-live").join("session.mnf");
@@ -1061,7 +1061,7 @@ fn a_remote_view_change_on_a_live_tab_starts_a_swap() {
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
 }
 
-/// Ruling 3: a swap in flight here beats another replica's engine, while its edit is unsaved (the mirror holds the
+/// A swap in flight here beats another replica's engine, while its edit is unsaved (the mirror holds the
 /// remote value back) and after it is saved (written again), so the document ends on the engine this tab lands on.
 #[test]
 fn a_local_swap_in_flight_wins_over_a_remote_view_kind() {
@@ -1087,7 +1087,7 @@ fn a_local_swap_in_flight_wins_over_a_remote_view_kind() {
     assert_eq!(asked, 1, "no second swap started");
 }
 
-/// Review M8: another replica's engine reaches a sleeping card through the mirror alone (nothing spawns, nothing is
+/// Another replica's engine reaches a sleeping card through the mirror alone (nothing spawns, nothing is
 /// queued), and the card wakes into it.
 #[test]
 fn a_remote_view_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
@@ -1106,7 +1106,7 @@ fn a_remote_view_change_on_a_sleeping_card_is_the_one_it_wakes_into() {
 }
 
 /// Final review Minor 6: another replica's url reaches a live tab as a `Navigate`; a url held back by a pending
-/// local edit sends none (the mirror refused it, 2b-3 Ruling 3).
+/// local edit sends none (the mirror refused it).
 #[test]
 fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
     let path = temp_dir("url-remote-live").join("session.mnf");
@@ -1129,7 +1129,7 @@ fn a_remote_url_navigates_a_live_tab_unless_a_local_url_is_pending() {
     assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://local/".into()));
 }
 
-/// Final review I1, url: another replica's url, parked while the tab wakes (`remote_in_flight`), still navigates
+/// Url: another replica's url, parked while the tab wakes (`remote_in_flight`), still navigates
 /// it when it lands, though a commit in between (here an unrelated Delete) saw that url in the document: the mirror
 /// keeps the url the tab had until the landing applies the parked change against it.
 #[test]
@@ -1154,8 +1154,8 @@ fn a_remote_url_parked_during_a_wake_navigates_the_tab_when_it_lands() {
     assert_eq!(app.doc.mirror.url(tab), "https://r/");
 }
 
-/// Final review I1, engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
-/// the tab when it lands, though a jar edit (which reaches a respawning tab, Ruling 9) committed
+/// Engine: another replica's engine, parked while a swap's respawn is in flight, still reaches
+/// the tab when it lands, though a jar edit (which reaches a respawning tab) committed
 /// a Set for the tab in between (the parked change takes the committed jar, so the landing does not replay the old
 /// one over it). The document and the running engine end up agreeing: the landing starts a swap to it.
 #[test]
@@ -1187,7 +1187,7 @@ fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Webview2));
 }
 
-/// Ruling 6: a jar deleted on another device stays stored (dangling, it reads as the Default jar) instead of being
+/// A jar deleted on another device stays stored (dangling, it reads as the Default jar) instead of being
 /// cleared by this device's next save.
 #[test]
 fn a_remote_deleted_group_jar_stays_stored() {

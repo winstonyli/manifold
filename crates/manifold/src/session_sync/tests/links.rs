@@ -162,7 +162,7 @@ fn a_tab_that_becomes_content_keeps_its_links() {
     assert!(app.save_session());
 }
 
-/// Links final review M2: merging S into T moves S's links onto T, keeping their direction, except one that would join T
+/// Merging S into T moves S's links onto T, keeping their direction, except one that would join T
 /// to itself (S-T) and one to a card T is already linked to (S-c beside T-c). Restored as saved.
 #[test]
 fn merging_a_group_retargets_its_links_onto_the_target() {

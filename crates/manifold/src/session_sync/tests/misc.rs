@@ -266,7 +266,7 @@ fn a_session_with_only_jars_still_restores_them() {
     assert!(back.doc.journal.as_ref().unwrap().doc().nodes[&jar].is_live());
 }
 
-/// Ruling 9 (2b-2's parked item): `recheck_edge_scope` reaches a tab mid-respawn, so a local move that takes its
+/// `recheck_edge_scope` reaches a tab mid-respawn, so a local move that takes its
 /// edge out of reach clears it, and it lands without it.
 #[test]
 fn a_respawning_tab_follows_a_local_moves_edge_recheck() {

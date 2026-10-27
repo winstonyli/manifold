@@ -284,8 +284,7 @@ pub(crate) fn card_style(kind: CardKind, visuals: &egui::Visuals) -> CardStyle {
         overload_border: danger(visuals),
         dark: visuals.dark_mode,
     };
-    // Presentation matches the type; behaviour reads the container table (`is_container`). See the plan 2b-6
-    // Outcome, "Presentation arms".
+    // Presentation matches the type; behaviour reads the container table (`is_container`).
     match kind.ty {
         // The accent at rest, as group cards have always been.
         TYPE_GROUP => CardStyle { border_idle: accent(visuals), ..themed },
@@ -861,16 +860,14 @@ pub(crate) fn pdf_card_size(pdf: &PdfPayload) -> egui::Vec2 {
 /// Any node's own card size, every kind -- the one source the card
 /// frame (`App::draw_graph_card`), `bounds_for_level`, the LOD visible
 /// count and the right-click hit test all read, so none of them can
-/// disagree about how big a given card is (they used to each carry
-/// their own per-kind copy, and the LOD count approximated Image/Pdf).
+/// disagree about how big a given card is.
 pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
     match runtime {
         Runtime::Tab(_) | Runtime::Unloaded(_) => GRAPH_NODE_SIZE,
         Runtime::Download(_) => DOWNLOAD_NODE_SIZE,
         Runtime::Note(_) => NOTE_NODE_SIZE,
         Runtime::Jar => JAR_NODE_SIZE,
-        // A placeholder has no real size: the same box a failed PDF gets.
-        // No size yet (still decoding, `ImagePayload::decoding`) or a placeholder: the box a pending PDF gets.
+        // No real size yet (still decoding, `ImagePayload::decoding`) or a placeholder: the box a pending PDF gets.
         Runtime::Image(image) if image.error.is_some() || image.decoding() => PDF_PENDING_NODE_SIZE,
         Runtime::Image(image) => image_node_card_size(image.width, image.height),
         Runtime::Pdf(pdf) => pdf_card_size(pdf),

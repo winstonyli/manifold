@@ -248,7 +248,7 @@ fn a_pull_merges_into_the_jar_the_tab_was_spawned_with() {
 #[test]
 fn a_pull_with_no_entry_or_a_deleted_jar_is_dropped() {
     let mut app = App::default();
-    assert!(!app.apply_pulled_cookies(node(9), SID), "no jar_tabs entry: dropped (deviation 5)");
+    assert!(!app.apply_pulled_cookies(node(9), SID), "no jar_tabs entry: dropped");
     let work = add_jar(&mut app, "Work");
     app.cookies.jar_tabs.insert(node(1), (work, jar::TabCookies::default()));
     app.remove_remotely_deleted(work);
@@ -281,7 +281,7 @@ fn an_ephemeral_jar_never_writes_a_file() {
     assert!(app.apply_pulled_cookies(node(1), SID));
     assert!(!jar::Jar::path(&dir, tmp).exists());
     app.set_jar_ephemeral(tmp, false);
-    assert!(jar::Jar::path(&dir, tmp).exists(), "turned off: saved (deviation 10)");
+    assert!(jar::Jar::path(&dir, tmp).exists(), "turned off: saved");
     app.set_jar_ephemeral(tmp, true);
     assert!(!jar::Jar::path(&dir, tmp).exists(), "turned on: file deleted");
     assert_eq!(app.jars[&tmp].cookies.len(), 1, "cookies kept in memory until quit");
@@ -317,7 +317,7 @@ fn jar_saved_earlier(name: &str) -> (std::path::PathBuf, App, store::model::Node
     (dir, app, work)
 }
 
-/// Final review I1: ephemeral on, then off, for a jar not loaded this run must not lose its saved logins: on
+/// Ephemeral on, then off, for a jar not loaded this run must not lose its saved logins: on
 /// loads them first (they stay in memory until quit), off saves them back.
 #[test]
 fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
@@ -331,7 +331,7 @@ fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
     assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
 }
 
-/// Final review I1: a locked jar's unreadable file (and its earlier copies) is never touched, ephemeral or not.
+/// A locked jar's unreadable file (and its earlier copies) is never touched, ephemeral or not.
 #[test]
 fn ephemeral_on_leaves_a_locked_jars_files_alone() {
     let dir = store::testutil::temp_dir("jar-ephemeral-locked");
@@ -349,7 +349,7 @@ fn ephemeral_on_leaves_a_locked_jars_files_alone() {
     assert!(jar::Jar::path(&dir, key).is_dir() && aside.exists(), "off saves nothing over it");
 }
 
-/// Final review I1: Settings asks before making a jar with saved logins ephemeral; one without, or turning it
+/// Settings asks before making a jar with saved logins ephemeral; one without, or turning it
 /// off, acts at once.
 #[test]
 fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
@@ -375,7 +375,7 @@ fn jar_saves(app: &App) -> usize {
     app.jar_saves.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Wave 2 (Jar H3): fifteen tabs pull a rotating cookie into one jar. They are saved once, when the round ends.
+/// Fifteen tabs pull a rotating cookie into one jar. They are saved once, when the round ends.
 #[test]
 fn a_burst_of_pulls_saves_the_jar() {
     let dir = store::testutil::temp_dir("jar-burst");
@@ -396,7 +396,7 @@ fn a_burst_of_pulls_saves_the_jar() {
     assert_eq!(jar::Jar::load(&dir, key).cookies[0].value, "v14", "the file holds the last value");
 }
 
-/// Wave 2 (Jar H3): a dirty jar is saved once no pull is pending, or once it has waited `JAR_FLUSH_AFTER`. A pull
+/// A dirty jar is saved once no pull is pending, or once it has waited `JAR_FLUSH_AFTER`. A pull
 /// that timed out unanswered keeps its entry but holds nothing back.
 #[test]
 fn a_dirty_jar_is_saved_when_its_pull_round_ends() {
@@ -432,7 +432,7 @@ fn a_dirty_jar_is_saved_when_its_pull_round_ends() {
     assert_eq!(jar_saves(&app), 3, "no pull is out: the round is over");
 }
 
-/// Wave 2 (Jar H3): a jar whose first login is not on disk yet still asks before ephemeral deletes it.
+/// A jar whose first login is not on disk yet still asks before ephemeral deletes it.
 #[test]
 fn ephemeral_on_asks_first_for_a_jar_whose_cookies_are_not_saved_yet() {
     let dir = store::testutil::temp_dir("jar-ephemeral-dirty");
@@ -483,7 +483,7 @@ fn clearing_a_jar_marks_its_running_tabs_for_a_reseed() {
     assert!(!app.cookies.jar_reseed.contains(&node(1)));
 }
 
-/// Final review I3: a Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
+/// A Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
 /// honoured: the host holds the old cookies, so it is marked to switch like the hosts running at the clear, even
 /// though the landing first wipes its id's old cookie state.
 #[test]

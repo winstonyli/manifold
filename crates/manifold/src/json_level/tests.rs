@@ -118,7 +118,7 @@ fn a_json_level_hides_the_links_section_and_ends_pick_target_mode() {
     assert!(app.node_menu_view(note).unwrap().edges.is_empty());
 }
 
-/// Review C-B11: screen<->world agree with the outline open.
+/// Screen<->world agree with the outline open.
 #[test]
 fn screen_to_world_inverts_world_to_screen_with_the_outline_open() {
     let (mut app, j) = app_with_json("inverse", r#"{"a": 1}"#);
@@ -361,7 +361,7 @@ fn a_failed_reload_keeps_the_view() {
     assert_eq!(app.doc.mirror.view(J).expect("a view").to_field(), before, "the error card keeps the view for Retry");
 }
 
-/// Ruling 8: a reload removes the node and inserts it again, but the view lives in the mirror, which keeps it;
+/// A reload removes the node and inserts it again, but the view lives in the mirror, which keeps it;
 /// only overrides the new value can't resolve are dropped.
 #[test]
 fn a_reload_keeps_the_view() {
@@ -585,7 +585,7 @@ fn leaving_the_level_stops_its_worker() {
     assert_eq!(checks.get(), 1, "at its first check");
 }
 
-/// Review D-B6: while a worker searches, the previous query's result is gone.
+/// While a worker searches, the previous query's result is gone.
 #[test]
 fn a_pending_search_hides_the_previous_result() {
     let items: Vec<String> = (0..json_view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
@@ -700,7 +700,7 @@ fn level_of(node: NodeId, json: &str) -> JsonLevel {
     JsonLevel::new(node, Arc::new(serde_json::from_str(json).unwrap()), &crate::json_view::NO_VIEW)
 }
 
-/// Plan Task 3b: every card of a level has its own non-node id.
+/// Every card of a level has its own non-node id.
 #[test]
 fn two_cards_of_one_level_get_different_ids() {
     let level = level_of(node(5), r#"{"a": {"x": 1}, "b": {"y": 2}}"#);
@@ -714,7 +714,7 @@ fn two_cards_of_one_level_get_different_ids() {
     }
 }
 
-/// Review Focus 0: a card's id names its pointer, not its index, so collapsing a sibling that moves it in the card
+/// A card's id names its pointer, not its index, so collapsing a sibling that moves it in the card
 /// list leaves its id alone.
 #[test]
 fn a_cards_id_is_unchanged_when_a_sibling_is_expanded() {

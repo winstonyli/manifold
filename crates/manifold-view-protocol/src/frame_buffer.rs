@@ -380,8 +380,7 @@ mod tests {
         println!("  {what:<58} best {best:>10.1?}  median {median:>10.1?}");
     }
 
-    /// Frame-path Task 1, M2a: what the engines' frame copies and the app's per-frame map cost at 1920x1080
-    /// (survey E2). Run: `cargo test --release -p manifold-view-protocol handoff_timing -- --ignored --nocapture`.
+    /// What the engines' frame copies and the app's per-frame map cost at 1920x1080. Run: `cargo test --release -p manifold-view-protocol handoff_timing -- --ignored --nocapture`.
     #[test]
     #[ignore = "timing bench; run by hand"]
     fn handoff_timing() {

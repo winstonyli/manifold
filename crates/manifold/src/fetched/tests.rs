@@ -158,7 +158,7 @@ fn insert_content_dispatches_web_content_and_keeps_its_url() {
     let source = ContentSource::Web { url: "https://x.test/note.txt".into(), body: WebBody::Text("hi".into()) };
     app.insert_content(source, note_id, egui::Vec2::ZERO, None).unwrap();
     assert_eq!(app.source_url(note_id), Some("https://x.test/note.txt"));
-    // 2b-5 Task 1: the url is the mirror's, seeded at creation, so the next save creates the node with it.
+    // The url is the mirror's, seeded at creation, so the next save creates the node with it.
     assert_eq!(
         (app.doc.mirror.url(id), app.doc.mirror.url(note_id)),
         ("https://x.test/a.png", "https://x.test/note.txt")
@@ -167,7 +167,7 @@ fn insert_content_dispatches_web_content_and_keeps_its_url() {
     assert_eq!(snapshot.fields[&field::URL], FieldValue::Str("https://x.test/a.png".into()));
 }
 
-/// 2b-5 Task 1: a download's address is the mirror's from the moment its card is placed, and its type is seeded.
+/// A download's address is the mirror's from the moment its card is placed, and its type is seeded.
 #[test]
 fn a_new_download_has_its_url_and_type_in_the_mirror() {
     use crate::session_sync::tests::{add, sleeping_tab};
@@ -181,7 +181,7 @@ fn a_new_download_has_its_url_and_type_in_the_mirror() {
     assert_eq!(app.doc.mirror.get(id, field::PATH), FieldValue::Str("f.bin".into()));
 }
 
-/// 2b-5 Ruling 5: a reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
+/// A reload that lands in a new file keeps the stored (create-time) path in the mirror, which the
 /// save writes, while the payload reads the new one.
 #[test]
 fn a_reload_keeps_the_stored_path_and_duplicating_exports_the_resolved_one() {
@@ -801,7 +801,7 @@ fn detach_refuses_a_card_whose_file_has_not_arrived() {
 
 #[test]
 fn two_replicas_detaching_one_file_write_identical_registers() {
-    // Equal trees merge to themselves, so a synced array cannot double (PARKED "Concurrent detach", plan 4b D4).
+    // Equal trees merge to themselves, so a synced array cannot double (PARKED "Concurrent detach").
     let body = r#"{"list": [1, 2, [3]]}"#;
     let mut trees = Vec::new();
     for actor in [1, 2] {

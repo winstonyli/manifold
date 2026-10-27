@@ -100,7 +100,7 @@ pub(crate) fn color_of(value: &FieldValue) -> Option<egui::Color32> {
 }
 
 /// Whether a card of stored type `ty` can run on `runtime`: the pairing `place_node` and the landings establish.
-/// A tab's runtime is one type whether it is loaded or asleep; a group has none (2b-6 Ruling 8); a type this build
+/// A tab's runtime is one type whether it is loaded or asleep; a group has none; a type this build
 /// doesn't know reads as `TYPE_UNKNOWN` (`card_kind::canonical_type`).
 #[cfg(debug_assertions)]
 fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
@@ -131,9 +131,9 @@ pub(crate) fn view_kind_of(code: u64) -> ViewKind {
     ViewKind::from_code(code).unwrap_or(ViewKind::Servo)
 }
 
-/// The one resolver of the links a commit writes (2b-5 Ruling 12): `target` stands if the document shows it live
+/// The one resolver of the links a commit writes: `target` stands if the document shows it live
 /// and this commit (`deleted`) doesn't delete it, or this commit (`created`) creates it; otherwise it is written as
-/// none (contract "Missing means deleted"; Ruling 5). A closed target is still valid: its node is only gone once
+/// none (contract "Missing means deleted"). A closed target is still valid: its node is only gone once
 /// its delete commits.
 fn resolve_id(
     doc: &Doc,
@@ -144,8 +144,8 @@ fn resolve_id(
     target.filter(|t| (doc.nodes.get(t).is_some_and(Node::is_live) && !deleted.contains(t)) || created.contains(t))
 }
 
-/// The `Create`s for `new`, the queued nodes the document has no entry for, each with what it shows (Ruling 3),
-/// each group's chain of new ancestors before the nodes inside it (Ruling 13). Every link a `Create` carries
+/// The `Create`s for `new`, the queued nodes the document has no entry for, each with what it shows,
+/// each group's chain of new ancestors before the nodes inside it. Every link a `Create` carries
 /// (`group`, `parent`, a tab's `jar`, a group's `default_jar`) goes through `resolve_id`, against this commit's
 /// `deleted`. A group created later in the batch (only a cycle does that) would make a placeholder: the node is
 /// created at the top level instead.
@@ -352,7 +352,7 @@ impl App {
             self.materialize(*id, s, None);
         }
         nodes.retain(|(_, s)| s.kind().card());
-        // Only jars (with Task 3, the Default at least): a fresh start, which keeps them where they are.
+        // Only jars (the Default at least): a fresh start, which keeps them where they are.
         if nodes.iter().all(|(_, s)| s.kind() == Kind::Jar) {
             for (id, s) in &nodes {
                 self.materialize(*id, s, None);

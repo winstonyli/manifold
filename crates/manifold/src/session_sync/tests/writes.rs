@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The commit builder (2b-5 Task 3): a save creates every queued node the document lacks, each group before the
+/// The commit builder: a save creates every queued node the document lacks, each group before the
 /// nodes inside it, so a member's `Create` names a group that exists. The member's id sorts before its group's.
 #[test]
 fn new_nodes_are_created_groups_first() {
@@ -30,7 +30,7 @@ fn an_unchanged_graph_emits_nothing() {
 }
 
 /// A node removed here is deleted at the next save (`queue_delete`); a tab mid-respawn is not removed, so it is kept
-/// (Ruling 4: `spawning` is no longer a keep list, respawns just never queue).
+/// (`spawning` is not a keep list: respawns never queue).
 #[test]
 fn a_removed_node_is_deleted_and_a_respawning_one_kept() {
     let mut app = app_on(&temp_dir("delete-unless-respawning").join("session.mnf"), 1);
@@ -85,7 +85,7 @@ fn re_homing_out_of_a_deleted_group_is_not_a_move() {
     assert_eq!(ops_of(&app), ops, "nothing written");
 }
 
-/// A new node's `parent` naming an id the document has never seen is written as none (Ruling 12: one resolver for
+/// A new node's `parent` naming an id the document has never seen is written as none (one resolver for
 /// every Id a `Create` carries).
 #[test]
 fn a_parent_naming_a_missing_node_is_written_as_none() {
@@ -96,8 +96,8 @@ fn a_parent_naming_a_missing_node_is_written_as_none() {
     assert_eq!(stored(&app, tab, field::PARENT), FieldValue::Id(None));
 }
 
-/// A created node's parent or group that the same save deletes is written as none, not as the dead id (Ruling 5;
-/// final review minor 3): a new tab opened from a tab into a group, both closed before its spawn landed.
+/// A created node's parent or group that the same save deletes is written as none, not as the dead id:
+/// a new tab opened from a tab into a group, both closed before its spawn landed.
 #[test]
 fn a_create_naming_a_node_deleted_by_the_same_save_writes_none() {
     let mut app = app_on(&temp_dir("create-names-deleted").join("session.mnf"), 1);
@@ -241,7 +241,7 @@ fn a_download_is_created_once_it_completes() {
     assert!(live_in_doc(&app, dl), "created");
 }
 
-/// Ruling 14: in a test build every save checks that the live graph and the document agree, so a node that leaves
+/// In a test build every save checks that the live graph and the document agree, so a node that leaves
 /// `nodes` behind the queues' back (a missed delete funnel) is caught at once.
 #[test]
 #[should_panic(expected = "delete funnel")]
@@ -277,7 +277,7 @@ fn a_node_whose_runtime_does_not_match_its_type_trips_the_invariant() {
     app.save_session();
 }
 
-/// Ruling 3: a new node's `Create` carries where it was placed, not where a settle moved it before the first save.
+/// A new node's `Create` carries where it was placed, not where a settle moved it before the first save.
 #[test]
 fn a_node_is_created_at_its_placement_not_its_settled_position() {
     let path = temp_dir("pos-create").join("session.mnf");
@@ -312,7 +312,7 @@ fn a_read_only_store_saves_nothing() {
 /// would touch both files even when nothing happened. `insert_note_at`
 /// (main.rs) is private to that module and also saves as a side effect,
 /// so this uses the `add` helper and sets the settled position directly,
-/// same as Task 5's own no-window tests.
+/// like the other no-window tests.
 #[test]
 fn an_idle_open_and_close_writes_nothing() {
     let dir = crate::store::testutil::temp_dir("idle-app");
@@ -519,7 +519,7 @@ fn queue_create_skips_an_id_the_document_already_has() {
     assert!(!app.doc.writes.has_creates(), "a tombstone: never recreated");
 }
 
-/// 2b-5 Ruling 7: a jar's name, colour and ephemeral flag are mirror fields. Creating, renaming and toggling a jar
+/// A jar's name, colour and ephemeral flag are mirror fields. Creating, renaming and toggling a jar
 /// write them through `edit_field` and the save stores them; the mirror keeps the jar's entry across saves
 /// (`Mirror::retain`), and a remote change reaches the mirror and `jar_defs`.
 #[test]
@@ -573,7 +573,7 @@ fn tabs_still_spawning_at_quit_are_saved() {
     assert_eq!(tabs, [(Kind::Tab, FieldValue::Str("https://new/".into()))]);
 }
 
-/// The mirror is what this replica knows of the store (2b-5 Task 4: `last_shared` is gone). After each kind of save,
+/// The mirror is what this replica knows of the store. After each kind of save,
 /// nothing pending, every live node's snapshot (`App::snapshot`: the mirror's fields and group) must be exactly what
 /// the store holds for it, whether the commit wrote it, another replica did, or a remote delete moved it.
 #[test]
@@ -676,8 +676,8 @@ fn an_edit_to_an_unsaved_node_removed_before_the_save_leaves_no_placeholder() {
     assert!(!doc.nodes.contains_key(&note), "no entry at all for the id");
 }
 
-/// Since 2b-5 Task 2 a jar's fields are mirrored like every other kind's: `App::pending` writes them, and nothing
-/// compares the mirror with the document (Task 3: `diff` is gone), so a value written to the mirror directly is
+/// A jar's fields are mirrored like every other kind's: `App::pending` writes them, and nothing
+/// compares the mirror with the document, so a value written to the mirror directly is
 /// never saved.
 #[test]
 fn a_jars_fields_reach_the_document_only_through_pending() {
@@ -760,7 +760,7 @@ fn a_parent_deleted_by_the_same_commit_is_written_as_none() {
     assert_eq!(stored(&app, b, field::PARENT), FieldValue::Id(None));
 }
 
-/// A parent target created by the same commit is kept (Ruling 5).
+/// A parent target created by the same commit is kept.
 #[test]
 fn a_parent_created_by_the_same_commit_is_kept() {
     let path = temp_dir("parent-new").join("session.mnf");
@@ -802,7 +802,7 @@ fn a_move_into_a_group_deleted_by_the_same_save_is_written_as_none() {
     assert_eq!(app.doc.mirror.group(t), None, "the mirror shows what the commit wrote");
 }
 
-/// Ruling 8: a pending `jar` is resolved at commit like `parent`: a jar this commit deletes is written as none, and
+/// A pending `jar` is resolved at commit like `parent`: a jar this commit deletes is written as none, and
 /// the mirror shows what was written.
 #[test]
 fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
@@ -821,7 +821,7 @@ fn a_pending_jar_naming_a_jar_deleted_in_this_commit_is_written_as_none() {
     assert_eq!(app.doc.mirror.jar(tab), None, "the mirror shows what was written");
 }
 
-/// Ruling 8, `Create`: a new tab naming a jar the same commit deletes is created with none; one naming a jar the same
+/// `Create`: a new tab naming a jar the same commit deletes is created with none; one naming a jar the same
 /// commit creates keeps it.
 #[test]
 fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
@@ -842,8 +842,7 @@ fn a_created_tab_naming_a_jar_deleted_in_this_commit_is_created_with_none() {
     assert_eq!(stored(&app, other, field::JAR), FieldValue::Id(Some(home)), "a jar created here is kept");
 }
 
-/// Ruling 8's accepted behavior change: a tab naming a jar another replica deleted keeps naming it through a save (it
-/// was cleared by every save before). Its chip still says the jar is missing.
+/// A tab naming a jar another replica deleted keeps naming it through a save. Its chip still says the jar is missing.
 #[test]
 fn a_dangling_remote_deleted_jar_survives_a_save() {
     let path = temp_dir("jar-dangling").join("session.mnf");
@@ -863,7 +862,7 @@ fn a_dangling_remote_deleted_jar_survives_a_save() {
     assert!(app.jar_chip(tab).is_some_and(|c| c.missing), "the chip says the jar is missing");
 }
 
-/// Ruling 6: an engine code this build doesn't know (a newer build's) reads as Servo, and is not overwritten by a
+/// An engine code this build doesn't know (a newer build's) reads as Servo, and is not overwritten by a
 /// save or by waking the tab on the engine it reads as.
 #[test]
 fn an_unknown_view_code_survives_a_save() {
@@ -886,7 +885,7 @@ fn an_unknown_view_code_survives_a_save() {
     assert_eq!(stored(&app, tab, field::VIEW_KIND), FieldValue::ViewCode(99), "nor by a wake");
 }
 
-/// Review M8, Ruling 6: an unknown engine code survives a wake that lands live too: the live tab's save reads the
+/// An unknown engine code survives a wake that lands live too: the live tab's save reads the
 /// mirror's raw value, not the engine it runs.
 #[test]
 fn an_unknown_view_code_survives_a_tab_landing_live() {
@@ -942,7 +941,7 @@ fn a_new_tab_whose_jar_is_deleted_after_its_create_dangles_to_the_default() {
     assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(work)), "dangling, never rewritten");
 }
 
-/// Ruling 10: every way a node is made seeds its type in the mirror (`Mirror::ty`): placed here, landed from a spawn,
+/// Every way a node is made seeds its type in the mirror (`Mirror::ty`): placed here, landed from a spawn,
 /// or materialized from the document.
 #[test]
 fn every_creation_path_seeds_the_node_type() {
@@ -1008,7 +1007,7 @@ fn every_creation_path_seeds_the_node_type() {
 }
 
 /// A node's `Create` resolves its Id fields (`create_ops`'s `valid`): a link to a node deleted meanwhile is written as
-/// none, and the mirror shows what the document holds, as after an edit (2b-5 Task 1 review).
+/// none, and the mirror shows what the document holds, as after an edit.
 #[test]
 fn a_created_group_shows_the_jar_its_create_resolved() {
     let path = temp_dir("group-jar-create").join("session.mnf");

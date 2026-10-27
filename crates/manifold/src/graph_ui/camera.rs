@@ -79,7 +79,7 @@ impl GraphCamera {
     /// minimap, which all read `rect`, skipped that margin: a card dragged
     /// into it vanished.
     ///
-    /// When `outer` differs from the last area only in width, the world stays put instead (card-pane spec R1): `rect`
+    /// When `outer` differs from the last area only in width, the world stays put instead: `rect`
     /// is first fitted to the last area, then keeps that scale and left edge, so a panel on the right covers or shows
     /// a strip rather than zooming everything. A running ease's endpoints are kept the same way, or its next step
     /// would bring back their old shape.
@@ -121,9 +121,7 @@ impl GraphCamera {
     /// "fit the visible scene rect into the available screen area,
     /// preserving aspect ratio, clamped to the configured zoom range"
     /// behavior exactly (using the *same* `rect` `Scene` itself
-    /// reads/writes) — verified live by screenshotting a
-    /// mid-animation frame and confirming the content quad visually lines
-    /// up with the target node's real on-screen position.
+    /// reads/writes).
     pub(crate) fn transform(&self, outer: egui::Rect) -> (f32, egui::Vec2) {
         let rect = self.filled(outer);
         let scale = (outer.size() / rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
@@ -158,7 +156,7 @@ fn fit(rect: egui::Rect, outer: egui::Rect) -> egui::Rect {
 }
 
 /// `rect` as shown in `last`, resized to `outer` (which differs from it only in width) at the same scale and left
-/// edge (R1).
+/// edge.
 fn keep_world(rect: egui::Rect, last: egui::Rect, outer: egui::Rect) -> egui::Rect {
     let shown = fit(rect, last);
     egui::Rect::from_min_size(shown.min, outer.size() * (shown.width() / last.width()))
@@ -199,10 +197,9 @@ impl App {
     }
 
     /// Inverse of `graph_world_rect_to_screen`: where a screen point
-    /// (window points, Graph view) lands in world space right now -- the
-    /// same projection a click there is hit-tested against (see
-    /// `handle_rect_select`'s own `world_pos`). Used to place a file
-    /// dropped on the window (`drop_file`).
+    /// (window points, Graph view) lands in world space right now: the
+    /// inverse of the projection `graph_world_rect_to_screen` uses. Used to
+    /// place a file dropped on the window (`drop_file`).
     pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
         let (scale, translation) = self.camera.transform(self.graph_scene_outer_rect());
         (point.to_vec2() - translation) / scale
@@ -254,7 +251,7 @@ impl App {
             self.camera.reveal = None;
             self.camera.pan_to(rect);
         }
-        // Card-pane R2: an ease would move the world under a dragged card, so a drag ends any (a press-drag can follow
+        // An ease would move the world under a dragged card, so a drag ends any (a press-drag can follow
         // the click that started one) and refuses new ones.
         if self.interaction.dragging.is_some() {
             self.camera.tween = None;
@@ -441,12 +438,9 @@ impl App {
     /// background pan sense already covers this whole panel (it's
     /// allocated over `scene_outer_rect`, which the minimap sits inside)
     /// and wins egui's hit-testing for any widget added here, so a
-    /// normal `interact()`-based click never actually saw the pointer --
-    /// confirmed live via temporary logging showing zero hover events
-    /// even with the cursor sitting directly over the minimap. The same
-    /// "read `ui.input` directly, ignore widget hit-testing entirely"
-    /// fix the rectangle-select marquee already needed for an identical
-    /// reason (see that code's own doc comment).
+    /// normal `interact()`-based click never sees the pointer, not even a
+    /// hover. The rectangle-select marquee reads `ui.input` directly and
+    /// ignores widget hit-testing for the same reason.
     pub(crate) fn handle_minimap_click(
         &mut self,
         ui: &egui::Ui,
@@ -490,7 +484,7 @@ mod tests {
         assert!(app.camera.is_moving() && app.camera.reveal.is_none(), "eased to the far card");
     }
 
-    /// Review M2 (card-pane R2): no ease moves the world under a dragged card, neither one already running (a click
+    /// No ease moves the world under a dragged card, neither one already running (a click
     /// on a half-hidden card, then a quick drag) nor a reveal asked for during the drag.
     #[test]
     fn a_drag_stops_and_refuses_camera_eases() {
@@ -596,7 +590,7 @@ mod tests {
         assert_eq!(tween.to, egui::Rect::from_center_size(far.center(), camera.rect.size()));
     }
 
-    /// R1: an area that only narrows (the right panel opening) keeps the scale and the visible left edge, so the
+    /// An area that only narrows (the right panel opening) keeps the scale and the visible left edge, so the
     /// panel covers a strip; widening back shows the same world again.
     #[test]
     fn a_change_of_width_alone_keeps_the_scale_and_the_left_edge() {
@@ -615,7 +609,7 @@ mod tests {
         assert_eq!(camera.rect, before, "widening back shows the same world");
     }
 
-    /// Review M1: an ease still running when only the width changes keeps its scale; its endpoints are anchored like
+    /// An ease still running when only the width changes keeps its scale; its endpoints are anchored like
     /// `rect`, else the next frame's `advance` brings back their old shape and the centred fit zooms out.
     #[test]
     fn an_ease_running_through_a_width_change_keeps_its_scale() {
@@ -633,7 +627,7 @@ mod tests {
         }
     }
 
-    /// R1: a rect of another shape (a fit, a tween target) is first fitted to the last area, so the left edge kept is
+    /// A rect of another shape (a fit, a tween target) is first fitted to the last area, so the left edge kept is
     /// the one on screen, not the rect's own.
     #[test]
     fn a_narrowing_keeps_the_left_edge_shown_not_the_rects_own() {
@@ -662,7 +656,7 @@ mod tests {
         assert_eq!(early, camera.transform(narrow));
     }
 
-    /// R1 leaves every other change to today's centred fit: a taller area keeps the centre.
+    /// Every other change gets the centred fit: a taller area keeps the centre.
     #[test]
     fn a_change_of_height_keeps_the_centred_fit() {
         let outer = egui::Rect::from_min_size(egui::pos2(0.0, 40.0), egui::vec2(1000.0, 600.0));

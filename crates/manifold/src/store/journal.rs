@@ -29,8 +29,7 @@ pub const FORMAT_VERSION: u64 = 4;
 pub mod frame {
     pub const SNAPSHOT: u64 = 2;
     pub const OPS: u64 = 3;
-    /// Never reused: 1 was a file-wide actor table (each frame now
-    /// carries its own), 4 was personal state (now `<session>.local`).
+    /// Never reused (1 and 4 are retired field numbers).
     #[cfg(test)]
     pub const RETIRED: [u64; 2] = [1, 4];
 }
@@ -438,7 +437,7 @@ fn doc_actors(doc: &Doc) -> Actors {
 /// Snapshot: `{1: doc id, 2: node*, 3: version*, 4: reserved for a
 /// retained Move-log tail, 5: clock, 6: actor*}`. A node is `{1: id, 3:
 /// deleted, 4: group, 5: register*}` (2, the numeric kind, is retired: the
-/// kind is the `type` register since format 2) and a register `{1: field,
+/// kind is the `type` register) and a register `{1: field,
 /// 2: stamp, 3: value encoding, 4: path (absent at the root)}`. The actor table is sorted, and nodes and
 /// registers are in id and (field, path) order, so equal documents encode to
 /// equal bytes.
@@ -571,8 +570,6 @@ fn op_actors(op: &Op) -> Vec<ActorId> {
     actors
 }
 
-/// Ops: `{1: actor*, 2: op*}`, the frame's table with the author first
-/// (index 0) and then every other actor its ops name, in first-use order.
 // The body field numbers of an op message, named once for `ops_message` and
 // `decode_ops` so a new op kind can't fall through to another's decoding.
 const OP_CREATE: u32 = 4;
@@ -580,6 +577,8 @@ const OP_SET: u32 = 5;
 const OP_MOVE: u32 = 6;
 const OP_DELETE: u32 = 7;
 
+/// Ops: `{1: actor*, 2: op*}`, the frame's table with the author first
+/// (index 0) and then every other actor its ops name, in first-use order.
 /// An op is `{1: counter delta, 2: ms delta (both zigzag, from the
 /// previous op in the frame), 3: logical, then one body field: 4 Create
 /// {1: node, 3: fields} (2, the numeric kind, is retired), 5 Set {1: node, 2: field, 3: value
@@ -833,9 +832,8 @@ impl Journal {
     /// all, or an older format: `read_readable_header`) is renamed to
     /// `<path>.unreadable-<secs>[-<n>]`, with its `.prev` and `.local`
     /// beside it (`set_aside_unless_journal`), and a fresh journal is
-    /// created in its place. Refusing used to leave the app without a
-    /// store, so nothing more was saved that run. Returns where the old
-    /// file went.
+    /// created in its place, so the app always has a store to save to.
+    /// Returns where the old file went.
     pub fn open_or_set_aside(path: &Path, actor: ActorId) -> Result<(Journal, Option<PathBuf>), JournalError> {
         match Journal::open(path, actor) {
             Err(JournalError::NotAJournal) => {

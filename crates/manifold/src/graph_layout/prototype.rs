@@ -1,4 +1,4 @@
-//! Throwaway prototype for "Arrange by topic" (plan task 10, step 2): does `step_sized` with similarity edges pull
+//! Throwaway prototype for "Arrange by topic": does `step_sized` with similarity edges pull
 //! same-topic cards together, and how far does an ordinary settle move them afterwards (OQ1)? Run with
 //! `cargo test -p manifold --release -- --ignored --nocapture prototype`.
 

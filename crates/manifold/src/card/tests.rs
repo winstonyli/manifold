@@ -744,7 +744,7 @@ fn a_waking_cards_tooltip_differs_from_a_sleeping_ones() {
     assert_eq!(sleeping_or_waking_tooltip(&UnloadedState::Waking), "Loading…");
 }
 
-/// Review C-B3: leaving a level ends a note edit there.
+/// Leaving a level ends a note edit there.
 #[test]
 fn leaving_the_level_ends_a_note_edit() {
     let mut app = App::default();
@@ -755,7 +755,7 @@ fn leaving_the_level_ends_a_note_edit() {
     assert!(!app.nodes[&id].as_note().unwrap().editing);
 }
 
-/// Review C-B8: a group's members come in creation order, every time.
+/// A group's members come in creation order, every time.
 #[test]
 fn group_members_follow_node_order() {
     let mut app = App::default();

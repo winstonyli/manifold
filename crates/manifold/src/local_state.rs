@@ -1,6 +1,6 @@
 //! Personal state (spec "Personal state"): what this profile shows and
 //! how, never merged. JSON inside `session.mnf.local`'s state bytes
-//! (plan ruling 4).
+//! (never merged, never in the shared document).
 
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
@@ -33,7 +33,7 @@ pub(crate) struct LocalState<K = NodeId> {
     #[serde(default)]
     pub groups_collapsed: bool,
     /// The camera rect `[min x, min y, max x, max y]` and the level it was
-    /// saved at (plan ruling 5).
+    /// saved at.
     #[serde(default, deserialize_with = "lenient_camera")]
     pub camera: Option<([f32; 4], Option<K>)>,
     /// Per node, by live id.
@@ -211,7 +211,7 @@ impl LocalState {
     }
 
     /// serde_json writes NaN and infinity as `null`, which a plain `f32`
-    /// can't read back: one bad value used to make the whole file unreadable,
+    /// can't read back: one bad value would make the whole file unreadable,
     /// Recently Closed included. A non-finite position is zeroed, any other non-finite value dropped.
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         if self.all_finite() {
@@ -352,7 +352,7 @@ impl App {
             local.title = tab.title.to_string();
             local.muted = tab.muted;
             local.zoom = (tab.zoom_factor != self.settings.zoom_factor).then_some(tab.zoom_factor);
-            // Against the shared url the mirror holds (Ruling 9): a url this replica shares is edited (`edit_url`)
+            // Against the shared url the mirror holds: a url this replica shares is edited (`edit_url`)
             // into it, so only an unshared move (a redirect, a script) is recorded.
             let from = self.doc.mirror.url(id);
             local.live_url = (from != tab.url).then(|| LiveUrl { url: tab.url.to_string(), from: from.to_owned() });

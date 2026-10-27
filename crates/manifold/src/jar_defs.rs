@@ -1,5 +1,5 @@
 //! Named cookie jars as synced definitions (`App::jar_defs`, spec "Data model"). A jar is a `Kind::Jar` card: a
-//! `App::nodes` entry with a unit `Runtime::Jar`. Its fields are mirror state (2b-5 Ruling 7): written through
+//! `App::nodes` entry with a unit `Runtime::Jar`. Its fields are mirror state: written through
 //! `App::edit_field` here and applied from the document by `materialize` like any card's.
 
 use crate::caps::{Scope, Storage, JAR_EDGE};

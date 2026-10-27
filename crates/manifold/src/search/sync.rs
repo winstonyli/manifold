@@ -19,7 +19,7 @@ const PROPS_TEXT_CAP: usize = 4096;
 pub(crate) const SYNC_EVERY: Duration = Duration::from_secs(1);
 
 impl App {
-    /// Whether tab `id` is in an ephemeral jar: nothing of it is stored or indexed (ruling R1). A closed tab has left
+    /// Whether tab `id` is in an ephemeral jar: nothing of it is stored or indexed. A closed tab has left
     /// `nodes` and the mirror, so its jar is read from the document: its own `jar` edge, else its nearest group's.
     pub(crate) fn in_ephemeral_jar(&self, id: NodeId) -> bool {
         if self.nodes.contains_key(&id) {

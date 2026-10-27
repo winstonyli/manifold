@@ -63,13 +63,11 @@ pub(crate) struct SpawnTracker {
 
     /// The tab id `respawn_tab` was called for *while it was the focused
     /// tab* — i.e. an engine swap or crash recovery is currently respawning
-    /// the tab the user is looking at. `build_tab_view_ui`'s existing "focused
-    /// tab missing from `self.nodes`" guard (a pre-existing one-frame safety
-    /// net, from before spawning was async) would otherwise bounce the user
-    /// to Graph view for the tab's *entire* respawn duration — imperceptible
-    /// when spawning was synchronous, but a visible multi-second flicker
-    /// back to Graph and then back to Tab view now that a WebKit respawn can
-    /// take many seconds. Set in `respawn_tab`, cleared in
+    /// the tab the user is looking at. `build_tab_view_ui`'s "focused
+    /// tab missing from `self.nodes`" guard would otherwise bounce the user
+    /// to Graph view for the tab's *entire* respawn duration, a visible
+    /// multi-second flicker back to Graph and then back to Tab view when a
+    /// WebKit respawn takes many seconds. Set in `respawn_tab`, cleared in
     /// `handle_tab_spawn_result` once that same id's `Respawn` outcome
     /// (`Ok` or `Err`) arrives.
     pub(crate) pending_respawn_focus: Option<NodeId>,
@@ -126,9 +124,8 @@ impl SpawnTracker {
 }
 
 /// Which call site triggered a tab spawn — `handle_tab_spawn_result` uses
-/// this to know what to do once the (now-async) `process_manager::spawn_tab`
-/// call finishes, mirroring what `spawn_root_tab`/`spawn_new_tab`/
-/// `respawn_tab` used to do inline before the spawn was made async.
+/// this to know what to do once the async `process_manager::spawn_tab`
+/// call finishes.
 pub(crate) enum SpawnPurpose {
     /// The very first tab at startup: becomes focused, switches to Tab view.
     Root,
@@ -192,7 +189,7 @@ pub(crate) struct TabSpawn {
     /// The `jar` edge a new tab starts with, which it lands with (`Carried::jar`); `None` inherits. A tab the mirror
     /// already holds (a respawn or wake) uses the mirror's instead, which an edit may change while it is in flight.
     pub(crate) jar: Option<NodeId>,
-    /// Where a new tab lands: its layout entry and its document pos start there (2b-4 Ruling 3). A tab already
+    /// Where a new tab lands: its layout entry and its document pos start there. A tab already
     /// placed (a respawn, a wake) keeps both (`App::layout` outlives the respawn, `Mirror::seed` never overwrites).
     pub(crate) pos: egui::Vec2,
     pub(crate) purpose: SpawnPurpose,
@@ -341,9 +338,8 @@ impl App {
     /// Runs `process_manager::spawn_tab` on a background thread and posts
     /// its result back via `event_proxy` as `UserEvent::TabSpawned` — see
     /// `TabSpawnOutcome`'s doc comment for why this can't run inline on the
-    /// main/event-loop thread. `handle_tab_spawn_result` does what the old
-    /// synchronous `Ok`/`Err` branches used to do, once the result actually
-    /// arrives.
+    /// main/event-loop thread. `handle_tab_spawn_result` applies the `Ok`/`Err`
+    /// outcome once the result arrives.
     pub(crate) fn spawn_tab_async(&mut self, spawn: TabSpawn) {
         self.spawns.tab_spawns_in_flight += 1;
         // Shared at the pos, url, engine and jar the mirror holds for it (a respawn's `spawn.url` is the live one); a
@@ -357,7 +353,7 @@ impl App {
         let mut snapshot = session_sync::spawn_snapshot(&spawn, pos, url, view_kind, own);
         snapshot.trees = self.doc.mirror.trees_of(spawn.id);
         self.spawns.spawning.insert(spawn.id, snapshot);
-        // A new tab is created from that snapshot by the next save (Ruling 3); a respawn's id is already stored.
+        // A new tab is created from that snapshot by the next save; a respawn's id is already stored.
         self.queue_create(spawn.id);
         let generation = self.spawns.session_generation;
         // Resolved and loaded before the test early return, so tests see the load happen.
@@ -439,7 +435,7 @@ impl App {
     /// engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip. Its engine is the mirror's (a swap in flight: its target).
-    /// The copy keeps `id`'s jar choice (deviation 3).
+    /// The copy keeps `id`'s jar choice.
     pub(crate) fn duplicate_tab(&mut self, id: NodeId) {
         let Some((parent, group, url, kind)) = self.nodes.get(&id).and_then(|n| {
             n.runtime.saved_tab().map(|url| {
@@ -458,7 +454,7 @@ impl App {
 
     /// Graph view's "+ New Tab" action: a child of `parent` (or a new root
     /// if `parent` is `None`), spawned invisible — it stays in Graph view
-    /// rather than auto-focusing (see plan's M5 scope decision 5), and
+    /// rather than auto-focusing, and
     /// background tabs render nothing until focused anyway. Also used for
     /// a page-triggered new tab (`ViewToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
@@ -467,8 +463,7 @@ impl App {
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None, None);
     }
 
-    /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar
-    /// (deviation 3).
+    /// A tab opened by tab `opener` (a page link or `window.open`): a child of it, in its group, with its jar.
     pub(crate) fn spawn_tab_from(&mut self, opener: NodeId, url: &str, pos: Option<egui::Vec2>) -> NodeId {
         let parent = Some(opener);
         let group = self.group_of(parent);
@@ -627,7 +622,7 @@ impl App {
         }
         // The primary pane was rendering at half width for the split --
         // needs to grow back to the full content width now that
-        // `content_size_px` no longer sees `split_tab` as set.
+        // `content_size_px` sees `split_tab` as unset.
         if let Some(focused_id) = self.focused {
             self.send_resize_to(focused_id);
         }
@@ -769,7 +764,7 @@ impl App {
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
     /// new jar (spec table). Runs after a local jar change, a remote batch (`apply_remote`) and each idle sweep, so a
-    /// waiting tab switches once it qualifies (deviation 11). A dirty form keeps it awake (`sleep_state::verdict`).
+    /// waiting tab switches once it qualifies. A dirty form keeps it awake (`sleep_state::verdict`).
     pub(crate) fn sweep_jar_switches(&mut self) {
         let todo: Vec<NodeId> = self
             .tab_idle_views()
@@ -815,7 +810,7 @@ impl App {
         self.will_switch(id) && !self.host_change_pending(id)
     }
 
-    /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id` (Task 6 review M3).
+    /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id`.
     /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
     pub(crate) fn host_change_pending(&self, id: NodeId) -> bool {
         self.pending_sleeps.contains_key(&id)

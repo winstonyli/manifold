@@ -130,7 +130,7 @@ impl App {
         let carry = TabCarry { pinned, zoom_factor, title, muted };
         let url = tab.url.clone();
         self.spawns.wakes_in_flight.insert(id);
-        // Another engine is saved as the wake starts, not when it lands (2b-3 Ruling 5).
+        // Another engine is saved as the wake starts, not when it lands.
         self.edit_view_kind(id, kind);
         let (purpose, fallback_kind) = (SpawnPurpose::Wake, None);
         self.respawn_tab(TabSpawn { id, url, kind, parent, group, jar, pos, purpose, carry, fallback_kind });

@@ -190,8 +190,8 @@ impl App {
 
     /// Tells the tabs on screen (the focused tab in Tab view or mid-
     /// transition, and the split pane) to stop capturing while minimized;
-    /// `about_to_wait` resumes them on restore. Measured 2026-10-01: the
-    /// engine and WebView2 kept using ~15% of a core behind a minimized window.
+    /// `about_to_wait` resumes them on restore. Otherwise the
+    /// engine and WebView2 keep using ~15% of a core behind a minimized window.
     pub(super) fn hide_tabs_for_minimize(&mut self) {
         let mut ids = Vec::new();
         if self.showing_tab_view() || self.transition.is_some() {

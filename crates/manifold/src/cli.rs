@@ -159,7 +159,7 @@ mod tests {
         assert_ne!(run(&args(&["--check", path.to_str().unwrap()])), Some(0));
     }
 
-    /// M4: anything this build doesn't read refuses to start, rather than opening the GUI on the real profile.
+    /// Anything this build doesn't read refuses to start, rather than opening the GUI on the real profile.
     #[test]
     fn an_unknown_flag_or_a_missing_value_refuses_to_start() {
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();

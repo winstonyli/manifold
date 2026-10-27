@@ -21,7 +21,7 @@ fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
     assert!(!back.doc.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
 }
 
-/// Ruling 4, restore: the mirror holds the document pos and the layout the personal one, and the next save writes
+/// Restore: the mirror holds the document pos and the layout the personal one, and the next save writes
 /// nothing for it.
 #[test]
 fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_document_one() {
@@ -90,8 +90,7 @@ fn personal_state_keeps_an_unloaded_tabs_title_and_mute() {
 /// "Mute Others" mutes a sleeping or waking card too -- it has no
 /// engine to send `SetMuted` to, but the landing already sends it
 /// (`TabCarry::muted`) and personal state saves it either way, so a
-/// woken tab comes back muted like every other tab "Mute Others" hit
-/// (Fix 8, final-review).
+/// woken tab comes back muted like every other tab "Mute Others" hit.
 #[test]
 fn mute_all_except_also_mutes_sleeping_tabs() {
     let mut app = app_on(&temp_dir("mute-others-sleeping").join("session.mnf"), 1);

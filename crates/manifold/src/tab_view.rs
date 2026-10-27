@@ -220,24 +220,19 @@ impl App {
             actions.forward_branches_rect = Some(marker.rect);
         }
 
-        // Address bar moved up here (right after nav/identity,
-        // before any per-tab action button) and given most of
-        // the row's width -- mirrors every mainstream browser's
-        // own layout (nav controls, then a wide address bar,
-        // then a handful of page-action icons to its right, then
-        // an overflow/app menu at the far end), rather than the
-        // stack of buttons that used to sit entirely to its
-        // left, pushing it almost to the row's far end.
+        // The row is laid out like every mainstream browser's: nav
+        // controls, then a wide address bar (right after nav/identity,
+        // before any per-tab action button), then a handful of
+        // page-action icons to its right, then an overflow/app menu
+        // at the far end.
         //
         // The trailing cluster (Bookmark, View-as-JSON, Split +
         // Close Split, Tab actions) is drawn *first*, into the frame's
         // right-to-left `trailing_ui` (`render_item_toolbar`, which has
         // already put the Universal chip at its far right), so its real
-        // consumed width can be measured -- not
-        // guessed the way a former `trailing_reserve = 360.0`
-        // constant was (sized "generously for the worst case,"
-        // with nothing to catch a future addition silently
-        // exceeding it). Added in reverse of their final visual
+        // consumed width can be measured rather than guessed with a
+        // fixed reserve that a later addition could silently exceed.
+        // Added in reverse of their final visual
         // order since a right-to-left `Ui` places each new
         // widget immediately to the *left* of the previous one.
         let tab_actions_response =

@@ -439,9 +439,6 @@ impl App {
         if clicked_outside && self.history_ui.renaming_bookmark_folder.is_none() {
             close = true;
         }
-        // Not `|| self.bookmarks.is_empty()` any more -- the Settings page's
-        // own "Lists" section can open this popup with an empty list, and
-        // that used to close it again the very next frame.
         if close {
             close_popup(&mut self.menus.open_popup, AnchoredPopup::Bookmarks);
             self.history_ui.renaming_bookmark_folder = None;
@@ -450,9 +447,8 @@ impl App {
 
     /// Tab view's "History (N)" dropdown -- every entry in `self.history`,
     /// most-recently-visited first, click a title to navigate the focused
-    /// tab there, "Clear" to empty the whole list. Same Area/Frame pattern
-    /// as `build_bookmarks_popup`/`build_recently_closed_popup`, scrollable
-    /// since history can grow much longer than either of those.
+    /// tab there, "Clear" to empty the whole list. Scrollable, since history
+    /// can grow much longer than the other lists.
     pub(crate) fn build_history_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
         let mut close = false;
         let mut navigate_url: Option<String> = None;
@@ -548,8 +544,6 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        // Not `|| self.history.is_empty()` any more -- see the matching
-        // comment in `build_bookmarks_popup`.
         if close {
             close_popup(&mut self.menus.open_popup, AnchoredPopup::History);
         }
@@ -644,23 +638,14 @@ impl App {
         if clicked_outside {
             close = true;
         }
-        // Not `|| self.nodes.is_empty()` any more: that counted every graph
-        // node (tabs, notes, images, ...), not just downloads, so it almost
-        // never actually fired -- and per the same fix as
-        // `build_bookmarks_popup`/`build_history_popup`, an empty list is no
-        // longer a reason to self-close at all now that the "Lists" menu can
-        // open this popup while empty.
         if close {
             close_popup(&mut self.menus.open_popup, AnchoredPopup::Downloads);
         }
     }
 
     /// Tab view's "Tab actions" dropdown -- "Mute Others", "Close Others",
-    /// and the "Pin All"/"Unpin All" toggle in one popup, folded from three
-    /// always-visible toolbar buttons (a later session pass flagged the
-    /// toolbar as cramped -- confirmed live, text touching the window edge
-    /// even at 1300pt wide). Same anchored Area/Frame pattern
-    /// `build_downloads_popup` already uses.
+    /// and the "Pin All"/"Unpin All" toggle in one popup, so the toolbar
+    /// stays uncrowded.
     pub(crate) fn build_tab_actions_popup(
         &mut self,
         ui: &mut egui::Ui,

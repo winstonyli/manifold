@@ -6,12 +6,12 @@ use super::*;
 /// What the next save does to a node's existence (`NodeWrites::life`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Life {
-    /// A node placed here that the next save creates (2b-5 Ruling 3): every way a node enters the live graph
+    /// A node placed here that the next save creates: every way a node enters the live graph
     /// (`place_node`, `spawn_tab_async`, a jar's `add_jar`) queues it; the save creates it if the document lacks it,
     /// from the mirror or the spawn's snapshot (`snapshot`). One the document already holds (a restore, another
     /// replica's node) is dropped. Cleared by a successful commit once created.
     Create,
-    /// A node removed here that the next save deletes (Ruling 4: `queue_delete`). Only a local removal queues: a
+    /// A node removed here that the next save deletes (`queue_delete`). Only a local removal queues: a
     /// node another replica deleted is already gone from the document, and a respawn, swap or reload only takes
     /// the node out of `nodes` for a while. Cleared by a successful commit.
     Delete,
@@ -56,7 +56,7 @@ pub(crate) struct PendingWrites {
     /// Counts `queue_closed` calls, to commit the flags in the order they were made.
     closed_seq: u64,
     /// Another replica's text for a note being typed in, held back from its mirror and box until the blur
-    /// (`end_note_edit`, 2b-4 Ruling 7), by node. Dropped when this replica commits its own text after it.
+    /// (`end_note_edit`), by node. Dropped when this replica commits its own text after it.
     pub(crate) held_text: HashMap<NodeId, String>,
     /// Store errors and repair notices toasted since the last commit
     /// (`store_error`, `take_store_recovery`), each shown once: a read-only
@@ -277,7 +277,7 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
     // recreated (ids are never reused), and one another replica created meanwhile stands.
     let new: BTreeMap<NodeId, Snapshot> =
         candidates.into_iter().filter(|(id, _)| !doc.nodes.contains_key(id)).collect();
-    // A queued delete applies to a node the document still shows live (Ruling 4); one it never had, or
+    // A queued delete applies to a node the document still shows live; one it never had, or
     // another replica deleted meanwhile, is just forgotten. Nothing queued is shown here: `materialize`
     // drops a remote edit to it, and showing it again locally withdraws the delete (`queue_create`).
     let deleted: BTreeSet<NodeId> =
@@ -304,7 +304,7 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
     // node's group is read back from the document after the commit instead: the store may refuse the move.
     let mut moved: BTreeSet<NodeId> = BTreeSet::new();
     let mut links: BTreeMap<(NodeId, u32), Option<NodeId>> = BTreeMap::new();
-    // Moves before sets (Ruling 4). A move to where the document already shows the node is left out.
+    // Moves go before sets. A move to where the document already shows the node is left out.
     for (node, group) in writes.moves() {
         if !editable(&node) {
             continue;
@@ -319,7 +319,7 @@ pub(super) fn build_ops(doc: &Doc, writes: &PendingWrites, candidates: BTreeMap<
         if !editable(&node) {
             continue;
         }
-        // Every link (an `Id` field: `parent`, a tab's `jar`) is resolved alike (2b-3 Ruling 8).
+        // Every link (an `Id` field: `parent`, a tab's `jar`) is resolved alike.
         let def = field_def(no);
         let enc = if def.is_some_and(|def| def.ty == FieldType::Id) {
             let target = match def.and_then(|def| decode_field(def, enc).ok()) {
@@ -352,9 +352,9 @@ impl App {
     /// What the store holds for `id`, or is about to, as a `Snapshot`: a graph node's fields of its kind as the mirror
     /// holds them (2b-5: every stored field of a graph node is mirror state), or the snapshot a
     /// tab's spawn started with (`spawning`, for one not shown yet). A tab's url is the shared one, not the live one
-    /// its payload holds (2b-3 Ruling 1); its engine is the one a swap in progress already shows as its target
-    /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here (2b-5 Ruling
-    /// 5). Its type is the mirror's string (`Mirror::ty`, the one source of a node's type), kept as written. `None` for an in-progress download
+    /// its payload holds; its engine is the one a swap in progress already shows as its target
+    /// (`start_swap_to`); a file card's path is the stored one, not the one its payload resolved here.
+    /// Its type is the mirror's string (`Mirror::ty`, the one source of a node's type), kept as written. `None` for an in-progress download
     /// (it can't resume, so it isn't created until it completes), for a node with no type yet, and for an id that is
     /// none of these. A type this build doesn't know is snapshotted with its string and the generic fields
     /// (`Kind::fields`).
@@ -399,7 +399,7 @@ impl App {
     }
 
     /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),
-    /// for the next save to create (Ruling 3), and withdraws a pending delete of it: it is shown again. One the
+    /// for the next save to create, and withdraws a pending delete of it: it is shown again. One the
     /// document already has an entry for (shown again from a restore or another replica's op, or a tombstone) needs
     /// no create.
     pub(crate) fn queue_create(&mut self, id: NodeId) {
@@ -407,7 +407,7 @@ impl App {
         self.doc.writes.queue_create(id, in_doc);
     }
 
-    /// Queues `id`, a node removed here, for the next save to delete (Ruling 4). The save deletes it if the document
+    /// Queues `id`, a node removed here, for the next save to delete. The save deletes it if the document
     /// still shows it live, so a node never created is just forgotten. Until then another replica's edit to it is
     /// dropped rather than showing it again (`materialize`). Only a local removal queues (a remote delete queues
     /// only the deletes of the links naming the node, `remove_remotely_deleted`): a node another replica
@@ -464,7 +464,7 @@ impl App {
                 }
             }
             // A moved node shows the group the document holds: the target, none for one this commit
-            // deleted (Ruling 5), or where it was when the store refused the move as a cycle (a
+            // deleted, or where it was when the store refused the move as a cycle (a
             // concurrent move raced it), which the mirror would otherwise keep showing.
             for &node in &moved {
                 let group = doc.effective_group(node);
@@ -477,7 +477,7 @@ impl App {
             self.doc.writes.retain_creates(|id| !doc.nodes.contains_key(&id));
         }
         self.doc.writes.clear_deletes();
-        // A link target this commit wrote as none (Ruling 5: deleted here) is none in the mirror too.
+        // A link target this commit wrote as none (deleted here) is none in the mirror too.
         for (&(node, no), &target) in &links {
             if no == field::PARENT {
                 if self.doc.mirror.parent(node) != target {
@@ -549,7 +549,7 @@ impl App {
         // Each round applies what others wrote since the last; four rounds
         // of fresh remote frames means another instance is busy: try again
         // later (`save_retry_at`) rather than spin.
-        // What is being typed is committed too (2b-4 Ruling 6).
+        // What is being typed is committed too.
         self.commit_note_buffers();
         for _ in 0..4 {
             // Projected before `begin`, since the `Txn` borrows the journal: what each queued node shows (one that
@@ -609,7 +609,7 @@ impl App {
         false
     }
 
-    /// Ruling 14, test and debug builds: after a successful save the live graph and the document agree. Every store
+    /// In test and debug builds, after a successful save the live graph and the document agree. Every store
     /// id in `nodes` (an in-progress download aside) and every jar is live in the document; a tab whose spawn is
     /// in flight has an entry (live, or a tombstone another replica left while it was in flight, which the landing
     /// applies); and every live document node is one of them. A failure names the funnel that was missed: a node

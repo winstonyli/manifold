@@ -665,7 +665,7 @@ mod tests {
         assert_eq!(q.get(&other), None);
     }
 
-    /// Review C-B2: a query narrowed after moving down confirms its first match, not a stale row.
+    /// A query narrowed after moving down confirms its first match, not a stale row.
     #[test]
     fn a_narrowed_query_confirms_its_first_match() {
         let mut app = app_on(&crate::store::testutil::temp_dir("omni-narrowed").join("session.mnf"), 1);

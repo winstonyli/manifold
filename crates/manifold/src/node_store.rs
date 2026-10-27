@@ -182,7 +182,7 @@ impl App {
     /// `nav_history` and `saved_scroll`.
     pub(crate) fn forget_id(&mut self, id: NodeId) {
         self.spawns.forget(id);
-        // A hide re-inserts its entry after this (plan D5); every permanent removal drops it.
+        // A hide re-inserts its entry after this; every permanent removal drops it.
         self.doc.hidden_local.remove(&id);
         self.pending_sleeps.remove(&id);
         self.clear_cookie_state(id);

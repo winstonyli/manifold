@@ -59,7 +59,7 @@ impl App {
         }
     }
 
-    /// Whether tab `id`'s text may be read: an http(s) page, in a jar that is not ephemeral (ruling R1).
+    /// Whether tab `id`'s text may be read: an http(s) page, in a jar that is not ephemeral.
     pub(crate) fn text_wanted(&self, id: NodeId) -> bool {
         let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return false };
         let url = tab.url.to_ascii_lowercase();

@@ -22,7 +22,7 @@ impl App {
     ///
     /// A node or jar whose delete is pending (`queue_delete`) was closed here
     /// and the save deletes it: another replica's edit to it is dropped
-    /// rather than bringing it back (Ruling 9).
+    /// rather than bringing it back.
     ///
     /// A type mismatch between the live node and `ty` is ignored (the
     /// store never changes a node's type, so the mirror's first string stands). A file card whose file can't be
@@ -36,7 +36,7 @@ impl App {
         let (ty, fields, group) = (snap.ty.as_str(), &snap.fields, snap.group);
         let kind = Kind::from_type(ty);
         // A node or jar deleted here stays gone: a remote edit arriving before the save commits the queued delete
-        // would otherwise re-show it, nameless from a partial change or whole (2b-5 Ruling 9, final review M1).
+        // would otherwise re-show it, nameless from a partial change or whole.
         if self.doc.writes.life(id) == Some(Life::Delete) {
             return;
         }
@@ -52,7 +52,7 @@ impl App {
             return;
         }
         let (held, changed) = self.mirror_remote(id, fields, &snap.trees, group);
-        // The store never changes a node's type, so the first one seen stands (2b-5 Ruling 10). Kept as written.
+        // The store never changes a node's type, so the first one seen stands.
         if !ty.is_empty() {
             self.doc.mirror.init_field(id, field::TYPE, FieldValue::Str(ty.to_owned()));
         }
@@ -91,10 +91,10 @@ impl App {
     }
 
     /// Applies `fields` to the live node `id` in the fields `mirror_remote` found changed (`changed`); the ones it
-    /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict (2b-3 Ruling 3),
+    /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict,
     /// so a tab whose url edit is pending is not navigated away from it, and a card whose pos edit is pending is not
     /// moved. A new pos snaps the layout to `pos`, at rest, except for a card being dragged: the drag keeps it under
-    /// the pointer, and its release then wins (2b-4 Ruling 4). False when there is no such node.
+    /// the pointer, and its release then wins. False when there is no such node.
     pub(super) fn update_live_node(
         &mut self,
         id: NodeId,
@@ -255,7 +255,7 @@ impl App {
                 self.insert_placeholder_node(id, pos, kind, Runtime::Unloaded(payload));
             }
             Kind::Group => {
-                // Its name, `from_json` and default jar are already the mirror's (`mirror_remote`); it has no runtime.
+                // Its name and jar are already the mirror's (`mirror_remote`); it has no runtime.
                 self.insert_placeholder_node(id, pos, kind, Runtime::None);
             }
             Kind::Note => {
@@ -449,7 +449,7 @@ impl App {
     /// (`unshow`), its personal state kept in `hidden_local` for a reopen, and its trail kept in `nav_history`. Nothing
     /// in the document changes: no re-parent, no link delete, no backing-file release. A tab whose spawn is in flight
     /// (in `spawning`: a respawn, or a wake, whose placeholder is dropped here) is parked as `Remote::Hidden` and
-    /// hidden when it lands (plan D3). A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn
+    /// hidden when it lands. A wake stops being one (`wakes_in_flight`), so its landing is an ordinary spawn
     /// that applies the parked change: a reopen before then replaces the `Hidden` with a `Shown` (`materialize`), and
     /// the tab shows when it lands.
     pub(crate) fn hide_node(&mut self, id: NodeId) {
@@ -535,7 +535,7 @@ impl App {
         }
     }
 
-    /// Whether tab `id`'s reported url change is shared (ruling 3), given
+    /// Whether tab `id`'s reported url change is shared, given
     /// how the engine says its navigation started (`user_started`). One a
     /// person started is; a page script's or the host's own `Navigate` (a
     /// typed url, which `navigate_tab` shares itself, or another replica's)
@@ -565,12 +565,12 @@ impl App {
         true
     }
 
-    /// Shows another replica's values of `fields` (the node's type's fields, Ruling 11) and its effective `group`,
+    /// Shows another replica's values of `fields` (the node's type's fields) and its effective `group`,
     /// except where this replica has an edit waiting for a save: it commits next and wins (last writer, per field or
     /// link). Returns `(held, changed)`: the fields held back that way, whose live effects `update_live_node` then
-    /// skips, and the fields whose value differs from what the mirror showed (Ruling 9), whose live effects it
-    /// applies. A note's text is held too while the note is typed in, and remembered in `held_text` for the blur
-    /// (2b-4 Ruling 7). The links (`parent`, `group`) are set but reported in neither list.
+    /// skips, and the fields whose value differs from what the mirror showed, whose live effects it
+    /// applies. A note's text is held too while the note is typed in, and remembered in `held_text` for the blur.
+    /// The links (`parent`, `group`) are set but reported in neither list.
     pub(super) fn mirror_remote(
         &mut self,
         id: NodeId,

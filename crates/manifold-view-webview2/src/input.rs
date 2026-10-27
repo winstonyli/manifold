@@ -1,72 +1,21 @@
 //! Input dispatch for WebView2: **mouse via native
 //! `ICoreWebView2CompositionController::SendMouseInput`, keyboard/text via
 //! `ICoreWebView2`'s CDP** (WebView2 has no native
-//! keyboard-injection API on any hosting mode). The rest of this comment is
-//! the history of how that split was arrived at over several rounds -- it
-//! matters, because three of those rounds concluded the native path was
-//! impossible, and the reason they were wrong is specific and easy to
-//! re-lose.
+//! keyboard-injection API on any hosting mode).
 //!
-//! Three earlier rounds tried to simulate input at the OS/engine level:
-//! raw `WM_*` messages to `Chrome_RenderWidgetHostHWND` (round 1, and round
-//! 3 with `MoveFocus` added first) were silently ignored by Chromium's
-//! actual input pipeline -- confirmed with real clicks that produced zero
-//! effect, not just a hunch; Composition hosting's native `SendMouseInput`
-//! (round 2) broke frame capture without fixing input either, and was
-//! reverted. A web search on how other projects automate WebView2 without
-//! a real focused window turned up the answer this project had been
-//! missing at the time: **don't simulate input at all** -- drive the
-//! interaction via JavaScript run directly in the page. This sidesteps the
-//! entire OS/Composition input pipeline (and its apparent focus/
-//! message-injection requirements) completely. (Superseded for mouse
-//! events by the Task 4 migration described at the bottom of this comment,
-//! and for text entry by CDP `Input.insertText`; see the end of this comment.)
+//! **Mouse:** `MouseDown`/`MouseMove`/`MouseUp`/`Scroll` go through the composition controller's
+//! `SendMouseInput` (the controller it is meant for), so real button and wheel events drive Chromium's own
+//! click, drag (including drag-selection) and scroll handling. Raw `WM_*` messages to the render widget window
+//! are ignored by Chromium's input pipeline, so don't try them.
 //!
-//! **Verified live**: a dispatched `MouseUp` visibly changed real Wikipedia
-//! page content (a fundraising banner expanded) -- unambiguous proof the
-//! click reached the page for real, not just that the call didn't error.
-//! Text entry (`Char`, via `execCommand('insertText', ...)`) is confirmed
-//! live too: a `MouseUp` on DuckDuckGo's HTML search box focused it, then
-//! dispatched `Char` events typed the real string into the field (visible
-//! in the resulting screenshot, cursor included) -- both halves of the
-//! click-then-type path work end to end, not just each in isolation.
+//! **Keys:** `KeyDown`/`KeyUp` use `ICoreWebView2::CallDevToolsProtocolMethod` with CDP
+//! `Input.dispatchKeyEvent`. Chromium treats that as a trusted key event, so (unlike a hand-dispatched DOM
+//! `KeyboardEvent`) it triggers default actions: Enter submits a form, Backspace deletes a character, arrow keys
+//! move a text cursor. They cover the physical-key side, as `manifold_view_protocol::InputEvent`'s doc describes.
 //!
-//! **`KeyDown`/`KeyUp`, later session pass: no longer no-ops.** The README's
-//! own former "no CEF-style synthetic key-event injection API" claim was
-//! wrong -- `ICoreWebView2::CallDevToolsProtocolMethod` is a real,
-//! documented WebView2 API that runs *any* Chrome DevTools Protocol method
-//! against this tab's own underlying page, `Input.dispatchKeyEvent` among
-//! them. This is the exact mechanism tools like Puppeteer use for
-//! `page.keyboard.press()` -- a CDP-injected key event is treated as trusted
-//! by Chromium's own input pipeline, so (unlike a hand-dispatched DOM
-//! `KeyboardEvent`) it *does* trigger default actions: Enter submits a form,
-//! Backspace deletes a character, arrow keys scroll/move a text cursor.
-//! `Char`'s own `execCommand('insertText', ...)` path (since replaced by
-//! `Input.insertText`, below) is untouched --
-//! `KeyDown`/`KeyUp` only need to cover the physical-key side now, the same
-//! division of labor `manifold_view_protocol::InputEvent`'s own doc comment already
-//! describes.
-//!
-//! **Mouse, later still (composition-hosting-migration Task 4): native
-//! `SendMouseInput`, not `Selection`/`Range` JS.** An earlier spike found
-//! `SendMouseInput` didn't extend a text selection during a drag under the
-//! old *windowed*-hosting controller, which is why `MouseDown`/`MouseMove`/
-//! `MouseUp`/`Scroll` moved to the JS path above at the time. Tasks 1-3 of
-//! that migration then moved hosting itself to
-//! `ICoreWebView2CompositionController` (for `Windows.Graphics.Capture`
-//! frame capture), which is the controller `SendMouseInput` was always
-//! meant for -- re-tried there, real button-down/up/move/wheel events drive
-//! Chromium's own click/drag/scroll handling (including drag-selection)
-//! directly, so mouse handling now sends those instead of running JS.
-//! Keyboard is unaffected: WebView2 has no `SendKeyInput` equivalent on any
-//! hosting mode, so `KeyDown`/`KeyUp`/`Char` stay exactly as described above.
-//!
-//! **Text, later again: CDP `Input.insertText`, not `execCommand`.** The
-//! `execCommand('insertText', ...)` script ran in the top document, so a
-//! field focused inside an iframe got nothing, and it went through
-//! `ExecuteScript` while keys went through CDP, so a character and a
-//! following Backspace could arrive out of order. `Input.insertText` types
-//! into whichever frame has focus and shares the key events' channel.
+//! **Text:** `Char` uses CDP `Input.insertText`, not a script. It types into whichever frame has focus (a script
+//! runs in the top document only) and shares the key events' channel, so a character and a following Backspace
+//! arrive in order.
 
 use std::cell::Cell;
 use std::cell::RefCell;

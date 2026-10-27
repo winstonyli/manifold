@@ -81,7 +81,7 @@ impl App {
         // The current level's cards, in draw order, with where each
         // one's center is on screen: what a headless test needs to
         // aim a click or drag at a card. A card is named by its type
-        // (`CardKind`), never a kind enum (plan 2b-6, Ruling 9).
+        // (`CardKind`), never a kind enum.
         let now = std::time::Instant::now();
         let window = self.egui_ctx.content_rect();
         let visuals = self.egui_ctx.global_style().visuals.clone();
@@ -382,7 +382,7 @@ mod tests {
     use super::*;
     use crate::card_id::testutil::node;
 
-    /// `EXPORTSTATE` names a card by its type (plan 2b-6, Ruling 9): `type` (the mime), `loaded` (true for a live tab
+    /// `EXPORTSTATE` names a card by its type: `type` (the mime), `loaded` (true for a live tab
     /// only) and `json_card` (a JSON level's card, not a stored node); the old card enum's `kind` is gone.
     /// `view_kinds` has every engine, each with its state label and what the disk holds (no data dir under test, so
     /// the downloaded engines read as not installed with nothing pinned).

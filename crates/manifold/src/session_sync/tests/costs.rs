@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Ruling 6: a note can reach 1 MB, so the per-frame reader borrows: the mirror's own string when idle, the box's
+/// A note can reach 1 MB, so the per-frame reader borrows: the mirror's own string when idle, the box's
 /// buffer while typed in; neither is a copy.
 #[test]
 fn a_large_note_edit_does_not_clone_per_frame() {
@@ -90,7 +90,7 @@ fn app_save_costs() {
     }
 }
 
-/// Wave 2 (H5): the saves that reach the store (`Journal::begin`) per action through `apply_graph_action`, which
+/// The saves that reach the store (`Journal::begin`) per action through `apply_graph_action`, which
 /// saves after the action's own save. With nothing left to write, the second one is redundant.
 #[test]
 fn save_count_per_action() {

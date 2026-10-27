@@ -1,4 +1,4 @@
-//! A grep guard: the names 2b-6 deleted must not come back (plan 2b-6, Ruling 12).
+//! A grep guard: names deleted from the code must not come back.
 
 use std::path::Path;
 

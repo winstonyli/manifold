@@ -14,7 +14,7 @@ pub(crate) struct GraphInteraction {
     /// selection when the dragged card is selected — see `take_drag_unit`
     /// and the `dragged()` branch that fills this in). Read and cleared at
     /// release (`release_drag`), where each one's `pos` is written exactly
-    /// once (`edit_pos`, 2b-4 Ruling 2): writing every frame of the drag
+    /// once (`edit_pos`): writing every frame of the drag
     /// instead would let an intermediate position reach the store, since a
     /// save can fire mid-drag from an unrelated event (`poll_store`, or a
     /// url change batched through `drain_tab_events`), independent of the
@@ -198,7 +198,7 @@ impl App {
         }
     }
 
-    /// A drag ends: each card it moved (`drag_moved`) is saved where it was dropped (`edit_pos`, 2b-4 Ruling 2).
+    /// A drag ends: each card it moved (`drag_moved`) is saved where it was dropped (`edit_pos`).
     /// Written once, here, not every dragged frame: saves fire independently of the gesture (`poll_store`, a url
     /// change batched through `drain_tab_events`), so writing every frame would commit intermediate positions. A
     /// card removed mid-drag (closed, crashed, swapped) leaves its id in `drag_moved`; it is skipped here rather than
@@ -388,7 +388,7 @@ impl App {
             let Some(node) = self.nodes.get(&id) else { break };
             // A JSON level's crumb is its Json node, named by its file.
             let name = match &node.runtime {
-                // A group has no runtime of its own (2b-6 Ruling 8).
+                // A group has no runtime of its own.
                 // name rule: drawn by display_name in toolbar_breadcrumb.
                 Runtime::None => self.doc.mirror.name(id).to_owned(),
                 Runtime::Json(_) => self.json_root_name(id),
@@ -546,20 +546,12 @@ impl App {
     }
 
     /// Runs the force-directed layout to convergence for whichever level
-    /// `self.current_group` is currently viewing, then stops -- unlike the
-    /// old always-on-every-frame simulation, positions are static between
-    /// calls to this. Continuous physics had a real, user-visible cost:
-    /// every unpinned node (the drop target included) kept reacting to
-    /// forces *while* being dragged onto, so a slow drag toward a group or
-    /// another tab could chase a target that kept fleeing the incoming
-    /// drag's own repulsion -- confirmed live while building the
-    /// drag-to-group feature, where only a single fast cursor jump (no
-    /// intermediate positions for the target to react to) reliably landed
-    /// a drop. Calling this only when the visible node set actually
-    /// changes (see `graph_settled_key`) keeps the one real benefit of the
-    /// old approach -- new/remaining nodes still auto-spread apart instead
-    /// of stacking -- without anything ever moving on its own while the
-    /// user is trying to point at it.
+    /// `self.current_group` is currently viewing, then stops: positions are
+    /// static between calls. Nothing may move on its own while the user is
+    /// pointing at it: a node reacting to forces while being dragged onto
+    /// (a group, another tab) would flee the drag's own repulsion. Called
+    /// only when the visible node set changes (see `graph_settled_key`), so
+    /// new and remaining nodes still spread apart instead of stacking.
     pub(crate) fn settle_current_level(&mut self) {
         // 90 iterations at a fixed 1/60s step is ~1.5 simulated seconds --
         // comfortably past the "well under a second" convergence this
@@ -569,26 +561,9 @@ impl App {
         const SETTLE_ITERATIONS: u32 = 90;
         const SETTLE_DT: f32 = 1.0 / 60.0;
 
-        // Not doubled via a stray `.chain()` of the identical filter over
-        // itself any more -- **found during a performance audit**: all
-        // three of these (plus the write-back loop below) collected the
-        // exact same filtered `self.nodes.iter()` twice, a duplicate-loop
-        // artifact from the tabs/downloads/groups -> one `self.nodes` map
-        // migration (the same recurring bug this project has already found
-        // and fixed four separate times elsewhere -- `App::merge_groups`,
-        // `remove_node` on a group twice, `replace_running_session`). Harmless for
-        // `positions`/`velocities` (a `HashMap` insert of the same key
-        // twice just overwrites itself), but a real correctness bug for
-        // `edges`: a plain `Vec`, so every spring edge was fed into
-        // `graph_layout::step` *twice* -- doubling the effective spring
-        // strength for every one of this function's 90 warmup iterations.
-        // `settle_current_level` is `graph_layout::step_sized`'s only call site
-        // in this whole app (the layout doesn't run continuously every
-        // frame -- see this function's own doc comment on why: it's a
-        // one-time burst triggered only when the visible node set actually
-        // changes), so this bug affected every settle animation, not a
-        // background steady-state cost.
-        // The layout only (`App::layout`): physics never writes the document pos (2b-4 Ruling 2).
+        // Each level node is collected once: `edges` is a plain `Vec`, so a duplicated pass would feed every spring
+        // edge to `graph_layout::step` twice and double the spring strength.
+        // The layout only (`App::layout`): physics never writes the document pos.
         let at_level = || self.nodes.keys().filter(|id| self.in_level(**id));
         let layout = |id: NodeId| self.layout.get(&id).copied().unwrap_or_default();
         let mut positions: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, layout(*id).pos)).collect();
@@ -763,10 +738,10 @@ mod tests {
     use super::*;
     use crate::store::model::Kind;
 
-    /// Frame cost of the level scan (2b-6 Ruling 10), timing, not correctness, so ignored:
+    /// Frame cost of the level scan (timing, not correctness, so ignored):
     /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
-    /// nodes: the enum pass Graph view had before 2b-6 (eight passes, each matching the payload against one kind),
-    /// the eight `card_kind`-filtered passes plus the group pass Task 2 left, and the single bucketed pass
+    /// nodes: the old enum pass (eight passes, each matching the payload against one kind),
+    /// the eight `card_kind`-filtered passes plus a group pass, and the single bucketed pass
     /// (`level_scan`). Release-build numbers are recorded in the 2b-6 plan's Outcome
     /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`).
     #[test]
@@ -808,7 +783,7 @@ mod tests {
             };
             report("old: 8 enum passes", timed(N, || drop(old_pass())));
 
-            // (b) Task 2's: eight `card_kind` passes by draw layer plus the group pass.
+            // (b) The `card_kind` version: eight `card_kind` passes by draw layer plus the group pass.
             let at_level = |pick: &dyn Fn(CardKind) -> bool| -> Vec<NodeId> {
                 app.node_order
                     .iter()
@@ -824,7 +799,7 @@ mod tests {
             };
             report("task 2: 8 card_kind passes + groups", timed(N, || drop(eight_pass())));
 
-            // (c) Task 3's single pass, and where its per-node cost goes: the level filter alone, plus `card_kind`,
+            // (c) The single pass, and where its per-node cost goes: the level filter alone, plus `card_kind`,
             // plus `caps()` (the draw layer), plus `is_container` (the whole of `level_scan`).
             report("task 3: level_scan, one pass", timed(N, || drop(app.level_scan())));
             let mut sink = 0usize;

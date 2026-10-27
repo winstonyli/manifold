@@ -1,4 +1,4 @@
-//! Edits to an inline Json card's document: one op enum and one writer (plan 4b D1). An op is resolved against the
+//! Edits to an inline Json card's document: one op enum and one writer. An op is resolved against the
 //! BODY tree (`body::pointer_path`), written through `edit_prop`, recorded as one `UndoKind::Props` step, and
 //! shown by `refresh_inline`.
 

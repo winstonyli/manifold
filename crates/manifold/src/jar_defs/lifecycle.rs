@@ -116,7 +116,7 @@ impl App {
         true
     }
 
-    /// Turns jar `id`'s ephemeral flag on or off (deviation 10; final review I1), a local toggle (after
+    /// Turns jar `id`'s ephemeral flag on or off, a local toggle (after
     /// `request_jar_ephemeral`'s confirm): the flag goes through `edit_field`. See `switch_jar_ephemeral`.
     pub(crate) fn set_jar_ephemeral(&mut self, id: NodeId, on: bool) {
         self.switch_jar_ephemeral(id, on);
@@ -325,7 +325,7 @@ impl App {
         }
     }
 
-    /// Empties jar `id` and saves it, then switches the live tabs running on it (deviation 14): their engines still
+    /// Empties jar `id` and saves it, then switches the live tabs running on it: their engines still
     /// hold the old cookies. A jar that no longer exists is left alone, so no file is written for it.
     pub(crate) fn clear_jar_cookies(&mut self, id: NodeId) {
         if !self.jar_exists(id) {

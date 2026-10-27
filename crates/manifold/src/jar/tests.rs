@@ -424,7 +424,7 @@ fn a_jar_file_is_named_by_its_node_id() {
     assert_eq!(Jar::load(&dir, d()), a, "the default jar is untouched");
 }
 
-/// Final review I2: every copy of a deleted jar goes, and only that jar's: `…-12` shares `…-1`'s prefix.
+/// Every copy of a deleted jar goes, and only that jar's: `…-12` shares `…-1`'s prefix.
 #[test]
 fn delete_files_takes_only_that_jars_copies() {
     let dir = temp_dir("jar-delete-files");

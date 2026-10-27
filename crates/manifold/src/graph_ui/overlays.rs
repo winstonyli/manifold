@@ -40,6 +40,11 @@ type DeferredOverlay = Box<dyn FnOnce(&egui::Painter, &dyn Fn(egui::Pos2) -> egu
 /// itself already reflects, closing the gap entirely rather than just
 /// making it smaller.
 ///
+/// Text goes through here for a second reason. egui rasterizes each glyph into its font atlas at the requested
+/// world-space size, and `Scene`'s transform then scales that quad, so text sized `* inv_zoom` inside the `Scene`
+/// closure comes out tiny at high zoom and blurs when magnified. On the untransformed overlay layer it has a real,
+/// fixed screen size. Shapes are vector and re-tessellate at any scale, so they stay in the closure, sized
+/// `desired_screen_px * inv_zoom`.
 ///
 /// Every item is tagged with the card being drawn when it was queued (`begin_card`), and shown only where no card
 /// drawn after that one covers it: the overlay layer sits above every card body, so untagged it would show a lower

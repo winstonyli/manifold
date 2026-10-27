@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(fetcher.pending_query, None);
     }
 
-    /// Review C-B7: returning to a query whose fetch was superseded fetches it again.
+    /// Returning to a query whose fetch was superseded fetches it again.
     #[test]
     fn a_query_typed_again_after_a_detour_is_fetched_again() {
         let mut fetcher = SuggestionFetcher::new();

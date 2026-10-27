@@ -99,7 +99,7 @@ pub(crate) enum JsonEdit {
     /// A dragged card's new top-left.
     Moved(String, egui::Pos2),
     Relayout,
-    /// A card header's colour, `0x00RRGGBB` (plan ruling 4), or none.
+    /// A card header's colour, `0x00RRGGBB`, or none.
     Color(String, Option<u32>),
     /// Opens a text box over the entry (a double click, F2, or the end of an add).
     Begin(String, EditWhat),
@@ -257,7 +257,7 @@ impl App {
             return;
         };
         // A Json node whose file failed to load, or is still being
-        // refetched, has no level (plan ruling 10, `JsonPayload::enterable`);
+        // refetched, has no level (`JsonPayload::enterable`);
         // a failed Refresh while viewing it, or a restart after its file
         // moved, leaves to its group, where its card shows the error and
         // Retry. Its group is never a Json node, so this recurses once.
@@ -354,7 +354,7 @@ impl App {
         let id = level.node_id;
         let mut view = self.doc.mirror.view(id).cloned().unwrap_or_default();
         if view.is_opaque() {
-            // M5: a newer build's format, written back untouched; an edit here would replace it on every replica.
+            // A newer build's format, written back untouched; an edit here would replace it on every replica.
             // Lay out from the unchanged view so a refused drag doesn't leave its card where it was dropped.
             if let Some(level) = self.json_level.as_mut() {
                 level.relayout(&view);

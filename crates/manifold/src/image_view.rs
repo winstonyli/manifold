@@ -301,7 +301,7 @@ mod tests {
         assert_eq!(image_fit_scale(egui::vec2(64.0, 64.0), body), 1.0);
     }
 
-    /// Review D-R8: Fit really fits an image over 10x the body, and zooming out from there doesn't jump in.
+    /// Fit really fits an image over 10x the body, and zooming out from there doesn't jump in.
     #[test]
     fn fit_fits_a_huge_image_and_zoom_out_never_goes_up() {
         let fit = image_fit_scale(egui::vec2(8000.0, 100.0), egui::vec2(700.0, 500.0));

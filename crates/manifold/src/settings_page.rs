@@ -266,11 +266,8 @@ impl App {
 
     /// Settings, "Current Tab": engine, mute, screenshot, print.
     pub(crate) fn settings_current_tab_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        // Engine swap, Mute, Screenshot, and Print to PDF used to
-        // be live toolbar controls next to the address bar --
-        // moved here to keep that toolbar down to nav + address
-        // bar + a small handful of page actions, at the cost of a
-        // click through Settings instead of an in-place toggle.
+        // Engine swap, Mute, Screenshot, and Print to PDF live here, not on
+        // the toolbar, which stays nav + address bar + a few page actions.
         // `focus_kind` is `None` either when no tab is focused at
         // all, or Settings was reached with a non-tab node
         // (group/note/etc.) focused -- either way, nothing here
@@ -835,7 +832,7 @@ mod tests {
         assert_eq!(calls.get(), 3, "Save As forgot it");
     }
 
-    /// Review C-B5: Escape in a Settings field reverts that field and keeps the page open.
+    /// Escape in a Settings field reverts that field and keeps the page open.
     #[test]
     fn escape_in_a_settings_field_reverts_it_and_stays_on_the_page() {
         let ctx = crate::theme::testutil::ctx(true);

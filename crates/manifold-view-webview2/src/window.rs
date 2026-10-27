@@ -43,18 +43,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// Creates the host window: off-screen positioned (never overlaps the
 /// user's real desktop), a plain `WS_OVERLAPPEDWINDOW`.
 ///
-/// The style and ownership used to be load-bearing: capture went through
-/// `Windows.Graphics.Capture`'s `CreateForWindow`, which rejects
-/// `WS_POPUP`, `WS_EX_TOOLWINDOW`, and owned windows alike with
-/// `E_INVALIDARG` ("Could not capture the given window") -- all three
-/// confirmed live, the owned-window attempt crashing the view-host in a
-/// respawn loop. Capture now reads the Composition visual
-/// (`CreateFromVisual`), which doesn't inspect the window at all, so those
-/// constraints no longer apply to anything. `WS_OVERLAPPEDWINDOW` is kept
-/// simply because it is what has been live-verified to work end to end;
-/// `hide_from_taskbar` still handles the taskbar entry it produces (see its
-/// own doc comment for why that mechanism was picked, and what changing it
-/// now would need re-verifying).
+/// Capture reads the Composition visual (`CreateFromVisual`), which doesn't
+/// inspect the window, so the style and ownership are not load-bearing.
+/// `WS_OVERLAPPEDWINDOW` is kept because it is what has been verified to
+/// work end to end; `hide_from_taskbar` handles the taskbar entry it
+/// produces (see its doc comment for why that mechanism was picked, and
+/// what changing it would need re-verifying).
 ///
 /// `WS_EX_NOACTIVATE`: the window still activates inside this process's own
 /// thread (its first `ShowWindow`, despite `SW_SHOWNOACTIVATE`, and

@@ -54,8 +54,7 @@ impl App {
     }
 
     /// Keeps the OS window title in sync with the focused tab's own title
-    /// -- previously hardcoded to `"manifold"` regardless of
-    /// what was open, unlike every real browser's own "the window
+    /// -- following every real browser's "the window
     /// represents the page you're looking at" convention. Reflects
     /// `self.focused` regardless of `view_mode` (it's "the last tab you
     /// were looking at" even from Graph/Settings, same reasoning
@@ -223,7 +222,7 @@ impl App {
             // carry the old url (CEF reported loading before the new address,
             // unlabelled): that isn't the user's either.
             self.note_host_load(tab_id);
-            // The typed url, whatever the page then redirects to (2b-3 Ruling 4).
+            // The typed url, whatever the page then redirects to.
             self.edit_url(tab_id, &url);
             // Saved now so other replicas follow at once. Only a save that
             // doesn't commit leaves the edit for a later one.

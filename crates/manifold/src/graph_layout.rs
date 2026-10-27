@@ -17,7 +17,7 @@ pub struct Edge {
 /// positions doubled as screen coordinates directly.
 pub(crate) const GRAPH_WORLD_CENTER: egui::Vec2 = egui::Vec2::ZERO;
 
-/// Pure force-directed layout for the M5 tab graph: nodes repel each other,
+/// Pure force-directed layout for the tab graph: nodes repel each other,
 /// parent→child edges pull toward a rest length, everything damps and
 /// settles. No `wgpu`/`winit` types here — this only manipulates plain
 /// positions/velocities so it can be unit-tested without a live window.
@@ -437,7 +437,7 @@ mod tests {
         (positions, velocities)
     }
 
-    /// Review C-B9: two nodes on one point push apart.
+    /// Two nodes on one point push apart.
     #[test]
     fn coincident_nodes_separate() {
         let (mut positions, mut velocities) = pair_at(egui::Vec2::ZERO, egui::Vec2::ZERO);

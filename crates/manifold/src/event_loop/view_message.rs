@@ -117,10 +117,8 @@ impl App {
                     "view-host crashed ({reason}) for {tab_id}, restarting at {}",
                     crash_report::redacted_url(url)
                 );
-                // Previously silent from the actual app's own UI -- this only
-                // ever showed up in the console, so a user with no terminal
-                // open had no way to know a tab had crashed and quietly come
-                // back, e.g. mid-navigation with unsaved page state lost.
+                // The console log alone leaves a user with no terminal open unaware that a tab crashed and
+                // quietly came back, e.g. mid-navigation with unsaved page state lost.
                 // Reuses the same toast infrastructure "Saved <path>" already
                 // has (generalized to a plain message, see `save_toast`'s own
                 // doc comment) rather than a second, separate notification

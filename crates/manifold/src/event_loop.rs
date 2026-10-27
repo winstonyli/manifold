@@ -132,7 +132,7 @@ impl ApplicationHandler<UserEvent> for App {
     /// frame (`ControlFlow::Poll`) the loop sleeps and ticks every
     /// `MINIMIZED_TICK`: just the bookkeeping that doesn't need a frame
     /// (engine messages, store, idle sleep), no egui pass and no present.
-    /// Measured 2026-10-01: a minimized window still cost ~16% of a core.
+    /// Polling a minimized window costs about 16% of a core.
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let minimized = self.is_minimized();
         if minimized {
