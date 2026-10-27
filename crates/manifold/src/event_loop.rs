@@ -251,63 +251,8 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Focused(focused) => self.on_window_focus(focused),
-            // Fires when the window moves to a monitor with a different
-            // scale factor (also on a live resolution/scaling change).
-            // Confirmed live this was a real gap, not just theoretical:
-            // instrumenting a live cross-monitor drag showed a transitional
-            // `send_resize_to` call computed with the size already updated
-            // for the new monitor but `window.scale_factor()` still
-            // reporting the *old* monitor's value -- a genuine race between
-            // winit's size and scale-factor updates that `Resized` alone
-            // doesn't protect against. This handler re-triggers the same
-            // tab-resize notification `Resized` does, so whichever event
-            // actually lands last with the fully-settled state (typically
-            // this one, since it specifically announces the scale change
-            // completed) corrects any bad intermediate value the other
-            // sent. `window.inner_size()` (not the stale pre-change size)
-            // is used for the GPU surface for the same reason.
-            WindowEvent::ScaleFactorChanged { .. } => {
-                if let Some(gpu) = &mut self.gpu {
-                    if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
-                        gpu.resize(size.width, size.height);
-                    }
-                }
-                if let Some(id) = self.focused {
-                    self.send_resize_to(id);
-                }
-                if let Some(id) = self.split_tab {
-                    self.send_resize_to(id);
-                }
-            }
-            WindowEvent::Resized(size) => {
-                if let Some(gpu) = &mut self.gpu {
-                    gpu.resize(size.width, size.height);
-                }
-                // A minimized window reports 0x0; resizing a page to that
-                // crashed the WebView2 engine ("Tab crashed, restarted" on
-                // restore). The restore's own `Resized` sends the real size.
-                if size.width > 0 && size.height > 0 {
-                    if let Some(id) = self.focused {
-                        self.send_resize_to(id);
-                    }
-                    if let Some(id) = self.split_tab {
-                        self.send_resize_to(id);
-                    }
-                }
-                // Not saved in headless mode -- see `Settings::window_width`'s
-                // own doc comment for why that would corrupt a real saved
-                // geometry with the deliberate off-screen placeholder size.
-                // Converted to logical points here (dividing out `ppp`) --
-                // see that same doc comment for why saving raw physical
-                // pixels compounded into runaway window growth across
-                // launches on a mixed-DPI multi-monitor setup.
-                if !self.headless && size.width > 0 && size.height > 0 {
-                    let ppp = self.ppp();
-                    self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
-                    self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
-                    self.note_settings_changed();
-                }
-            }
+            WindowEvent::ScaleFactorChanged { .. } => self.on_scale_factor_changed(),
+            WindowEvent::Resized(size) => self.on_resized(size),
             WindowEvent::Moved(position) => {
                 if !self.headless {
                     self.settings.window_x = Some(position.x);
@@ -317,17 +262,15 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_pos = (position.x, position.y);
-                let chrome_height = self.chrome_height_px() as f64;
-                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| position.x < divider);
-                if in_tab_view && !consumed_by_egui && position.y >= chrome_height && in_primary_pane {
-                    if let Some(id) = self.focused {
-                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            node.tab.send(&HostToView::Input(InputEvent::MouseMove {
-                                x: position.x,
-                                y: position.y - chrome_height,
-                                modifiers: self.key_modifiers,
-                            }));
-                        }
+                if in_tab_view && !consumed_by_egui && self.pointer_in_content(position.x, position.y) {
+                    let chrome_height = self.chrome_height_px() as f64;
+                    let modifiers = self.key_modifiers;
+                    if let Some(node) = self.focused_tab_mut() {
+                        node.tab.send(&HostToView::Input(InputEvent::MouseMove {
+                            x: position.x,
+                            y: position.y - chrome_height,
+                            modifiers,
+                        }));
                     }
                 }
             }
@@ -341,136 +284,13 @@ impl ApplicationHandler<UserEvent> for App {
                 self.drop_file(path, point);
             }
             WindowEvent::MouseInput { state, button, .. } => {
-                let chrome_height = self.chrome_height_px() as f64;
-                let (x, y) = self.cursor_pos;
-                // `egui_winit` reports the right button as "consumed"
-                // unconditionally (confirmed live via temporary logging:
-                // `consumed_by_egui=true` even over this project's own raw
-                // content quad, which isn't a real egui widget and has
-                // nothing there to legitimately claim it) — bypassed for
-                // right and middle specifically so a right/middle-click on
-                // tab content still reaches `InputEvent::MouseDown`/
-                // `MouseUp` the same way every left-click already does.
-                // Middle was missing this even though every view-host's
-                // own `translate_mouse_button`/native input path already
-                // fully implements `MouseButton::Middle`.
-                let egui_wants_it =
-                    consumed_by_egui && button != WinitMouseButton::Right && button != WinitMouseButton::Middle;
-                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
-                let in_content = in_tab_view && !egui_wants_it && y >= chrome_height && in_primary_pane;
-                if state == ElementState::Pressed && in_tab_view && !consumed_by_egui {
-                    self.side_button_nav(button);
-                }
-                if let Some(button) = translate_mouse_button(button) {
-                    // A release always goes to whichever tab is mid-drag,
-                    // even when it lands outside the content area -- see
-                    // `native_drag_tab`'s doc comment for the stuck-button
-                    // bug that gating it the same way as a press caused.
-                    let target = match state {
-                        ElementState::Pressed if in_content => self.focused,
-                        ElementState::Released => {
-                            if matches!(button, MouseButton::Left) { self.native_drag_tab.take() } else { None }
-                                .or_else(|| in_content.then_some(self.focused).flatten())
-                        }
-                        ElementState::Pressed => None,
-                    };
-                    if state == ElementState::Pressed && target.is_none() {
-                        self.click_counter.reset();
-                    }
-                    if let Some(id) = target {
-                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            let (x, y) = (x, y - chrome_height);
-                            let event = match state {
-                                ElementState::Pressed => {
-                                    let click_count =
-                                        self.click_counter.press(id, button, (x, y), std::time::Instant::now());
-                                    InputEvent::MouseDown { x, y, button, modifiers: self.key_modifiers, click_count }
-                                }
-                                ElementState::Released => InputEvent::MouseUp {
-                                    x,
-                                    y,
-                                    button,
-                                    modifiers: self.key_modifiers,
-                                    click_count: self.click_counter.current(),
-                                },
-                            };
-                            node.tab.send(&HostToView::Input(event));
-                            if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
-                                self.native_drag_tab = Some(id);
-                            }
-                        }
-                    }
-                }
+                self.on_mouse_input(state, button, in_tab_view, consumed_by_egui)
             }
-            WindowEvent::MouseWheel { delta, .. } => {
-                let chrome_height = self.chrome_height_px() as f64;
-                let (x, y) = self.cursor_pos;
-                let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
-                if in_tab_view && !consumed_by_egui && y >= chrome_height && in_primary_pane {
-                    if let Some(id) = self.focused {
-                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            // `LineDelta` is a fixed synthetic unit
-                            // (`* 20.0`), not a measurement of anything;
-                            // `PixelDelta` is already a real physical-pixel
-                            // amount, which is the space every engine's
-                            // surface (and so this event's `x`/`y`) is in --
-                            // neither needs converting.
-                            let (dx, dy) = match delta {
-                                winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64 * 20.0, y as f64 * 20.0),
-                                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
-                            };
-                            node.tab.send(&HostToView::Input(InputEvent::Scroll {
-                                x,
-                                y: y - chrome_height,
-                                delta_x: dx,
-                                delta_y: dy,
-                                modifiers: self.key_modifiers,
-                            }));
-                        }
-                    }
-                }
-            }
+            WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta, in_tab_view && !consumed_by_egui),
             WindowEvent::ModifiersChanged(new_modifiers) => {
                 self.key_modifiers = winit_modifiers_to_bits(new_modifiers.state());
             }
-            WindowEvent::KeyboardInput { event, .. } => {
-                // A key we take as a shortcut isn't also the page's: its press, text and release stay here.
-                let swallowed = match (event.physical_key, event.state) {
-                    (PhysicalKey::Code(code), ElementState::Pressed)
-                        if crate::shortcuts::claims_chord(code, self.key_modifiers) =>
-                    {
-                        self.swallowed_keys.insert(code);
-                        true
-                    }
-                    (PhysicalKey::Code(code), ElementState::Released) => self.swallowed_keys.remove(&code),
-                    _ => false,
-                };
-                if in_tab_view && !consumed_by_egui && !swallowed {
-                    if let Some(id) = self.focused {
-                        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                            if let Some(key) = translate_key_code(event.physical_key) {
-                                let input = match event.state {
-                                    ElementState::Pressed => InputEvent::KeyDown { key, modifiers: self.key_modifiers },
-                                    ElementState::Released => InputEvent::KeyUp { key, modifiers: self.key_modifiers },
-                                };
-                                node.tab.send(&HostToView::Input(input));
-                            }
-                            // The produced text (after layout/shift/dead-key
-                            // processing) is separate from the physical key
-                            // above — a page's text field wants this, a
-                            // shortcut wants the key. winit only reports
-                            // `text` on the press, not the release.
-                            if event.state == ElementState::Pressed {
-                                if let Some(text) = &event.text {
-                                    for ch in text.chars() {
-                                        node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            WindowEvent::KeyboardInput { event, .. } => self.on_key(&event, in_tab_view && !consumed_by_egui),
             // No frame while minimized, and no `request_redraw`, so the loop
             // stops spinning; `about_to_wait` ticks it instead.
             WindowEvent::RedrawRequested if self.is_minimized() => {}
@@ -528,6 +348,208 @@ impl ApplicationHandler<UserEvent> for App {
                 self.headless_end_of_frame(event_loop);
             }
             _ => {}
+        }
+    }
+}
+
+impl App {
+    fn focused_tab_mut(&mut self) -> Option<&mut TabPayload> {
+        let id = self.focused?;
+        self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut())
+    }
+
+    /// Whether the pointer at `(x, y)` (physical window pixels) is over the primary pane's content: below the
+    /// chrome and, while a split is open, left of its divider.
+    fn pointer_in_content(&self, x: f64, y: f64) -> bool {
+        let in_primary_pane = self.split_divider_x_px().is_none_or(|divider| x < divider);
+        y >= self.chrome_height_px() as f64 && in_primary_pane
+    }
+
+    fn resize_panes(&mut self) {
+        if let Some(id) = self.focused {
+            self.send_resize_to(id);
+        }
+        if let Some(id) = self.split_tab {
+            self.send_resize_to(id);
+        }
+    }
+
+    /// Fires when the window moves to a monitor with a different
+    /// scale factor (also on a live resolution/scaling change).
+    /// Confirmed live this was a real gap, not just theoretical:
+    /// instrumenting a live cross-monitor drag showed a transitional
+    /// `send_resize_to` call computed with the size already updated
+    /// for the new monitor but `window.scale_factor()` still
+    /// reporting the *old* monitor's value -- a genuine race between
+    /// winit's size and scale-factor updates that `Resized` alone
+    /// doesn't protect against. This handler re-triggers the same
+    /// tab-resize notification `Resized` does, so whichever event
+    /// actually lands last with the fully-settled state (typically
+    /// this one, since it specifically announces the scale change
+    /// completed) corrects any bad intermediate value the other
+    /// sent. `window.inner_size()` (not the stale pre-change size)
+    /// is used for the GPU surface for the same reason.
+    fn on_scale_factor_changed(&mut self) {
+        if let Some(gpu) = &mut self.gpu {
+            if let Some(size) = self.window.as_ref().map(|w| w.inner_size()) {
+                gpu.resize(size.width, size.height);
+            }
+        }
+        self.resize_panes();
+    }
+
+    fn on_resized(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        if let Some(gpu) = &mut self.gpu {
+            gpu.resize(size.width, size.height);
+        }
+        // A minimized window reports 0x0; resizing a page to that
+        // crashed the WebView2 engine ("Tab crashed, restarted" on
+        // restore). The restore's own `Resized` sends the real size.
+        if size.width > 0 && size.height > 0 {
+            self.resize_panes();
+        }
+        // Not saved in headless mode -- see `Settings::window_width`'s
+        // own doc comment for why that would corrupt a real saved
+        // geometry with the deliberate off-screen placeholder size.
+        // Converted to logical points here (dividing out `ppp`) --
+        // see that same doc comment for why saving raw physical
+        // pixels compounded into runaway window growth across
+        // launches on a mixed-DPI multi-monitor setup.
+        if !self.headless && size.width > 0 && size.height > 0 {
+            let ppp = self.ppp();
+            self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
+            self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
+            self.note_settings_changed();
+        }
+    }
+
+    fn on_mouse_input(
+        &mut self,
+        state: ElementState,
+        button: WinitMouseButton,
+        in_tab_view: bool,
+        consumed_by_egui: bool,
+    ) {
+        let chrome_height = self.chrome_height_px() as f64;
+        let (x, y) = self.cursor_pos;
+        // `egui_winit` reports the right button as "consumed"
+        // unconditionally (confirmed live via temporary logging:
+        // `consumed_by_egui=true` even over this project's own raw
+        // content quad, which isn't a real egui widget and has
+        // nothing there to legitimately claim it) — bypassed for
+        // right and middle specifically so a right/middle-click on
+        // tab content still reaches `InputEvent::MouseDown`/
+        // `MouseUp` the same way every left-click already does.
+        // Middle was missing this even though every view-host's
+        // own `translate_mouse_button`/native input path already
+        // fully implements `MouseButton::Middle`.
+        let egui_wants_it = consumed_by_egui && button != WinitMouseButton::Right && button != WinitMouseButton::Middle;
+        let in_content = in_tab_view && !egui_wants_it && self.pointer_in_content(x, y);
+        if state == ElementState::Pressed && in_tab_view && !consumed_by_egui {
+            self.side_button_nav(button);
+        }
+        let Some(button) = translate_mouse_button(button) else { return };
+        // A release always goes to whichever tab is mid-drag,
+        // even when it lands outside the content area -- see
+        // `native_drag_tab`'s doc comment for the stuck-button
+        // bug that gating it the same way as a press caused.
+        let target = match state {
+            ElementState::Pressed if in_content => self.focused,
+            ElementState::Released => {
+                if matches!(button, MouseButton::Left) { self.native_drag_tab.take() } else { None }
+                    .or_else(|| in_content.then_some(self.focused).flatten())
+            }
+            ElementState::Pressed => None,
+        };
+        if state == ElementState::Pressed && target.is_none() {
+            self.click_counter.reset();
+        }
+        let Some(id) = target else { return };
+        let modifiers = self.key_modifiers;
+        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
+            let (x, y) = (x, y - chrome_height);
+            let event = match state {
+                ElementState::Pressed => {
+                    let click_count = self.click_counter.press(id, button, (x, y), std::time::Instant::now());
+                    InputEvent::MouseDown { x, y, button, modifiers, click_count }
+                }
+                ElementState::Released => {
+                    InputEvent::MouseUp { x, y, button, modifiers, click_count: self.click_counter.current() }
+                }
+            };
+            node.tab.send(&HostToView::Input(event));
+            if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
+                self.native_drag_tab = Some(id);
+            }
+        }
+    }
+
+    /// `to_page`: the tab view is showing and egui didn't take the event.
+    fn on_wheel(&mut self, delta: winit::event::MouseScrollDelta, to_page: bool) {
+        let (x, y) = self.cursor_pos;
+        if !(to_page && self.pointer_in_content(x, y)) {
+            return;
+        }
+        let chrome_height = self.chrome_height_px() as f64;
+        let modifiers = self.key_modifiers;
+        if let Some(node) = self.focused_tab_mut() {
+            // `LineDelta` is a fixed synthetic unit
+            // (`* 20.0`), not a measurement of anything;
+            // `PixelDelta` is already a real physical-pixel
+            // amount, which is the space every engine's
+            // surface (and so this event's `x`/`y`) is in --
+            // neither needs converting.
+            let (dx, dy) = match delta {
+                winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64 * 20.0, y as f64 * 20.0),
+                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
+            };
+            node.tab.send(&HostToView::Input(InputEvent::Scroll {
+                x,
+                y: y - chrome_height,
+                delta_x: dx,
+                delta_y: dy,
+                modifiers,
+            }));
+        }
+    }
+
+    /// `to_page`: the tab view is showing and egui didn't take the event.
+    fn on_key(&mut self, event: &winit::event::KeyEvent, to_page: bool) {
+        // A key we take as a shortcut isn't also the page's: its press, text and release stay here.
+        let swallowed = match (event.physical_key, event.state) {
+            (PhysicalKey::Code(code), ElementState::Pressed)
+                if crate::shortcuts::claims_chord(code, self.key_modifiers) =>
+            {
+                self.swallowed_keys.insert(code);
+                true
+            }
+            (PhysicalKey::Code(code), ElementState::Released) => self.swallowed_keys.remove(&code),
+            _ => false,
+        };
+        if !to_page || swallowed {
+            return;
+        }
+        let modifiers = self.key_modifiers;
+        if let Some(node) = self.focused_tab_mut() {
+            if let Some(key) = translate_key_code(event.physical_key) {
+                let input = match event.state {
+                    ElementState::Pressed => InputEvent::KeyDown { key, modifiers },
+                    ElementState::Released => InputEvent::KeyUp { key, modifiers },
+                };
+                node.tab.send(&HostToView::Input(input));
+            }
+            // The produced text (after layout/shift/dead-key
+            // processing) is separate from the physical key
+            // above — a page's text field wants this, a
+            // shortcut wants the key. winit only reports
+            // `text` on the press, not the release.
+            if event.state == ElementState::Pressed {
+                if let Some(text) = &event.text {
+                    for ch in text.chars() {
+                        node.tab.send(&HostToView::Input(InputEvent::Char { codepoint: ch as u32 }));
+                    }
+                }
+            }
         }
     }
 }
