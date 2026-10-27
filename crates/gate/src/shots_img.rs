@@ -1,5 +1,5 @@
 //! The image steps of `gate chrome-shots`: the contact sheet (was scripts/shots_sheet.py) and the hover report (was
-//! scripts/hover_diff.py), both on the `image` crate instead of Pillow.
+//! scripts/hover_diff.py), both on the `image` crate instead of Pillow, and `gate shots-diff`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -114,6 +114,91 @@ pub fn hover_report(dir: &Path, band: u32, column: bool, x0: u32) -> io::Result<
     Ok(report_lines(changed))
 }
 
+/// How `b` differs from `a`: `None` when every pixel matches, else the size mismatch or the changed-pixel count, the
+/// largest channel difference and the changed area's bounds.
+fn pixel_diff(a: &RgbImage, b: &RgbImage) -> Option<String> {
+    if a.dimensions() != b.dimensions() {
+        return Some(format!("size {}x{} vs {}x{}", a.width(), a.height(), b.width(), b.height()));
+    }
+    let (mut n, mut max, mut lo, mut hi) = (0u32, 0u8, (u32::MAX, u32::MAX), (0, 0));
+    for ((x, y, pa), pb) in a.enumerate_pixels().zip(b.pixels()) {
+        let d = (0..3).map(|i| pa.0[i].abs_diff(pb.0[i])).max().unwrap_or(0);
+        if d > 0 {
+            n += 1;
+            max = max.max(d);
+            lo = (lo.0.min(x), lo.1.min(y));
+            hi = (hi.0.max(x), hi.1.max(y));
+        }
+    }
+    (n > 0).then(|| format!("{n} px, max {max}, x {}..{} y {}..{}", lo.0, hi.0, lo.1, hi.1))
+}
+
+/// The shots under `root` as `/`-separated relative paths, sorted: every PNG except the ones derived from the others
+/// (`crop/` and `sheet.png`, which would repeat each difference).
+fn shot_paths(root: &Path) -> io::Result<BTreeSet<String>> {
+    let mut out = BTreeSet::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir)? {
+            let path = entry?.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if path.is_dir() {
+                if name != "crop" {
+                    dirs.push(path);
+                }
+            } else if name.ends_with(".png") && name != "sheet.png" {
+                let rel = path.strip_prefix(root).map_err(io::Error::other)?;
+                out.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Compares two `chrome-shots` output trees by decoded pixels (two runs on one commit match pixel for pixel, but their
+/// PNG bytes mostly don't). Returns a line per shot that differs or is missing, a summary line, and whether all match.
+fn diff_trees(a: &Path, b: &Path) -> io::Result<(Vec<String>, bool)> {
+    let (in_a, in_b) = (shot_paths(a)?, shot_paths(b)?);
+    let (mut lines, mut differ, mut missing) = (Vec::new(), 0, 0);
+    for rel in &in_a {
+        if !in_b.contains(rel) {
+            missing += 1;
+            lines.push(format!("{rel}: missing in B"));
+        } else if let Some(d) = pixel_diff(&load(&a.join(rel))?, &load(&b.join(rel))?) {
+            differ += 1;
+            lines.push(format!("{rel}: {d}"));
+        }
+    }
+    let only_b: Vec<&String> = in_b.difference(&in_a).collect();
+    lines.extend(only_b.iter().map(|rel| format!("{rel}: only in B")));
+    let same = in_a.len() - differ - missing;
+    lines.push(format!(
+        "{} shots in A: {same} same, {differ} differ, {missing} missing in B; {} only in B",
+        in_a.len(),
+        only_b.len()
+    ));
+    Ok((lines, differ + missing + only_b.len() == 0))
+}
+
+/// `gate shots-diff A B`: prints how two `chrome-shots` output dirs differ; exit 0 when every shot matches pixel for
+/// pixel, 1 when any differs or is missing on one side, 2 on bad arguments or an unreadable file.
+pub(crate) fn shots_diff(args: &[String]) -> std::process::ExitCode {
+    let [a, b] = args else {
+        eprintln!("usage: gate shots-diff A B");
+        return std::process::ExitCode::from(2);
+    };
+    match diff_trees(Path::new(a), Path::new(b)) {
+        Ok((lines, same)) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            std::process::ExitCode::from(u8::from(!same))
+        }
+        Err(e) => {
+            eprintln!("shots-diff: {e}");
+            std::process::ExitCode::from(2)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +223,46 @@ mod tests {
         let report = report_lines(changed);
         assert!(report[..5].iter().all(|l| l.ends_with("runs=1")), "{report:?}");
         assert!(report[0].contains("changed 40..40"), "{report:?}");
+    }
+
+    #[test]
+    fn pixel_diff_counts_and_bounds_the_changes() {
+        let a = RgbImage::from_pixel(20, 10, image::Rgb([0, 0, 0]));
+        assert_eq!(pixel_diff(&a, &a.clone()), None);
+        let mut b = a.clone();
+        b.put_pixel(3, 2, image::Rgb([0, 9, 0]));
+        b.put_pixel(15, 7, image::Rgb([200, 0, 0]));
+        assert_eq!(pixel_diff(&a, &b).as_deref(), Some("2 px, max 200, x 3..15 y 2..7"));
+        assert_eq!(pixel_diff(&a, &RgbImage::new(20, 11)).as_deref(), Some("size 20x10 vs 20x11"));
+    }
+
+    #[test]
+    fn shot_trees_compare_by_pixels_and_skip_derived_files() {
+        let dir = std::env::temp_dir().join(format!("gate-shots-diff-test-{}", std::process::id()));
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        let black = RgbImage::from_pixel(4, 4, image::Rgb([0, 0, 0]));
+        let mut white_dot = black.clone();
+        white_dot.put_pixel(1, 1, image::Rgb([255, 255, 255]));
+        for (root, odd) in [(&a, &black), (&b, &white_dot)] {
+            fs::create_dir_all(root.join("hover/graph")).unwrap();
+            fs::create_dir_all(root.join("crop")).unwrap();
+            black.save(root.join("same.png")).unwrap();
+            odd.save(root.join("hover/graph/x0004.png")).unwrap();
+            odd.save(root.join("crop/same.png")).unwrap();
+            odd.save(root.join("sheet.png")).unwrap();
+        }
+        black.save(a.join("only-a.png")).unwrap();
+        let (lines, same) = diff_trees(&a, &b).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(!same);
+        assert_eq!(
+            lines,
+            [
+                "hover/graph/x0004.png: 1 px, max 255, x 1..1 y 1..1",
+                "only-a.png: missing in B",
+                "3 shots in A: 1 same, 1 differ, 1 missing in B; 0 only in B",
+            ]
+        );
     }
 
     #[test]

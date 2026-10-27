@@ -117,4 +117,5 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 
 From `docs/superpowers/plans/2026-10-26-cleanliness-refactors.md` and its final review; verified 2026-10-27.
 
+- **`chrome-shots` graph views don't repeat between runs.** Two runs on one commit lay the graph out differently (cards placed elsewhere, zoom 144% vs 124%), and file cards show the run's work dir (it holds the pid), so the 42 default views that show the graph can't be pixel-diffed across a change; the other 25 can (`gate shots-diff`). *Why parked:* the cause of the layout difference is not yet looked for. *Trigger:* a graph drawing change that wants a pixel diff. *Evidence:* runs `2026-10-27-chrome-shots-aa`, `-aa-hover` in `docs/runs.md`; `shots.rs` module doc. *Status:* parked.
 - **Final-review minors.** (1) `App::load` starts from `..Self::default()`, so it builds workers and a memory-only `Search` and then replaces them: wasted work, no effect. (2) M2 removed `suggest::Server`'s request log with its assertion; the path was dead. *Trigger:* a touch of the code. *Status:* parked.

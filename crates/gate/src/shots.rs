@@ -35,11 +35,11 @@
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
 //! by number; this is for looking.
 //!
-//! Two runs on one commit give the same pixels, so a look change can be checked by a pixel diff of before and after.
-//! Compare decoded pixels, not files: the PNG bytes differ for most shots. A/A on 2026-10-27 (674f714; runs
-//! `chrome-shots-aa`, `chrome-shots-aa-hover` in `docs/runs.md`): all 112 default-view files, and `hover-graph`'s 93
-//! at 1280x800 and 30 at 400x300, matched pixel for pixel, the hover pair at 49% CPU load. An earlier report of the zoom
-//! readout differing between runs (134% vs 144%) did not reproduce. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! `gate shots-diff A B` compares two runs' trees by decoded pixels (PNG bytes differ even where pixels match). Two runs
+//! on one commit match only where no graph canvas shows: the graph's layout differs between runs (cards elsewhere, zoom
+//! 144% vs 124%), and file cards show the work dir, which holds the pid. A/A on 2026-10-27 (674f714; runs
+//! `chrome-shots-aa`, `chrome-shots-aa-hover` in `docs/runs.md`): 25 of 67 default views matched (tab view, settings,
+//! popups, JSON level, engine states), the 42 with the graph did not, nor did any `hover-graph` shot. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
