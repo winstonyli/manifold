@@ -540,7 +540,7 @@ mod tests {
         let near = tab(&mut app, "https://near.test/", "Near");
         let far = add(&mut app, Kind::Tab, sleeping_tab("https://far.test/", "Far"));
         app.view_mode = ViewMode::Graph;
-        app.layout.entry(far).or_default().pos = egui::vec2(5000.0, 0.0);
+        app.snap_layout(far, egui::vec2(5000.0, 0.0));
         app.camera.jump_to(egui::Rect::from_center_size(egui::pos2(100.0, 100.0), egui::vec2(900.0, 700.0)));
         app.omni_activate(card_row(&app, far), Host::Graph);
         assert_eq!(app.camera.reveal, Some(far));

@@ -309,7 +309,7 @@ impl App {
     fn seed_landing(&mut self, id: NodeId, carried: Carried) {
         let ty = crate::store::model::Kind::Tab.type_str().unwrap_or_default().to_owned();
         let carried = carried.with_str(field::TYPE, ty);
-        self.layout.entry(id).or_insert(Layout::at(carried.pos().unwrap_or_default()));
+        self.layout.entry(id).or_insert(carried.pos().unwrap_or_default());
         self.doc.mirror.seed(id, &carried);
         if self.doc.mirror.group(id).is_some_and(|g| !self.nodes.contains_key(&g)) {
             let group = self.shown_group(id);

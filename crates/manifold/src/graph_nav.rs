@@ -562,11 +562,13 @@ impl App {
 
         // Each level node is collected once: `edges` is a plain `Vec`, so a duplicated pass would feed every spring
         // edge to `graph_layout::step` twice and double the spring strength.
-        // The layout only (`App::layout`): physics never writes the document pos.
+        // Starts from the document pos, at rest, so the result depends only on the document and the cards' sizes,
+        // not on earlier settles (one at a placeholder size, say); an unplaced node starts where it is drawn. Writes
+        // the layout only (`App::layout`): physics never writes the document pos.
         let at_level = || self.nodes.keys().filter(|id| self.in_level(**id));
-        let layout = |id: NodeId| self.layout.get(&id).copied().unwrap_or_default();
-        let mut positions: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, layout(*id).pos)).collect();
-        let mut velocities: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, layout(*id).vel)).collect();
+        let start = |id: NodeId| self.doc.mirror.pos(id).unwrap_or_else(|| self.layout_pos(id));
+        let mut positions: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, start(*id))).collect();
+        let mut velocities: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, egui::Vec2::ZERO)).collect();
         let edges = self.spring_edges();
         let pinned: HashSet<NodeId> = self
             .nodes
@@ -594,10 +596,7 @@ impl App {
             );
         }
 
-        for (id, pos) in positions {
-            let vel = velocities.get(&id).copied().unwrap_or_default();
-            self.layout.insert(id, Layout { pos, vel });
-        }
+        self.layout.extend(positions);
     }
 
     /// The `(opener, opened)` pairs that pull on each other in the layout: the level's edges whose table row has
@@ -617,12 +616,12 @@ impl App {
 
     /// Where `id`'s card is drawn (`App::layout`); the origin for a node with no entry (a hand-built test node).
     pub(crate) fn layout_pos(&self, id: NodeId) -> egui::Vec2 {
-        self.layout.get(&id).map_or(egui::Vec2::ZERO, |layout| layout.pos)
+        self.layout.get(&id).copied().unwrap_or_default()
     }
 
-    /// Moves `id`'s card to `pos`, at rest: a placement, a remote pos, a restored personal one.
+    /// Moves `id`'s card to `pos`: a placement, a remote pos.
     pub(crate) fn snap_layout(&mut self, id: NodeId, pos: egui::Vec2) {
-        self.layout.insert(id, Layout::at(pos));
+        self.layout.insert(id, pos);
     }
 
     /// `id`'s card in world space (`node_card_rect` at its layout position); `None` when there is no such node.
@@ -836,18 +835,12 @@ mod tests {
         spread(&mut f);
         let levels = [None, Some(f.groups[0])];
         let mut app = f.app;
-        let start = app.layout.clone();
         for level in levels {
             app.current_group = level;
             let cards = app.nodes.keys().filter(|id| app.in_level(**id)).count();
             let what = format!("settle, {} ({cards} cards)", if level.is_some() { "g0" } else { "top" });
-            report(
-                &what,
-                timed(10, || {
-                    app.layout = start.clone();
-                    app.settle_current_level();
-                }),
-            );
+            // Each settle starts from the document positions, so repeats need no reset.
+            report(&what, timed(10, || app.settle_current_level()));
         }
     }
 

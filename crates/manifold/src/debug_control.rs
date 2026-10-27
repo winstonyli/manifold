@@ -1236,7 +1236,7 @@ impl App {
         if !self.nodes.contains_key(&id) {
             return false;
         }
-        self.layout.entry(id).or_default().pos = pos;
+        self.snap_layout(id, pos);
         self.edit_pos(id, Some(self.layout_pos(id)));
         self.save_session();
         true

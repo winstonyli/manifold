@@ -196,11 +196,12 @@ struct App {
     /// node click/drag targeting flaky if used directly).
     nodes: NodeMap,
     node_order: Vec<NodeId>,
-    /// Where each node's card is drawn, by id (`Layout`): runtime and personal, never the document's
-    /// pos (`Mirror::pos`). Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
+    /// Where each node's card is drawn, by id: runtime only, never the document's pos (`Mirror::pos`). A settle
+    /// (`settle_current_level`, from the document pos) and drags move it; it starts at the node's placement and a
+    /// remote pos snaps it. Keyed by id and left alone by a respawn's remove-and-reinsert, so a respawning tab keeps
     /// its place; pruned with the mirror at a save. Read through `layout_pos`: a node without an entry (a hand-built
     /// test node) is at the origin.
-    layout: HashMap<NodeId, Layout>,
+    layout: HashMap<NodeId, egui::Vec2>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
     /// button -- while `true`, every non-empty group card falls back to
     /// the plain centered name+count layout an empty group already uses,

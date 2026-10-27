@@ -42,6 +42,7 @@ pub(crate) fn spread(f: &mut Fixture) {
         let k = next.entry(f.app.doc.mirror.group(*id)).or_default();
         let pos = egui::vec2((*k % 30) as f32 * 300.0, (*k / 30) as f32 * 200.0);
         *k += 1;
+        f.app.edit_pos(*id, Some(pos));
         f.app.snap_layout(*id, pos);
     }
 }

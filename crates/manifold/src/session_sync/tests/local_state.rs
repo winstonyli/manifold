@@ -21,22 +21,22 @@ fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
     assert!(!back.doc.hidden_local.contains_key(&tab), "the Delete drops it (forget_deleted)");
 }
 
-/// Restore: the mirror holds the document pos and the layout the personal one, and the next save writes
-/// nothing for it.
+/// Restore places a node at its document pos, whatever a settle showed before the restart (a settle derives it again
+/// from the document), and the next save writes nothing for it.
 #[test]
-fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_document_one() {
+fn a_restart_places_a_node_at_its_document_position() {
     let path = temp_dir("pos-restore").join("session.mnf");
     let note = {
         let mut app = app_on(&path, 1);
         let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
         assert!(app.save_session());
-        app.snap_layout(note, egui::vec2(70.0, 80.0)); // a settle: personal
+        app.snap_layout(note, egui::vec2(70.0, 80.0)); // a settle
         app.close_store();
         note
     };
     let mut app = app_on(&path, 2);
     assert!(app.restore_session());
-    assert_eq!(app.layout_pos(note), egui::vec2(70.0, 80.0));
+    assert_eq!(app.layout_pos(note), egui::vec2(10.0, 20.0));
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(10.0, 20.0)));
     assert!(app.save_session());
     assert!(!app.doc.writes.has_fields());
@@ -115,7 +115,7 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
         app.close_store();
         note
     };
-    let entry = LocalNode { pos: [7.0, 8.0], ..LocalNode::default() };
+    let entry = LocalNode { editing: true, ..LocalNode::default() };
     let side = crate::store::local::path_for(&path);
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
@@ -145,11 +145,11 @@ fn personal_state_startup_could_not_read_is_retried_not_overwritten() {
     app.doc.local_persist.local_unread.as_mut().unwrap().retry_at = std::time::Instant::now();
     app.poll_store();
     assert!(app.doc.local_persist.local_unread.is_none());
-    assert_eq!(app.layout_pos(note), egui::vec2(7.0, 8.0));
+    assert_eq!(app.local_state().nodes.get(&note), Some(&entry), "applied");
     app.close_store();
     let bytes = Journal::open(&path, ActorId(4)).unwrap().read_local().unwrap().unwrap();
     let written = LocalState::from_bytes(&bytes).unwrap();
-    assert_eq!(written.nodes[&note].pos, [7.0, 8.0]);
+    assert_eq!(written.nodes.get(&note), Some(&entry));
 }
 
 /// A damaged `.local` is still a fresh start that the next write replaces
@@ -168,7 +168,7 @@ fn a_damaged_personal_state_file_is_not_retried() {
     assert!(app.restore_session());
     assert!(app.doc.local_persist.local_unread.is_none());
     // An unchanged state isn't written (`local_written` is armed); a change is.
-    add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "m".into(), editing: false }));
+    app.groups_collapsed = true;
     app.maybe_write_local(true);
     let bytes = app.doc.journal.as_ref().unwrap().read_local().unwrap();
     assert!(bytes.is_some(), "replaced with this profile's state");
@@ -237,7 +237,7 @@ fn a_late_read_of_no_personal_state_keeps_the_live_view() {
 }
 
 /// Personal state written before a restored tab's wake lands still
-/// keeps theirs (position, title, zoom), and a fresh failed card's zoom
+/// keeps theirs (title, zoom), and a fresh failed card's zoom
 /// is kept too. A restored tab is an `Unloaded` card at once, so
 /// `apply_local` applies its entry directly; the `pending_local` path
 /// for a node still spawning (a group import, Recently Closed) isn't
@@ -251,7 +251,7 @@ fn personal_state_survives_onto_a_still_waking_restored_card_and_a_fresh_failed_
         app.close_store();
         tab
     };
-    let entry = LocalNode { pos: [7.0, 8.0], title: "T".into(), zoom: Some(2.0), ..LocalNode::default() };
+    let entry = LocalNode { title: "T".into(), zoom: Some(2.0), ..LocalNode::default() };
     {
         let journal = Journal::open(&path, ActorId(2)).unwrap();
         let state = LocalState { nodes: BTreeMap::from([(tab, entry.clone())]), ..LocalState::default() };

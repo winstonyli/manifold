@@ -427,23 +427,6 @@ pub(crate) struct GraphNode {
     pub(crate) runtime: Runtime,
 }
 
-/// Where a node's card is drawn and how fast physics is moving it (`App::layout`): runtime state,
-/// personal to this replica. The force-directed settle and drags move it; it starts at the node's placement, a
-/// remote pos snaps it, and personal state (`LocalNode::pos`) restores it. The document never reads it: only a drag
-/// release (`App::edit_pos`) writes the document pos.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub(crate) struct Layout {
-    pub(crate) pos: egui::Vec2,
-    pub(crate) vel: egui::Vec2,
-}
-
-impl Layout {
-    /// At rest at `pos`.
-    pub(crate) fn at(pos: egui::Vec2) -> Self {
-        Layout { pos, vel: egui::Vec2::ZERO }
-    }
-}
-
 impl GraphNode {
     /// A sleeping tab whose engine failed to start.
     pub(crate) fn tab_failed(&self) -> bool {

@@ -28,9 +28,9 @@ impl App {
     /// store never changes a node's type, so the mirror's first string stands). A file card whose file can't be
     /// loaded is kept, showing its error: the node stays in the store.
     ///
-    /// `local`, personal state's entry for a new node, lays it out at its
-    /// settled position instead of `fields`'s stored `pos` (which the mirror
-    /// holds), and reopens a tab at its live url (`LocalNode::live_url`).
+    /// `local`, personal state's entry for a new node, reopens a tab at its
+    /// live url (`LocalNode::live_url`); the node is laid out at `fields`'s
+    /// stored `pos`.
     /// Every caller but `restore_session` passes `None`.
     pub(crate) fn materialize(&mut self, id: NodeId, snap: &Snapshot, local: Option<&LocalNode>) {
         let (ty, fields, group) = (snap.ty.as_str(), &snap.fields, snap.group);
@@ -56,7 +56,7 @@ impl App {
         if !ty.is_empty() {
             self.doc.mirror.init_field(id, field::TYPE, FieldValue::Str(ty.to_owned()));
         }
-        let pos = local.map_or_else(|| pos_of(id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
+        let pos = pos_of(id, fields);
         if self.update_live_node(id, fields, pos, &changed, &held) {
             return;
         }
@@ -218,7 +218,7 @@ impl App {
 
     /// Creates the node `id` of `kind` from `fields` (a file card whose file is gone gets a placeholder).
     pub(super) fn insert_materialized(&mut self, id: NodeId, kind: Kind, fields: &Fields, local: Option<&LocalNode>) {
-        let pos = local.map_or_else(|| pos_of(id, fields), |l| egui::vec2(l.pos[0], l.pos[1]));
+        let pos = pos_of(id, fields);
         // Resolved once up front for the arms below and the missing-file
         // refetch check: this machine's newest `<id>.*` in the content dir,
         // else `stored` (`ContentIndex`): the pass's own index when one is

@@ -115,6 +115,36 @@ fn a_drag_release_saves_the_dropped_position() {
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(50.0, 10.0)));
 }
 
+/// A settle starts from the document positions, so where the layout was before (an earlier settle, at a card's
+/// placeholder size) doesn't change where it ends.
+#[test]
+fn a_settle_ends_where_the_document_says_whatever_came_before() {
+    let mut app = App::default();
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    let other = a_note_at(&mut app, egui::vec2(52.0, 10.0));
+    app.settle_current_level();
+    let once = (app.layout_pos(note), app.layout_pos(other));
+    app.snap_layout(note, egui::vec2(-400.0, 300.0));
+    app.settle_current_level();
+    assert_eq!((app.layout_pos(note), app.layout_pos(other)), once);
+}
+
+/// Pinning keeps a card where it is drawn: the pin saves its shown position, which a settle then holds.
+#[test]
+fn a_pinned_card_stays_where_it_was_shown() {
+    let mut app = App::default();
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    a_note_at(&mut app, egui::vec2(52.0, 10.0));
+    app.settle_current_level();
+    let shown = app.layout_pos(note);
+    assert_ne!(shown, egui::vec2(10.0, 10.0), "the settle moved it");
+    app.toggle_pin(note);
+    a_note_at(&mut app, egui::vec2(30.0, 40.0));
+    app.settle_current_level();
+    assert_eq!(app.layout_pos(note), shown);
+    assert_eq!(app.doc.mirror.pos(note), Some(shown));
+}
+
 /// Closing a tab while its wake is in flight deletes it from the store
 /// once the (now-moot) spawn result lands -- the landing's "closed
 /// while waking" branch must save, since a save while the wake was in

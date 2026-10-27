@@ -53,9 +53,6 @@ pub(crate) struct LocalState<K = NodeId> {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct LocalNode {
-    /// The settled position, so the graph reopens as it was left.
-    #[serde(deserialize_with = "lenient_pos")]
-    pub pos: [f32; 2],
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -83,12 +80,6 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
-/// A `null` coordinate (an older build wrote NaN that way) reads as 0.
-fn lenient_pos<'de, D: serde::Deserializer<'de>>(d: D) -> Result<[f32; 2], D::Error> {
-    let [x, y] = <[Option<f32>; 2]>::deserialize(d)?;
-    Ok([x.unwrap_or(0.0), y.unwrap_or(0.0)])
-}
-
 /// An id that does not read as a `K` is none.
 fn lenient_id<'de, D: serde::Deserializer<'de>, K: FromStr>(d: D) -> Result<Option<K>, D::Error> {
     Ok(Option::<String>::deserialize(d)?.and_then(|text| text.parse().ok()))
@@ -109,25 +100,17 @@ fn lenient_camera<'de, D: serde::Deserializer<'de>, K: FromStr>(
     }))
 }
 
-/// Whether `a` and `b` differ enough to write: settled positions within
-/// 1 px count as equal, so physics jitter never causes a write.
+/// Whether `a` and `b` differ enough to write.
 pub(crate) fn differs(a: &LocalState, b: &LocalState) -> bool {
     let strip = |s: &LocalState| {
         let mut s = s.clone();
-        s.nodes.values_mut().for_each(|n| n.pos = [0.0, 0.0]);
         // A non-finite camera is never written (`to_bytes`), so it must not read as a change either.
         if s.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
             s.camera = None;
         }
         s
     };
-    if strip(a) != strip(b) {
-        return true;
-    }
-    a.nodes.iter().any(|(id, n)| {
-        let m = &b.nodes[id]; // same keys: `strip` compared them
-        (n.pos[0] - m.pos[0]).abs() > 1.0 || (n.pos[1] - m.pos[1]).abs() > 1.0
-    })
+    strip(a) != strip(b)
 }
 /// The personal-state file's write bookkeeping (`App::local_persist`).
 pub(crate) struct LocalPersist {
@@ -205,20 +188,18 @@ impl LocalState<String> {
 
 impl LocalState {
     fn all_finite(&self) -> bool {
-        self.nodes.values().all(|n| n.pos.iter().all(|v| v.is_finite()))
-            && self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
+        self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
             && self.right_panel_width.is_none_or(f32::is_finite)
     }
 
     /// serde_json writes NaN and infinity as `null`, which a plain `f32`
     /// can't read back: one bad value would make the whole file unreadable,
-    /// Recently Closed included. A non-finite position is zeroed, any other non-finite value dropped.
+    /// Recently Closed included. A non-finite value is dropped.
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         if self.all_finite() {
             return serde_json::to_vec(self).expect("personal state serializes");
         }
         let mut clean = self.clone();
-        clean.nodes.values_mut().flat_map(|n| n.pos.iter_mut()).filter(|v| !v.is_finite()).for_each(|v| *v = 0.0);
         if clean.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
             clean.camera = None;
         }
@@ -343,11 +324,10 @@ impl App {
         }
     }
 
-    /// `id`'s personal state as the live graph shows it: its settled position, a tab's title, muted, zoom and
-    /// unshared live url, a note's `editing`.
+    /// `id`'s personal state as the live graph shows it: a tab's title, muted, zoom and unshared live url, a note's
+    /// `editing`. Not its position: a settle derives that from the document (`settle_current_level`).
     pub(crate) fn local_node(&self, id: NodeId, node: &crate::GraphNode) -> LocalNode {
-        let pos = self.layout_pos(id);
-        let mut local = LocalNode { pos: [pos.x, pos.y], ..LocalNode::default() };
+        let mut local = LocalNode::default();
         if let Some(tab) = tab_common(&node.runtime) {
             local.title = tab.title.to_string();
             local.muted = tab.muted;
@@ -368,8 +348,12 @@ impl App {
     /// before restored tabs land doesn't lose their placement and zoom.
     pub(crate) fn local_state(&self) -> LocalState {
         let item = self.view_mode == ViewMode::Item;
-        let mut nodes: BTreeMap<NodeId, LocalNode> =
-            self.nodes.iter().map(|(&id, node)| (id, self.local_node(id, node))).collect();
+        let mut nodes: BTreeMap<NodeId, LocalNode> = self
+            .nodes
+            .iter()
+            .map(|(&id, node)| (id, self.local_node(id, node)))
+            .filter(|(_, n)| *n != LocalNode::default())
+            .collect();
         if let Some(pending) = &self.doc.local_persist.pending_local {
             for (&id, node) in pending {
                 if self.spawns.spawning.contains_key(&id) {
@@ -455,7 +439,6 @@ impl App {
         for (id, node) in state.nodes {
             if let Some(live) = self.nodes.get_mut(&id) {
                 Self::apply_local_node(live, &node);
-                self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
             } else if self.spawns.spawning.contains_key(&id) {
                 pending.insert(id, node);
             } else {
@@ -485,8 +468,7 @@ impl App {
         self.doc.hidden_local.extend(keep);
     }
 
-    /// One node's share of `apply_local` beyond its settled position (the caller's `snap_layout`): whatever its
-    /// payload kind keeps (a tab's title/muted/zoom, a note's editing).
+    /// One node's share of `apply_local`: whatever its payload kind keeps (a tab's title/muted/zoom, a note's editing).
     pub(crate) fn apply_local_node(live: &mut crate::GraphNode, node: &LocalNode) {
         match &mut live.runtime {
             Runtime::Tab(tab) => {
@@ -510,8 +492,8 @@ impl App {
 
     /// Applies a spawning node's personal-state entry once its node exists
     /// (`handle_tab_spawn_result`), removing it from `pending_local`. An
-    /// unloaded card now takes title/muted/zoom from personal state just
-    /// like a live tab; every other kind only takes its position.
+    /// unloaded card takes title/muted/zoom from personal state just like a
+    /// live tab.
     pub(crate) fn apply_pending_local(&mut self, id: NodeId) {
         let Some(pending) = &mut self.doc.local_persist.pending_local else { return };
         let Some(node) = pending.remove(&id) else { return };
@@ -519,10 +501,7 @@ impl App {
             self.doc.local_persist.pending_local = None;
         }
         if let Some(live) = self.nodes.get_mut(&id) {
-            if let Runtime::Tab(_) | Runtime::Unloaded(_) | Runtime::Note(_) = &live.runtime {
-                Self::apply_local_node(live, &node)
-            }
-            self.snap_layout(id, egui::vec2(node.pos[0], node.pos[1]));
+            Self::apply_local_node(live, &node);
         }
     }
 
@@ -551,21 +530,21 @@ mod tests {
     use super::*;
     use crate::card_id::testutil::node;
 
-    fn with_pos(x: f32) -> LocalState {
-        let entry = LocalNode { pos: [x, 0.0], ..LocalNode::default() };
+    fn with_title(title: &str) -> LocalState {
+        let entry = LocalNode { title: title.into(), ..LocalNode::default() };
         LocalState { nodes: BTreeMap::from([(node(1), entry)]), ..LocalState::default() }
     }
 
     #[test]
-    fn jitter_under_a_pixel_is_not_a_change() {
-        assert!(!differs(&with_pos(10.0), &with_pos(10.9)));
-        assert!(differs(&with_pos(10.0), &with_pos(11.5)));
-        assert!(differs(&with_pos(10.0), &LocalState::default()), "a node appearing is a change");
+    fn a_changed_or_new_node_is_a_change() {
+        assert!(!differs(&with_title("a"), &with_title("a")));
+        assert!(differs(&with_title("a"), &with_title("b")));
+        assert!(differs(&with_title("a"), &LocalState::default()), "a node appearing is a change");
     }
 
     #[test]
     fn remap_renames_ids_and_drops_unknown_ones() {
-        let entry = LocalNode { pos: [1.0, 0.0], ..LocalNode::default() };
+        let entry = LocalNode { title: "t".into(), ..LocalNode::default() };
         let state = LocalState::<String> {
             focused: Some("a".into()),
             current_group: Some("gone".into()),
@@ -581,7 +560,7 @@ mod tests {
     #[test]
     fn an_unreadable_id_costs_only_itself() {
         let text = format!(
-            r#"{{"focused":"not an id","split_tab":"{}","camera":[[0,0,1,1],"nope"],"nodes":{{"junk":{{"pos":[1,1]}},"{}":{{"pos":[2,3]}}}}}}"#,
+            r#"{{"focused":"not an id","split_tab":"{}","camera":[[0,0,1,1],"nope"],"nodes":{{"junk":{{"title":"j"}},"{}":{{"title":"k"}}}}}}"#,
             node(5),
             node(6)
         );
@@ -592,33 +571,31 @@ mod tests {
 
     #[test]
     fn ids_are_written_as_their_text() {
-        let state = with_pos(1.0);
+        let state = with_title("t");
         let json: serde_json::Value = serde_json::from_slice(&state.to_bytes()).unwrap();
-        assert!(json["nodes"][node(1).to_string()]["pos"].is_array());
+        assert_eq!(json["nodes"][node(1).to_string()]["title"], "t");
     }
 
     #[test]
     fn bytes_round_trip_and_garbage_is_a_fresh_start() {
-        let state = with_pos(3.0);
+        let state = with_title("t");
         assert_eq!(LocalState::from_bytes(&state.to_bytes()), Some(state));
         assert_eq!(LocalState::from_bytes(b"\x00not json"), None);
     }
 
     #[test]
     fn a_non_finite_value_costs_only_itself() {
-        let mut state = with_pos(f32::NAN);
-        state.nodes.insert(node(2), LocalNode { pos: [5.0, 6.0], title: "kept".into(), ..LocalNode::default() });
+        let mut state = with_title("kept");
         state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
         state.right_panel_width = Some(f32::NAN);
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
-        assert_eq!(back.nodes[&node(1)].pos, [0.0, 0.0], "the bad position is zeroed, the node kept");
-        assert_eq!(back.nodes[&node(2)].title, "kept");
+        assert_eq!(back.nodes[&node(1)].title, "kept");
         assert_eq!((back.camera, back.right_panel_width), (None, None));
     }
 
     #[test]
     fn a_non_finite_camera_is_no_change() {
-        let mut state = with_pos(1.0);
+        let mut state = with_title("t");
         state.camera = Some(([0.0, f32::NAN, 1.0, 1.0], None));
         assert!(!differs(&state, &state.clone()), "it is never written, so it never differs");
     }
@@ -627,11 +604,11 @@ mod tests {
     #[test]
     fn nulls_written_by_older_builds_read_back() {
         let bytes = format!(
-            r#"{{"camera":[[0.0,null,1.0,1.0],null],"nodes":{{"{}":{{"pos":[null,2.0]}}}},"closed":[{{"nodes":[]}}]}}"#,
+            r#"{{"camera":[[0.0,null,1.0,1.0],null],"nodes":{{"{}":{{"pos":[null,2.0],"title":"t"}}}},"closed":[{{"nodes":[]}}]}}"#,
             node(1)
         );
         let state = LocalState::from_bytes(bytes.as_bytes()).expect("lenient");
-        assert_eq!(state.nodes[&node(1)].pos, [0.0, 2.0]);
+        assert_eq!(state.nodes[&node(1)].title, "t", "an old file's pos is ignored");
         assert_eq!(state.camera, None);
         assert_eq!(state.nodes.len(), 1, "an old file's Recently Closed list is ignored, not an error");
     }

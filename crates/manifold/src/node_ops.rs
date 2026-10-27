@@ -254,7 +254,7 @@ impl App {
         let tabs: Vec<NodeId> =
             self.nodes.iter().filter(|(_, n)| n.runtime.saved_tab().is_some()).map(|(&id, _)| id).collect();
         for id in tabs {
-            self.edit_field(id, field::PINNED, FieldValue::Bool(pin));
+            self.set_pinned(id, pin);
         }
     }
 

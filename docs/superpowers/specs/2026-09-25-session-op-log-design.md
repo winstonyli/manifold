@@ -173,7 +173,9 @@ journal (see "Personal-state file"):
   url, the shared one wins. The restored load is host-started, so its
   redirects stay local;
 - the last settled position of every node, so the graph reopens exactly
-  as it was left rather than re-settling from the shared `pos`;
+  as it was left rather than re-settling from the shared `pos`; *(dropped
+  2026-10-27: a settle now starts from the shared `pos`, so re-settling
+  reopens it as it was left)*;
 - Recently Closed: up to 20 entries, oldest first, each a JSON snapshot
   (root first, then its subtree; `local` carries tab zoom).
 

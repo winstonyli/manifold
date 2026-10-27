@@ -202,7 +202,7 @@ fn drag(app: &mut App, ids: &[NodeId], delta: egui::Vec2) {
     app.interaction.dragging = Some(crate::card_id::CardId::from(ids[0]));
     app.interaction.drag_moved = ids.iter().map(|&id| crate::card_id::CardId::from(id)).collect();
     for &id in ids {
-        app.layout.entry(id).or_default().pos += delta;
+        *app.layout.entry(id).or_default() += delta;
     }
 }
 

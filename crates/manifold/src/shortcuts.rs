@@ -243,7 +243,7 @@ impl App {
         let ids: Vec<NodeId> = ids.into_iter().filter(|id| self.nodes.contains_key(id)).collect();
         let pin = ids.iter().any(|&id| !self.doc.mirror.pinned(id));
         for id in ids {
-            self.edit_field(id, field::PINNED, FieldValue::Bool(pin));
+            self.set_pinned(id, pin);
         }
     }
 
@@ -257,8 +257,18 @@ impl App {
     pub(crate) fn toggle_pin(&mut self, id: NodeId) {
         if self.nodes.contains_key(&id) {
             let on = !self.doc.mirror.pinned(id);
-            self.edit_field(id, field::PINNED, FieldValue::Bool(on));
+            self.set_pinned(id, on);
         }
+    }
+
+    /// Every pin and unpin goes through here. A settle holds a pinned card at its document pos and starts the others
+    /// from theirs (`settle_current_level`), so pinning first saves where the card is drawn: it stays put.
+    pub(crate) fn set_pinned(&mut self, id: NodeId, on: bool) {
+        let shown = self.layout_pos(id);
+        if on && self.doc.mirror.pos(id) != Some(shown) {
+            self.edit_pos(id, Some(shown));
+        }
+        self.edit_field(id, field::PINNED, FieldValue::Bool(on));
     }
 
     /// `Ctrl+R`/`F5` / headless `RELOAD` — reloads the focused tab. Every

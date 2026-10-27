@@ -1472,7 +1472,7 @@ impl App {
             // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in moved.iter().filter_map(|moved| moved.node()) {
                 if self.nodes.contains_key(&moved_id) {
-                    self.layout.entry(moved_id).or_default().pos += delta;
+                    *self.layout.entry(moved_id).or_default() += delta;
                 }
             }
             self.interaction.drag_moved = moved;

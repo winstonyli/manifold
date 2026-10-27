@@ -419,21 +419,21 @@ fn a_local_pos_edit_wins_over_a_remote_one() {
     assert_eq!(app.doc.mirror.get(note, field::NAME), one(), "their other field arrives");
 }
 
-/// Another replica's pos reaches the mirror and snaps the layout, at rest; nothing is written back.
+/// Another replica's pos reaches the mirror and snaps the layout; nothing is written back.
 #[test]
-fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
+fn a_remote_pos_snaps_the_layout() {
     let path = temp_dir("pos-remote").join("session.mnf");
     let mut app = app_on(&path, 1);
     let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
     assert!(app.save_session());
-    app.layout.insert(note, crate::Layout { pos: egui::vec2(12.0, 22.0), vel: egui::vec2(3.0, 4.0) });
+    app.snap_layout(note, egui::vec2(12.0, 22.0));
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, note, field::POS, FieldValue::Pos(Some((5.0, 6.0))));
     let pos_stamp = |doc: &Doc| doc.nodes[&note].fields[&crate::store::model::RegKey::of(field::POS)].stamp;
     let theirs = pos_stamp(other.doc());
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(5.0, 6.0)));
-    assert_eq!(app.layout[&note], crate::Layout { pos: egui::vec2(5.0, 6.0), vel: egui::Vec2::ZERO });
+    assert_eq!(app.layout_pos(note), egui::vec2(5.0, 6.0));
     assert!(app.save_session());
     assert_eq!(pos_stamp(app.doc.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
 }

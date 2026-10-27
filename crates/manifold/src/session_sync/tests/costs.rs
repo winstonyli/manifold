@@ -80,7 +80,7 @@ fn app_save_costs() {
         report(
             "maybe_write_local, changed (build + write)",
             timed(N, || {
-                app.layout.get_mut(&ids[k % tabs]).unwrap().pos.x += 1.0;
+                app.layout.get_mut(&ids[k % tabs]).unwrap().x += 1.0;
                 k += 1;
                 app.maybe_write_local(true);
             }),
