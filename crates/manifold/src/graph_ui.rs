@@ -10,6 +10,7 @@ mod card_pane;
 mod cards;
 mod hints;
 mod keys;
+mod marquee;
 mod overlays;
 mod right_panel;
 mod scene;
