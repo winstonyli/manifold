@@ -136,7 +136,8 @@ impl App {
                 self.select_only(entry.id);
             }
             if missing_file {
-                if card.response.clicked() || activated {
+                // egui reports Enter on the focused card as a click too.
+                if card.response.clicked() {
                     pass.actions.push(GraphAction::Node(id, NodeAction::RetryMissingFile));
                 }
             } else if let Some(click) = kind.caps().click.filter(|_| activated) {
