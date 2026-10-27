@@ -403,7 +403,7 @@ impl App {
     /// makes — a child of whichever tab is currently focused, staying put
     /// rather than auto-focusing (see `spawn_new_tab`'s own doc comment).
     pub(crate) fn new_tab_shortcut(&mut self) {
-        let home_page = self.settings.home_page.clone();
+        let home_page = self.settings.value.home_page.clone();
         let parent = self.focused;
         // From a JSON level: leave it, and land in the level then shown (the
         // focused id may be a level card, not a stored node).

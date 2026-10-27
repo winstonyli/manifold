@@ -394,15 +394,6 @@ struct App {
     /// per source tab: a user gesture and a rate budget.
     page_tab_gate: page_tab_gate::PageTabGate,
 
-    /// `settings::fingerprint()` as this process last saw it (set at load,
-    /// updated after every successful save) -- see `save_settings`. `None`
-    /// until the file has actually been loaded or saved once this run,
-    /// which also means "skip the conflict check" the first time.
-    settings_fingerprint: Option<u64>,
-    /// When settings changed by a window move or resize are due to be
-    /// written (`note_settings_changed`, `flush_settings_if_due`); `None`
-    /// when nothing is waiting.
-    settings_save_due: Option<std::time::Instant>,
     /// Set for the length of one restore or apply pass, so each node's file
     /// lookup doesn't read the content dir again.
     content_index: Option<ContentIndex>,
@@ -410,20 +401,8 @@ struct App {
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
 
-    /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
-    home_page_draft: Option<String>,
-    /// The Settings row to scroll to and outline, for one frame (`settings_page::draw_setting_rows`).
-    settings_focus: Option<&'static str>,
-
-    /// User-configurable defaults (search engine, starting engine, zoom,
-    /// home page), loaded once at startup and persisted to
-    /// `%APPDATA%\manifold\settings.json` on every change — see
-    /// `settings.rs`.
-    settings: Settings,
-    /// Which view `ViewMode::Settings` should return to (its own Back
-    /// button, `Escape`, or `Ctrl+G`) -- set once when the settings page is
-    /// entered, from whichever of Tab/Graph was showing at that moment.
-    settings_return_view: ViewMode,
+    /// The user's settings and the Settings page's state (see `settings_page::SettingsState`).
+    settings: settings_page::SettingsState,
     /// Flat `(title, url)` list, loaded once at startup and persisted to
     /// `%APPDATA%\manifold\bookmarks.json` on every change — see
     /// `bookmarks.rs`. Listed by `App::build_bookmarks_popup`.
@@ -541,14 +520,13 @@ impl Default for App {
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             page_tab_gate: page_tab_gate::PageTabGate::default(),
-            settings_fingerprint,
-            settings_save_due: None,
             content_index: None,
             find: FindState::default(),
-            home_page_draft: None,
-            settings_focus: None,
-            settings,
-            settings_return_view: ViewMode::Item,
+            settings: settings_page::SettingsState {
+                value: settings,
+                fingerprint: settings_fingerprint,
+                ..Default::default()
+            },
             bookmarks,
             history,
             transition: None,

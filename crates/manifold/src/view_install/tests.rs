@@ -284,7 +284,7 @@ fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
     assert_eq!(app.view_status_at(ViewKind::Cef, disk(RuntimeOnDisk::Ready), &cef_plan()), ViewStatus::Installed);
 
     app.set_cef_directory("  ");
-    assert_eq!(app.settings.cef_directory, None);
+    assert_eq!(app.settings.value.cef_directory, None);
     assert!(app.cef_dir_verdict().is_none());
 }
 

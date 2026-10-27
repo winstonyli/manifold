@@ -793,7 +793,7 @@ impl App {
             pinned: self.doc.mirror.pinned(id),
             unresponsive: node.as_tab().is_some_and(|t| t.tab.is_unresponsive(std::time::Instant::now())),
             other_default_view_kind: node.runtime.as_unloaded().is_some()
-                && self.doc.mirror.view_kind(id) != self.settings.default_starting_view_kind,
+                && self.doc.mirror.view_kind(id) != self.settings.value.default_starting_view_kind,
             failed: node.tab_failed(),
             view_missing: node.tab_failed() && {
                 let kind = self.doc.mirror.view_kind(id);
@@ -981,7 +981,7 @@ impl App {
             NodeAction::CancelRename => self.renaming_group = None,
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
-            NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.default_starting_view_kind),
+            NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.value.default_starting_view_kind),
             NodeAction::RemoveFromGroup => self.apply_drop(CardId::from(id), Some((DropEffect::Eject, None))),
             NodeAction::MoveToGroup(group) => {
                 self.apply_drop(CardId::from(id), Some((DropEffect::Join, Some(CardId::from(group)))))

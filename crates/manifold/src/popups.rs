@@ -489,7 +489,7 @@ mod view_picker_tests {
             });
             output.textures_delta.clear();
         };
-        let before = app.settings.default_starting_view_kind;
+        let before = app.settings.value.default_starting_view_kind;
         app.menus.open_popup = Some(AnchoredPopup::DefaultViewKind);
         for _ in 0..4 {
             frame(&mut app, vec![]);
@@ -515,6 +515,6 @@ mod view_picker_tests {
         };
         assert!(toasted(reason), "the reason should be toasted");
         assert_eq!(app.menus.open_popup, Some(AnchoredPopup::DefaultViewKind), "the picker stays open");
-        assert_eq!(app.settings.default_starting_view_kind, before, "nothing switched");
+        assert_eq!(app.settings.value.default_starting_view_kind, before, "nothing switched");
     }
 }

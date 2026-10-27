@@ -185,7 +185,7 @@ mod tests {
     #[test]
     fn app_default_touches_no_profile_file() {
         let app = crate::App::default();
-        assert_eq!(app.settings_fingerprint, None);
+        assert_eq!(app.settings.fingerprint, None);
 
         let mut offenders = Vec::new();
         let needles =

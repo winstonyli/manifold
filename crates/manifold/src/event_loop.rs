@@ -93,10 +93,10 @@ impl ApplicationHandler<UserEvent> for App {
             // further on every launch). `None` (no saved geometry yet)
             // just leaves `attrs` untouched, falling back to winit's own
             // default the same as before this existed.
-            if let (Some(width), Some(height)) = (self.settings.window_width, self.settings.window_height) {
+            if let (Some(width), Some(height)) = (self.settings.value.window_width, self.settings.value.window_height) {
                 attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(width as f64, height as f64));
             }
-            if let (Some(x), Some(y)) = (self.settings.window_x, self.settings.window_y) {
+            if let (Some(x), Some(y)) = (self.settings.value.window_x, self.settings.value.window_y) {
                 attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
             }
         }
@@ -105,7 +105,7 @@ impl ApplicationHandler<UserEvent> for App {
         // screen reader there).
         let real_window = !self.headless;
         let window = Arc::new(event_loop.create_window(attrs.with_visible(!real_window)).expect("create window"));
-        window.set_theme(window_theme(self.settings.theme));
+        window.set_theme(window_theme(self.settings.value.theme));
         self.gpu = Some(GpuState::new(window.clone()));
         let mut egui_state = egui_winit::State::new(
             self.egui_ctx.clone(),
@@ -129,11 +129,11 @@ impl ApplicationHandler<UserEvent> for App {
             self.save_session();
         }
         if !restored {
-            if self.settings.has_shown_first_launch_demo {
+            if self.settings.value.has_shown_first_launch_demo {
                 self.spawn_root_tab();
             } else {
                 self.spawn_first_launch_demo();
-                self.settings.has_shown_first_launch_demo = true;
+                self.settings.value.has_shown_first_launch_demo = true;
                 self.save_settings();
             }
         }
@@ -289,8 +289,8 @@ impl ApplicationHandler<UserEvent> for App {
             WindowEvent::Resized(size) => self.on_resized(size),
             WindowEvent::Moved(position) => {
                 if !self.headless {
-                    self.settings.window_x = Some(position.x);
-                    self.settings.window_y = Some(position.y);
+                    self.settings.value.window_x = Some(position.x);
+                    self.settings.value.window_y = Some(position.y);
                     self.note_settings_changed();
                 }
             }
@@ -451,8 +451,8 @@ impl App {
         // launches on a mixed-DPI multi-monitor setup.
         if !self.headless && size.width > 0 && size.height > 0 {
             let ppp = self.ppp();
-            self.settings.window_width = Some((size.width as f64 / ppp).round() as u32);
-            self.settings.window_height = Some((size.height as f64 / ppp).round() as u32);
+            self.settings.value.window_width = Some((size.width as f64 / ppp).round() as u32);
+            self.settings.value.window_height = Some((size.height as f64 / ppp).round() as u32);
             self.note_settings_changed();
         }
     }

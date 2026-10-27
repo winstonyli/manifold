@@ -86,7 +86,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("toasts.save_toast", "a message, not a node id"),
     ("toasts.undo", "lives one toast; its ids are checked on use (a member must still be where the dissolve left it)"),
     ("view_ui.cef_dir_draft", "a path draft, not a node id"),
-    ("home_page_draft", "a url draft, not a node id"),
+    ("settings.home_page_draft", "a url draft, not a node id"),
     ("list_popups.renaming_bookmark_folder", "a bookmark folder, not a node id"),
     ("list_popups.history_matches_cache", "a history query, not a node id"),
 ];
@@ -97,7 +97,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 16] = [
+    const GROUPS: [(&str, &str, &str); 17] = [
         ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
         ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
@@ -114,6 +114,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("page_input", include_str!("../event_loop.rs"), "pub(crate) struct PageInput {"),
         ("workers", include_str!("../event_loop/fetchers.rs"), "pub(crate) struct Workers {"),
         ("graph", include_str!("../graph_ui.rs"), "pub(crate) struct GraphUi {"),
+        ("settings", include_str!("../settings_page.rs"), "pub(crate) struct SettingsState {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()

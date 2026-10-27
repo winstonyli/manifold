@@ -357,7 +357,7 @@ impl App {
     /// elsewhere, any other card is shown in the Graph from every host, a page or search opens in a new tab (the Item
     /// view navigates its own), a setting opens the Settings page at its row.
     pub(crate) fn omni_activate(&mut self, row: Row, host: Host) {
-        let engine = self.settings.default_search_engine;
+        let engine = self.settings.value.default_search_engine;
         match row {
             Row::Card { id, .. } => {
                 self.show_level_of(id);
@@ -370,7 +370,7 @@ impl App {
             Row::Other { id, .. } => self.reveal_in_graph(id),
             Row::Setting { id, .. } => {
                 self.open_settings_page();
-                self.settings_focus = Some(id);
+                self.settings.focus = Some(id);
             }
             Row::History { url, .. } => self.omni_open_url(url, host),
             Row::Typed { text } => self.omni_open_url(resolve_navigation_url(&text, engine), host),
@@ -555,7 +555,7 @@ mod tests {
         let mut app = App::default();
         app.omni_activate(Row::Typed { text: "rust lang".into() }, Host::Graph);
         let (spawn, _) = app.test_spawns.last().expect("a tab was spawned");
-        assert_eq!(spawn.url, app.settings.default_search_engine.search_url("rust lang"));
+        assert_eq!(spawn.url, app.settings.value.default_search_engine.search_url("rust lang"));
     }
 
     #[test]
@@ -577,7 +577,7 @@ mod tests {
         let setting = Row::Setting { id: "theme", title: "Theme", section: "General" };
         app.omni_activate(setting, Host::Graph);
         assert_eq!(app.view_mode, ViewMode::Settings);
-        assert_eq!(app.settings_focus, Some("theme"));
+        assert_eq!(app.settings.focus, Some("theme"));
     }
 
     #[test]
@@ -691,7 +691,7 @@ mod tests {
         app.omni_popup.dismiss();
         assert_eq!(app.omni_popup.highlighted, None);
         app.omni_confirm(Host::Popup);
-        let search = app.settings.default_search_engine.search_url("rust 1");
+        let search = app.settings.value.default_search_engine.search_url("rust 1");
         assert!(app.test_spawns.iter().all(|(spawn, _)| spawn.url != search), "no web search");
         assert_eq!(app.focused, Some(ids[1]));
     }
@@ -705,6 +705,6 @@ mod tests {
         app.omni_confirm(Host::Popup);
         assert!(app.menus.omni_popup.open.is_none());
         let (spawn, _) = app.test_spawns.last().expect("a search tab");
-        assert_eq!(spawn.url, app.settings.default_search_engine.search_url("no such tab"));
+        assert_eq!(spawn.url, app.settings.value.default_search_engine.search_url("no such tab"));
     }
 }

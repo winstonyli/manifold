@@ -13,15 +13,15 @@ impl App {
     /// `manifold.exe` on this profile) changed it since this one last read
     /// or wrote it: then the write goes to `settings::conflict_path()` and a
     /// toast says so, rather than clobbering theirs. The first save of a run
-    /// (`settings_fingerprint` still `None`) always proceeds. Replaces every
-    /// direct `self.settings.save()` call site. It writes the window
+    /// (`SettingsState::fingerprint` still `None`) always proceeds. Replaces every
+    /// direct `self.settings.value.save()` call site. It writes the window
     /// geometry too, so a debounced save still waiting is done by it.
     pub(crate) fn save_settings(&mut self) {
-        self.settings_save_due = None;
+        self.settings.save_due = None;
         let on_disk = settings::fingerprint();
-        if self.settings_fingerprint.is_some() && on_disk != self.settings_fingerprint {
+        if self.settings.fingerprint.is_some() && on_disk != self.settings.fingerprint {
             if let Some(path) = settings::conflict_path() {
-                self.settings.save_to(&path);
+                self.settings.value.save_to(&path);
                 eprintln!(
                     "settings: settings.json changed on disk since last load/save -- wrote {} instead",
                     path.display()
@@ -33,21 +33,21 @@ impl App {
             }
             return;
         }
-        self.settings.save();
-        self.settings_fingerprint = settings::fingerprint();
+        self.settings.value.save();
+        self.settings.fingerprint = settings::fingerprint();
     }
 
     /// Settings changed (window size or position): written once things
     /// are quiet for `SETTINGS_SAVE_DELAY`, or at exit.
     pub(crate) fn note_settings_changed(&mut self) {
-        self.settings_save_due = Some(std::time::Instant::now() + SETTINGS_SAVE_DELAY);
+        self.settings.save_due = Some(std::time::Instant::now() + SETTINGS_SAVE_DELAY);
     }
 
     /// Writes settings if a change is due by `now`. Returns whether it wrote.
     pub(crate) fn flush_settings_if_due(&mut self, now: std::time::Instant) -> bool {
-        match self.settings_save_due {
+        match self.settings.save_due {
             Some(due) if due <= now => {
-                self.settings_save_due = None;
+                self.settings.save_due = None;
                 self.save_settings();
                 true
             }
@@ -57,7 +57,7 @@ impl App {
 
     /// At exit: writes a debounced settings change still waiting.
     pub(crate) fn flush_pending_settings(&mut self) {
-        if self.settings_save_due.is_some() {
+        if self.settings.save_due.is_some() {
             self.save_settings();
         }
     }
@@ -162,8 +162,8 @@ impl App {
     ///
     /// Every engine serves `manifold://` (the `manifold-pages` crate), so the tabs use the default starting engine.
     pub(crate) fn spawn_first_launch_demo(&mut self) {
-        let kind = self.settings.default_starting_view_kind;
-        let zoom = self.settings.zoom_factor;
+        let kind = self.settings.value.default_starting_view_kind;
+        let zoom = self.settings.value.zoom_factor;
 
         let welcome_id = self.alloc_node_id();
         self.focused = Some(welcome_id);

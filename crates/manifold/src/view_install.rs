@@ -1018,7 +1018,7 @@ impl crate::App {
     /// with the path (`cef_dir_check`): the disk is read when the path changes or every `CEF_DIR_CHECK_TTL`,
     /// not every frame, so a folder deleted or replaced behind the app's back is noticed.
     pub(crate) fn cef_dir_verdict(&self) -> Option<(PathBuf, Result<(), String>)> {
-        let configured = self.settings.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
+        let configured = self.settings.value.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
         let mut cache = self.view_ui.cef_dir_check.borrow_mut();
         if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
             let verdict = match crate::cef_pin::pin_for_platform() {
@@ -1043,7 +1043,7 @@ impl crate::App {
     /// verdict and states so the next read validates it.
     pub(crate) fn set_cef_directory(&mut self, path: &str) {
         let path = path.trim();
-        self.settings.cef_directory = (!path.is_empty()).then(|| path.to_string());
+        self.settings.value.cef_directory = (!path.is_empty()).then(|| path.to_string());
         self.invalidate_cef_dir_check();
         self.save_settings();
     }

@@ -17,7 +17,7 @@ pub(crate) fn tab_zoom(app: &App, id: NodeId) -> Option<f64> {
         Some(Runtime::Unloaded(tab)) => tab.zoom_factor,
         _ => return None,
     };
-    (zoom != app.settings.zoom_factor).then_some(zoom)
+    (zoom != app.settings.value.zoom_factor).then_some(zoom)
 }
 
 /// `id`'s tab title, when it has one -- what `subtree_json` records in `doc.local["title"]`. Like zoom, a title is

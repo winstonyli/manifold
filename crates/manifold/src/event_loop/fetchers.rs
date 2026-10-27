@@ -59,7 +59,8 @@ impl App {
     /// Puts idle tabs to sleep (`sweep_idle_tabs`) when `idle_clock` says a sweep is due.
     fn idle_sweep(&mut self) {
         if self.idle_clock.due(std::time::Instant::now()) {
-            let limit = self.settings.idle_sleep_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60));
+            let limit =
+                self.settings.value.idle_sleep_minutes.map(|m| std::time::Duration::from_secs(u64::from(m) * 60));
             self.sweep_idle_tabs(limit);
         }
     }

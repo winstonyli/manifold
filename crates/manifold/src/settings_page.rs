@@ -17,6 +17,33 @@ fn section_start(ui: &mut egui::Ui, title: &str) {
     ui.label(heading_text(ui.visuals(), title));
 }
 
+/// The user's settings and the Settings page's own state (`App::settings`).
+#[derive(Default)]
+pub(crate) struct SettingsState {
+    /// User-configurable defaults (search engine, starting engine, zoom,
+    /// home page), loaded once at startup and persisted to
+    /// `%APPDATA%\manifold\settings.json` on every change — see
+    /// `settings.rs`.
+    pub(crate) value: Settings,
+    /// `settings::fingerprint()` as this process last saw it (set at load,
+    /// updated after every successful save) -- see `save_settings`. `None`
+    /// until the file has actually been loaded or saved once this run,
+    /// which also means "skip the conflict check" the first time.
+    pub(crate) fingerprint: Option<u64>,
+    /// When settings changed by a window move or resize are due to be
+    /// written (`note_settings_changed`, `flush_settings_if_due`); `None`
+    /// when nothing is waiting.
+    pub(crate) save_due: Option<std::time::Instant>,
+    /// Which view `ViewMode::Settings` should return to (its own Back
+    /// button, `Escape`, or `Ctrl+G`) -- set once when the settings page is
+    /// entered, from whichever of Tab/Graph was showing at that moment.
+    pub(crate) return_view: ViewMode,
+    /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
+    pub(crate) home_page_draft: Option<String>,
+    /// The Settings row to scroll to and outline, for one frame (`settings_page::draw_setting_rows`).
+    pub(crate) focus: Option<&'static str>,
+}
+
 /// What the Settings page's sections (`App::settings_general_section`
 /// and the rest) asked for or laid out this frame. `build_settings_page`
 /// acts on it after its scroll area: `apply_settings_requests`, then
@@ -105,9 +132,9 @@ impl App {
     }
 
     /// Draws `settings_rows::rows()`: a heading where the section changes (the first has no rule above it), a gap
-    /// between rows, and for the row `settings_focus` names, a scroll to it and an outline for this frame.
+    /// between rows, and for the row `SettingsState::focus` names, a scroll to it and an outline for this frame.
     fn draw_setting_rows(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        let focus = self.settings_focus.take();
+        let focus = self.settings.focus.take();
         let mut section = "";
         for row in crate::settings_rows::rows() {
             if row.section != section {
@@ -132,29 +159,32 @@ impl App {
     /// Settings, General: the theme.
     pub(crate) fn settings_theme_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Theme");
-        egui::ComboBox::from_id_salt("settings_theme").selected_text(self.settings.theme.label()).show_ui(ui, |ui| {
-            menu_item_style(ui);
-            for choice in ThemeChoice::ALL {
-                let selected = self.settings.theme == choice;
-                if selectable_label(ui, selected, choice.label()).clicked() && !selected {
-                    self.choose_theme(choice);
-                    self.save_settings();
+        egui::ComboBox::from_id_salt("settings_theme").selected_text(self.settings.value.theme.label()).show_ui(
+            ui,
+            |ui| {
+                menu_item_style(ui);
+                for choice in ThemeChoice::ALL {
+                    let selected = self.settings.value.theme == choice;
+                    if selectable_label(ui, selected, choice.label()).clicked() && !selected {
+                        self.choose_theme(choice);
+                        self.save_settings();
+                    }
                 }
-            }
-        });
+            },
+        );
     }
 
     /// Settings, General: where a search goes.
     pub(crate) fn settings_search_engine_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Default search engine");
         egui::ComboBox::from_id_salt("settings_search_engine")
-            .selected_text(self.settings.default_search_engine.label())
+            .selected_text(self.settings.value.default_search_engine.label())
             .show_ui(ui, |ui| {
                 menu_item_style(ui);
                 for view_kind in SearchEngine::ALL {
-                    let selected = self.settings.default_search_engine == view_kind;
+                    let selected = self.settings.value.default_search_engine == view_kind;
                     if selectable_label(ui, selected, view_kind.label()).clicked() && !selected {
-                        self.settings.default_search_engine = view_kind;
+                        self.settings.value.default_search_engine = view_kind;
                         self.save_settings();
                     }
                 }
@@ -175,10 +205,10 @@ impl App {
     pub(crate) fn settings_starting_engine_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         ui.label("Default starting engine (new tabs)");
         let default_view_response =
-            self.view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.default_starting_view_kind);
+            self.view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.value.default_starting_view_kind);
         req.default_view_button_rect = Some(default_view_response.rect);
         // A saved default this platform cannot run is kept, not replaced; say why new tabs will fail.
-        let default_state = self.view_status(self.settings.default_starting_view_kind);
+        let default_state = self.view_status(self.settings.value.default_starting_view_kind);
         if matches!(default_state, crate::view_install::ViewStatus::Unavailable(_)) {
             view_status_line(ui, &default_state);
         }
@@ -207,29 +237,29 @@ impl App {
     /// Settings, General: the page new tabs open.
     pub(crate) fn settings_home_page_row(&mut self, ui: &mut egui::Ui) {
         ui.label("Home page (new tabs)");
-        let saved = self.settings.home_page.clone();
-        let draft = self.home_page_draft.get_or_insert_with(|| saved.clone());
+        let saved = self.settings.value.home_page.clone();
+        let draft = self.settings.home_page_draft.get_or_insert_with(|| saved.clone());
         let response = toolbar_field(ui, |ui| {
             ui.add(field_edit(draft).id(egui::Id::new(HOME_PAGE_FIELD)).desired_width(f32::INFINITY))
         });
         if response.lost_focus() {
             // Escape gives up the edit, as the CEF folder row does. Unchanged text isn't saved: `lost_focus` stays
             // true for a second frame.
-            let draft = self.home_page_draft.take();
+            let draft = self.settings.home_page_draft.take();
             if let Some(text) = draft.filter(|text| *text != saved && !ui.input(|i| i.key_pressed(egui::Key::Escape))) {
-                self.settings.home_page = text;
+                self.settings.value.home_page = text;
                 self.save_settings();
             }
         } else if !ui.memory(|m| m.has_focus(response.id)) {
             // Track outside edits (a settings reload). Not `response.has_focus()`: that is also false while the OS
             // window is unfocused, yet the field still takes typed text, so the draft would be dropped each frame.
-            self.home_page_draft = None;
+            self.settings.home_page_draft = None;
         }
     }
 
     /// Settings, General: idle sleep for background tabs.
     pub(crate) fn settings_sleep_row(&mut self, ui: &mut egui::Ui) {
-        let mut minutes = self.settings.idle_sleep_minutes;
+        let mut minutes = self.settings.value.idle_sleep_minutes;
         setting_row(
             ui,
             "Sleep background tabs",
@@ -258,8 +288,8 @@ impl App {
                 );
             });
         }
-        if minutes != self.settings.idle_sleep_minutes {
-            self.settings.idle_sleep_minutes = minutes;
+        if minutes != self.settings.value.idle_sleep_minutes {
+            self.settings.value.idle_sleep_minutes = minutes;
             self.save_settings();
         }
     }
@@ -387,7 +417,7 @@ impl App {
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(palette(ui.visuals()).text));
         let mut commit = None;
-        let configured = self.settings.cef_directory.clone().unwrap_or_default();
+        let configured = self.settings.value.cef_directory.clone().unwrap_or_default();
         ui.horizontal(|ui| {
             let draft = self.view_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
             let response = toolbar_field(ui, |ui| {
@@ -667,14 +697,14 @@ impl App {
         {
             self.build_downloads_popup(ui, rect, fade);
         }
-        let default_view_kind = Some(self.settings.default_starting_view_kind);
+        let default_view_kind = Some(self.settings.value.default_starting_view_kind);
         if let Some(kind) = self.build_anchored_view_picker(
             ui,
             AnchoredPopup::DefaultViewKind,
             req.default_view_button_rect,
             default_view_kind,
         ) {
-            self.settings.default_starting_view_kind = kind;
+            self.settings.value.default_starting_view_kind = kind;
             self.save_settings();
         }
         let current_kind =
@@ -699,29 +729,29 @@ impl App {
     /// Gear-icon button (Tab or Graph toolbar) / headless
     /// `TOGGLESETTINGSPAGE` — enters the Settings page from whichever of
     /// Tab/Graph is currently showing, remembering it in
-    /// `settings_return_view` so `close_settings_page` knows where to go
+    /// `SettingsState::return_view` so `close_settings_page` knows where to go
     /// back to. A no-op if already on the Settings page (doesn't clobber
     /// the return view with `Settings` itself).
     pub(crate) fn open_settings_page(&mut self) {
         if self.view_mode != ViewMode::Settings {
             self.end_note_edits();
             self.invalidate_cef_dir_check();
-            self.settings_return_view = self.view_mode;
+            self.settings.return_view = self.view_mode;
             self.view_mode = ViewMode::Settings;
         }
     }
 
     /// The Settings page's own Back button / `Escape` / `Ctrl+G` — returns
-    /// to `settings_return_view`. A no-op if the Settings page isn't
+    /// to `SettingsState::return_view`. A no-op if the Settings page isn't
     /// showing.
     pub(crate) fn close_settings_page(&mut self) {
         if self.view_mode == ViewMode::Settings {
-            self.view_mode = self.settings_return_view;
+            self.view_mode = self.settings.return_view;
         }
     }
 
     /// Gear-icon button's actual click handler -- opens the Settings page,
-    /// or closes it back to `settings_return_view` if it's already open
+    /// or closes it back to `SettingsState::return_view` if it's already open
     /// (the button doubles as Back while on the page, same toggle feel the
     /// old gear-icon popup had).
     pub(crate) fn toggle_settings_page(&mut self) {
@@ -837,7 +867,7 @@ mod tests {
     fn escape_in_a_settings_field_reverts_it_and_stays_on_the_page() {
         let ctx = crate::theme::testutil::ctx(true);
         let mut app = App::default();
-        app.settings.home_page = "https://old".into();
+        app.settings.value.home_page = "https://old".into();
         app.open_settings_page();
         let input = |events| egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 3000.0))),
@@ -859,12 +889,12 @@ mod tests {
             frame(&mut app, vec![]);
         }
         frame(&mut app, vec![egui::Event::Text("x".into())]);
-        assert_eq!(app.settings.home_page, "https://old", "typing edits the draft only");
+        assert_eq!(app.settings.value.home_page, "https://old", "typing edits the draft only");
         frame(&mut app, vec![key(egui::Key::Escape)]);
         assert_eq!(app.view_mode, ViewMode::Settings, "still on Settings");
-        assert_eq!(app.settings.home_page, "https://old", "Escape reverted the field");
+        assert_eq!(app.settings.value.home_page, "https://old", "Escape reverted the field");
         frame(&mut app, vec![]);
-        assert_eq!(app.settings.home_page, "https://old", "and stays reverted");
+        assert_eq!(app.settings.value.home_page, "https://old", "and stays reverted");
 
         // Enter still commits, and with no field focused Escape leaves the page.
         ctx.memory_mut(|m| m.request_focus(HOME_PAGE_FIELD.into()));
@@ -873,7 +903,7 @@ mod tests {
         }
         frame(&mut app, vec![egui::Event::Text("y".into())]);
         frame(&mut app, vec![key(egui::Key::Enter)]);
-        assert!(app.settings.home_page.contains('y'), "Enter committed: {}", app.settings.home_page);
+        assert!(app.settings.value.home_page.contains('y'), "Enter committed: {}", app.settings.value.home_page);
         frame(&mut app, vec![]);
         frame(&mut app, vec![key(egui::Key::Escape)]);
         assert_ne!(app.view_mode, ViewMode::Settings, "Escape outside a field closes Settings");
@@ -908,7 +938,7 @@ mod tests {
         assert!(texts > 20, "the page drew its text ({texts})");
     }
 
-    /// A row named by `settings_focus` is outlined for one frame and the field is cleared; an unknown id only clears.
+    /// A row named by `SettingsState::focus` is outlined for one frame and the field is cleared; an unknown id only clears.
     #[test]
     fn the_focused_row_is_outlined_once() {
         let ctx = crate::theme::testutil::ctx(true);
@@ -927,12 +957,12 @@ mod tests {
         };
         frame(&mut app);
         let before = outlines(&frame(&mut app));
-        app.settings_focus = Some("home_page");
+        app.settings.focus = Some("home_page");
         assert_eq!(outlines(&frame(&mut app)), before + 1);
-        assert_eq!(app.settings_focus, None);
+        assert_eq!(app.settings.focus, None);
         assert_eq!(outlines(&frame(&mut app)), before, "gone the next frame");
-        app.settings_focus = Some("no_such_row");
+        app.settings.focus = Some("no_such_row");
         assert_eq!(outlines(&frame(&mut app)), before);
-        assert_eq!(app.settings_focus, None);
+        assert_eq!(app.settings.focus, None);
     }
 }

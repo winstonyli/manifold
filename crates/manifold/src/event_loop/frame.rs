@@ -304,7 +304,7 @@ impl App {
     /// Applies a theme choice everywhere it lands at once: egui's preference, and the native window's (which owns
     /// the title bar). Under `System` the window re-reports its own theme, so egui's input is refreshed at once.
     pub(crate) fn choose_theme(&mut self, choice: ThemeChoice) {
-        self.settings.theme = choice;
+        self.settings.value.theme = choice;
         apply_theme_choice(&self.egui_ctx, choice);
         let Some(window) = &self.window else { return };
         window.set_theme(window_theme(choice));

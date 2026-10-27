@@ -351,7 +351,7 @@ impl App {
         if let Some(tab) = tab_common(&node.runtime) {
             local.title = tab.title.to_string();
             local.muted = tab.muted;
-            local.zoom = (tab.zoom_factor != self.settings.zoom_factor).then_some(tab.zoom_factor);
+            local.zoom = (tab.zoom_factor != self.settings.value.zoom_factor).then_some(tab.zoom_factor);
             // Against the shared url the mirror holds: a url this replica shares is edited (`edit_url`)
             // into it, so only an unshared move (a redirect, a script) is recorded.
             let from = self.doc.mirror.url(id);

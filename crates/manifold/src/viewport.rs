@@ -164,7 +164,7 @@ impl App {
             .and_then(|id| self.nodes.get(&id))
             .and_then(|n| n.as_tab())
             .map(|t| t.zoom_factor)
-            .unwrap_or(self.settings.zoom_factor)
+            .unwrap_or(self.settings.value.zoom_factor)
     }
 
     /// Sets `factor` as both the new default for future tabs (`Settings::
@@ -178,10 +178,10 @@ impl App {
     /// jumped tab B's actual zoom by an unexpected amount, not the 10%
     /// step the button claimed. Now every read/write of "the current zoom"
     /// goes through this pair (`focused_zoom_factor`/`set_focused_zoom`)
-    /// instead of `self.settings.zoom_factor` directly, so the display and
+    /// instead of `self.settings.value.zoom_factor` directly, so the display and
     /// the tab it's supposedly controlling can't diverge.
     pub(crate) fn set_focused_zoom(&mut self, factor: f64) {
-        self.settings.zoom_factor = factor;
+        self.settings.value.zoom_factor = factor;
         self.save_settings();
         if let Some(id) = self.focused {
             if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {

@@ -237,7 +237,7 @@ impl App {
             GraphAction::Node(id, action) => self.apply_node_action(ctx, id, action),
             GraphAction::FinishConnect(target) => self.finish_connect(target),
             GraphAction::NewTab(parent) => {
-                let home_page = self.settings.home_page.clone();
+                let home_page = self.settings.value.home_page.clone();
                 self.leave_json_level();
                 let group = self.current_group;
                 self.spawn_new_tab(parent, group, &home_page);

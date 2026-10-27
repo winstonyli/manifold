@@ -436,7 +436,7 @@ impl App {
             self.reload_focused_tab_shortcut();
         }
         if home_requested {
-            let home_page = self.settings.home_page.clone();
+            let home_page = self.settings.value.home_page.clone();
             self.navigate_tab(focused_id, home_page);
         }
         if close_split_requested {

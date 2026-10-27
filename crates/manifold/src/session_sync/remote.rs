@@ -249,7 +249,7 @@ impl App {
                 let live = local.and_then(|l| l.live_url.as_ref()).filter(|l| l.from == shared);
                 let url = live.map_or(shared, |l| l.url.clone());
                 // Title, mute and zoom come from personal state (`apply_local`); the engine is the mirror's.
-                let zoom_factor = self.settings.zoom_factor;
+                let zoom_factor = self.settings.value.zoom_factor;
                 let (title, muted, state) = (String::new(), false, UnloadedState::Sleeping);
                 let payload = UnloadedTabPayload { url, title, muted, zoom_factor, state };
                 self.insert_placeholder_node(id, pos, kind, Runtime::Unloaded(payload));

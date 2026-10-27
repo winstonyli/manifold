@@ -3,13 +3,14 @@
 use super::*;
 use crate::store::model::NodeId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum ViewMode {
     Graph,
     /// One node shown full-screen ("maximized"): a Tab's live page, or --
     /// while `App::viewed_image` is `Some` -- an Image. Was `Tab` before a
     /// second kind could enter it; personal state's own `LocalState::
     /// view_item` keeps the generic name on disk.
+    #[default]
     Item,
     /// The gear-icon Settings page -- a real `ViewMode`, not a popup
     /// overlaid on Tab/Graph, since the popup's fixed 200pt width

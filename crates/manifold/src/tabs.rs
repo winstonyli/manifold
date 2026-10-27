@@ -329,9 +329,9 @@ impl App {
     /// browser" from before M5 — Graph view is reached explicitly).
     pub(crate) fn spawn_root_tab(&mut self) {
         let id = self.alloc_node_id();
-        let home_page = self.settings.home_page.clone();
-        let kind = self.settings.default_starting_view_kind;
-        let zoom = self.settings.zoom_factor;
+        let home_page = self.settings.value.home_page.clone();
+        let kind = self.settings.value.default_starting_view_kind;
+        let zoom = self.settings.value.zoom_factor;
         self.spawn_tab_async(TabSpawn::new(id, home_page, kind, egui::Vec2::ZERO, SpawnPurpose::Root, zoom));
     }
 
@@ -459,7 +459,7 @@ impl App {
     /// a page-triggered new tab (`ViewToHost::OpenTabRequested`), with
     /// that request's URL instead of the configured home page.
     pub(crate) fn spawn_new_tab(&mut self, parent: Option<NodeId>, group: Option<NodeId>, url: &str) {
-        let kind = self.settings.default_starting_view_kind;
+        let kind = self.settings.value.default_starting_view_kind;
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, None, None);
     }
 
@@ -467,7 +467,7 @@ impl App {
     pub(crate) fn spawn_tab_from(&mut self, opener: NodeId, url: &str, pos: Option<egui::Vec2>) -> NodeId {
         let parent = Some(opener);
         let group = self.group_of(parent);
-        let (kind, jar) = (self.settings.default_starting_view_kind, self.doc.mirror.jar(opener));
+        let (kind, jar) = (self.settings.value.default_starting_view_kind, self.doc.mirror.jar(opener));
         self.spawn_new_tab_with_kind(parent, group, url, kind, SpawnPurpose::New, jar, pos)
     }
 
@@ -510,7 +510,7 @@ impl App {
             .or_else(|| self.nodes.keys().copied().find(|&id| in_group(id)))
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
         let pos = pos.unwrap_or_else(|| parent_pos + graph_layout::spawn_jitter(id));
-        let spawn = TabSpawn::new(id, url.to_string(), kind, pos, purpose, self.settings.zoom_factor);
+        let spawn = TabSpawn::new(id, url.to_string(), kind, pos, purpose, self.settings.value.zoom_factor);
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
     }
@@ -846,7 +846,7 @@ impl App {
         parent: Option<NodeId>,
     ) -> NodeId {
         let id = self.alloc_node_id();
-        let (kind, zoom) = (self.settings.default_starting_view_kind, self.settings.zoom_factor);
+        let (kind, zoom) = (self.settings.value.default_starting_view_kind, self.settings.value.zoom_factor);
         let spawn = TabSpawn::new(id, url.to_string(), kind, pos, SpawnPurpose::New, zoom);
         self.spawn_tab_async(TabSpawn { group, parent, ..spawn });
         id
