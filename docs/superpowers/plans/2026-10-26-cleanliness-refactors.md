@@ -133,7 +133,7 @@ Done: 76efb88
   dispatch split out.
 - **GR7** `graph_ui/cards.rs:50-65` Ctrl-reveal block to `keys.rs`; `graph_ui/scene.rs` repeated
   `minimap.map(|(rect, _, _)| rect)` and `connect_drag_end` calls.
-  Done: aab9410 (GR3), b623bd3 (GR8), fd6a4a2 (GR7)
+  Done: aab9410 (GR3), b623bd3 (GR8), fd6a4a2 (GR7), 390c5fa a7eee9e 8bfa79e (E4, E5, E6)
 
 ### B9. `App` fields grouped
 
