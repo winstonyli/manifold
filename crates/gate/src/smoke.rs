@@ -493,7 +493,9 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let first_row = sm.state("weather_rows")?.0["suggestions"][0].as_str().unwrap_or_default().to_string();
 
     // The dropdown's first row, where the export says it is.
-    let row = sm.state("weather_rows")?.row(0).ok_or_else(|| bad("the dropdown drew no row".into()))?;
+    let state = sm.state("weather_rows")?;
+    let row = state.popup_controls().first().and_then(|c| State::center(c));
+    let row = row.ok_or_else(|| bad("the dropdown drew no row".into()))?;
     sm.send(&format!("CLICK {row}"))?;
     sm.wait_state("after_click", "clicking the first suggestion searches it", "q == row", |v| v.q == first_row)?;
     sm.send("WAITIDLE")?;

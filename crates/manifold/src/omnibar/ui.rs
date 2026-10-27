@@ -153,14 +153,16 @@ impl App {
                 other => (row_icon(other), None),
             };
             let text = row_text(row);
-            let mut button = egui::Button::new(row_label(ui, &text, qualifier, 0.0))
-                .truncate()
-                .min_size(egui::vec2(full_width, 0.0));
+            let label = row_label(ui, &text, qualifier, 0.0);
+            let name = label.text().to_owned();
+            let mut button = egui::Button::new(label).truncate().min_size(egui::vec2(full_width, 0.0));
             if selected {
                 button = button.fill(accent(ui.visuals()));
             }
             let response = if live { ui.add(button) } else { ui.add_enabled(false, button) };
-            paint_row_icon(ui, response.rect, ui.spacing().button_padding.x, &text, selected, identity);
+            // The highlight is the button's fill; a screen reader (and the gate's `controls`) hears it as selected.
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, live, selected, &name));
+            paint_row_icon(ui, response.rect, ui.spacing().button_padding.x, identity);
             if live && response.clicked() {
                 clicked = Some(idx);
             }

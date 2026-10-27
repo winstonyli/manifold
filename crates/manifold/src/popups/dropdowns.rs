@@ -184,7 +184,7 @@ impl App {
                 let kind = ViewKind::from_name(&str_field("view_kind")).unwrap_or(ViewKind::Servo);
                 let (slot, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
                 let identity = Identity::of_tab(false, App::favicon_in(gpu, &url), kind, &url);
-                paint_row_icon(ui, slot, 0.0, "", false, identity);
+                paint_row_icon(ui, slot, 0.0, identity);
                 title.map_or(url, str::to_string)
             }
             // Image, Pdf, Json, a jar, a download: the stored path.
@@ -347,14 +347,7 @@ impl App {
                                 let identity = App::page_row_identity(self.gpu.as_ref(), &bookmark.url);
                                 wanted.push(bookmark.url.clone());
                                 let row = list_row(ui, row_label(ui, &bookmark.title, None, LIST_ROW_INSET));
-                                paint_row_icon(
-                                    ui,
-                                    row.rect,
-                                    LIST_ROW_INSET,
-                                    &bookmark.title,
-                                    row.has_focus(),
-                                    identity,
-                                );
+                                paint_row_icon(ui, row.rect, LIST_ROW_INSET, identity);
                                 if row.clicked() {
                                     navigate_url = Some(bookmark.url.clone());
                                 }
@@ -487,7 +480,7 @@ impl App {
                     let widget_label = row_label(ui, label, None, LIST_ROW_INSET);
                     let row = ui.scope_builder(egui::UiBuilder::new().id(id), |ui| list_row(ui, widget_label)).inner;
                     let identity = App::page_row_identity(self.gpu.as_ref(), &entry.url);
-                    paint_row_icon(ui, row.rect, LIST_ROW_INSET, label, row.has_focus(), identity);
+                    paint_row_icon(ui, row.rect, LIST_ROW_INSET, identity);
                     if row.clicked() {
                         *navigate_url = Some(entry.url.clone());
                     }

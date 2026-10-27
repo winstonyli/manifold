@@ -327,9 +327,9 @@ impl App {
     /// `export_state`'s keys for what the last frame drew, and the trails.
     fn drawn_state(&self) -> Value {
         json!({
-            "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| json!({"text": r.text, "selected": r.selected, "rect": rect_json(r.rect)})).collect::<Vec<_>>(),
-            // The controls with a name (`NamedTip`) the last frame drew: the gate clicks them by name, not by pixel.
-            "controls": self.debug.controls.iter().map(|c| json!({"name": c.label, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
+            // The named controls the last frame drew (`identity::controls_in`), list rows among them: the gate clicks
+            // them by name, not by pixel, and finds a list's highlighted or focused row by `selected`.
+            "controls": self.debug.controls.iter().map(|c| json!({"name": c.label, "selected": c.selected, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| json!({"kind": i.kind, "text": i.text, "rect": rect_json(i.rect)})).collect::<Vec<_>>(),
             "trail": self.trail_state(),

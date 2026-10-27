@@ -74,11 +74,10 @@ impl Run {
     }
 }
 
-/// The screen rects of EXPORTSTATE's labelled `rows`, as `[left, top, right, bottom]`.
+/// The screen rects of the controls inside a popup (`State::popup_controls`: the dropdown's rows), as
+/// `[left, top, right, bottom]`.
 fn rows(s: &State) -> Vec<Vec<Value>> {
-    s.0["rows"]
-        .as_array()
-        .map_or_else(Vec::new, |rows| rows.iter().filter_map(|r| r["rect"].as_array().cloned()).collect())
+    s.popup_controls().iter().filter_map(|c| c["rect"].as_array().cloned()).collect()
 }
 
 /// How many icons of any kind EXPORTSTATE's `identities` lists.
@@ -367,8 +366,8 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
             })
             .count()
     };
-    check_is("every dropdown row has an icon inside it", rows(&s).len(), led(&s));
-    let selected = |s: &State| s.0["rows"].as_array().map_or(0, |r| r.iter().filter(|r| r["selected"] == true).count());
+    check_is("every control in the dropdown has an icon inside it", rows(&s).len(), led(&s));
+    let selected = |s: &State| s.popup_controls().iter().filter(|c| c["selected"] == true).count();
     check_is("no dropdown row is selected yet", 0, selected(&s));
     inst.send("ARROWDOWN")?;
     let s = inst.export_until("dropdown-selected", |s| selected(s) == 1)?;

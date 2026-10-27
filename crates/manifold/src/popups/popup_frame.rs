@@ -132,11 +132,14 @@ pub(crate) fn settle_popup(
 }
 
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
-/// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
+/// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows. A screen reader hears a button.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let text = text.into();
+    let name = text.text().to_owned();
     let response = ui
         .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name));
     nav_row(ui, &response);
     response
 }

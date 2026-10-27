@@ -121,24 +121,19 @@ pub(crate) struct DrawnIcon {
     pub(crate) rect: egui::Rect,
 }
 
-/// A labelled list row: its text, screen rect, and whether it is the selected (highlighted or focused) one.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct DrawnRow {
-    pub(crate) text: String,
-    pub(crate) rect: egui::Rect,
-    pub(crate) selected: bool,
-}
-
-/// A control with a name, as a screen reader hears it (`controls_in`), and its screen rect.
+/// A control with a name, as a screen reader hears it (`controls_in`), its screen rect, and whether it is selected (a
+/// list's highlighted row, a toggled button) or has keyboard focus.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DrawnControl {
     pub(crate) label: String,
     pub(crate) rect: egui::Rect,
+    pub(crate) selected: bool,
 }
 
 /// The named controls of the pass `ctx` just finished, from its accesskit tree `update`: a widget's name is the text
-/// of what it is `labelled_by`, else its own label (a button's text, a `NamedTip`). A label is not a control, and a
-/// widget clipped away (scrolled out of its area) is left out. Frontmost layer first, in paint order within a layer.
+/// of what it is `labelled_by`, else its own label (a button's text, a `NamedTip`). A label is not a control (a list
+/// row that is one says it is a button, `popups::list_row`), and a widget clipped away (scrolled out of its area) is
+/// left out. Frontmost layer first, in paint order within a layer.
 pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpdate) -> Vec<DrawnControl> {
     use egui::accesskit::{Node, NodeId};
     let nodes: std::collections::HashMap<NodeId, &Node> = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
@@ -159,8 +154,15 @@ pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpd
         .into_iter()
         .filter(|w| w.interact_rect.is_positive())
         .filter_map(|w| {
-            let label = name(nodes.get(&w.id.accesskit_id())?)?;
-            (!label.is_empty()).then(|| DrawnControl { label, rect: to_global(ctx, w.layer_id, w.interact_rect) })
+            let id = w.id.accesskit_id();
+            let node = nodes.get(&id)?;
+            let label = name(node)?;
+            let selected = node.toggled() == Some(egui::accesskit::Toggled::True) || update.focus == id;
+            (!label.is_empty()).then(|| DrawnControl {
+                label,
+                rect: to_global(ctx, w.layer_id, w.interact_rect),
+                selected,
+            })
         })
         .collect()
 }
@@ -170,8 +172,6 @@ pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpd
 struct IconLog {
     building: Vec<DrawnIcon>,
     done: Vec<DrawnIcon>,
-    rows_building: Vec<DrawnRow>,
-    rows_done: Vec<DrawnRow>,
 }
 
 fn icon_log_id() -> egui::Id {
@@ -183,18 +183,12 @@ pub(crate) fn begin_icon_frame(ctx: &egui::Context) {
     ctx.data_mut(|d| {
         let log = d.get_temp_mut_or_default::<IconLog>(icon_log_id());
         log.done = std::mem::take(&mut log.building);
-        log.rows_done = std::mem::take(&mut log.rows_building);
     });
 }
 
 /// The icons the last finished frame drew, in paint order.
 pub(crate) fn drawn_icons(ctx: &egui::Context) -> Vec<DrawnIcon> {
     ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.done).unwrap_or_default())
-}
-
-/// The labelled list rows (an icon row with a label) the last finished frame drew: text and screen rect.
-pub(crate) fn drawn_rows(ctx: &egui::Context) -> Vec<DrawnRow> {
-    ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.rows_done).unwrap_or_default())
 }
 
 /// A point or rect in `layer`'s space, in window space (unchanged for a layer with no transform).
@@ -211,21 +205,6 @@ where
     egui::emath::TSTransform: std::ops::Mul<T, Output = T>,
 {
     ctx.layer_transform_from_global(layer).map_or(p, |t| t * p)
-}
-
-/// Notes the labelled row `label` at `rect`; an empty label is no row.
-fn note_row(ui: &egui::Ui, label: &str, selected: bool, rect: egui::Rect) {
-    if label.is_empty() {
-        return;
-    }
-    let rect = to_global(ui.ctx(), ui.layer_id(), rect);
-    ui.ctx().data_mut(|d| {
-        d.get_temp_mut_or_default::<IconLog>(icon_log_id()).rows_building.push(DrawnRow {
-            text: label.to_owned(),
-            rect,
-            selected,
-        })
-    });
 }
 
 /// Notes that `identity` is drawn in `square` (in `ui`'s layer space).
@@ -289,15 +268,7 @@ pub(crate) fn row_label(ui: &egui::Ui, label: &str, qualifier: Option<&str>, ins
 }
 
 /// Paints `identity` in the room `row_label` left at the left of a row's `rect`, `pad` points in (a button's padding, or `LIST_ROW_INSET`).
-pub(crate) fn paint_row_icon(
-    ui: &egui::Ui,
-    rect: egui::Rect,
-    pad: f32,
-    label: &str,
-    selected: bool,
-    identity: Identity,
-) {
-    note_row(ui, label, selected, rect);
+pub(crate) fn paint_row_icon(ui: &egui::Ui, rect: egui::Rect, pad: f32, identity: Identity) {
     let center = egui::pos2(rect.left() + pad + ICON_SIZE_SMALL / 2.0, rect.center().y);
     if let Some(text) = identity.paint(ui, center, ICON_SIZE_SMALL, 1.0, ui.visuals().weak_text_color()) {
         text.draw(ui.painter(), text.center);
@@ -461,6 +432,29 @@ mod tests {
         output.textures_delta.clear();
     }
 
+    /// A list row is a control whether it is a button or a clickable label, and the highlighted or focused one is the
+    /// selected one; plain text is no control.
+    #[test]
+    fn rows_are_controls_and_the_highlighted_or_focused_one_is_selected() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut update = None;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.label("just text");
+                let picked = ui.add(egui::Button::new("picked"));
+                picked.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, "picked"));
+                ui.add(egui::Button::new("other"));
+                crate::popups::list_row(ui, "history row").request_focus();
+            });
+            output.textures_delta.clear();
+            update = output.platform_output.accesskit_update;
+        }
+        let controls = controls_in(&ctx, &update.expect("accesskit on"));
+        let seen: Vec<_> = controls.iter().map(|c| (c.label.as_str(), c.selected)).collect();
+        assert_eq!(seen, [("picked", true), ("other", false), ("history row", true)]);
+    }
+
     #[test]
     fn painted_icons_are_logged_for_the_finished_frame_only() {
         let ctx = egui::Context::default();
@@ -479,11 +473,8 @@ mod tests {
                     ui,
                     egui::Rect::from_min_size(egui::pos2(0.0, 30.0), egui::vec2(100.0, 14.0)),
                     4.0,
-                    "page",
-                    true,
                     Identity::Spinner,
                 );
-                paint_row_icon(ui, egui::Rect::ZERO, 0.0, "", false, Identity::Spinner);
             });
             output.textures_delta.clear();
         };
@@ -493,9 +484,7 @@ mod tests {
         paint(&ctx);
         let icons = drawn_icons(&ctx);
         let seen: Vec<_> = icons.iter().map(|i| (i.kind, i.text.as_str(), i.rect.center())).collect();
-        assert_eq!(seen.len(), 4);
+        assert_eq!(seen.len(), 3);
         assert_eq!(seen[..2], [("tile", "E", egui::pos2(10.0, 10.0)), ("spinner", "", egui::pos2(50.0, 10.0))]);
-        let rows = drawn_rows(&ctx);
-        assert_eq!(rows.iter().map(|r| (r.text.as_str(), r.selected)).collect::<Vec<_>>(), [("page", true)]);
     }
 }

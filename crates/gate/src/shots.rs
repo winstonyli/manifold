@@ -407,14 +407,7 @@ impl Shots {
     /// The rect `[x0, y0, x1, y1]` of the open menu or popup, if any (the key hint beside a keyboard-focused card does
     /// not count).
     fn popup_rect(&mut self) -> io::Result<Option<[f64; 4]>> {
-        let st = self.state()?;
-        let popup = st.0["popups"]
-            .as_array()
-            .and_then(|list| list.iter().find(|p| p["id"].as_str().is_some_and(|id| !id.contains("card_key_hint"))));
-        Ok(popup.and_then(|p| {
-            let r = p["rect"].as_array()?;
-            Some([r[0].as_f64()?, r[1].as_f64()?, r[2].as_f64()?, r[3].as_f64()?])
-        }))
+        Ok(self.state()?.popup_rects().first().copied())
     }
 
     fn menu_open(&mut self) -> io::Result<bool> {
@@ -1285,21 +1278,19 @@ impl Shots {
                             return s.reset();
                         };
                         send!(s, format!("CLICK {} {}", x0 + 40.0, y0 + 13.0), "SLEEP 1", "EGUITEXT wiki", "SLEEP 1")?;
-                        // A shot forces the frame that `rows` is read from (see PARKED.md, headless debug keys).
+                        // A shot forces the frame that `controls` is read from (see PARKED.md, headless debug keys).
                         s.shot("popup-history-typed")?;
-                        let rows = s.state()?.0["rows"].clone();
-                        let row =
-                            |text: &str| rows.as_array().and_then(|r| r.iter().find(|r| r["text"] == text)).cloned();
+                        let st = s.state()?;
+                        let row = |name: &str| st.popup_controls().into_iter().find(|c| c["name"] == name).cloned();
                         check(
                             "History filter 'wiki' keeps Wikipedia and drops Hacker News",
                             row("Wikipedia").is_some() && row("Hacker News").is_none(),
                         );
                         send!(s, "ARROWDOWN", "SLEEP 1")?;
                         s.shot("popup-history-filtered")?;
-                        let rows = s.state()?.0["rows"].clone();
-                        let selected = rows
-                            .as_array()
-                            .is_some_and(|r| r.iter().any(|r| r["text"] == "Wikipedia" && r["selected"] == true));
+                        let st = s.state()?;
+                        let selected =
+                            st.popup_controls().iter().any(|c| c["name"] == "Wikipedia" && c["selected"] == true);
                         check("Down from the History filter focuses the first match", selected);
                     }
                     send!(s, AWAY, "SLEEP 1")?;

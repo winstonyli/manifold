@@ -165,15 +165,36 @@ impl State {
     /// The center of the named control (`controls` in the export), `"x y"`, or `None` when the last frame drew none
     /// of that name.
     pub fn control(&self, name: &str) -> Option<String> {
-        let c = self.0["controls"].as_array()?.iter().find(|c| c["name"] == name)?;
-        let [l, t, r, b] = Self::floats::<4>(c, "rect")?;
+        Self::center(self.0["controls"].as_array()?.iter().find(|c| c["name"] == name)?)
+    }
+
+    /// The center of a `controls` entry, `"x y"`.
+    pub fn center(control: &Value) -> Option<String> {
+        let [l, t, r, b] = Self::floats::<4>(control, "rect")?;
         Some(fmt_pair((l + r) / 2.0, (t + b) / 2.0))
     }
 
-    /// The center of the `n`th list row the last frame drew (`rows`: the omnibar's dropdown rows, a menu's), `"x y"`.
-    pub fn row(&self, n: usize) -> Option<String> {
-        let [l, t, r, b] = Self::floats::<4>(self.0["rows"].as_array()?.get(n)?, "rect")?;
-        Some(fmt_pair((l + r) / 2.0, (t + b) / 2.0))
+    /// The rects of the popups showing (`popups`), `[left, top, right, bottom]`; the key hint beside a
+    /// keyboard-focused card is not one.
+    pub fn popup_rects(&self) -> Vec<[f64; 4]> {
+        let list = self.0["popups"].as_array().map_or(&[][..], Vec::as_slice);
+        list.iter()
+            .filter(|p| p["id"].as_str().is_some_and(|id| !id.contains("card_key_hint")))
+            .filter_map(|p| Self::rect_from(&p["rect"]))
+            .collect()
+    }
+
+    /// The `controls` that lie inside a popup: a dropdown's or a list popup's rows (`selected` marks the highlighted
+    /// or focused one), and any button of the popup's own. Frontmost first, in paint order.
+    pub fn popup_controls(&self) -> Vec<&Value> {
+        let popups = self.popup_rects();
+        let list = self.0["controls"].as_array().map_or(&[][..], Vec::as_slice);
+        list.iter()
+            .filter(|c| {
+                Self::rect_from(&c["rect"])
+                    .is_some_and(|[l, t, r, b]| popups.iter().any(|p| l >= p[0] && t >= p[1] && r <= p[2] && b <= p[3]))
+            })
+            .collect()
     }
 
     /// A point on the card, `"x y"` rounded as python's `%.0f` (`xy(id)`): its center, or when that is off the canvas
@@ -282,14 +303,22 @@ mod tests {
         assert!(!over([477.0, 318.0, 591.0, 349.0]), "clear of the trail page: {at:?}");
     }
 
-    /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
-    /// `reopen-nested`: center y 651 in a 639 px window): `xy` aims at the part that is on the canvas.
-    /// A row is found by its index in `rows`, at its rect's center.
+    /// A popup's controls are the ones inside a popup's rect, in order; one outside every popup, or inside only the
+    /// key hint, is not one.
     #[test]
-    fn row_is_found_by_index() {
-        let s = State::parse(r#"{"rows":[{"text":"a","selected":false,"rect":[183.0,38.0,615.0,64.0]}]}"#).unwrap();
-        assert_eq!(s.row(0).as_deref(), Some("399 51"));
-        assert_eq!(s.row(1), None);
+    fn popup_controls_are_the_controls_inside_a_popup() {
+        let s = State::parse(
+            r#"{"popups":[{"id":"omni_dropdown","rect":[180.0,36.0,620.0,120.0]},
+                          {"id":"card_key_hint","rect":[0.0,200.0,100.0,240.0]}],
+                "controls":[{"name":"a","selected":false,"rect":[183.0,38.0,615.0,64.0]},
+                            {"name":"b","selected":true,"rect":[183.0,64.0,615.0,90.0]},
+                            {"name":"Back one level","rect":[10.0,5.0,34.0,29.0]},
+                            {"name":"hinted","rect":[10.0,205.0,40.0,230.0]}]}"#,
+        )
+        .unwrap();
+        let names: Vec<_> = s.popup_controls().iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(State::center(s.popup_controls()[0]).as_deref(), Some("399 51"));
     }
 
     /// A control is found by its name in `controls`, at its rect's center; an unknown name is `None`.
@@ -300,6 +329,8 @@ mod tests {
         assert_eq!(s.control("Reset View (fit all)"), None);
     }
 
+    /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
+    /// `reopen-nested`: center y 651 in a 639 px window): `xy` aims at the part that is on the canvas.
     #[test]
     fn xy_stays_on_the_canvas() {
         let s =
