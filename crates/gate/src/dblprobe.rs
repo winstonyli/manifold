@@ -39,8 +39,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
         return Err(bad(format!("--import-json exited with {status}")));
     }
     let mut a = Instance::launch(exe, &profile, work, "a.log")?;
-    a.send("WAITTABS")?;
-    a.send("WAITIDLE")?;
+    a.settle()?;
     let rounds: usize = std::env::var("ROUNDS").ok().and_then(|r| r.parse().ok()).unwrap_or(100);
     let mut missed = [0usize; 3];
     let mut tried = [0usize; 3];

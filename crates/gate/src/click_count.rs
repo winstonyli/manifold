@@ -7,9 +7,8 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::check::{check, Section};
-use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
+use crate::check::check;
+use crate::probes::{finish, for_each_view, quit, tab_node, Site};
 
 const TEXT: &str = "alpha beta gamma delta";
 
@@ -20,37 +19,38 @@ fn selection(site: &Site, d: u8) -> Option<String> {
 }
 
 pub(crate) fn click_count(exe: &Path, work: &Path) -> ExitCode {
-    for view in views() {
-        let _t = Section::start(&format!("click-count-{view}"));
-        guarded(&format!("{view} click count"), || {
+    for_each_view(
+        "click-count",
+        exe,
+        work,
+        |view| {
             let site = Site::start()?;
-            let profile = work.join(format!("appdata-{view}"));
-            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/clicks")), &view)])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("click-count-{view}.log"))?;
-            for line in ["WAITTABS", "WAITIDLE"] {
-                inst.send(line)?;
-            }
+            let nodes = vec![tab_node(Some(&site.url("/clicks")), view)];
+            Ok((site, nodes))
+        },
+        |view, inst, site| {
+            inst.settle()?;
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the page to load", || site.hits("/clicks") > 0)?;
             inst.export_state(&format!("state-{view}"))?;
             let limit = Duration::from_secs(30);
             inst.send("DOUBLECLICK 300 200")?;
             let doubled = site.wait_for("click d=2", 1, limit);
             // Read before the triple click: its own second release reports a count of 2 too.
-            let word = selection(&site, 2);
+            let word = selection(site, 2);
             inst.send("TRIPLECLICK 300 200")?;
             let tripled = site.wait_for("click d=3", 1, limit);
-            quit(&mut inst, &view);
+            quit(inst, view);
             check(
                 &format!("{view}: a double click reports count 2 and selects one word ({word:?})"),
                 doubled && word.as_deref().is_some_and(|w| !w.is_empty() && !w.contains(' ') && TEXT.contains(w)),
             );
-            let line = selection(&site, 3);
+            let line = selection(site, 3);
             check(
                 &format!("{view}: a triple click reports count 3 and selects the paragraph ({line:?})"),
                 tripled && line.as_deref() == Some(TEXT),
             );
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }

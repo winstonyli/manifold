@@ -226,6 +226,12 @@ impl Instance {
         stdin.flush()
     }
 
+    /// `WAITTABS` then `WAITIDLE`: the tabs are up and the first layout is done.
+    pub fn settle(&mut self) -> io::Result<()> {
+        self.send("WAITTABS")?;
+        self.send("WAITIDLE")
+    }
+
     /// A fresh path in the work dir; any file there is removed first so a poll cannot see an earlier export.
     fn fresh_path(&self, file: String) -> PathBuf {
         let path = self.work.join(file);

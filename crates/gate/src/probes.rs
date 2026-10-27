@@ -275,6 +275,28 @@ pub(crate) fn guarded(label: &str, body: impl FnOnce() -> io::Result<()>) {
     }
 }
 
+/// The per-view probe skeleton. For each of `views()`: a section `{stage}-{view}` and a guard labelled `{view} {stage}`;
+/// `prepare` (starts a site, say) gives its own state and the tabs to seed `appdata-{view}` with; an instance is
+/// launched on that profile (log `{stage}-{view}.log`) and handed to `body` with the state. `body` quits it.
+pub(crate) fn for_each_view<S>(
+    stage: &str,
+    exe: &Path,
+    work: &Path,
+    prepare: impl Fn(&str) -> io::Result<(S, Vec<Value>)>,
+    body: impl Fn(&str, &mut Instance, &S) -> io::Result<()>,
+) {
+    for view in views() {
+        let _t = Section::start(&format!("{stage}-{view}"));
+        guarded(&format!("{view} {stage}"), || {
+            let (state, nodes) = prepare(&view)?;
+            let profile = work.join(format!("appdata-{view}"));
+            seed(exe, &profile, &view, &nodes)?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("{stage}-{view}.log"))?;
+            body(&view, &mut inst, &state)
+        });
+    }
+}
+
 pub(crate) fn page_kind(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
         Ok(s) => s,
@@ -316,16 +338,17 @@ pub(crate) fn page_kind(exe: &Path, work: &Path) -> ExitCode {
 }
 
 pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
-    for view in views() {
-        let _t = Section::start(&format!("hscroll-{view}"));
-        guarded(&format!("hscroll {view}"), || {
+    for_each_view(
+        "hscroll",
+        exe,
+        work,
+        |view| {
             let site = Site::start()?;
-            let profile = work.join(format!("appdata-{view}"));
-            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/wide")), &view)])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("{view}.log"))?;
-            for line in ["WAITTABS", "WAITIDLE"] {
-                inst.send(line)?;
-            }
+            let nodes = vec![tab_node(Some(&site.url("/wide")), view)];
+            Ok((site, nodes))
+        },
+        |view, inst, site| {
+            inst.settle()?;
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the /wide page to load", || site.hits("/wide") > 0)?;
             // A wheel event sent before Tab view is drawn goes nowhere.
             inst.export_until(&format!("tabview-{view}"), State::tab_view)?;
@@ -334,7 +357,7 @@ pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
             site.wait_for("hscroll", 1, Duration::from_secs(20));
             inst.send("SCROLL 300 200 -120 0")?;
             site.wait_for("hscroll", 2, Duration::from_secs(20));
-            quit(&mut inst, &view);
+            quit(inst, view);
             // The settled positions, in order: after the positive dx, after the negative one.
             let at: Vec<Option<i64>> = site
                 .lines()
@@ -351,8 +374,8 @@ pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
                 }
             }
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }
 
@@ -381,16 +404,17 @@ fn expected_keys(view: &str) -> Vec<&'static str> {
 }
 
 pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
-    for view in views() {
-        let _t = Section::start(&format!("key-{view}"));
-        guarded(&format!("key {view}"), || {
+    for_each_view(
+        "key",
+        exe,
+        work,
+        |view| {
             let site = Site::start()?;
-            let profile = work.join(format!("appdata-{view}"));
-            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/")), &view)])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("{view}.log"))?;
-            for line in ["WAITTABS", "WAITIDLE"] {
-                inst.send(line)?;
-            }
+            let nodes = vec![tab_node(Some(&site.url("/")), view)];
+            Ok((site, nodes))
+        },
+        |view, inst, site| {
+            inst.settle()?;
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the page to load", || site.hits("/") > 0)?;
             // Each command draws a frame, and the view change needs one.
             inst.export_state(&format!("state-{view}"))?;
@@ -400,11 +424,11 @@ pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
                 inst.send(&format!("KEYPAGE {k}"))?;
             }
             site.wait_for("", 6, Duration::from_secs(30));
-            quit(&mut inst, &view);
+            quit(inst, view);
             // CEF sends no `code`: drop it from what the page logged.
             let got: Vec<String> =
                 site.lines().into_iter().map(|l| if view == "cef" { l.replacen("code= ", "", 1) } else { l }).collect();
-            let want = expected_keys(&view);
+            let want = expected_keys(view);
             if !check(&format!("{view}: {} keys as expected", got.len()), got == want) {
                 println!("  the page logged:");
                 for l in &got {
@@ -416,8 +440,8 @@ pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
                 }
             }
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }
 

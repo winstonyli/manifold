@@ -205,7 +205,7 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
                     // Quit here; the second instance restores the tab on the same profile.
                     quit(&mut inst, &title);
                     let mut second = Instance::launch(exe, &profile, work, &format!("{name}-2.log"))?;
-                    send_all(&mut second, &["WAITTABS", "WAITIDLE"])?;
+                    second.settle()?;
                     second
                         .step(&["GRAPHDOWN", "GRAPHOPEN"], "the restored page to load", || site.hits("/p3") > before)?;
                     let woken = until(&mut second, "woken", &live_label)?;

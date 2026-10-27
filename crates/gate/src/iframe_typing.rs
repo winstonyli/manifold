@@ -7,22 +7,21 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use crate::check::{check, Section};
-use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
+use crate::check::check;
+use crate::probes::{finish, for_each_view, quit, tab_node, Site};
 
 pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
-    for view in views() {
-        let _t = Section::start(&format!("iframe-typing-{view}"));
-        guarded(&format!("{view} iframe typing"), || {
+    for_each_view(
+        "iframe-typing",
+        exe,
+        work,
+        |view| {
             let (outer, inner) = (Site::start()?, Site::start()?);
             let url = format!("{}?src={}", outer.url("/outer"), inner.url("/frame"));
-            let profile = work.join(format!("appdata-{view}"));
-            seed(exe, &profile, &view, &[tab_node(Some(&url), &view)])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("iframe-typing-{view}.log"))?;
-            for line in ["WAITTABS", "WAITIDLE"] {
-                inst.send(line)?;
-            }
+            Ok(((outer, inner), vec![tab_node(Some(&url), view)]))
+        },
+        |view, inst, (_outer, inner)| {
+            inst.settle()?;
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the frame to load", || inner.hits("/frame") > 0)?;
             inst.export_state(&format!("state-{view}"))?;
             // CEF loses the first click into the frame (2 clicks needed, 2026-10-24), so click until it is seen.
@@ -39,11 +38,11 @@ pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
             inner.wait_for("frame saw focusin", 1, Duration::from_secs(3));
             inst.send("TYPE abc")?;
             let typed = inner.wait_for("typed v=abc", 1, Duration::from_secs(30));
-            quit(&mut inst, &view);
+            quit(inst, view);
             check(&format!("{view}: a click in a cross-origin iframe reaches it"), clicked);
             check(&format!("{view}: characters typed into a cross-origin iframe arrive ({:?})", inner.lines()), typed);
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }

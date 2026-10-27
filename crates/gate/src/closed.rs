@@ -39,8 +39,7 @@ impl Run {
     /// One instance on the profile (BelowNormal, in the job), its tabs up.
     fn start(&self, log: &str) -> io::Result<Instance> {
         let mut inst = Instance::launch(&self.exe, &self.profile, &self.work, log)?;
-        inst.send("WAITTABS")?;
-        inst.send("WAITIDLE")?;
+        inst.settle()?;
         Ok(inst)
     }
 

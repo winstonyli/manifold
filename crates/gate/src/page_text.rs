@@ -7,9 +7,9 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
-use crate::check::{check, Section};
-use crate::instance::{Instance, STEP_TIMEOUT};
-use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
+use crate::check::check;
+use crate::instance::STEP_TIMEOUT;
+use crate::probes::{finish, for_each_view, quit, tab_node, Site};
 
 pub(crate) fn page_text(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
@@ -19,14 +19,13 @@ pub(crate) fn page_text(exe: &Path, work: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    for view in views() {
-        let _t = Section::start(&format!("page-text-{view}"));
-        guarded(&format!("{view} page text"), || {
-            let profile = work.join(format!("appdata-{view}"));
-            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view)])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("page-text-{view}.log"))?;
-            inst.send("WAITTABS")?;
-            inst.send("WAITIDLE")?;
+    for_each_view(
+        "page-text",
+        exe,
+        work,
+        |view| Ok(((), vec![tab_node(Some(&site.url("/text")), view)])),
+        |view, inst, ()| {
+            inst.settle()?;
             let state = inst.export_state("ids")?;
             let id = state.cards().first().and_then(|c| c["id"].as_str()).unwrap_or("t1").to_owned();
             // The text is read a short while after the load ends: ask until it is stored.
@@ -46,7 +45,7 @@ pub(crate) fn page_text(exe: &Path, work: &Path) -> ExitCode {
                     Err(e) => println!("  stuck: no state export: {e}"),
                 }
             }
-            quit(&mut inst, &view);
+            quit(inst, view);
             if !check(
                 &format!("{view}: the page's visible text is stored, whitespace collapsed ({text:?})"),
                 text.contains("The quick brown fox") && text.contains("jumps over the lazy dog"),
@@ -55,7 +54,7 @@ pub(crate) fn page_text(exe: &Path, work: &Path) -> ExitCode {
             }
             check(&format!("{view}: script and style content is not stored"), !text.contains("MARK"));
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }

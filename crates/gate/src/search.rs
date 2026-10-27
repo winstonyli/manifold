@@ -6,9 +6,8 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use crate::check::{check, Section};
-use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
+use crate::check::check;
+use crate::probes::{finish, for_each_view, quit, tab_node, Site};
 
 pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
@@ -18,17 +17,18 @@ pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    for view in views() {
-        let _t = Section::start(&format!("search-{view}"));
-        guarded(&format!("{view} search"), || {
-            let profile = work.join(format!("appdata-{view}"));
-            let mut second = tab_node(Some(&site.url("/")), &view);
+    for_each_view(
+        "search",
+        exe,
+        work,
+        |view| {
+            let mut second = tab_node(Some(&site.url("/")), view);
             second["id"] = "t2".into();
             second["pos"] = serde_json::json!([400.0, 0.0]);
-            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view), second])?;
-            let mut inst = Instance::launch(exe, &profile, work, &format!("search-{view}.log"))?;
-            inst.send("WAITTABS")?;
-            inst.send("WAITIDLE")?;
+            Ok(((), vec![tab_node(Some(&site.url("/text")), view), second]))
+        },
+        |view, inst, ()| {
+            inst.settle()?;
             inst.send("WAITINDEX")?;
             inst.send("GRAPHFILTERTEXT lazy")?;
             inst.send("WAITIDLE")?;
@@ -43,7 +43,7 @@ pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
                 .as_array()
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
                 .unwrap_or_default();
-            quit(&mut inst, &view);
+            quit(inst, view);
             check(
                 &format!(
                     "{view}: a word only a page's text holds matches that tab alone ({matches:?}, loaded {loaded:?})"
@@ -51,7 +51,7 @@ pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
                 !loaded.is_empty() && matches == loaded,
             );
             Ok(())
-        });
-    }
+        },
+    );
     finish(work)
 }
