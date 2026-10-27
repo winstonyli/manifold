@@ -1,57 +1,72 @@
-//! The `EXPORTSTATE` debug command's JSON: UI state a probe checks and the session store doesn't hold.
+//! The `EXPORTSTATE` debug command's JSON: UI state a probe checks and the session store doesn't hold
+//! (and shouldn't: it's the user's saved session). `gate` reads it for the probe scripts.
 //!
-//! `EXPORTSTATE path` -- writes UI state that the session store doesn't
-//! hold (and shouldn't: it's the user's saved session) as JSON, for a
-//! test to check: `tab_view`, `transition`, `focused_url`,
-//! `controls` (the named controls drawn, by tooltip, with their rects), `address_bar_text`, `omni_matches` (the ids of the cards the Graph omnibar's text matches, page text included), `suggestions` (the omnibar dropdown's rows: `tab:<id>` for an open
-//! tab, `setting:<id>`, a history url, or the text a search or the typed row acts on), `highlighted` (a row
-//! index, or null) and `current_group` (the Graph view level's group
-//! id, or null at the top). `cards` lists the current level's cards in
-//! draw order, each as `id`, `type` (the card's mime type, e.g.
-//! `application/vnd.manifold.tab` or `text/markdown`; `store::model`'s
-//! `TYPE_*`), `stored_type` (the type string as stored: the same but for an `image/*` other than `image/png`, a
-//! different case, or a type this build doesn't know, whose `type` is `TYPE_UNKNOWN`), `loaded` (true for a tab with a running engine only),
-//! `json_card` (true for a JSON level's card, which is no stored node:
-//! its keys are only `id`, `type` (`application/json`), `loaded` (false), `unresponsive` (false),
-//! `json_card`, `screen` and `rect`), `group`, `parent`,
-//! `pinned`, `editing` (a note being edited), `screen` (its center) and
-//! `rect` (`[left, top, right, bottom]`), in points, which are pixels
-//! headless. `gate` reads these for the probe
-//! scripts. `selected` is the rectangle
-//! selection's ids, sorted. `mirror_groups` maps every node id (any
-//! level) to its group as this replica shows it (the mirror), or null.
-//! `mirror_names` (groups), `mirror_texts` (notes) and `mirror_pos` (every node, `[x, y]`) map ids to the
-//! mirror's name, text and document pos the same way, null where EXPORTSESSION leaves the field out (empty, or
-//! pos (0, 0)).
-//! `links` lists every Link node as `{id, from, to}`. `edges` lists the lines drawn at the current level as
-//! `{kind: link|opened, link (the Link node id, or null), from, to, screen: [x, y], near_from, near_to}`, where
-//! `screen` is the point halfway along the curve (t = 0.5) between the two cards' facing sides and `near_from`
-//! and `near_to` are the points at t = 0.2 and 0.8, where a probe grabs a link's `from` or `to` end.
-//! `retarget` is the Link node whose end a connect-drag from its curve is moving, or null. `connecting` is pick-target mode as
-//! `{from, edge, targets}` (`targets` sorted), or null. `link_handles` maps each card that would show connect-drag
-//! handles (every card when nothing else owns the pointer; every card during a connect-drag) to
-//! `{top, right, bottom, left}` (those shown at this zoom), each `[left, top, right, bottom]` on screen.
-//! `connect_drag` is the source card of a running connect-drag, or null.
-//! `view_kinds` maps each engine name to `{state, disk}`: the state label the engine lists show and what the disk
-//! holds of its downloadable parts ("host ready", for CEF "host ready, runtime missing").
-//! `toast` is the bottom-left toast's text
-//! (the one showing, else the next queued), or null. Suggestions arriving from the network show up
-//! only once a frame has drained them, and every command draws one, so
-//! a test can poll this until `suggestions` fills.
-//! `window` is the window's `[width, height]` in points; `popups` lists the visible menus, dialogs, dropdowns and
-//! toasts as `{id, order, rect}` (see `App::popups_state`).
-//! `trail` maps each tab with a trail to `{entries, depth, url, back_fork, forward_fork, lin_at, lin_len,
-//! left_to, back, forward}` (`App::trail_state`): `depth` is 0 at the trail's first page, `back`/`forward` the
-//! chips' enablement.
+//! Rects are `[left, top, right, bottom]` and points `[x, y]`, in points, which are pixels headless. Node ids are
+//! written as strings, sorted where a list is a set (`selected`, `connecting.targets`). Suggestions arriving from
+//! the network show up only once a frame has drained them, and every command draws one, so a test can poll
+//! `suggestions` until it fills.
+//!
+//! - `cards`: the current level's cards in draw order, each with `type` (the mime type; `stored_type` is the raw
+//!   stored string, `TYPE_UNKNOWN` in `type` for one this build doesn't know), `loaded` (a running engine only),
+//!   `json_card` (a JSON level's card, which is no stored node and has only `id`, `type`, `loaded`, `unresponsive`,
+//!   `json_card`, `screen` and `rect`), `screen` (its center) and `rect`.
+//! - `mirror_*`: the replica's group, name, text and pos per node id, null where EXPORTSESSION leaves the field out.
+//! - `edges`: `screen` is the point halfway along the curve (t = 0.5); `near_from` and `near_to` are t = 0.2 and
+//!   0.8, where a probe grabs a link's end.
+//! - `trail`: per tab, `NavHistory::export` plus the chips' enablement (`App::trail_state`).
+//!
 //! The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
 
 use super::*;
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
+
+/// `[left, top, right, bottom]`.
+fn rect_json(r: egui::Rect) -> Value {
+    json!([r.min.x, r.min.y, r.max.x, r.max.y])
+}
+
+/// `[x, y]`.
+fn point_json(p: egui::Pos2) -> Value {
+    json!([p.x, p.y])
+}
 
 impl App {
-    /// What `EXPORTSTATE` writes (see this module's doc).
-    pub(crate) fn export_state(&self) -> serde_json::Value {
+    /// What `EXPORTSTATE` writes (see this module's doc). Built a section at a time, so no `json!` literal nears
+    /// the macro's recursion limit.
+    pub(crate) fn export_state(&self) -> Value {
+        let sections = [
+            self.focus_state(),
+            self.omnibar_state(),
+            json!({"cards": self.cards_state()}),
+            self.mirror_state(),
+            self.links_state(),
+            self.window_state(),
+            self.drawn_state(),
+            json!({"labels": self.labels_json()}),
+            json!({"right_panel": self.right_panel_state()}),
+        ];
+        let mut state = Map::new();
+        for section in sections {
+            let Value::Object(keys) = section else { unreachable!("a section is a JSON object") };
+            state.extend(keys);
+        }
+        Value::Object(state)
+    }
+
+    /// `export_state`'s `tab_view`, `transition` and `focused_url`.
+    fn focus_state(&self) -> Value {
         let focused_url =
             self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).map(|t| t.url.clone());
+        json!({
+            "tab_view": self.showing_tab_view(),
+            "transition": self.transition.is_some(),
+            "focused_url": focused_url,
+        })
+    }
+
+    /// `export_state`'s omnibar keys, and the Graph level it filters.
+    fn omnibar_state(&self) -> Value {
         // The inline omnibar's rows while its dropdown is open, each as what Enter on it would act on.
         let suggestions: Vec<String> = match self.omni.host.filter(|_| self.omni.open) {
             Some(host) => self
@@ -78,34 +93,42 @@ impl App {
                 ids.into_iter().map(|id| id.to_string()).collect()
             }
         };
-        // The current level's cards, in draw order, with where each
-        // one's center is on screen: what a headless test needs to
-        // aim a click or drag at a card. A card is named by its type
-        // (`CardKind`), never a kind enum.
+        json!({
+            "address_bar_text": self.omni.text,
+            "suggestions": suggestions,
+            "omni_matches": omni_matches,
+            "group_suggestions": self.suggestions().iter().map(|s| json!({"label": s.label, "cards": s.cards})).collect::<Vec<_>>(),
+            "highlighted": self.omni.highlighted,
+            "current_group": self.current_group,
+        })
+    }
+
+    /// `export_state`'s `cards`: the current level's cards, in draw order, with where each
+    /// one's center is on screen: what a headless test needs to
+    /// aim a click or drag at a card. A card is named by its type
+    /// (`CardKind`), never a kind enum.
+    fn cards_state(&self) -> Vec<Value> {
         let now = std::time::Instant::now();
-        let window = self.egui_ctx.content_rect();
-        let visuals = self.egui_ctx.global_style().visuals.clone();
-        let cards: Vec<serde_json::Value> = self
-            .level_items()
+        self.level_items()
             .into_iter()
             .filter_map(|item| {
                 let screen = self.graph_world_rect_to_screen(item.rect);
                 if item.origin == Origin::Json {
                     // A JSON level's card shows a piece of the Json node's value; it is no stored node.
-                    return Some(serde_json::json!({
+                    return Some(json!({
                         "id": item.id,
                         "type": crate::store::model::TYPE_JSON,
                         "loaded": false,
                         "json_card": true,
                         "unresponsive": false,
-                        "screen": [screen.center().x, screen.center().y],
-                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                        "screen": point_json(screen.center()),
+                        "rect": rect_json(screen),
                     }));
                 }
                 if let Origin::Virtual(source) = item.origin {
                     // A source's card: no node, so none of a stored card's fields; the abilities its kind grants.
                     let caps = item.caps();
-                    return Some(serde_json::json!({
+                    return Some(json!({
                         "id": item.id,
                         "type": item.kind.ty,
                         "loaded": false,
@@ -121,14 +144,15 @@ impl App {
                             "stored_controls": caps.stored_controls,
                         },
                         "unresponsive": false,
-                        "screen": [screen.center().x, screen.center().y],
-                        "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                        "screen": point_json(screen.center()),
+                        "rect": rect_json(screen),
                     }));
                 }
                 let kind = item.kind;
                 let id = item.id.node()?;
                 let node = self.nodes.get(&id)?;
-                Some(serde_json::json!({
+                let world = self.layout_pos(id);
+                Some(json!({
                     "id": item.id,
                     "type": kind.ty,
                     "stored_type": self.doc.mirror.ty(id), // the raw string; `type` is its row (`canonical_type`)
@@ -149,63 +173,62 @@ impl App {
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
                     // Where MOVENODE puts the card back after it was parked (gate layout).
-                    "world": [self.layout_pos(id).x, self.layout_pos(id).y],
-                    "screen": [screen.center().x, screen.center().y],
-                    "rect": [screen.min.x, screen.min.y, screen.max.x, screen.max.y],
+                    "world": [world.x, world.y],
+                    "screen": point_json(screen.center()),
+                    "rect": rect_json(screen),
                 }))
             })
-            .collect();
-        // Every node's group as this replica shows it, at any level (a two-instance test compares them).
-        let mirror_groups: std::collections::BTreeMap<NodeId, Option<NodeId>> =
+            .collect()
+    }
+
+    /// `export_state`'s `mirror_*` keys. Every node's group as this replica shows it, at any level (a two-instance
+    /// test compares them); likewise each group's name, each note's text and every node's document pos, null when
+    /// absent (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
+    fn mirror_state(&self) -> Value {
+        let mirror_groups: BTreeMap<NodeId, Option<NodeId>> =
             self.linked_ids().map(|id| (id, self.doc.mirror.group(id))).collect();
-        // Likewise each group's name, each note's text and every node's document pos, null when absent
-        // (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
         let non_empty = |s: &'_ str| (!s.is_empty()).then(|| s.to_owned());
-        let mirror_names: std::collections::BTreeMap<NodeId, Option<String>> = self
+        let mirror_names: BTreeMap<NodeId, Option<String>> = self
             .linked_ids()
             .filter(|id| self.is_container(*id))
             .map(|id| (id, non_empty(self.doc.mirror.name(id)))) // name rule: raw, compared with the document
             .collect();
-        let mirror_texts: std::collections::BTreeMap<NodeId, Option<String>> = self
+        let mirror_texts: BTreeMap<NodeId, Option<String>> = self
             .linked_ids()
             .filter(|id| self.nodes.get(id).is_some_and(|n| n.as_note().is_some()))
             .map(|id| (id, non_empty(self.doc.mirror.text(id))))
             .collect();
-        let mirror_pos: std::collections::BTreeMap<NodeId, Option<[f32; 2]>> =
+        let mirror_pos: BTreeMap<NodeId, Option<[f32; 2]>> =
             self.linked_ids().map(|id| (id, self.doc.mirror.pos(id).map(|p| [p.x, p.y]))).collect();
-        // Sorted by text, as when ids were text, so the export's order is the one the gate has always read.
-        // Every live label: its id, stored name and whether it has a colour.
-        let labels: Vec<_> = self
-            .label_defs()
-            .into_iter()
-            .map(|(id, d)| serde_json::json!({"id": id, "name": d.name, "color": d.color.is_some()})) // name rule: reported as stored
-            .collect();
-        let mut selected: Vec<String> = self.interaction.selected.iter().map(|id| id.to_string()).collect();
-        selected.sort();
-        // Every link this replica knows (ends null where unset), whether or not it is shown. `shown` is true when
-        // both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a deleted one is absent.
-        let links: Vec<serde_json::Value> = self
-            .doc
+        json!({
+            "mirror_groups": mirror_groups,
+            "mirror_names": mirror_names,
+            "mirror_texts": mirror_texts,
+            "mirror_pos": mirror_pos,
+        })
+    }
+
+    /// `export_state`'s `links`: every link this replica knows (ends null where unset), whether or not it is shown.
+    /// `shown` is true when both ends are in `nodes`, so a link whose end is hidden (closed) reads false and a
+    /// deleted one is absent.
+    fn links_json(&self) -> Vec<Value> {
+        self.doc
             .mirror
             .link_ids()
             .map(|link| {
                 let (from, to) = self.doc.mirror.link_ends(link);
                 let shown = [from, to].iter().all(|e| e.is_some_and(|n| self.nodes.contains_key(&n)));
-                serde_json::json!({
+                json!({
                     "id": link, "from": from, "to": to, "shown": shown,
                 })
             })
-            .collect();
-        // Recently Closed as the document orders it, newest first (`Doc::closed_roots`).
-        let closed: Vec<String> = self
-            .doc
-            .journal
-            .as_ref()
-            .map_or_else(Vec::new, |j| j.doc().closed_roots().into_iter().map(|(id, _)| id.to_string()).collect());
-        // The lines drawn at this level, with the point halfway along each curve (t = 0.5) on screen: where a probe
-        // clicks a link line.
-        let edges: Vec<serde_json::Value> = self
-            .level_edges()
+            .collect()
+    }
+
+    /// `export_state`'s `edges`: the lines drawn at this level, with the point halfway along each curve (t = 0.5) on
+    /// screen: where a probe clicks a link line.
+    fn edges_json(&self) -> Vec<Value> {
+        self.level_edges()
             .iter()
             .map(|edge| {
                 let on_screen = |t: f32| {
@@ -221,59 +244,54 @@ impl App {
                     crate::level::EdgeKind::Jar => "jar",
                     crate::level::EdgeKind::Opened => "opened",
                 };
-                serde_json::json!({
-                    "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": [mid.x, mid.y],
-                    "near_from": [near_from.x, near_from.y], "near_to": [near_to.x, near_to.y],
+                json!({
+                    "kind": kind, "link": edge.link, "from": edge.from_id, "to": edge.to_id, "screen": point_json(mid),
+                    "near_from": point_json(near_from), "near_to": point_json(near_to),
                 })
             })
-            .collect();
-        // Where each card has connect handles when it would show them (on hover, and on every card during a
-        // connect-drag), on screen, so a probe can press one:
-        // `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`. Empty when nothing shows them.
+            .collect()
+    }
+
+    /// `export_state`'s `link_handles`: where each card has connect handles when it would show them (on hover, and
+    /// on every card during a connect-drag), on screen, so a probe can press one:
+    /// `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`. Empty when nothing shows them.
+    fn link_handles_json(&self) -> Map<String, Value> {
         let zoom_scale = self.camera.transform(self.graph_scene_outer_rect()).scaling;
-        let link_handles: serde_json::Map<String, serde_json::Value> = self
-            .level_items()
+        self.level_items()
             .into_iter()
             .filter(|item| item.origin == Origin::Stored && self.shows_link_handles())
             .map(|item| {
-                let sides: serde_json::Map<String, serde_json::Value> =
+                let sides: Map<String, Value> =
                     crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph_detail)
                         .into_iter()
-                        .map(|(side, rect)| {
-                            let r = self.graph_world_rect_to_screen(rect);
-                            (side.key().to_string(), serde_json::json!([r.left(), r.top(), r.right(), r.bottom()]))
-                        })
+                        .map(|(side, rect)| (side.key().to_string(), rect_json(self.graph_world_rect_to_screen(rect))))
                         .collect();
-                (item.id.to_string(), serde_json::Value::Object(sides))
+                (item.id.to_string(), Value::Object(sides))
             })
-            .collect();
-        let mut state = serde_json::json!({
-            "tab_view": self.showing_tab_view(),
-            "transition": self.transition.is_some(),
-            "focused_url": focused_url,
-            "address_bar_text": self.omni.text,
-            "suggestions": suggestions,
-            "omni_matches": omni_matches,
-            "group_suggestions": self.suggestions().iter().map(|s| serde_json::json!({"label": s.label, "cards": s.cards})).collect::<Vec<_>>(),
-            "highlighted": self.omni.highlighted,
-            "current_group": self.current_group,
-            "cards": cards,
-            "mirror_groups": mirror_groups,
-            "mirror_names": mirror_names,
-            "mirror_texts": mirror_texts,
-            "mirror_pos": mirror_pos,
-            "links": links,
+            .collect()
+    }
+
+    /// `export_state`'s link, connect and drag keys.
+    fn links_state(&self) -> Value {
+        // Recently Closed as the document orders it, newest first (`Doc::closed_roots`).
+        let closed: Vec<String> = self
+            .doc
+            .journal
+            .as_ref()
+            .map_or_else(Vec::new, |j| j.doc().closed_roots().into_iter().map(|(id, _)| id.to_string()).collect());
+        json!({
+            "links": self.links_json(),
             "closed": closed,
-            "edges": edges,
+            "edges": self.edges_json(),
             // Pick-target mode: the source card, the edge and the cards a click would finish it on.
             "connecting": self.link.connecting.as_ref().map(|(from, edge)| {
-                serde_json::json!({
+                json!({
                     "from": from,
                     "edge": edge,
                     "targets": self.valid_targets(edge, *from).iter().map(NodeId::to_string).collect::<Vec<_>>(),
                 })
             }),
-            "link_handles": link_handles,
+            "link_handles": self.link_handles_json(),
             "connect_drag": self.link.connect_drag,
             // The Link node whose end a connect-drag from a curve is moving (`App::retarget`), or null.
             "retarget": self.link.retarget.as_ref().map(|r| r.link),
@@ -282,6 +300,16 @@ impl App {
             "retarget_preview": self.link.retarget.as_ref().and(self.link.retarget_preview).map(crate::links::RetargetOutcome::name),
             // The card being dragged (`App::dragging`), or null.
             "dragging": self.interaction.dragging,
+        })
+    }
+
+    /// `export_state`'s selection, toast, window, popup and theme keys.
+    fn window_state(&self) -> Value {
+        let mut selected: Vec<String> = self.interaction.selected.iter().map(|id| id.to_string()).collect();
+        selected.sort();
+        let window = self.egui_ctx.content_rect();
+        let visuals = self.egui_ctx.global_style().visuals.clone();
+        json!({
             "json_level": self.json_level_state(),
             // How many outdated surfaces were reconfigured and lost ones recreated (debug `SURFACE`).
             "surface_recoveries": self.gpu.as_ref().map(|g| g.recoveries),
@@ -293,29 +321,43 @@ impl App {
             "popups": self.popups_state(),
             // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
             "theme": {"danger": crate::theme::rgb(crate::theme::danger(&visuals)), "accent": crate::theme::rgb(crate::theme::accent(&visuals))},
-            "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| serde_json::json!({"text": r.text, "selected": r.selected, "rect": [r.rect.min.x, r.rect.min.y, r.rect.max.x, r.rect.max.y]})).collect::<Vec<_>>(),
+        })
+    }
+
+    /// `export_state`'s keys for what the last frame drew, and the trails.
+    fn drawn_state(&self) -> Value {
+        json!({
+            "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| json!({"text": r.text, "selected": r.selected, "rect": rect_json(r.rect)})).collect::<Vec<_>>(),
             // The controls with a name (`NamedTip`) the last frame drew: the gate clicks them by name, not by pixel.
-            "controls": crate::identity::drawn_controls(&self.egui_ctx).iter().map(|c| serde_json::json!({"name": c.label, "rect": [c.rect.min.x, c.rect.min.y, c.rect.max.x, c.rect.max.y]})).collect::<Vec<_>>(),
+            "controls": crate::identity::drawn_controls(&self.egui_ctx).iter().map(|c| json!({"name": c.label, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
-            "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| serde_json::json!({"kind": i.kind, "text": i.text, "rect": [i.rect.min.x, i.rect.min.y, i.rect.max.x, i.rect.max.y]})).collect::<Vec<_>>(),
+            "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| json!({"kind": i.kind, "text": i.text, "rect": rect_json(i.rect)})).collect::<Vec<_>>(),
             "trail": self.trail_state(),
-        });
-        // Apart from the literal above, which is at the macro recursion limit.
-        state["labels"] = labels.into();
-        // The right panel: what it shows and the cards the pane describes (the gate's card-pane checks).
-        state["right_panel"] = match self.right_panel() {
-            None => serde_json::Value::Null,
-            Some(crate::graph_ui::RightPanel::Outline) => serde_json::json!({"shows": "outline"}),
+        })
+    }
+
+    /// `export_state`'s `labels`: every live label: its id, stored name and whether it has a colour.
+    fn labels_json(&self) -> Vec<Value> {
+        self.label_defs()
+            .into_iter()
+            .map(|(id, d)| json!({"id": id, "name": d.name, "color": d.color.is_some()})) // name rule: reported as stored
+            .collect()
+    }
+
+    /// `export_state`'s `right_panel`: what it shows and the cards the pane describes (the gate's card-pane checks).
+    fn right_panel_state(&self) -> Value {
+        match self.right_panel() {
+            None => Value::Null,
+            Some(crate::graph_ui::RightPanel::Outline) => json!({"shows": "outline"}),
             Some(crate::graph_ui::RightPanel::Cards) => {
                 // Ids written as `selected` writes them, so the gate compares them with its card ids.
                 let mut cards: Vec<String> =
                     self.interaction.selected.iter().filter(|c| c.node().is_some()).map(|c| c.to_string()).collect();
                 cards.sort();
                 let card = self.pane_card().map(|id| id.to_string());
-                serde_json::json!({"shows": "cards", "cards": cards, "card": card})
+                json!({"shows": "cards", "cards": cards, "card": card})
             }
-        };
-        state
+        }
     }
 
     /// `export_state`'s `trail`: each tab with a trail, by id, as `NavHistory::export` plus `back` and `forward`, the
