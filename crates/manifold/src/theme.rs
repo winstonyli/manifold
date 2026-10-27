@@ -427,8 +427,9 @@ pub(crate) fn accent(visuals: &egui::Visuals) -> egui::Color32 {
 
 /// `ctx.animate_bool_with_easing`, and the one place the app eases a value: a pass that draws one between its ends
 /// is recorded, so `WAITIDLE` (`App::debug_idle`, through `eased_last_pass`) waits for fades and hover easing to
-/// finish. Ease through this, not egui's `animate_bool*`, or `WAITIDLE` won't see it.
+/// finish. `clippy.toml` bans egui's own `animate_*`, which `WAITIDLE` would not see.
 pub(crate) fn animate(ctx: &egui::Context, id: egui::Id, on: bool, easing: fn(f32) -> f32) -> f32 {
+    #[expect(clippy::disallowed_methods, reason = "the one place the app eases a value (clippy.toml)")]
     let t = ctx.animate_bool_with_easing(id, on, easing);
     if t > 0.0 && t < 1.0 {
         // `cumulative_pass_nr` counts completed passes, so during a pass it is this pass's index.
