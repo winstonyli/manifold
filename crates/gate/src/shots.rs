@@ -193,13 +193,15 @@ impl Shots {
             ])
             .to_string(),
         )?;
+        // No card at the exact origin: the store reads it as unplaced and jitters it from its id, which is random per
+        // run, so the whole layout (and the fitted zoom) would differ between runs.
         import_session(
             exe,
             &profile,
             &[
-                json!({"id": "t1", "type": TAB, "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 0.0]}),
+                json!({"id": "t1", "type": TAB, "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 40.0]}),
                 json!({"id": "g", "type": GROUP, "name": "Research", "pos": [300.0, 0.0]}),
-                json!({"id": "t2", "type": TAB, "url": "about:blank", "view_kind": "webview2", "group": "g", "pos": [0.0, 0.0]}),
+                json!({"id": "t2", "type": TAB, "url": "about:blank", "view_kind": "webview2", "group": "g", "pos": [0.0, 40.0]}),
                 json!({"id": "n1", "type": NOTE, "text": "a note", "pos": [-300.0, 0.0]}),
             ],
         )?;
