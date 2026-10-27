@@ -425,6 +425,20 @@ pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
     visuals.error_fg_color
 }
 
+/// Emphasised text, in the primary text color. egui's `RichText::strong` takes the active widget's ink, which this
+/// theme sets for the accent fill (the ground color in the dark theme), so on a plain surface it vanishes;
+/// `clippy.toml` bans it for this.
+pub(crate) fn strong(visuals: &egui::Visuals, text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text).color(palette(visuals).text)
+}
+
+/// A spinner in the primary text color. egui's default color is the same active-widget ink as `RichText::strong`
+/// (`clippy.toml` bans `Spinner::new` for this).
+pub(crate) fn spinner(visuals: &egui::Visuals) -> egui::Spinner {
+    #[expect(clippy::disallowed_methods, reason = "the one place a Spinner gets its color")]
+    egui::Spinner::new().color(palette(visuals).text)
+}
+
 /// Fills egui's dark and light style slots (`style_mut_of` keeps one `Style` per theme), so `set_theme` switches the
 /// whole chrome. Each slot starts from egui's own preset for its theme, so every field the table below does not name
 /// is coherent for that theme, then gets the spacing, shape and the `manifold_pages::palette` colors: the
@@ -814,23 +828,7 @@ pub(crate) mod testutil;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// WCAG contrast ratio of two opaque colors.
-    fn contrast(a: egui::Color32, b: egui::Color32) -> f32 {
-        let lum = |c: egui::Color32| {
-            let lin = |v: u8| {
-                let v = v as f32 / 255.0;
-                if v <= 0.03928 {
-                    v / 12.92
-                } else {
-                    ((v + 0.055) / 1.055).powf(2.4)
-                }
-            };
-            0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
-        };
-        let (hi, lo) = (lum(a).max(lum(b)), lum(a).min(lum(b)));
-        (hi + 0.05) / (lo + 0.05)
-    }
+    use testutil::contrast;
 
     /// Every foreground role on every surface it is drawn on keeps its contrast, in each theme: 4.5:1 (WCAG AA) for
     /// text, 3:1 for the hover outline (a UI boundary). A new role goes in this table with the surfaces it sits on.

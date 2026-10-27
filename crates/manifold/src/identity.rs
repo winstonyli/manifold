@@ -97,7 +97,7 @@ impl Identity {
         let square = egui::Rect::from_center_size(center, egui::Vec2::splat(side));
         record_icon(ui, self, square);
         match self {
-            Self::Spinner => egui::Spinner::new().size(side).paint_at(ui, square),
+            Self::Spinner => crate::theme::spinner(ui.visuals()).color(default_ink).size(side).paint_at(ui, square),
             Self::Image(tex) => {
                 ui.painter().image(tex, square, FULL_UV, egui::Color32::WHITE);
             }

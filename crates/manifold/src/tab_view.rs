@@ -524,7 +524,7 @@ impl App {
                 if render_return_to_graph(ui) {
                     back_to_graph = true;
                 }
-                ui.add(egui::Spinner::new().size(12.0));
+                ui.add(crate::theme::spinner(ui.visuals()).size(12.0));
                 ui.label(label);
             });
         });
@@ -533,7 +533,7 @@ impl App {
             return;
         }
         ui.centered_and_justified(|ui| {
-            ui.add(egui::Spinner::new().size(32.0));
+            ui.add(crate::theme::spinner(ui.visuals()).size(32.0));
         });
     }
 
@@ -580,7 +580,7 @@ impl App {
             egui::Rect::from_min_max(egui::pos2(0.0, CHROME_HEIGHT_POINTS), egui::pos2(primary_width, screen_height));
         ui.scope_builder(egui::UiBuilder::new().max_rect(content_rect), |ui| {
             ui.centered_and_justified(|ui| {
-                ui.add(egui::Spinner::new().size(32.0));
+                ui.add(crate::theme::spinner(ui.visuals()).size(32.0));
             });
         });
     }

@@ -80,9 +80,8 @@ impl App {
             }
         } else {
             ui.horizontal(|ui| {
-                ui.add(
-                    egui::Label::new(egui::RichText::new(self.accessible_name(id).unwrap_or_default()).strong()).wrap(),
-                );
+                let name = crate::theme::strong(ui.visuals(), self.accessible_name(id).unwrap_or_default());
+                ui.add(egui::Label::new(name).wrap());
                 if ui.small_button(egui_phosphor::light::PENCIL_SIMPLE).on_hover_text("Rename").clicked() {
                     actions.push(GraphAction::Node(id, NodeAction::Rename));
                 }
@@ -264,6 +263,33 @@ mod tests {
         app.interaction.selected.insert(CardId::from(b));
         app.track_pane_card();
         assert_eq!((app.pane_card(), app.camera.reveal), (Some(b), Some(b)), "back to one card: revealed");
+    }
+
+    /// The header names the card in text that reads on the panel, in each theme.
+    #[test]
+    fn the_pane_header_reads_on_the_panel() {
+        for dark in [true, false] {
+            let mut app = App::default();
+            let a = crate::session_sync::tests::add_note(&mut app, "alpha");
+            app.interaction.selected.insert(CardId::from(a));
+            let name = app.accessible_name(a).unwrap();
+            let ctx = crate::theme::testutil::ctx(dark);
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.build_right_panel(ui, &mut Vec::new()));
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+            let color = output
+                .shapes
+                .iter()
+                .find_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.text() == name => {
+                        Some(t.override_text_color.unwrap_or(t.galley.job.sections[0].format.color))
+                    }
+                    _ => None,
+                })
+                .expect("the header draws the name");
+            let panel = ctx.global_style().visuals.panel_fill;
+            let ratio = crate::theme::testutil::contrast(color, panel);
+            assert!(ratio >= 4.5, "dark={dark}: {color:?} on {panel:?} is {ratio:.2}");
+        }
     }
 
     /// The Labels section lists every label with how much of the selection carries it.
