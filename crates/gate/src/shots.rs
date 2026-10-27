@@ -37,10 +37,10 @@
 //!
 //! `gate shots-diff A B` compares two runs' trees by decoded pixels (PNG bytes differ even where pixels match). Files
 //! whose path shows in a shot live in a folder named by their contents (`content_dir`), not the pid-named work dir. A/A
-//! on 2026-10-27 (4969b539; run `chrome-shots-aa-4` in `docs/runs.md`): 61 of 67 default views matched. The other six
-//! differ only where the harness isn't fixed: the text caret's blink (`note-edit`, `quickswitch`, `tabview-find`), the
-//! page server's random port in a download's url (`download-progress`, `download-failed`) and the search provider's
-//! live suggestions (`tabview-dropdown`). Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! on 2026-10-27 (60412333; run `chrome-shots-aa-5` in `docs/runs.md`): all 67 default views matched. What made that
+//! possible: headless mode's caret doesn't blink, the download server keeps one port (`shots_net`; a busy port is
+//! logged, and then the two download views won't match), and the address bar's suggestions come from the local
+//! `suggest::Server`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
