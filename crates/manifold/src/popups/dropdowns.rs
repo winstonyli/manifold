@@ -5,6 +5,14 @@ use super::*;
 /// A Tab actions row: label, the key shown at its edge, and what it does.
 type TabActionRow = (&'static str, &'static str, fn(&mut App));
 
+/// What a click in the Tab actions popup chose: one of the focused tab's own actions, or a bulk one.
+enum TabAction {
+    Focused(fn(&mut App)),
+    MuteOthers,
+    CloseOthers,
+    TogglePinAll,
+}
+
 /// Above this many matching entries, the History popup lays out only the
 /// rows in view. Shorter lists keep the plain layout (and wrapping arrow keys).
 const HISTORY_WINDOW_FROM: usize = 100;
@@ -102,9 +110,8 @@ impl App {
         let outcome = picked.map(|kind| pick_outcome(kind, &state_of(kind)));
         // A click on an unavailable engine only explains: the picker stays open.
         let explains_only = matches!(outcome, Some(PickOutcome::Unavailable(..)));
-        if (picked.is_some() && !explains_only) || escape || clicked_outside_popup(ui, area_rect, Some(rect)) {
-            close_popup(&mut self.menus.open_popup, which);
-        }
+        let applied = (picked.is_some() && !explains_only) || escape;
+        settle_popup(&mut self.menus.open_popup, which, applied, clicked_outside_popup(ui, area_rect, Some(rect)));
         // An engine that isn't installed stays selectable, but choosing it asks to install it: no
         // silent switch, and no silent fallback to another engine.
         match outcome? {
@@ -189,7 +196,6 @@ impl App {
     /// The "Recently Closed" toolbar dropdown (Graph view, at any level):
     /// every entry, newest first; click one to reopen it where it was.
     pub(crate) fn build_recently_closed_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
-        let mut close = false;
         // Every closed root, any replica's, newest first (spec "Recently Closed rows"): label from its fields, title
         // from its kept personal state, a group's member count from its non-deleted descendants.
         let rows: Vec<ClosedRow> = self
@@ -264,16 +270,13 @@ impl App {
             },
         );
 
-        if let Some(id) = reopen {
-            self.reopen_node(id);
-            close = true;
-        }
-        if clicked_outside {
-            close = true;
-        }
-        if close || rows.is_empty() {
-            close_popup(&mut self.menus.open_popup, AnchoredPopup::RecentlyClosed);
-        }
+        let applied = reopen.map(|id| self.reopen_node(id)).is_some();
+        settle_popup(
+            &mut self.menus.open_popup,
+            AnchoredPopup::RecentlyClosed,
+            applied || rows.is_empty(),
+            clicked_outside,
+        );
     }
 
     /// Tab view's "Bookmarks (N)" dropdown -- every saved bookmark, click
@@ -283,7 +286,6 @@ impl App {
     /// scope limit `Bookmark::folder`'s own doc comment states. Same
     /// Area/Frame pattern as `build_recently_closed_popup`.
     pub(crate) fn build_bookmarks_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
-        let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut remove_index: Option<usize> = None;
         let mut folder_rename_start: Option<(String, String)> = None;
@@ -426,21 +428,19 @@ impl App {
                 }
             }
         }
+        let navigated = navigate_url.is_some();
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused {
                 self.navigate_tab(id, url);
             }
-            close = true;
         }
         if let Some(index) = remove_index {
             self.bookmarks.remove(index);
             bookmarks::save(&self.bookmarks);
         }
-        if clicked_outside && self.history_ui.renaming_bookmark_folder.is_none() {
-            close = true;
-        }
-        if close {
-            close_popup(&mut self.menus.open_popup, AnchoredPopup::Bookmarks);
+        // An outside click while a folder is being renamed leaves the popup open.
+        let outside = clicked_outside && self.history_ui.renaming_bookmark_folder.is_none();
+        if settle_popup(&mut self.menus.open_popup, AnchoredPopup::Bookmarks, navigated, outside) {
             self.history_ui.renaming_bookmark_folder = None;
         }
     }
@@ -450,7 +450,6 @@ impl App {
     /// tab there, "Clear" to empty the whole list. Scrollable, since history
     /// can grow much longer than the other lists.
     pub(crate) fn build_history_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
-        let mut close = false;
         let mut navigate_url: Option<String> = None;
         let mut clear_requested = false;
         let wanted = std::cell::RefCell::new(Vec::<String>::new());
@@ -529,24 +528,18 @@ impl App {
 
         self.request_favicons(wanted.borrow().iter().map(String::as_str));
 
+        let navigated = navigate_url.is_some();
         if let Some(url) = navigate_url {
             if let Some(id) = self.focused {
                 self.navigate_tab(id, url);
             }
-            close = true;
         }
         if clear_requested {
             self.history.clear();
             self.history_ui.history_dirty = true;
             self.history_ui.history_matches_cache = None;
-            close = true;
         }
-        if clicked_outside {
-            close = true;
-        }
-        if close {
-            close_popup(&mut self.menus.open_popup, AnchoredPopup::History);
-        }
+        settle_popup(&mut self.menus.open_popup, AnchoredPopup::History, navigated || clear_requested, clicked_outside);
     }
 
     /// Tab view's "Downloads (N)" dropdown -- every entry in
@@ -557,7 +550,6 @@ impl App {
     /// (same as `close_node`). Exists so a completed download can
     /// be found without first switching to Graph view.
     pub(crate) fn build_downloads_popup(&mut self, ui: &mut egui::Ui, anchor_rect: egui::Rect, fade: f32) {
-        let mut close = false;
         let mut reveal_id: Option<NodeId> = None;
         let mut remove_id: Option<NodeId> = None;
         let clicked_outside = list_popup(
@@ -628,19 +620,11 @@ impl App {
             },
         );
 
-        if let Some(id) = reveal_id {
-            self.reveal_node(id);
-            close = true;
-        }
+        let applied = reveal_id.map(|id| self.reveal_node(id)).is_some();
         if let Some(id) = remove_id {
             self.close_node(id);
         }
-        if clicked_outside {
-            close = true;
-        }
-        if close {
-            close_popup(&mut self.menus.open_popup, AnchoredPopup::Downloads);
-        }
+        settle_popup(&mut self.menus.open_popup, AnchoredPopup::Downloads, applied, clicked_outside);
     }
 
     /// Tab view's "Tab actions" dropdown -- "Mute Others", "Close Others",
@@ -653,12 +637,7 @@ impl App {
         focused_id: NodeId,
         fade: f32,
     ) {
-        let mut close = false;
-        let mut mute_others = false;
-        let mut close_others = false;
-        let mut toggle_pin_all = false;
-        // The focused tab's own actions, each with its shortcut shown at the row's edge.
-        let mut tab_action: Option<fn(&mut App)> = None;
+        let mut chosen: Option<TabAction> = None;
         let focused_pinned = self.doc.mirror.pinned(focused_id);
         let tab_pin_states: Vec<bool> = self
             .nodes
@@ -672,6 +651,7 @@ impl App {
             .interactable(self.menus.open_popup == Some(AnchoredPopup::TabActions));
         let area = menu_popup(ui.ctx(), area, fade, |ui| {
             ui.set_min_width(200.0);
+            // The focused tab's own actions, each with its shortcut shown at the row's edge.
             let rows: [TabActionRow; 5] = [
                 (if focused_pinned { "Unpin" } else { "Pin" }, "Ctrl+P", App::pin_focused_tab_shortcut),
                 ("Duplicate", "Ctrl+D", App::duplicate_focused_tab_shortcut),
@@ -684,47 +664,34 @@ impl App {
                     .add(egui::Button::new(label).shortcut_text(keys).min_size(egui::vec2(ui.min_rect().width(), 0.0)))
                     .clicked()
                 {
-                    tab_action = Some(action);
-                    close = true;
+                    chosen = Some(TabAction::Focused(action));
                 }
             }
             menu_separator(ui);
             if ui.button("Mute Others").on_hover_text("Mute every other open tab").clicked() {
-                mute_others = true;
-                close = true;
+                chosen = Some(TabAction::MuteOthers);
             }
             if ui.button("Close Others").on_hover_text("Close every other open tab").clicked() {
-                close_others = true;
-                close = true;
+                chosen = Some(TabAction::CloseOthers);
             }
             let label = if all_pinned { "Unpin All" } else { "Pin All" };
             let hover = if all_pinned { "Unpin every open tab" } else { "Pin every open tab" };
             if ui.button(label).on_hover_text(hover).clicked() {
-                toggle_pin_all = true;
-                close = true;
+                chosen = Some(TabAction::TogglePinAll);
             }
         });
 
         let clicked_outside = clicked_outside_popup(ui, area.rect, Some(anchor_rect));
 
-        if let Some(action) = tab_action {
-            action(self);
+        let applied = chosen.is_some();
+        match chosen {
+            Some(TabAction::Focused(action)) => action(self),
+            Some(TabAction::MuteOthers) => self.mute_all_except(focused_id),
+            Some(TabAction::CloseOthers) => self.close_all_except(focused_id),
+            Some(TabAction::TogglePinAll) => self.set_all_pinned(!all_pinned),
+            None => {}
         }
-        if mute_others {
-            self.mute_all_except(focused_id);
-        }
-        if close_others {
-            self.close_all_except(focused_id);
-        }
-        if toggle_pin_all {
-            self.set_all_pinned(!all_pinned);
-        }
-        if clicked_outside {
-            close = true;
-        }
-        if close {
-            close_popup(&mut self.menus.open_popup, AnchoredPopup::TabActions);
-        }
+        settle_popup(&mut self.menus.open_popup, AnchoredPopup::TabActions, applied, clicked_outside);
     }
 
     /// The Back or Forward chip's branch list (trail spec decision 8): the strip's own page cards, edges and dot grid
@@ -850,9 +817,7 @@ impl App {
         }
         // A click that dismisses the page menu from outside is the menu's, not the popup's.
         let clicked_outside = clicked_outside_popup(ui, area.response.rect, Some(anchor_rect)) && !menu_was_open;
-        if clicked || clicked_outside {
-            close_popup(&mut self.menus.open_popup, which);
-        }
+        settle_popup(&mut self.menus.open_popup, which, clicked, clicked_outside);
         self.build_trail_menu(ui);
     }
 }

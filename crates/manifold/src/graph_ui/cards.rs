@@ -216,33 +216,29 @@ impl App {
     ) {
         let Some(pos) = self.interaction.pending_new_node else { return };
         let screen_pos = project(egui::Pos2::new(pos.x, pos.y));
-        let (mut tab, mut note, mut group, mut json, mut file) = (false, false, false, false, false);
+        let mut chosen = None;
         let id = egui::Id::new("pending_new_node_menu");
         // The right-click that opens the menu is still this frame's click: it must not dismiss it.
         let opened_now = ui.ctx().memory(|m| m.area_rect(id)).is_none();
         let area = menu_popup(ui.ctx(), egui::Area::new(id).fixed_pos(screen_pos), 1.0, |ui| {
             ui.set_min_width(150.0);
-            tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
-            note = ui.button(format!("{} New Note", kind_caps(Kind::Note).glyph)).clicked();
-            group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
-            json = ui.button(format!("{} New JSON", kind_caps(Kind::Json).glyph)).clicked();
+            let tab = ui.button(format!("{} New Tab", egui_phosphor::light::PLUS)).clicked();
+            let note = ui.button(format!("{} New Note", kind_caps(Kind::Note).glyph)).clicked();
+            let group = ui.button(format!("{} New Group", egui_phosphor::light::FOLDER_PLUS)).clicked();
+            let json = ui.button(format!("{} New JSON", kind_caps(Kind::Json).glyph)).clicked();
             // A real picker blocks on OS/human input, which headless mode has neither of.
-            if !self.headless {
-                file = ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
-            }
+            let file =
+                !self.headless && ui.button(format!("{} Add File...", egui_phosphor::light::FILE_PLUS)).clicked();
+            chosen = tab
+                .then_some(GraphAction::NewTab(self.focused))
+                .or(note.then_some(GraphAction::NewNote(pos)))
+                .or(group.then_some(GraphAction::NewGroup(pos)))
+                .or(json.then_some(GraphAction::NewJson(pos)))
+                .or(file.then_some(GraphAction::NewFile(pos)));
         });
-        if tab {
-            actions.push(GraphAction::NewTab(self.focused));
-        } else if note {
-            actions.push(GraphAction::NewNote(pos));
-        } else if group {
-            actions.push(GraphAction::NewGroup(pos));
-        } else if json {
-            actions.push(GraphAction::NewJson(pos));
-        } else if file {
-            actions.push(GraphAction::NewFile(pos));
-        }
-        if tab || note || group || json || file || !opened_now && clicked_outside_popup(ui, area.rect, None) {
+        let dismissed = chosen.is_some() || !opened_now && clicked_outside_popup(ui, area.rect, None);
+        actions.extend(chosen);
+        if dismissed {
             self.interaction.pending_new_node = None;
         }
     }

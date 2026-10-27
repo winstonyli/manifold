@@ -115,6 +115,21 @@ pub(crate) fn list_popup(
     clicked_outside_popup(ui, area_rect, Some(anchor_rect))
 }
 
+/// The end of an anchored popup's frame, whichever shell drew it: closes `which` when a row `applied` its action or
+/// `clicked_outside` it (the caller folds in any reason to ignore that click). Returns whether it closed.
+pub(crate) fn settle_popup(
+    open_popup: &mut Option<AnchoredPopup>,
+    which: AnchoredPopup,
+    applied: bool,
+    clicked_outside: bool,
+) -> bool {
+    let close = applied || clicked_outside;
+    if close {
+        close_popup(open_popup, which);
+    }
+    close
+}
+
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
