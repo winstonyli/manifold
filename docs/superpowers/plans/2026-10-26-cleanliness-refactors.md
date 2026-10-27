@@ -152,8 +152,10 @@ Done: 76efb88
   of saving and restoring visuals by hand.
 - **UI8** `toolbar_panel` and `toolbar_field` both set `extreme_bg_color` and the inactive stroke (675, 702); give
   the field look one owner.
-  Done: af23655 (UI3, UI4). UI8 left: `toolbar_panel`'s `extreme_bg_color` also paints the toolbar's horizontal
-  overflow scrollbar track (egui `scroll_area.rs`), so dropping it for `toolbar_field` would change that look.
+  Done: af23655 (UI3, UI4), UI8 after the final review (user, 2026-10-27): `toolbar_panel` no longer sets
+  `extreme_bg_color`, whose only other reader there was the overflow scrollbar's track (egui `scroll_area.rs`, drawn
+  at 40% while hovered). Measured at 400x300, dark: the track's rows moved at most 3 of 255; light, from the palette:
+  about 8 darker, a recessed groove instead of a raised one.
 
 ### B11. Small singles
 
@@ -188,7 +190,7 @@ One whole-branch review of fe35568..10f13e6, and the full gate passed on 10f13e6
 `2026-10-27-cleanliness-full-2`). Fixed: a JSON card with no parsed payload entered on Enter, because B2's merged
 `Click::Enter` arm let it through (test `enter_on_a_json_card_without_its_payload_stays_put`), and stale doc comments
 naming `App::default()` as the loader. Not a finding: the `EXPORTSTATE` key reference moved beside the code that writes
-each key (E5). Leftovers, UI8 and the review's minors are in `PARKED.md`, "Cleanliness
+each key (E5). Leftovers and the review's minors are in `PARKED.md`, "Cleanliness
 refactors leftovers". The store dead-code sweep is not needed: `manifold` is a binary crate, so rustc's dead-code
 lint already flags an unused `pub fn` (a probe `pub fn` in `store/journal.rs` warned, 2026-10-27) and clippy runs
 with `-D warnings`.

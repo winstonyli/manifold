@@ -640,9 +640,8 @@ pub(crate) fn toolbar_panel(id: &'static str, ui: &mut egui::Ui, content: impl F
             ui.spacing_mut().button_padding = egui::vec2(8.0, 4.0);
             // Buttons and fields are 28 px tall (the mockup's control height).
             ui.spacing_mut().interact_size.y = 28.0;
-            // Soft-filled fields and borderless buttons: the raised fill
-            // alone separates them from the bar (approved toolbar mockup).
-            ui.visuals_mut().extreme_bg_color = ui.visuals().widgets.inactive.bg_fill;
+            // Borderless buttons: the raised fill alone separates them from the bar (approved toolbar mockup). A
+            // field's look is `toolbar_field`'s.
             ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
             egui::ScrollArea::horizontal().auto_shrink([false, false]).show(ui, content);
         });
