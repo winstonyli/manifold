@@ -3,19 +3,15 @@
 //! the app stored. The page holds a script and a style, whose contents are not page text. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Instant;
 
 use crate::check::{check, Section};
 use crate::instance::{Instance, STEP_TIMEOUT};
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
+use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
 
-pub(crate) fn page_text(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "page-text") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn page_text(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
         Ok(s) => s,
         Err(e) => {
@@ -27,8 +23,8 @@ pub(crate) fn page_text(parent: Option<PathBuf>) -> ExitCode {
         let _t = Section::start(&format!("page-text-{view}"));
         guarded(&format!("{view} page text"), || {
             let profile = work.join(format!("appdata-{view}"));
-            seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view)])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("page-text-{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view)])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("page-text-{view}.log"))?;
             inst.send("WAITTABS")?;
             inst.send("WAITIDLE")?;
             let state = inst.export_state("ids")?;
@@ -61,5 +57,5 @@ pub(crate) fn page_text(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }

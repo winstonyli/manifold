@@ -45,7 +45,7 @@ use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
 use crate::instance::{seed_settings, Instance};
-use crate::probes::{finish, import_session, quit, setup};
+use crate::probes::{finish, import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{Downloads, Proxy};
 use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
@@ -86,11 +86,7 @@ fn default_out(exe: &Path, leaf: &str) -> PathBuf {
     exe.parent().and_then(Path::parent).map_or_else(|| PathBuf::from("target"), Path::to_path_buf).join(leaf)
 }
 
-pub(crate) fn chrome_shots(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "chrome-shots") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn chrome_shots(exe: &Path, work: &Path) -> ExitCode {
     let Some(size) = parse_size(&std::env::var("SIZE").unwrap_or_else(|_| "1280 800".into())) else {
         eprintln!("SIZE is \"W H\"");
         return ExitCode::from(2);
@@ -99,21 +95,17 @@ pub(crate) fn chrome_shots(parent: Option<PathBuf>) -> ExitCode {
     let cfg = Config {
         size,
         views: views.split_whitespace().map(str::to_owned).collect(),
-        out: std::env::var_os("OUT").map_or_else(|| default_out(&exe, "shots"), PathBuf::from),
+        out: std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots"), PathBuf::from),
         crop_px: knob("CROP_PX", 110),
     };
-    run(&exe, &work, cfg);
-    finish(&work)
+    run(exe, work, cfg);
+    finish(work)
 }
 
-pub(crate) fn chrome_shots_sizes(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "chrome-shots-sizes") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn chrome_shots_sizes(exe: &Path, work: &Path) -> ExitCode {
     let sizes = std::env::var("SIZES").unwrap_or_else(|_| "400 300,800 600,1920 1080".into());
     let views = std::env::var("VIEWS").unwrap_or_else(|_| SIZES_VIEWS.into());
-    let out = std::env::var_os("OUT").map_or_else(|| default_out(&exe, "shots-sizes"), PathBuf::from);
+    let out = std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots-sizes"), PathBuf::from);
     for text in sizes.split(',') {
         let Some(size) = parse_size(text) else {
             println!("FAIL: SIZES entry {text:?} is not \"W H\"");
@@ -128,9 +120,9 @@ pub(crate) fn chrome_shots_sizes(parent: Option<PathBuf>) -> ExitCode {
             out: out.join(&leaf),
             crop_px: knob("CROP_PX", 110),
         };
-        run(&exe, &work.join(&leaf), cfg);
+        run(exe, &work.join(&leaf), cfg);
     }
-    finish(&work)
+    finish(work)
 }
 
 /// One run: a failure is printed and counted, not returned.

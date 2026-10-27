@@ -3,18 +3,14 @@
 //! (`GRAPHFILTERTEXT`) is a word from `/text`: `EXPORTSTATE`'s `omni_matches` must list that tab and not the other. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
+use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
 
-pub(crate) fn search(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "search") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
         Ok(s) => s,
         Err(e) => {
@@ -29,8 +25,8 @@ pub(crate) fn search(parent: Option<PathBuf>) -> ExitCode {
             let mut second = tab_node(Some(&site.url("/")), &view);
             second["id"] = "t2".into();
             second["pos"] = serde_json::json!([400.0, 0.0]);
-            seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view), second])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("search-{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/text")), &view), second])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("search-{view}.log"))?;
             inst.send("WAITTABS")?;
             inst.send("WAITIDLE")?;
             inst.send("WAITINDEX")?;
@@ -57,5 +53,5 @@ pub(crate) fn search(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }

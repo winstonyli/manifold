@@ -3,14 +3,14 @@
 //! positions in `EXPORTSESSION`; the screen ones move with the camera), and one undo (`UNDOKEY`) puts every note back.
 //! No page loads, so no engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit, setup};
+use crate::probes::{finish, guarded, import_session, quit};
 
 const NOTE: &str = "text/markdown";
 /// In position order along the row: cat, rust, cat, rust, cat, rust.
@@ -35,11 +35,7 @@ fn mean_distance(spots: &[[f64; 2]], pairs: &[(usize, usize)]) -> f64 {
     pairs.iter().map(d).sum::<f64>() / pairs.len() as f64
 }
 
-pub(crate) fn arrange(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "arrange") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn arrange(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("arrange");
     guarded("arrange", || {
         let profile = work.join("appdata-arrange");
@@ -49,8 +45,8 @@ pub(crate) fn arrange(parent: Option<PathBuf>) -> ExitCode {
             .enumerate()
             .map(|(i, text)| json!({"id": format!("n{i}"), "type": NOTE, "text": text, "pos": [i as f64 * 300.0, 0.0]}))
             .collect();
-        import_session(&exe, &profile, &nodes)?;
-        let mut inst = Instance::launch(&exe, &profile, &work, "arrange.log")?;
+        import_session(exe, &profile, &nodes)?;
+        let mut inst = Instance::launch(exe, &profile, work, "arrange.log")?;
         inst.send("WAITIDLE")?;
         let before = positions(&inst.export_session("before")?);
         inst.send("ARRANGE")?;
@@ -77,5 +73,5 @@ pub(crate) fn arrange(parent: Option<PathBuf>) -> ExitCode {
         );
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }

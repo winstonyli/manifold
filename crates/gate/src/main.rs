@@ -99,8 +99,10 @@ mod windows_main {
     use crate::fresh::require_fresh_exe;
     use crate::instance::{seed_settings, Instance};
 
-    /// How a stage takes its arguments: the work-dir parent, the rest of the command line, or nothing.
+    /// How a stage takes its arguments: the manifold exe and a fresh work dir (made from the work-dir parent argument),
+    /// the work-dir parent, the rest of the command line, or nothing.
     enum Run {
+        Work(fn(&Path, &Path) -> ExitCode),
         Parent(fn(Option<PathBuf>) -> ExitCode),
         Args(fn(&[String]) -> ExitCode),
         Bare(fn() -> ExitCode),
@@ -113,91 +115,77 @@ mod windows_main {
         run: Run,
     }
 
+    impl Stage {
+        /// A stage that takes `[WORKDIR_PARENT]` and is run with `manifold.exe` and its work dir (named after the stage).
+        const fn work(name: &'static str, f: fn(&Path, &Path) -> ExitCode) -> Self {
+            Self { name, usage: Some("[WORKDIR_PARENT]"), run: Run::Work(f) }
+        }
+
+        /// A stage that takes `[WORKDIR_PARENT]` and makes its own work dir.
+        const fn parent(name: &'static str, f: fn(Option<PathBuf>) -> ExitCode) -> Self {
+            Self { name, usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(f) }
+        }
+
+        const fn args(name: &'static str, usage: &'static str, f: fn(&[String]) -> ExitCode) -> Self {
+            Self { name, usage: Some(usage), run: Run::Args(f) }
+        }
+
+        /// The usage text after the name, for a stage that takes its parent argument but does not list it.
+        const fn listed_as(mut self, usage: &'static str) -> Self {
+            self.usage = Some(usage);
+            self
+        }
+    }
+
     /// Every stage: the one place `gate <name>` dispatch and the usage text come from.
     const STAGES: &[Stage] = &[
-        Stage {
-            name: "all",
-            usage: Some("LOG [full|light|ui]"),
-            run: Run::Args(|a| crate::all::all(a.first().map(PathBuf::from), a.get(1).cloned())),
-        },
-        Stage { name: "hello", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(hello) },
-        Stage {
-            name: "launch-forms",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::launch_forms::launch_forms),
-        },
-        Stage { name: "layout", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::layout::layout) },
-        Stage { name: "link", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::link::link) },
-        Stage { name: "smoke", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::smoke::smoke) },
-        Stage { name: "two", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::two::two) },
-        Stage {
-            name: "unknown-type",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::unknown_type::unknown_type),
-        },
-        Stage { name: "closed", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::closed::closed) },
-        Stage { name: "dblprobe", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::dblprobe::dblprobe) },
-        Stage { name: "trail", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::trail::trail) },
-        Stage { name: "unresponsive", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::stress::unresponsive) },
-        Stage { name: "focus-loss", usage: Some(""), run: Run::Parent(crate::focus::focus_loss) },
-        Stage { name: "bad-url", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::bad_url) },
-        Stage { name: "failed-spawn", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::failed_spawn) },
-        Stage { name: "hscroll", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::hscroll) },
-        Stage { name: "key", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::key) },
-        Stage { name: "page-kind", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::probes::page_kind) },
-        Stage { name: "chrome-shots", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::shots::chrome_shots) },
-        Stage {
-            name: "chrome-shots-sizes",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::shots::chrome_shots_sizes),
-        },
-        Stage {
-            name: "click-count",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::click_count::click_count),
-        },
-        Stage {
-            name: "iframe-typing",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::iframe_typing::iframe_typing),
-        },
-        Stage { name: "page-text", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::page_text::page_text) },
-        Stage { name: "surface", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::surface::surface) },
-        Stage { name: "search", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::search::search) },
-        Stage {
-            name: "suggest-groups",
-            usage: Some("[WORKDIR_PARENT]"),
-            run: Run::Parent(crate::suggest_groups::suggest_groups),
-        },
-        Stage { name: "labels", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::labels::labels) },
-        Stage { name: "arrange", usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(crate::arrange::arrange) },
-        Stage { name: "sleep", usage: Some(""), run: Run::Parent(crate::sleep::sleep) },
-        Stage { name: "jar", usage: Some(""), run: Run::Parent(crate::jar::jar) },
-        Stage { name: "scale", usage: Some("TABS..."), run: Run::Args(crate::stress::scale) },
-        Stage {
-            name: "release-verify",
-            usage: Some("vX.Y.Z [DIST]"),
-            run: Run::Args(crate::release_verify::release_verify),
-        },
-        Stage { name: "release-check", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_check) },
-        Stage { name: "release-tag", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_tag) },
-        Stage { name: "release-notes", usage: Some("vX.Y.Z"), run: Run::Args(crate::release_check::release_notes) },
+        Stage::args("all", "LOG [full|light|ui]", |a| crate::all::all(a.first().map(PathBuf::from), a.get(1).cloned())),
+        Stage::parent("hello", hello),
+        Stage::parent("launch-forms", crate::launch_forms::launch_forms),
+        Stage::parent("layout", crate::layout::layout),
+        Stage::parent("link", crate::link::link),
+        Stage::parent("smoke", crate::smoke::smoke),
+        Stage::parent("two", crate::two::two),
+        Stage::parent("unknown-type", crate::unknown_type::unknown_type),
+        Stage::parent("closed", crate::closed::closed),
+        Stage::parent("dblprobe", crate::dblprobe::dblprobe),
+        Stage::parent("trail", crate::trail::trail),
+        Stage::work("unresponsive", crate::stress::unresponsive),
+        Stage::work("focus-loss", crate::focus::focus_loss).listed_as(""),
+        Stage::work("bad-url", crate::probes::bad_url),
+        Stage::work("failed-spawn", crate::probes::failed_spawn),
+        Stage::work("hscroll", crate::probes::hscroll),
+        Stage::work("key", crate::probes::key),
+        Stage::work("page-kind", crate::probes::page_kind),
+        Stage::work("chrome-shots", crate::shots::chrome_shots),
+        Stage::work("chrome-shots-sizes", crate::shots::chrome_shots_sizes),
+        Stage::work("click-count", crate::click_count::click_count),
+        Stage::work("iframe-typing", crate::iframe_typing::iframe_typing),
+        Stage::work("page-text", crate::page_text::page_text),
+        Stage::work("surface", crate::surface::surface),
+        Stage::work("search", crate::search::search),
+        Stage::work("suggest-groups", crate::suggest_groups::suggest_groups),
+        Stage::work("labels", crate::labels::labels),
+        Stage::work("arrange", crate::arrange::arrange),
+        Stage::work("sleep", crate::sleep::sleep).listed_as(""),
+        Stage::work("jar", crate::jar::jar).listed_as(""),
+        Stage::args("scale", "TABS...", crate::stress::scale),
+        Stage::args("release-verify", "vX.Y.Z [DIST]", crate::release_verify::release_verify),
+        Stage::args("release-check", "vX.Y.Z", crate::release_check::release_check),
+        Stage::args("release-tag", "vX.Y.Z", crate::release_check::release_tag),
+        Stage::args("release-notes", "vX.Y.Z", crate::release_check::release_notes),
         Stage { name: "sync-runtime-deps", usage: Some(""), run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
-        Stage { name: "cef-pin", usage: Some("[--platform ID] PREFIX"), run: Run::Args(crate::cef_pin::cef_pin_main) },
-        Stage {
-            name: "profile",
-            usage: Some("SCENARIO [SECONDS] [--samply] [--visible]"),
-            run: Run::Args(crate::profile::profile),
-        },
-        Stage {
-            name: "ab",
-            usage: Some("NAME SCENARIO [SECONDS] [--repeats N] [--quiet PCT] LABEL:VAR=value[,VAR=value]..."),
-            run: Run::Args(crate::ab::ab),
-        },
-        Stage { name: "package", usage: Some("[EXE]"), run: Run::Args(crate::package::package) },
-        Stage { name: "install-check", usage: Some("cef|servo EXE"), run: Run::Args(crate::package::install_check) },
-        Stage { name: "tier", usage: Some("[BASE|--stdin]"), run: Run::Args(crate::tier::tier) },
-        Stage { name: "fresh", usage: Some("EXE"), run: Run::Args(fresh) },
+        Stage::args("cef-pin", "[--platform ID] PREFIX", crate::cef_pin::cef_pin_main),
+        Stage::args("profile", "SCENARIO [SECONDS] [--samply] [--visible]", crate::profile::profile),
+        Stage::args(
+            "ab",
+            "NAME SCENARIO [SECONDS] [--repeats N] [--quiet PCT] LABEL:VAR=value[,VAR=value]...",
+            crate::ab::ab,
+        ),
+        Stage::args("package", "[EXE]", crate::package::package),
+        Stage::args("install-check", "cef|servo EXE", crate::package::install_check),
+        Stage::args("tier", "[BASE|--stdin]", crate::tier::tier),
+        Stage::args("fresh", "EXE", fresh),
         Stage { name: "hold", usage: None, run: Run::Parent(hold) },
     ];
 
@@ -219,6 +207,12 @@ mod windows_main {
         let name = args.next().unwrap_or_default();
         let rest: Vec<String> = args.collect();
         match STAGES.iter().find(|s| s.name == name) {
+            Some(Stage { name, run: Run::Work(f), .. }) => {
+                match crate::probes::setup(rest.first().map(PathBuf::from), name) {
+                    Ok((exe, work)) => f(&exe, &work),
+                    Err(code) => code,
+                }
+            }
             Some(Stage { run: Run::Parent(f), .. }) => f(rest.first().map(PathBuf::from)),
             Some(Stage { run: Run::Args(f), .. }) => f(&rest),
             Some(Stage { run: Run::Bare(f), .. }) => f(),

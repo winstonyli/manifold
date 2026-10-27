@@ -4,14 +4,14 @@
 //! clears it, deleting a label and undoing that brings it back, and after a restart the labels are still there. No page loads, so no engine is needed. Build first:
 //! `cargo build -p manifold`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::{json, Value};
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit, setup};
+use crate::probes::{finish, guarded, import_session, quit};
 
 const NOTE: &str = "text/markdown";
 const TEXTS: [&str; 6] = [
@@ -28,11 +28,7 @@ fn carrying(state: &crate::state::State, name: &str) -> usize {
     state.cards().iter().filter(|c| c["labels"].as_array().is_some_and(|a| a.iter().any(|l| l == name))).count()
 }
 
-pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "labels") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn labels(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("labels");
     guarded("labels", || {
         let profile = work.join("appdata-labels");
@@ -49,8 +45,8 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
                 node
             })
             .collect();
-        import_session(&exe, &profile, &nodes)?;
-        let mut inst = Instance::launch(&exe, &profile, &work, "labels.log")?;
+        import_session(exe, &profile, &nodes)?;
+        let mut inst = Instance::launch(exe, &profile, work, "labels.log")?;
         inst.send("WAITIDLE")?;
         let start = inst.export_state("start")?;
         let old_colour_ignored = start.cards().iter().all(|c| c["tag_color"] == false);
@@ -100,7 +96,7 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         inst.send("LABELSELECTED urgent off")?;
         inst.send("WAITIDLE")?;
         quit(&mut inst, "labels");
-        let mut again = Instance::launch(&exe, &profile, &work, "labels-restart.log")?;
+        let mut again = Instance::launch(exe, &profile, work, "labels-restart.log")?;
         again.send("WAITIDLE")?;
         let restored = again.export_state("restored")?;
         let kept = restored.0["labels"].as_array().map_or(0, Vec::len);
@@ -136,5 +132,5 @@ pub(crate) fn labels(parent: Option<PathBuf>) -> ExitCode {
         check(&format!("with nothing selected there is no right panel ({pane_none})"), pane_none.is_null());
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }

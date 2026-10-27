@@ -3,27 +3,23 @@
 //! input, `TYPE` sends characters to the tab's page, and the frame reports its value to its own site. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
+use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
 
-pub(crate) fn iframe_typing(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "iframe-typing") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
     for view in views() {
         let _t = Section::start(&format!("iframe-typing-{view}"));
         guarded(&format!("{view} iframe typing"), || {
             let (outer, inner) = (Site::start()?, Site::start()?);
             let url = format!("{}?src={}", outer.url("/outer"), inner.url("/frame"));
             let profile = work.join(format!("appdata-{view}"));
-            seed(&exe, &profile, &view, &[tab_node(Some(&url), &view)])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("iframe-typing-{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&url), &view)])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("iframe-typing-{view}.log"))?;
             for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
@@ -49,5 +45,5 @@ pub(crate) fn iframe_typing(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }

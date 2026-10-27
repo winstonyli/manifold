@@ -7,7 +7,7 @@
 
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -58,16 +58,12 @@ fn flags(state: &State, id: &str) -> (bool, bool) {
 /// and its queue fills. The card must then read `unresponsive` with a "Not responding" toast while the app keeps
 /// answering; `RESTARTVIEW` must bring the tab back live and responsive and end the suspended host; and with a second
 /// host suspended `QUIT` must end the app within 10 s: closing a stuck tab never waits on it.
-pub(crate) fn unresponsive(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "unresponsive") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn unresponsive(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("unresponsive");
     guarded("unresponsive", || {
         let profile = work.join("appdata");
-        seed(&exe, &profile, "webview2", &[tab_node(Some("about:blank"), "webview2")])?;
-        let mut inst = Instance::launch(&exe, &profile, &work, "app.log")?;
+        seed(exe, &profile, "webview2", &[tab_node(Some("about:blank"), "webview2")])?;
+        let mut inst = Instance::launch(exe, &profile, work, "app.log")?;
         for line in ["WAITTABS", "SLEEP 4"] {
             inst.send(line)?;
         }
@@ -81,7 +77,7 @@ pub(crate) fn unresponsive(parent: Option<PathBuf>) -> ExitCode {
             inst.send(line)?;
         }
         inst.export_state("open")?;
-        let first = suspend_engines(&work, inst.pid())?;
+        let first = suspend_engines(work, inst.pid())?;
         if !check("an engine host was suspended", !first.is_empty()) {
             return Ok(());
         }
@@ -106,7 +102,7 @@ pub(crate) fn unresponsive(parent: Option<PathBuf>) -> ExitCode {
         const ALIVE: &str = "param([int]$P)
 if (Get-Process -Id $P -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' }
 ";
-        let alive = powershell(&work, "alive", ALIVE, &["-P", &first[0]])?;
+        let alive = powershell(work, "alive", ALIVE, &["-P", &first[0]])?;
         check_eq("the suspended host was ended", "gone", alive.first().map_or("?", String::as_str));
 
         // A second stuck engine, then quit: exit must not wait on it.
@@ -114,7 +110,7 @@ if (Get-Process -Id $P -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' 
             inst.send(line)?;
         }
         inst.export_state("open2")?;
-        if !check("a second engine host was suspended", !suspend_engines(&work, inst.pid())?.is_empty()) {
+        if !check("a second engine host was suspended", !suspend_engines(work, inst.pid())?.is_empty()) {
             return Ok(());
         }
         for line in [format!("TYPE {}", "b".repeat(1000)), "SLEEP 3".into(), "ESCAPE".into(), "SLEEP 1".into()] {
@@ -129,7 +125,7 @@ if (Get-Process -Id $P -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' 
         check("QUIT with a stuck tab ends within 10 s", status.is_ok() && took <= Duration::from_secs(10));
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }
 
 /// A medium page (~60 KB of text and a script that retitles it every second): a light stand-in for a real site.

@@ -2,14 +2,14 @@
 //! of three (`EXPORTSTATE`'s `group_suggestions`), and accepting one (`ACCEPTSUGGESTION 0`) moves its three cards off
 //! the level under a new group card. No page loads, so no engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use serde_json::json;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit, setup};
+use crate::probes::{finish, guarded, import_session, quit};
 
 const NOTE: &str = "text/markdown";
 const TEXTS: [&str; 6] = [
@@ -21,11 +21,7 @@ const TEXTS: [&str; 6] = [
     "compile build crate rust cargo",
 ];
 
-pub(crate) fn suggest_groups(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "suggest-groups") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn suggest_groups(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("suggest");
     guarded("suggest", || {
         let profile = work.join("appdata-suggest");
@@ -35,8 +31,8 @@ pub(crate) fn suggest_groups(parent: Option<PathBuf>) -> ExitCode {
             .enumerate()
             .map(|(i, text)| json!({"id": format!("n{i}"), "type": NOTE, "text": text, "pos": [i as f64 * 300.0, 0.0]}))
             .collect();
-        import_session(&exe, &profile, &nodes)?;
-        let mut inst = Instance::launch(&exe, &profile, &work, "suggest.log")?;
+        import_session(exe, &profile, &nodes)?;
+        let mut inst = Instance::launch(exe, &profile, work, "suggest.log")?;
         inst.send("WAITIDLE")?;
         inst.send("SUGGEST")?;
         inst.send("WAITIDLE")?;
@@ -56,5 +52,5 @@ pub(crate) fn suggest_groups(parent: Option<PathBuf>) -> ExitCode {
         check(&format!("the other offers go stale with the card set ({standing} standing)"), standing == 0);
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }

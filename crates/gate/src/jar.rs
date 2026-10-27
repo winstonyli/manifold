@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use crate::check::{check, check_eq, check_is, note_failure, Section};
 use crate::http::{self, response};
 use crate::instance::{poll, seed_settings, wait_file, Instance};
-use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_session, setup};
+use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_session};
 use crate::state::{JAR, TAB};
 use crate::suggest::{query_param, url_query};
 
@@ -729,11 +729,7 @@ impl Probe {
     }
 }
 
-pub(crate) fn jar(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "jar") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn jar(exe: &Path, work: &Path) -> ExitCode {
     let log: Log = Arc::default();
     let server = match cookie_server(log.clone()) {
         Ok(s) => s,
@@ -753,7 +749,7 @@ pub(crate) fn jar(parent: Option<PathBuf>) -> ExitCode {
         return ExitCode::from(1);
     }
     let runs = std::env::var("RUNS").unwrap_or_default().split_whitespace().map(str::to_owned).collect();
-    let p = Probe { exe, work: work.clone(), profile, base, host, log, runs };
+    let p = Probe { exe: exe.to_path_buf(), work: work.to_path_buf(), profile, base, host, log, runs };
     let section = |name: &str| Section::start(name);
     if p.wanted("login") || p.wanted("fresh") || p.wanted("cef") || p.wanted("webview2") {
         let _t = section("jar-login");
@@ -792,5 +788,5 @@ pub(crate) fn jar(parent: Option<PathBuf>) -> ExitCode {
         let _t = section("jar-switchnow");
         guarded("switchnow", || p.switchnow());
     }
-    finish(&work)
+    finish(work)
 }

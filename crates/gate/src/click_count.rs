@@ -3,13 +3,13 @@
 //! reports every mouse release's click count and the selection it holds. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
+use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
 
 const TEXT: &str = "alpha beta gamma delta";
 
@@ -19,18 +19,14 @@ fn selection(site: &Site, d: u8) -> Option<String> {
     site.lines().iter().rev().find_map(|l| l.strip_prefix(&prefix).map(|s| s.trim().to_owned()))
 }
 
-pub(crate) fn click_count(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "click-count") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn click_count(exe: &Path, work: &Path) -> ExitCode {
     for view in views() {
         let _t = Section::start(&format!("click-count-{view}"));
         guarded(&format!("{view} click count"), || {
             let site = Site::start()?;
             let profile = work.join(format!("appdata-{view}"));
-            seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/clicks")), &view)])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("click-count-{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/clicks")), &view)])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("click-count-{view}.log"))?;
             for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
@@ -56,5 +52,5 @@ pub(crate) fn click_count(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }

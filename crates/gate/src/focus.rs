@@ -20,7 +20,7 @@
 //! windows.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
@@ -29,7 +29,7 @@ use serde_json::Value;
 
 use crate::check::{check_eq, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup};
+use crate::probes::{finish, guarded, quit, seed};
 use crate::state::{round_half_even, State};
 
 /// Python's `str()` of a JSON value: `None` for null.
@@ -286,11 +286,7 @@ fn case_card(exe: &Path, work: &Path, script: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn focus_loss(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "focus-loss") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn focus_loss(exe: &Path, work: &Path) -> ExitCode {
     // target/debug/manifold.exe -> the repo root
     let Some(script) = exe.ancestors().nth(3).map(|root| root.join("scripts").join("foreground.ps1")) else {
         eprintln!("cannot find the repo root from {}", exe.display());
@@ -300,10 +296,10 @@ pub(crate) fn focus_loss(parent: Option<PathBuf>) -> ExitCode {
     for case in cases.split_whitespace() {
         let _t = Section::start(&format!("focus-loss-{case}"));
         guarded(case, || match case {
-            "connect" => case_connect(&exe, &work, &script),
-            "card" => case_card(&exe, &work, &script),
+            "connect" => case_connect(exe, work, &script),
+            "card" => case_card(exe, work, &script),
             other => Err(io::Error::other(format!("unknown case {other}"))),
         });
     }
-    finish(&work)
+    finish(work)
 }

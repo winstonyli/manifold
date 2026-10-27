@@ -3,23 +3,19 @@
 //! staged here); `EXPORTSTATE`'s `surface_recoveries` counts the reconfigure and the recreate, and a `SCREENSHOT`
 //! after each shows the window still draws. No engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::PathBuf;
+use std::path::Path;
 use std::process::ExitCode;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup};
+use crate::probes::{finish, guarded, quit, seed};
 
-pub(crate) fn surface(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "surface") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn surface(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("surface");
     guarded("surface", || {
         let profile = work.join("appdata");
-        seed(&exe, &profile, "webview2", &[])?;
-        let mut inst = Instance::launch(&exe, &profile, &work, "surface.log")?;
+        seed(exe, &profile, "webview2", &[])?;
+        let mut inst = Instance::launch(exe, &profile, work, "surface.log")?;
         inst.send("WAITIDLE")?;
         for (n, fault) in [(1, "outdated"), (2, "lost")] {
             inst.send(&format!("SURFACE {fault}"))?;
@@ -31,5 +27,5 @@ pub(crate) fn surface(parent: Option<PathBuf>) -> ExitCode {
         quit(&mut inst, "surface");
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }

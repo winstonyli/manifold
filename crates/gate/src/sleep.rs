@@ -20,12 +20,12 @@
 //! `EXPORTSTATE`. Build first: `cargo build -p manifold -p manifold-view-cef -p manifold-view-webview2`.
 
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
 use crate::check::{check, check_eq, Section};
 use crate::instance::{poll, Instance, STEP_TIMEOUT};
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node, views, Site};
+use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
 use crate::state::{State, TAB};
 use crate::stress::powershell;
 
@@ -259,17 +259,13 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn sleep(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "sleep") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn sleep(exe: &Path, work: &Path) -> ExitCode {
     let cases = std::env::var("CASES").unwrap_or_else(|_| "manual idle scroll dirty".into());
     for case in cases.split_whitespace() {
         for view in views() {
             let _t = Section::start(&format!("sleep-{case}-{view}"));
-            guarded(&format!("{case} {view}"), || run_case(&exe, &work, case, &view));
+            guarded(&format!("{case} {view}"), || run_case(exe, work, case, &view));
         }
     }
-    finish(&work)
+    finish(work)
 }

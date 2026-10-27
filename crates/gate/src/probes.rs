@@ -275,11 +275,7 @@ pub(crate) fn guarded(label: &str, body: impl FnOnce() -> io::Result<()>) {
     }
 }
 
-pub(crate) fn page_kind(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "page-kind") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn page_kind(exe: &Path, work: &Path) -> ExitCode {
     let site = match Site::start() {
         Ok(s) => s,
         Err(e) => {
@@ -296,8 +292,8 @@ pub(crate) fn page_kind(parent: Option<PathBuf>) -> ExitCode {
             let _t = Section::start(&format!("page-kind-{name}"));
             guarded(&format!("{view} {path}"), || {
                 let profile = work.join(format!("appdata-{name}"));
-                seed(&exe, &profile, &view, &[tab_node(Some(&site.url(path)), &view)])?;
-                let mut inst = Instance::launch(&exe, &profile, &work, &format!("{name}.log"))?;
+                seed(exe, &profile, &view, &[tab_node(Some(&site.url(path)), &view)])?;
+                let mut inst = Instance::launch(exe, &profile, work, &format!("{name}.log"))?;
                 inst.send("WAITTABS")?;
                 let labels = |s: &State| -> String {
                     s.cards()
@@ -316,21 +312,17 @@ pub(crate) fn page_kind(parent: Option<PathBuf>) -> ExitCode {
             });
         }
     }
-    finish(&work)
+    finish(work)
 }
 
-pub(crate) fn hscroll(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "hscroll") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
     for view in views() {
         let _t = Section::start(&format!("hscroll-{view}"));
         guarded(&format!("hscroll {view}"), || {
             let site = Site::start()?;
             let profile = work.join(format!("appdata-{view}"));
-            seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/wide")), &view)])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/wide")), &view)])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("{view}.log"))?;
             for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
@@ -361,7 +353,7 @@ pub(crate) fn hscroll(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }
 
 /// What the page should log for each key sent, per view kind. CEF sends no DOM `code`, and its modifier keyCode is the
@@ -388,18 +380,14 @@ fn expected_keys(view: &str) -> Vec<&'static str> {
     }
 }
 
-pub(crate) fn key(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "key") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
     for view in views() {
         let _t = Section::start(&format!("key-{view}"));
         guarded(&format!("key {view}"), || {
             let site = Site::start()?;
             let profile = work.join(format!("appdata-{view}"));
-            seed(&exe, &profile, &view, &[tab_node(Some(&site.url("/")), &view)])?;
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("{view}.log"))?;
+            seed(exe, &profile, &view, &[tab_node(Some(&site.url("/")), &view)])?;
+            let mut inst = Instance::launch(exe, &profile, work, &format!("{view}.log"))?;
             for line in ["WAITTABS", "WAITIDLE"] {
                 inst.send(line)?;
             }
@@ -430,7 +418,7 @@ pub(crate) fn key(parent: Option<PathBuf>) -> ExitCode {
             Ok(())
         });
     }
-    finish(&work)
+    finish(work)
 }
 
 /// The host logs (`manifold-<tab>.log`) the case's own TEMP holds.
@@ -452,11 +440,7 @@ fn tab_state(s: &State) -> (usize, bool, String) {
     (tabs.len(), tabs.iter().all(|c| c["loaded"].as_bool() == Some(true)), s.focused_url().to_string())
 }
 
-pub(crate) fn bad_url(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "bad-url") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn bad_url(exe: &Path, work: &Path) -> ExitCode {
     for view in views() {
         // garbage: a stored url that is not one; missing: none (the host gets VIEW_INITIAL_URL="").
         for (name, url) in [("garbage", Some("not a url")), ("missing", None)] {
@@ -467,9 +451,9 @@ pub(crate) fn bad_url(parent: Option<PathBuf>) -> ExitCode {
                 let tmp = dir.join("tmp");
                 fs::create_dir_all(&tmp)?;
                 let profile = dir.join("appdata");
-                seed(&exe, &profile, &view, &[tab_node(url, &view)])?;
+                seed(exe, &profile, &view, &[tab_node(url, &view)])?;
                 let tmp_s = tmp.display().to_string();
-                let mut inst = Instance::launch_env(&exe, &profile, &dir, "log", &[("TEMP", &tmp_s), ("TMP", &tmp_s)])?;
+                let mut inst = Instance::launch_env(exe, &profile, &dir, "log", &[("TEMP", &tmp_s), ("TMP", &tmp_s)])?;
                 // Imported tabs sleep, so GRAPHDOWN (focus the first card) and GRAPHOPEN wake it, once the graph's
                 // first layout is done (WAITIDLE).
                 for line in ["WAITTABS", "WAITIDLE", "GRAPHDOWN", "GRAPHOPEN"] {
@@ -528,14 +512,10 @@ pub(crate) fn bad_url(parent: Option<PathBuf>) -> ExitCode {
             });
         }
     }
-    finish(&work)
+    finish(work)
 }
 
-pub(crate) fn failed_spawn(parent: Option<PathBuf>) -> ExitCode {
-    let (exe, work) = match setup(parent, "failed-spawn") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("failed-spawn");
     guarded("failed-spawn", || {
         // The failure is forced by running a copy of the exe with a view host beside it that is not a program: a
@@ -546,11 +526,11 @@ pub(crate) fn failed_spawn(parent: Option<PathBuf>) -> ExitCode {
         let bin = work.join("bin");
         fs::create_dir_all(&bin)?;
         let lone = bin.join("manifold.exe");
-        fs::copy(&exe, &lone)?;
+        fs::copy(exe, &lone)?;
         fs::write(bin.join("manifold-view-webview2.exe"), "not a program")?;
         let profile = work.join("appdata");
         seed(&lone, &profile, "webview2", &[])?;
-        let mut inst = Instance::launch(&lone, &profile, &work, "log")?;
+        let mut inst = Instance::launch(&lone, &profile, work, "log")?;
         let snap = |inst: &mut Instance, name: &str| -> io::Result<(usize, String, String)> {
             let s = inst.export_state(name)?;
             let first = s.cards().first().and_then(|c| c["id"].as_str()).map(str::to_owned);
@@ -581,5 +561,5 @@ pub(crate) fn failed_spawn(parent: Option<PathBuf>) -> ExitCode {
         check_eq("Retry keeps the card id", id1, id3);
         Ok(())
     });
-    finish(&work)
+    finish(work)
 }
