@@ -2,8 +2,8 @@
 
 use super::*;
 
-/// The background fetchers and decoders `tick_fetchers` drains (`App::workers`). `default()` keeps no files; `App::load`
-/// gives the favicon and redirect fetchers their directories.
+/// The background fetchers and decoders `tick_fetchers` drains (`App::workers`). The favicon and redirect fetchers keep
+/// files in the directories `new` gets (`None`: none kept, as in tests).
 pub(crate) struct Workers {
     /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
     /// module's own doc comment for why favicons are fetched independently
@@ -26,13 +26,13 @@ pub(crate) struct Workers {
     pub(crate) favicon_resolved: HashSet<String>,
 }
 
-impl Default for Workers {
-    fn default() -> Self {
+impl Workers {
+    pub(crate) fn new(favicon_dir: Option<std::path::PathBuf>, content_dir: Option<std::path::PathBuf>) -> Self {
         Self {
-            favicon_fetcher: FaviconFetcher::new(None),
+            favicon_fetcher: FaviconFetcher::new(favicon_dir),
             pdf_renderer: PdfRenderer::new(),
             image_decoder: ImageDecoder::new(),
-            redirect_fetcher: RedirectFetcher::new(None),
+            redirect_fetcher: RedirectFetcher::new(content_dir),
             favicon_resolved: HashSet::new(),
         }
     }

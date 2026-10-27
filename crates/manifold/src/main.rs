@@ -440,17 +440,71 @@ struct App {
     jar_saves: std::sync::atomic::AtomicUsize,
 }
 
+/// What the profile gives a new `App` (`App::new`): `read` takes it from the profile, `default()` is an empty profile.
+#[derive(Default)]
+struct Loaded {
+    settings: Settings,
+    /// See `SettingsState::fingerprint`.
+    settings_fingerprint: Option<u64>,
+    bookmarks: Vec<bookmarks::Bookmark>,
+    history: Vec<history::HistoryEntry>,
+    nav_history: HashMap<NodeId, nav_history::NavHistory>,
+    search_dir: Option<std::path::PathBuf>,
+    favicon_dir: Option<std::path::PathBuf>,
+    content_dir: Option<std::path::PathBuf>,
+    /// Load failures, shown as toasts.
+    errors: Vec<String>,
+}
+
+impl Loaded {
+    fn read() -> Self {
+        let (settings, settings_err) = Settings::load();
+        let (bookmarks, bookmarks_err) = bookmarks::load();
+        let (history, history_err) = history::load();
+        Self {
+            settings,
+            // Re-reads the file `Settings::load` just read: a second read of a file this small, once at startup, is
+            // cheaper than threading the fingerprint out of `load`.
+            settings_fingerprint: settings::fingerprint(),
+            bookmarks,
+            history,
+            nav_history: nav_history::load(),
+            search_dir: profile::search_dir(),
+            favicon_dir: profile::favicon_cache_dir(),
+            content_dir: profile::content_dir(),
+            errors: [settings_err, bookmarks_err, history_err].into_iter().flatten().collect(),
+        }
+    }
+}
+
 impl Default for App {
+    /// An app on an empty profile: reads and writes no file (tests use it).
     fn default() -> Self {
+        Self::new(Loaded::default())
+    }
+}
+
+impl App {
+    fn new(loaded: Loaded) -> Self {
+        let Loaded {
+            settings,
+            settings_fingerprint,
+            bookmarks,
+            history,
+            nav_history,
+            search_dir,
+            favicon_dir,
+            content_dir,
+            errors,
+        } = loaded;
         let egui_ctx = egui::Context::default();
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
-        let settings = Settings::default();
         apply_theme_choice(&egui_ctx, settings.theme);
         manifold_pages::set_dark(egui_ctx.theme() == egui::Theme::Dark);
         let jars: BTreeMap<store::model::NodeId, jar::Jar> = BTreeMap::new();
         let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
-        Self {
+        let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
             last_theme: None,
@@ -473,11 +527,11 @@ impl Default for App {
             idle_clock: idle_sleep::IdleClock::default(),
             pending_sleeps: HashMap::new(),
             page_text: Default::default(),
-            search: search::Search::open(None),
+            search: search::Search::open(search_dir.as_deref()),
             jars,
             cookies: jar::CookieState { jar_snapshots, ..Default::default() },
             saved_scroll: HashMap::new(),
-            nav_history: HashMap::new(),
+            nav_history,
             drop_batch: 0,
             view_mode: ViewMode::Item,
             doc: doc::Doc::default(),
@@ -487,7 +541,7 @@ impl Default for App {
             egui_state: None,
             omni: OmniBar::new(settings.home_page.clone()),
             omni_popup: OmniBar::new(String::new()),
-            workers: Default::default(),
+            workers: event_loop::Workers::new(favicon_dir, content_dir),
             link: LinkGesture::default(),
             interaction: GraphInteraction::default(),
             spawns: SpawnTracker::default(),
@@ -508,9 +562,13 @@ impl Default for App {
             page_tab_gate: page_tab_gate::PageTabGate::default(),
             content_index: None,
             find: FindState::default(),
-            settings: settings_page::SettingsState { value: settings, ..Default::default() },
-            bookmarks: Vec::new(),
-            history: Vec::new(),
+            settings: settings_page::SettingsState {
+                value: settings,
+                fingerprint: settings_fingerprint,
+                ..Default::default()
+            },
+            bookmarks,
+            history,
             transition: None,
             event_proxy: None,
             #[cfg(test)]
@@ -519,13 +577,15 @@ impl Default for App {
             jars_dir_override: None,
             #[cfg(test)]
             jar_saves: std::sync::atomic::AtomicUsize::new(0),
+        };
+        for err in errors {
+            app.queue_toast(err);
         }
+        app
     }
-}
 
-impl App {
-    /// The app as a run starts it: `App::default()` plus what the profile holds (settings, bookmarks, history, trails,
-    /// the text log) and the workers that keep files. Nothing else reads the profile, so `default()` touches no file.
+    /// The app as a run starts it: `new` on what the profile holds (`Loaded::read`: settings, bookmarks, history,
+    /// trails, the text log, the fetchers' directories). Nothing else reads the profile, so `default()` touches no file.
     fn load() -> Self {
         // Before constructing anything that might make its own first real
         // HTTPS request (search suggestions, favicons) -- see `suggestions::
@@ -534,34 +594,7 @@ impl App {
         // its own redundant warm-up (or, worse, one racing a real request
         // against another's not-yet-finished warm-up).
         suggestions::warm_up_https_client();
-        let (settings, settings_err) = Settings::load();
-        let (bookmarks, bookmarks_err) = bookmarks::load();
-        let (history, history_err) = history::load();
-        let mut app = Self {
-            // Re-reads the file `settings::fingerprint()` already just read for
-            // `load()` -- a second read of a file this small, once at startup,
-            // isn't worth threading a fingerprint out through `load()`'s own
-            // return type for.
-            settings: settings_page::SettingsState {
-                value: settings,
-                fingerprint: settings::fingerprint(),
-                ..Default::default()
-            },
-            bookmarks,
-            history,
-            nav_history: nav_history::load(),
-            search: search::Search::open(profile::search_dir().as_deref()),
-            ..Self::default()
-        };
-        app.workers.favicon_fetcher = FaviconFetcher::new(profile::favicon_cache_dir());
-        app.workers.redirect_fetcher = RedirectFetcher::new(profile::content_dir());
-        apply_theme_choice(&app.egui_ctx, app.settings.value.theme);
-        manifold_pages::set_dark(app.egui_ctx.theme() == egui::Theme::Dark);
-        app.omni = OmniBar::new(app.settings.value.home_page.clone());
-        for err in [settings_err, bookmarks_err, history_err].into_iter().flatten() {
-            app.queue_toast(err);
-        }
-        app
+        Self::new(Loaded::read())
     }
 }
 
