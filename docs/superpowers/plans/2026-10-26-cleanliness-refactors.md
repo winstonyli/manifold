@@ -150,6 +150,8 @@ Done: 76efb88
   of saving and restoring visuals by hand.
 - **UI8** `toolbar_panel` and `toolbar_field` both set `extreme_bg_color` and the inactive stroke (675, 702); give
   the field look one owner.
+  Done: af23655 (UI3, UI4). UI8 left: `toolbar_panel`'s `extreme_bg_color` also paints the toolbar's horizontal
+  overflow scrollbar track (egui `scroll_area.rs`), so dropping it for `toolbar_field` would change that look.
 
 ### B11. Small singles
 
@@ -162,6 +164,10 @@ Done: 76efb88
 - **UI9** `popups/menus.rs:199-203` and `settings_page.rs:323-329` share the unavailable-engine colour.
 - **UI10** `settings_page.rs:281-310` hand-rolls rows `setting_row` already makes.
 - **M3** `process_manager.rs:879, 900` `prepare_*` take an unused `_custom`.
+  Done: 88431d8 (S4 inlined `tab_fields` only: `Carried::tab` omits absent values and `parent`, so the field sets
+  don't share, S6, S7), 37871da (S9, S10). Left: UI9 (the two sites differ in the available colour; nothing to
+  share), UI10 (the Engine row sits beside its label, `setting_row` right-aligns the control), M3 (the table's
+  `fn(ViewKind, Option<&Path>)` signature is shared with `prepare_cef`, which uses it).
 
 ## Considered and rejected
 
