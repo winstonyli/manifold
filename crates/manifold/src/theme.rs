@@ -209,21 +209,16 @@ pub(crate) fn focus_ring(ui: &egui::Ui, response: &egui::Response) {
 /// after it in the row shifts. Zeroing the strokes in the visuals keeps the
 /// padding the same in every state.
 pub(crate) fn add_borderless(ui: &mut egui::Ui, enabled: bool, button: egui::Button) -> egui::Response {
-    let none = egui::Stroke::NONE;
-    let w = &mut ui.visuals_mut().widgets;
-    let saved =
-        [w.noninteractive.bg_stroke, w.inactive.bg_stroke, w.hovered.bg_stroke, w.active.bg_stroke, w.open.bg_stroke];
-    for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
-        state.bg_stroke = none;
-    }
-    let response = ui.add_enabled(enabled, button);
+    let response = ui
+        .scope(|ui| {
+            let w = &mut ui.visuals_mut().widgets;
+            for state in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+                state.bg_stroke = egui::Stroke::NONE;
+            }
+            ui.add_enabled(enabled, button)
+        })
+        .inner;
     focus_ring(ui, &response);
-    let w = &mut ui.visuals_mut().widgets;
-    for (state, stroke) in
-        [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open].into_iter().zip(saved)
-    {
-        state.bg_stroke = stroke;
-    }
     response
 }
 
@@ -234,11 +229,11 @@ pub(crate) fn add_borderless(ui: &mut egui::Ui, enabled: bool, button: egui::But
 /// and the widget grows by twice the stroke width, pushing what follows. With no
 /// resting stroke the padding is the full amount in both states.
 pub(crate) fn rest_borderless<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
-    let saved = ui.visuals().widgets.inactive.bg_stroke;
-    ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
-    let result = add(ui);
-    ui.visuals_mut().widgets.inactive.bg_stroke = saved;
-    result
+    ui.scope(|ui| {
+        ui.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        add(ui)
+    })
+    .inner
 }
 
 /// `ui.selectable_label` that does not change size on hover; see [`rest_borderless`].
@@ -696,17 +691,31 @@ pub(crate) fn toolbar_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui
 /// whether the pointer is over its not-yet-laid-out rect. For icon-only
 /// toolbar buttons, not every `ui.button` in the app.
 pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
+    let rest_bg = ui.visuals().widgets.inactive.weak_bg_fill;
+    eased_button(ui, id, label.into(), rest_bg, egui::vec2(32.0, 0.0), false, true)
+}
+
+/// The hover easing both icon-button flavours share: the fill goes from `rest_bg` to the hovered fill and the text
+/// from its resting to its hovered colour; `borderless` adds the button through [`add_borderless`].
+fn eased_button(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    text: String,
+    rest_bg: egui::Color32,
+    min_size: egui::Vec2,
+    borderless: bool,
+    enabled: bool,
+) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
     let hover_t = animate(ui.ctx(), id, was_hovered, egui::emath::easing::cubic_out);
-    let bg =
-        lerp_color32(ui.visuals().widgets.inactive.weak_bg_fill, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
+    let bg = lerp_color32(rest_bg, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
     let fg = lerp_color32(
         ui.visuals().widgets.inactive.fg_stroke.color,
         ui.visuals().widgets.hovered.fg_stroke.color,
         hover_t,
     );
-    let response =
-        ui.add(egui::Button::new(egui::RichText::new(label.into()).color(fg)).fill(bg).min_size(egui::vec2(32.0, 0.0)));
+    let button = egui::Button::new(egui::RichText::new(text).color(fg)).fill(bg).min_size(min_size);
+    let response = if borderless { add_borderless(ui, enabled, button) } else { ui.add_enabled(enabled, button) };
     ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
     response
 }
@@ -736,21 +745,7 @@ pub(crate) fn chip_icon_button_enabled(
     icon: impl Into<String>,
     enabled: bool,
 ) -> egui::Response {
-    let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
-    let hover_t = animate(ui.ctx(), id, was_hovered, egui::emath::easing::cubic_out);
-    let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
-    let fg = lerp_color32(
-        ui.visuals().widgets.inactive.fg_stroke.color,
-        ui.visuals().widgets.hovered.fg_stroke.color,
-        hover_t,
-    );
-    let response = add_borderless(
-        ui,
-        enabled,
-        egui::Button::new(egui::RichText::new(icon.into()).color(fg)).fill(bg).min_size(egui::vec2(32.0, 26.0)),
-    );
-    ui.ctx().memory_mut(|m| m.data.insert_temp(id, response.hovered()));
-    response
+    eased_button(ui, id, icon.into(), egui::Color32::TRANSPARENT, egui::vec2(32.0, 26.0), true, enabled)
 }
 
 /// Paints a raised chip background behind `content` -- e.g. a cluster of
