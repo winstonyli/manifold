@@ -38,7 +38,7 @@ impl<T: Clone> Fading<T> {
     /// visible instead of easing in. Returns `None` once the fade has finished (nothing left to draw), else the
     /// value (`open`'s own while it is `Some`, otherwise the frozen cache) and the fade (0.0-1.0).
     pub(crate) fn state(&mut self, ctx: &egui::Context, id: egui::Id) -> Option<(T, f32)> {
-        let fade = ctx.animate_bool(id, self.open.is_some());
+        let fade = crate::theme::animate(ctx, id, self.open.is_some(), egui::emath::easing::linear);
         if let Some(value) = &self.open {
             self.cache = Some(value.clone());
         }
@@ -163,7 +163,12 @@ impl App {
         anchor: Option<egui::Rect>,
     ) -> Option<(egui::Rect, f32)> {
         let open = self.menus.open_popup == Some(which);
-        let fade = ctx.animate_bool(egui::Id::new(("anchored_popup_fade", which)), open);
+        let fade = crate::theme::animate(
+            ctx,
+            egui::Id::new(("anchored_popup_fade", which)),
+            open,
+            egui::emath::easing::linear,
+        );
         if fade > 0.0 {
             anchor.map(|rect| (rect, fade))
         } else {

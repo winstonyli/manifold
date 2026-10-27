@@ -269,12 +269,17 @@ impl App {
         // Polled every frame regardless of `peek_target`, same
         // "continuous polling, not just while shown" reasoning the
         // dropdown popups' own fade needs -- a plain `if let Some`
-        // gate here would only ever call `animate_bool` while a
+        // gate here would only ever call `theme::animate` while a
         // peek is actually showing, and the real-elapsed-time gap
         // since the last poll (however long the pointer sat
         // elsewhere) would make it jump straight to fully visible
         // the instant it reappears instead of visibly fading in.
-        let peek_fade = ui.ctx().animate_bool(egui::Id::new("peek_preview_fade"), peek_target.is_some());
+        let peek_fade = crate::theme::animate(
+            ui.ctx(),
+            egui::Id::new("peek_preview_fade"),
+            peek_target.is_some(),
+            egui::emath::easing::linear,
+        );
         if peek_fade > 0.0 {
             if let Some(hovered_id) = peek_target {
                 let key = hovered_id.node();

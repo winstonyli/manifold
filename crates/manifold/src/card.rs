@@ -1182,7 +1182,12 @@ impl App {
 
         // One eased hover drives the glow, the fill's brightening and the
         // border, so the three move together.
-        let hover_t = ui.ctx().animate_bool_responsive(egui::Id::new(("graph_card_hover_t", card)), is_hovered);
+        let hover_t = crate::theme::animate(
+            ui.ctx(),
+            egui::Id::new(("graph_card_hover_t", card)),
+            is_hovered,
+            egui::emath::easing::cubic_out,
+        );
         let style = card_style(view.kind, ui.visuals());
         let (border_width, border_color) = card_border(&view, &style, hover_t);
         // A soft black shadow at rest that takes on the border color as the card is hovered or open.

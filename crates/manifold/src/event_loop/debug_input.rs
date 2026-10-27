@@ -29,8 +29,8 @@ impl App {
 
     /// What `WAITIDLE` waits for: no debug input still needs a frame, no
     /// view transition is running, the Graph camera isn't easing or gliding (only a frame that draws the Graph
-    /// advances it, so in another view it is not waited on), no address-bar suggestion is on its way, and the
-    /// focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a row (see
+    /// advances it, so in another view it is not waited on), no address-bar suggestion is on its way, no fade or
+    /// hover easing is mid-way (`theme::eased_last_pass`), and the focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a row (see
     /// `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
         let loading =
@@ -40,6 +40,7 @@ impl App {
             && !(self.view_mode == ViewMode::Graph && self.camera.is_moving())
             && !self.omni.fetcher.is_busy()
             && !self.omni_popup.fetcher.is_busy()
+            && !crate::theme::eased_last_pass(&self.egui_ctx)
             && !loading
     }
 

@@ -81,7 +81,7 @@ pub(crate) fn kbd(ui: &mut egui::Ui, text: &str) -> egui::Response {
 /// the caller reads `clicked()` and flips its own state. `label` is the screen-reader name.
 pub(crate) fn toggle(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(30.0, 17.0), egui::Sense::click());
-    let t = ui.ctx().animate_bool_responsive(response.id, on);
+    let t = animate(ui.ctx(), response.id, on, egui::emath::easing::cubic_out);
     let off_fill = ui.visuals().window_fill.gamma_multiply(1.6);
     let fill = lerp_color32(off_fill, accent(ui.visuals()), t);
     let knob = lerp_color32(ui.visuals().weak_text_color(), ui.visuals().panel_fill, t);
@@ -425,6 +425,28 @@ pub(crate) fn accent(visuals: &egui::Visuals) -> egui::Color32 {
     visuals.selection.bg_fill
 }
 
+/// `ctx.animate_bool_with_easing`, and the one place the app eases a value: a pass that draws one between its ends
+/// is recorded, so `WAITIDLE` (`App::debug_idle`, through `eased_last_pass`) waits for fades and hover easing to
+/// finish. Ease through this, not egui's `animate_bool*`, or `WAITIDLE` won't see it.
+pub(crate) fn animate(ctx: &egui::Context, id: egui::Id, on: bool, easing: fn(f32) -> f32) -> f32 {
+    let t = ctx.animate_bool_with_easing(id, on, easing);
+    if t > 0.0 && t < 1.0 {
+        // `cumulative_pass_nr` counts completed passes, so during a pass it is this pass's index.
+        let pass = ctx.cumulative_pass_nr();
+        ctx.data_mut(|d| d.insert_temp(easing_pass_id(), pass));
+    }
+    t
+}
+
+/// Whether the last completed pass drew an `animate` value between its ends.
+pub(crate) fn eased_last_pass(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<u64>(easing_pass_id())).is_some_and(|pass| pass + 1 == ctx.cumulative_pass_nr())
+}
+
+fn easing_pass_id() -> egui::Id {
+    egui::Id::new("theme_easing_pass")
+}
+
 /// The one severity-red, for text, icons and borders.
 pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
     visuals.error_fg_color
@@ -599,7 +621,7 @@ pub(crate) fn with_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
 /// Per-channel linear interpolation between two colors -- `egui`/`epaint`
 /// has no built-in `Color32::lerp`. Used to ease a card's border color
 /// between its resting and hovered tint instead of snapping instantly,
-/// matching the same eased feel `animate_bool_responsive` already gives
+/// matching the same eased feel `animate` with `cubic_out` already gives
 /// the hover glow. Interpolates the premultiplied channels `Color32` stores, so easing in from `TRANSPARENT` fades
 /// the target's own color in rather than passing through a darker tint of it.
 pub(crate) fn lerp_color32(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
@@ -708,7 +730,7 @@ pub(crate) fn toolbar_field<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui
 /// wasn't attempted.
 pub(crate) fn icon_button_eased(ui: &mut egui::Ui, id: egui::Id, label: impl Into<String>) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
-    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let hover_t = animate(ui.ctx(), id, was_hovered, egui::emath::easing::cubic_out);
     let bg =
         lerp_color32(ui.visuals().widgets.inactive.weak_bg_fill, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
     let fg = lerp_color32(
@@ -750,7 +772,7 @@ pub(crate) fn chip_icon_button_enabled(
     enabled: bool,
 ) -> egui::Response {
     let was_hovered: bool = ui.ctx().memory(|m| m.data.get_temp(id).unwrap_or(false));
-    let hover_t = ui.ctx().animate_bool_responsive(id, was_hovered);
+    let hover_t = animate(ui.ctx(), id, was_hovered, egui::emath::easing::cubic_out);
     let bg = lerp_color32(egui::Color32::TRANSPARENT, ui.visuals().widgets.hovered.weak_bg_fill, hover_t);
     let fg = lerp_color32(
         ui.visuals().widgets.inactive.fg_stroke.color,
@@ -862,6 +884,24 @@ mod tests {
             }
         }
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// `eased_last_pass` is true after a pass that drew a value between its ends, and false once it has settled.
+    #[test]
+    fn an_easing_value_marks_its_pass_until_it_settles() {
+        let ctx = testutil::ctx(true);
+        let id = egui::Id::new("easing_probe");
+        let pass = |on: bool, time: f64| {
+            let input = egui::RawInput { time: Some(time), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                animate(ui.ctx(), id, on, egui::emath::easing::linear);
+            });
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+            eased_last_pass(&ctx)
+        };
+        assert!(!pass(false, 0.0), "a value seen for the first time starts settled");
+        assert!(pass(true, 0.01), "just switched on, it is between its ends");
+        assert!(!pass(true, 10.0), "settled at 1");
     }
 
     #[test]
