@@ -66,7 +66,7 @@ Rulings made while implementing:
 - `on_drop` gets `at`, the world position of the release (the ghost's transform applied to the pointer), so a source can place what was dragged out where it was dropped even when `target` is `None`. A release on the back button reaches `on_drop` as `Some((DropEffect::Eject, None))`: `drop_action` ignores the dragged kind for it.
 - `on_click` and `on_drop` run with `&mut App` inside the card loop (a stored drop goes through `GraphAction::Drop` instead); a handler returns a `GraphAction` for anything that changes nodes.
 - Shift+F10 on a focused card asks `menu`: a stored card opens its node menu, a virtual one calls `on_menu` at the card's bottom-left.
-- The settle key counts stored entries only (`level::settle_count`, used by the per-frame check and `current_level_settle_key`), so a source whose entry count changes never re-settles the stored cards.
+- The settle key counts and sizes stored entries only (`level::settle_key`, used by the per-frame check and `current_level_settle_key`), so a source whose entry count changes never re-settles the stored cards.
 
 ## Next
 

@@ -461,14 +461,14 @@ impl App {
         self.bounds_for_level(&self.subtree_ids(root_id))
     }
 
-    /// `(level, node_count)` for whichever level `self.current_group` is
+    /// `(level, level::SettleKey)` for whichever level `self.current_group` is
     /// currently viewing -- the key `build_graph_ui`'s settle-check
     /// compares against `GraphUi::settled_key`, factored out so every call
     /// site that changes `current_group` (the per-frame check, and
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
-    pub(crate) fn current_level_settle_key(&self) -> (Option<NodeId>, usize) {
-        (self.current_group, crate::level::settle_count(&self.level_items()))
+    pub(crate) fn current_level_settle_key(&self) -> (Option<NodeId>, crate::level::SettleKey) {
+        (self.current_group, crate::level::settle_key(&self.level_items()))
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab
@@ -549,7 +549,7 @@ impl App {
     /// static between calls. Nothing may move on its own while the user is
     /// pointing at it: a node reacting to forces while being dragged onto
     /// (a group, another tab) would flee the drag's own repulsion. Called
-    /// only when the visible node set changes (see `GraphUi::settled_key`), so
+    /// only when the visible node set or a card's size changes (see `GraphUi::settled_key`), so
     /// new and remaining nodes still spread apart instead of stacking.
     pub(crate) fn settle_current_level(&mut self) {
         // 90 iterations at a fixed 1/60s step is ~1.5 simulated seconds --

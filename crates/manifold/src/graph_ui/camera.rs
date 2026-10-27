@@ -253,13 +253,13 @@ impl App {
         }
     }
 
-    /// Re-lays-out the level when its node set changed size, unless a drag is in progress.
-    pub(super) fn settle_level_if_changed(&mut self, item_count: usize) {
+    /// Re-lays-out the level when its node set or a card's size changed, unless a drag is in progress.
+    pub(super) fn settle_level_if_changed(&mut self, key: crate::level::SettleKey) {
         if self.interaction.dragging.is_none() {
             // Same formula `current_level_settle_key()` computes, just
             // built from this frame's already-cached `items` instead of
             // redoing the level scan a second time.
-            let current_key = (self.current_group, item_count);
+            let current_key = (self.current_group, key);
             if self.graph.settled_key.as_ref() != Some(&current_key) {
                 self.layout_current_level();
                 self.graph.settled_key = Some(current_key);

@@ -92,11 +92,27 @@ pub(crate) struct LevelEdge {
     pub(crate) link: Option<NodeId>,
 }
 
-/// How many of `items` count toward the level's settle key: every card but a virtual one. A source's entry count
-/// can change with each navigation, and that must not re-settle (move) the stored cards. The one count both the
-/// per-frame check and `App::current_level_settle_key` use.
-pub(crate) fn settle_count(items: &[CardEntry]) -> usize {
-    items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count()
+/// What a level's layout was computed from, besides its group (`GraphUi::settled_key`): how many of its cards are
+/// not virtual (a source's entry count can change with each navigation, and that must not re-settle (move) the
+/// stored cards), and the stored cards' sizes, the layout's other input, so a card that changes size (an image
+/// decoding) re-lays-out the level as a new card does. Sizes are summed, so drawing order doesn't change the key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SettleKey {
+    pub(crate) count: usize,
+    sizes: u64,
+}
+
+/// `items`' `SettleKey`: the one both the per-frame check and `App::current_level_settle_key` use.
+pub(crate) fn settle_key(items: &[CardEntry]) -> SettleKey {
+    use std::hash::{BuildHasher, BuildHasherDefault};
+    let hasher = BuildHasherDefault::<std::hash::DefaultHasher>::default();
+    let stored = items.iter().filter(|item| item.origin == Origin::Stored);
+    SettleKey {
+        count: items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count(),
+        sizes: stored
+            .map(|item| hasher.hash_one((item.rect.width().to_bits(), item.rect.height().to_bits())))
+            .fold(0, u64::wrapping_add),
+    }
 }
 
 /// One walk of `node_order` at the level being viewed (`App::level_scan`).
@@ -317,6 +333,25 @@ mod tests {
             completed: true,
             failed: false,
         })
+    }
+
+    /// A stored card that changes size (an image decoding) changes the key, so the level re-lays-out; drawing order
+    /// and a virtual card's size don't.
+    #[test]
+    fn a_stored_cards_size_is_part_of_the_settle_key() {
+        let entry = |id: NodeId, width: f32, origin: Origin| CardEntry {
+            id: CardId::from(id),
+            kind: crate::card_kind::fixtures::plain(crate::store::model::TYPE_DOWNLOAD),
+            origin,
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 90.0)),
+        };
+        let key = |items: &[CardEntry]| settle_key(items);
+        let base =
+            [entry(D1, 160.0, Origin::Stored), entry(D2, 200.0, Origin::Stored), entry(P, 50.0, Origin::Virtual("v"))];
+        let [a, b, v] = base.clone();
+        assert_ne!(key(&base), key(&[a.clone(), entry(D2, 260.0, Origin::Stored), v.clone()]), "a stored card grew");
+        assert_eq!(key(&base), key(&[b.clone(), a.clone(), v]), "the same cards in another order");
+        assert_eq!(key(&base), key(&[a, b, entry(P, 80.0, Origin::Virtual("v"))]), "a virtual card grew");
     }
 
     #[test]

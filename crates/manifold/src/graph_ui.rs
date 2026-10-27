@@ -90,13 +90,13 @@ pub(crate) struct GraphUi {
     pub(crate) truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
     /// A zoom scale (1.0 = 100%) the next Graph frame sets the camera to (`GRAPHZOOM`).
     pub(crate) pending_zoom: Option<f32>,
-    /// `(level, node_count)` for the graph level `graph_settle_current_level`
+    /// `(level, level::SettleKey)` for the graph level `graph_settle_current_level`
     /// last ran a settle burst for -- `build_graph_ui` compares this
-    /// against the current level/count every frame and only re-settles
+    /// against the current level's key every frame and only re-settles
     /// (and updates this) when they differ, instead of the physics sim
     /// running continuously. See `graph_settle_current_level`'s own doc
     /// comment for why continuous physics was replaced with this at all.
-    pub(crate) settled_key: Option<(Option<NodeId>, usize)>,
+    pub(crate) settled_key: Option<(Option<NodeId>, crate::level::SettleKey)>,
 }
 
 impl Detail {

@@ -177,7 +177,7 @@ impl App {
         // from `response.drag_delta()` in the per-node loop below,
         // independent of this, and everything else should stay exactly
         // where it is for the whole gesture.
-        self.settle_level_if_changed(crate::level::settle_count(&items));
+        self.settle_level_if_changed(crate::level::settle_key(&items));
 
         self.handle_graph_keys(ui, typing);
 
