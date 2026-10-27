@@ -20,8 +20,18 @@ struct Hold {
 }
 
 impl Hold {
-    fn start(on_conn: impl Fn(TcpStream, &Held) + Send + Sync + 'static) -> io::Result<Hold> {
-        let listener = TcpListener::bind((crate::http::site_host().as_str(), 0))?;
+    /// Listens on `port`, or on any free port if that one is busy (0 asks for any) and says so.
+    fn start(port: u16, on_conn: impl Fn(TcpStream, &Held) + Send + Sync + 'static) -> io::Result<Hold> {
+        let host = crate::http::site_host();
+        let listener = match TcpListener::bind((host.as_str(), port)) {
+            Err(e) if port != 0 => {
+                println!(
+                    "port {port} is busy ({e}), so the shots that show this server's url won't match another run's"
+                );
+                TcpListener::bind((host.as_str(), 0))?
+            }
+            bound => bound?,
+        };
         let addr = listener.local_addr()?;
         let stop = Arc::new(AtomicBool::new(false));
         let held = Arc::new(Held::default());
@@ -75,11 +85,14 @@ fn request_line(stream: &mut TcpStream) -> String {
 
 /// `/real.zip` answers a 4-byte attachment; `/slow` promises 1 MB, sends 300 KB and then holds the connection until
 /// `kill` (the server "dying" mid-transfer: the engine reports the download interrupted).
+/// The download server listens here: the download views show its url, so two runs' shots match only on the same port.
+const DOWNLOADS_PORT: u16 = 47_311;
+
 pub struct Downloads(Hold);
 
 impl Downloads {
     pub fn start() -> io::Result<Downloads> {
-        Hold::start(|mut stream, held| {
+        Hold::start(DOWNLOADS_PORT, |mut stream, held| {
             let slow = request_line(&mut stream).split(' ').nth(1) == Some("/slow");
             let (name, len) = if slow { ("slow", 1_000_000) } else { ("real", 4) };
             let head = format!(
@@ -116,7 +129,7 @@ impl Proxy {
     pub fn start(refuse: bool) -> io::Result<Proxy> {
         let refuse = Arc::new(AtomicBool::new(refuse));
         let mode = refuse.clone();
-        let hold = Hold::start(move |mut stream, held| {
+        let hold = Hold::start(0, move |mut stream, held| {
             let _ = request_line(&mut stream);
             let reply: &[u8] = if mode.load(Ordering::SeqCst) {
                 b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
