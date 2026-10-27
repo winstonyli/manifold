@@ -230,7 +230,7 @@ impl App {
         // Where each card has connect handles when it would show them (on hover, and on every card during a
         // connect-drag), on screen, so a probe can press one:
         // `{card id: {top|right|bottom|left: [left, top, right, bottom]}}`. Empty when nothing shows them.
-        let (zoom_scale, _) = self.camera.transform(self.graph_scene_outer_rect());
+        let zoom_scale = self.camera.transform(self.graph_scene_outer_rect()).scaling;
         let link_handles: serde_json::Map<String, serde_json::Value> = self
             .level_items()
             .into_iter()

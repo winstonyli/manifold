@@ -116,28 +116,28 @@ impl GraphCamera {
     /// (private to egui, not part of its public API) — needed to compute
     /// where a graph node actually lands on screen *outside* the `Scene`
     /// widget's own closure, for the shrink/expand animation's target
-    /// rect. `(scale, translation)` such that
-    /// `screen = translation + scale * world`, matching `Scene`'s own
+    /// rect. The `TSTransform` such that
+    /// `screen = translation + scaling * world`, matching `Scene`'s own
     /// "fit the visible scene rect into the available screen area,
     /// preserving aspect ratio, clamped to the configured zoom range"
     /// behavior exactly (using the *same* `rect` `Scene` itself
     /// reads/writes).
-    pub(crate) fn transform(&self, outer: egui::Rect) -> (f32, egui::Vec2) {
+    pub(crate) fn transform(&self, outer: egui::Rect) -> egui::emath::TSTransform {
         let rect = self.filled(outer);
         let scale = (outer.size() / rect.size()).min_elem().clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
-        (scale, outer.center().to_vec2() - scale * rect.center().to_vec2())
+        egui::emath::TSTransform::new(outer.center().to_vec2() - scale * rect.center().to_vec2(), scale)
     }
 
     /// A frame's camera work before its `Scene`: advance any tween or glide, keep repainting while one runs, fill
     /// `rect` to `outer`'s shape (`fill`) and set the zoom readout. Returns `transform(outer)`.
-    pub(crate) fn begin_frame(&mut self, ctx: &egui::Context, outer: egui::Rect) -> (f32, egui::Vec2) {
+    pub(crate) fn begin_frame(&mut self, ctx: &egui::Context, outer: egui::Rect) -> egui::emath::TSTransform {
         self.advance();
         if self.tween.is_some() || self.momentum.is_some() {
             ctx.request_repaint();
         }
         self.fill(outer);
         let transform = self.transform(outer);
-        self.zoom_pct = transform.0 * 100.0;
+        self.zoom_pct = transform.scaling * 100.0;
         transform
     }
 
@@ -189,11 +189,7 @@ impl App {
     /// the same projection `Scene` applies, computed outside it (see
     /// `GraphCamera::transform`).
     pub(crate) fn graph_world_rect_to_screen(&self, world: egui::Rect) -> egui::Rect {
-        let (scale, translation) = self.camera.transform(self.graph_scene_outer_rect());
-        egui::Rect::from_min_max(
-            (translation + scale * world.min.to_vec2()).to_pos2(),
-            (translation + scale * world.max.to_vec2()).to_pos2(),
-        )
+        self.camera.transform(self.graph_scene_outer_rect()) * world
     }
 
     /// Inverse of `graph_world_rect_to_screen`: where a screen point
@@ -201,8 +197,7 @@ impl App {
     /// inverse of the projection `graph_world_rect_to_screen` uses. Used to
     /// place a file dropped on the window (`drop_file`).
     pub(crate) fn graph_screen_point_to_world(&self, point: egui::Pos2) -> egui::Vec2 {
-        let (scale, translation) = self.camera.transform(self.graph_scene_outer_rect());
-        (point.to_vec2() - translation) / scale
+        (self.camera.transform(self.graph_scene_outer_rect()).inverse() * point).to_vec2()
     }
 
     /// The Graph view's scene area in window points: below the toolbar,
@@ -538,12 +533,11 @@ mod tests {
         let mut camera = GraphCamera::new();
         camera.rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 200.0));
         let outer = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(800.0, 400.0));
-        let (scale, translation) = camera.transform(outer);
-        assert_eq!(scale, 2.0);
-        let screen = translation + scale * camera.rect.center().to_vec2();
-        assert_eq!(screen, outer.center().to_vec2());
+        let transform = camera.transform(outer);
+        assert_eq!(transform.scaling, 2.0);
+        assert_eq!(transform * camera.rect.center(), outer.center());
         camera.rect = egui::Rect::from_center_size(egui::Pos2::ZERO, egui::vec2(8.0, 4.0));
-        assert_eq!(camera.transform(outer).0, GRAPH_ZOOM_MAX, "the zoom range clamps");
+        assert_eq!(camera.transform(outer).scaling, GRAPH_ZOOM_MAX, "the zoom range clamps");
     }
 
     #[test]
@@ -552,8 +546,7 @@ mod tests {
         let mut camera = GraphCamera::new();
         camera.rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
         let outer = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 200.0));
-        let (scale, _) = camera.begin_frame(&ctx, outer);
-        assert_eq!(scale, 2.0);
+        assert_eq!(camera.begin_frame(&ctx, outer).scaling, 2.0);
         assert_eq!(camera.rect.size(), egui::vec2(200.0, 100.0));
         assert_eq!(camera.zoom_pct, 200.0);
     }
@@ -595,10 +588,10 @@ mod tests {
         camera.jump_to(egui::Rect::from_min_size(egui::pos2(-500.0, -300.0), egui::vec2(1000.0, 600.0)));
         camera.fill(wide);
         let before = camera.rect;
-        let scale = camera.transform(wide).0;
+        let scale = camera.transform(wide).scaling;
         camera.fill(narrow);
         assert_eq!(camera.rect.min, before.min, "the left edge stays");
-        assert_eq!(camera.transform(narrow).0, scale, "and the scale");
+        assert_eq!(camera.transform(narrow).scaling, scale, "and the scale");
         assert_eq!(camera.rect.size(), egui::vec2(700.0, 600.0));
         camera.fill(wide);
         assert_eq!(camera.rect, before, "widening back shows the same world");
@@ -618,7 +611,11 @@ mod tests {
         for _ in 0..3 {
             camera.advance();
             camera.fill(narrow);
-            assert!((camera.transform(narrow).0 - 1.0).abs() < 1e-4, "scale {}", camera.transform(narrow).0);
+            assert!(
+                (camera.transform(narrow).scaling - 1.0).abs() < 1e-4,
+                "scale {}",
+                camera.transform(narrow).scaling
+            );
         }
     }
 

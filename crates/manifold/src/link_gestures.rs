@@ -404,8 +404,7 @@ impl App {
         }
         let drawn = self.camera.rect;
         self.camera.rect = press_rect;
-        let (zoom, translation) = self.camera.transform(scene_outer_rect);
-        let at = ((origin.to_vec2() - translation) / zoom).to_pos2();
+        let at = self.camera.transform(scene_outer_rect).inverse() * origin;
         let edges = self.level_edges();
         let Some(edge) = edges.iter().find(|e| e.link == Some(link)) else {
             self.camera.rect = drawn;
@@ -460,7 +459,7 @@ impl App {
     /// only inside `scene_outer_rect`, off the `minimap` (painted over the Scene, not a widget) and
     /// under no interactable egui Area above the graph (a popup or menu, by `Context::layer_id_at`, the layer test
     /// egui's own hit-test uses, so a click there would reach no card either; a non-interactable toast lets both
-    /// through). `(zoom_scale, translation)` maps world to screen (`GraphCamera::transform`). Both the bright
+    /// through). `transform` maps world to screen (`GraphCamera::transform`). Both the bright
     /// target ring and the release read this, so the ring shows exactly where a release links. egui hovers only the
     /// dragged handle meanwhile, so the card's own hover cannot say so.
     pub(crate) fn connect_drag_end(
@@ -469,7 +468,7 @@ impl App {
         pointer: Option<egui::Pos2>,
         scene_outer_rect: egui::Rect,
         minimap: Option<egui::Rect>,
-        (zoom_scale, translation): (f32, egui::Vec2),
+        transform: egui::emath::TSTransform,
     ) -> DragEnd {
         let Some(source) = self.link.connect_drag.as_ref() else { return DragEnd::Abandoned };
         let covered = |p: egui::Pos2| ctx.layer_id_at(p).is_some_and(|layer| layer.order != egui::Order::Background);
@@ -478,8 +477,8 @@ impl App {
         else {
             return DragEnd::Abandoned;
         };
-        let at = ((pointer.to_vec2() - translation) / zoom_scale).to_pos2();
-        let tolerance = DROP_TOLERANCE_PX / zoom_scale;
+        let at = transform.inverse() * pointer;
+        let tolerance = DROP_TOLERANCE_PX / transform.scaling;
         if let Some(target) = self.card_within(at, tolerance, *source) {
             return DragEnd::Card(target);
         }

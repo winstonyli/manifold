@@ -751,7 +751,7 @@ impl App {
                 popup_frame(ui).show(ui, |ui| {
                     let (outer, _) = ui.allocate_exact_size(view, egui::Sense::hover());
                     ui.painter().rect_filled(outer, 4.0, ui.visuals().panel_fill);
-                    let (zoom_scale, _) = camera.begin_frame(ui.ctx(), outer);
+                    let zoom_scale = camera.begin_frame(ui.ctx(), outer).scaling;
                     let inv_zoom = 1.0 / zoom_scale;
                     let viewport = camera.rect;
                     let weak = ui.visuals().weak_text_color();
@@ -802,8 +802,8 @@ impl App {
                         camera.pan_to(target);
                     }
                     // The pages' labels and icon letters, at screen size over the scene, clipped to the popup.
-                    let (zoom_scale, translation) = camera.transform(outer);
-                    let project = move |world: egui::Pos2| (translation + zoom_scale * world.to_vec2()).to_pos2();
+                    let transform = camera.transform(outer);
+                    let project = move |world: egui::Pos2| transform * world;
                     let overlay_painter = ui.painter().with_clip_rect(outer);
                     overlays.play(&overlay_painter, &project);
                     debug_assert!(actions.is_empty(), "a trail page's click returns no GraphAction");

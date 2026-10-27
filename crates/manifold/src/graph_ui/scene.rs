@@ -189,8 +189,8 @@ impl App {
         // local instead of borrowed from `self.camera.rect` directly.
         // `Scene` scales everything in its closure by the zoom factor, so chrome (shapes, text) is sized
         // `desired_screen_px * inv_zoom` to keep a constant screen size; text instead goes through
-        // `overlay_painter`/`project` (see `DeferredOverlays`). `zoom_scale`/`translation` are the pair
-        // `GraphCamera::transform` derives (`screen = translation + zoom_scale * world`). The node card itself
+        // `overlay_painter`/`project` (see `DeferredOverlays`). `transform` is the one
+        // `GraphCamera::transform` derives (`screen = translation + scaling * world`). The node card itself
         // (`GRAPH_NODE_SIZE`) and the hover peek preview (`GRAPH_PEEK_SIZE`) are zoomable content, not chrome,
         // so they scale with the zoom.
         self.build_right_panel(ui, &mut actions);
@@ -198,9 +198,10 @@ impl App {
         self.apply_zoom_requests(scene_outer_rect, reset_zoom, graph_zoom_step);
         // Advance first: everything below (strokes, `zoom_pct`, the new-node
         // menu) must use the rect the Scene draws this frame.
-        let (zoom_scale, translation) = self.camera.begin_frame(ui.ctx(), scene_outer_rect);
+        let transform = self.camera.begin_frame(ui.ctx(), scene_outer_rect);
+        let zoom_scale = transform.scaling;
         let inv_zoom = 1.0 / zoom_scale;
-        let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
+        let project = move |world: egui::Pos2| -> egui::Pos2 { transform * world };
         // Clipped to the graph panel's own rect (not `layer_painter`'s
         // default full-content-rect) so a node near the top edge can't
         // paint its label over the toolbar above. `Order::Middle`: above
@@ -215,7 +216,7 @@ impl App {
             scene_outer_rect,
         );
 
-        self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, zoom_scale, translation);
+        self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, transform);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
         // Compared against after `Scene`'s own closure runs, below --
@@ -257,7 +258,7 @@ impl App {
                     ui.input(|i| i.pointer.interact_pos()),
                     scene_outer_rect,
                     minimap.map(|(rect, _, _)| rect),
-                    (zoom_scale, translation),
+                    transform,
                 );
                 // For a dragged link end, what the release there would do: the band and ring show it.
                 self.link.retarget_preview = self.retarget_preview(&connect_end);
@@ -295,8 +296,8 @@ impl App {
         // it, closing the one-frame gap between a card and its own
         // overlay-painted label/icons that was otherwise most visible
         // during a fast pan or zoom.
-        let (zoom_scale, translation) = self.camera.transform(scene_outer_rect);
-        let project = move |world: egui::Pos2| -> egui::Pos2 { (translation + zoom_scale * world.to_vec2()).to_pos2() };
+        let transform = self.camera.transform(scene_outer_rect);
+        let project = move |world: egui::Pos2| -> egui::Pos2 { transform * world };
         deferred_overlays.play(&overlay_painter, &project);
         self.draw_selection_bar(ui, &mut actions, scene_outer_rect, &project);
         self.draw_suggestions(ui, scene_outer_rect, &project);
@@ -337,7 +338,7 @@ impl App {
                     ui.input(|i| i.pointer.interact_pos()),
                     scene_outer_rect,
                     minimap.map(|(rect, _, _)| rect),
-                    (zoom_scale, translation),
+                    transform,
                 )
             } else {
                 crate::link_gestures::DragEnd::Abandoned

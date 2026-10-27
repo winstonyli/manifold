@@ -1138,7 +1138,7 @@ fn a_connect_drag_ends_with_its_mode_and_with_its_source() {
 }
 
 fn handle_on_screen(app: &App, id: NodeId, side: HandleSide) -> egui::Pos2 {
-    let (zoom, _) = app.camera.transform(app.graph_scene_outer_rect());
+    let zoom = app.camera.transform(app.graph_scene_outer_rect()).scaling;
     let rects = link_handle_rects(app.card_rect(id).expect("a card"), zoom, Detail::Full);
     let (_, rect) = rects.into_iter().find(|(s, _)| *s == side).expect("shown at this zoom");
     app.graph_world_rect_to_screen(rect).center()
@@ -1268,7 +1268,7 @@ fn a_handle_over_a_link_line_takes_the_press_from_the_line() {
     let handle = handle_on_screen(&app, a, HandleSide::Right) + egui::vec2(4.0, 0.0);
     assert!(!screen_rect(&app, a).contains(handle));
     let line = app.level_edges().into_iter().find(|e| e.link == Some(ab)).expect("drawn");
-    let (zoom, _) = app.camera.transform(app.graph_scene_outer_rect());
+    let zoom = app.camera.transform(app.graph_scene_outer_rect()).scaling;
     let in_world = app.card_rect(a).unwrap().right_center() + egui::vec2(4.0 / zoom, 0.0);
     assert!(
         distance_to_bow(in_world, line.from, line.to) <= link_hit_tolerance(1.0 / zoom),
@@ -1553,7 +1553,7 @@ fn a_connect_drag_without_its_button_down_cancels() {
 fn a_click_on_a_handle_over_a_neighbour_links_nothing() {
     let (h, mut app, [a, b, _]) = three_notes();
     // b's left edge 2 screen points right of a's right edge: b's left handle's outer half lies over a.
-    let (zoom, _) = app.camera.transform(app.graph_scene_outer_rect());
+    let zoom = app.camera.transform(app.graph_scene_outer_rect()).scaling;
     let (ra, rb) = (app.card_rect(a).unwrap(), app.card_rect(b).unwrap());
     let b_centre = egui::pos2(ra.right() + 2.0 / zoom + rb.width() / 2.0, ra.center().y);
     app.snap_layout(b, b_centre.to_vec2());

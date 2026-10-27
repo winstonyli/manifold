@@ -197,9 +197,9 @@ impl App {
         ui: &egui::Ui,
         overlay_painter: &egui::Painter,
         scene_outer_rect: egui::Rect,
-        zoom_scale: f32,
-        translation: egui::Vec2,
+        transform: egui::emath::TSTransform,
     ) {
+        let to_world = transform.inverse();
         let secondary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Secondary));
         let pointer_pos = ui.input(|i| i.pointer.interact_pos());
         // Not while a card drag or a connect-drag holds the primary button: a right-press then would open a menu
@@ -220,7 +220,7 @@ impl App {
                 // see `nearest_tab_in_direction`'s own doc comment on why
                 // `self.focused` stays tab-only), so a right-click on one
                 // would otherwise just compute an empty selection.
-                let world_pos = ((pos.to_vec2() - translation) / zoom_scale).to_pos2();
+                let world_pos = to_world * pos;
                 // Reverse draw order, `level_items`, so the card on top
                 // takes the right-click, the same card a left-click there
                 // would reach.
@@ -284,14 +284,11 @@ impl App {
                 if (current - start).length() < 4.0 {
                     // A JSON level is read-only: no creation card there.
                     if self.json_level.is_none() {
-                        let world_pos = ((start.to_vec2() - translation) / zoom_scale).to_pos2();
+                        let world_pos = to_world * start;
                         self.interaction.pending_new_node = Some(egui::Vec2::new(world_pos.x, world_pos.y));
                     }
                 } else {
-                    let world_rect = egui::Rect::from_two_pos(
-                        ((screen_rect.min.to_vec2() - translation) / zoom_scale).to_pos2(),
-                        ((screen_rect.max.to_vec2() - translation) / zoom_scale).to_pos2(),
-                    );
+                    let world_rect = to_world * screen_rect;
                     self.interaction.selected = self
                         .level_items()
                         .into_iter()
