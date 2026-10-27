@@ -24,11 +24,11 @@ mod trail;
 mod view_modes;
 mod writes;
 
-/// Waits up to ~1 s for `app.redirect_fetcher` to report something.
+/// Waits up to ~1 s for `app.workers.redirect_fetcher` to report something.
 /// Under test (no content dir) every fetch fails at once.
 fn drain_fetches(app: &mut App) -> Vec<FetchResult> {
     for _ in 0..200 {
-        let results = app.redirect_fetcher.tick();
+        let results = app.workers.redirect_fetcher.tick();
         if !results.is_empty() {
             return results;
         }

@@ -205,8 +205,8 @@ fn teardown_cancels_pending_pdf_renders() {
     let pdf = add(&mut app, Kind::Pdf, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
     app.teardown_running_session();
-    assert!(app.pdf_renderer.is_cancelled(pdf));
-    assert!(!app.pdf_renderer.is_cancelled(note), "only PDFs are marked");
+    assert!(app.workers.pdf_renderer.is_cancelled(pdf));
+    assert!(!app.workers.pdf_renderer.is_cancelled(note), "only PDFs are marked");
 }
 
 /// Wave 2 (teardown order): replacing the session queues a delete for every live non-jar node of the document and

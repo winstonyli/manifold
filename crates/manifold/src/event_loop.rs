@@ -14,6 +14,7 @@ mod pacing;
 mod view_ipc;
 mod view_message;
 
+pub(crate) use fetchers::Workers;
 pub(crate) use pacing::*;
 
 /// What the window events leave for forwarding input to pages (`App::page_input`).

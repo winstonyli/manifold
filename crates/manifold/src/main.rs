@@ -336,25 +336,8 @@ struct App {
     omni: OmniBar,
     /// The Ctrl+K popup's omnibar.
     omni_popup: OmniBar,
-    /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
-    /// module's own doc comment for why favicons are fetched independently
-    /// here rather than aggregated from each engine's own (inconsistent)
-    /// native favicon API.
-    favicon_fetcher: FaviconFetcher,
-    /// See `PdfPayload::outcome`'s own doc comment.
-    pdf_renderer: PdfRenderer,
-    /// Decodes image nodes' files off the UI thread (`insert_image_node_with_id`).
-    image_decoder: ImageDecoder,
-    /// See `redirect_fetch`'s own module doc comment.
-    redirect_fetcher: RedirectFetcher,
-    /// Origins already resolved (successfully or not) by `favicon_fetcher`
-    /// -- checked before requesting again, so a failed origin (no
-    /// `/favicon.ico`, a network error, undecodable bytes) isn't refetched
-    /// on every navigation back to it. A *successful* fetch's actual pixel
-    /// data lives in `GpuState::favicons` (keyed by the same origin
-    /// string), not duplicated here -- this only needs to remember whether
-    /// resolution was already attempted, not the result itself.
-    favicon_resolved: HashSet<String>,
+    /// The background fetchers and decoders (see `event_loop::Workers`).
+    workers: event_loop::Workers,
 
     /// Pick-target mode and the connect-drag/retarget gestures. See `LinkGesture`.
     link: LinkGesture,
@@ -564,11 +547,7 @@ impl Default for App {
             egui_state: None,
             omni: OmniBar::new(settings.home_page.clone()),
             omni_popup: OmniBar::new(String::new()),
-            favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
-            pdf_renderer: PdfRenderer::new(),
-            image_decoder: ImageDecoder::new(),
-            redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
-            favicon_resolved: HashSet::new(),
+            workers: Default::default(),
             link: LinkGesture::default(),
             interaction: GraphInteraction::default(),
             spawns: SpawnTracker::default(),

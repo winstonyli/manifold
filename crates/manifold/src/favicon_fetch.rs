@@ -48,7 +48,7 @@ const MAX_FAVICON_FETCHES: usize = 4;
 /// Fetches and decodes favicons on background threads, deduplicating
 /// concurrent requests for the same origin (two tabs navigating to the same
 /// site around the same time shouldn't fire two redundant HTTP requests).
-/// Which origins already resolved this launch is `App::favicon_resolved`'s
+/// Which origins already resolved this launch is `Workers::favicon_resolved`'s
 /// job; this type knows only the requests in flight, and the disk cache.
 pub struct FaviconFetcher {
     tx: mpsc::Sender<(String, Option<FaviconImage>)>,

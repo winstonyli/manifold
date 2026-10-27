@@ -311,8 +311,8 @@ impl App {
     /// Asks for the favicon of each of `urls`' origins not yet fetched (a list row only has one once it is).
     pub(crate) fn request_favicons<'a>(&mut self, urls: impl IntoIterator<Item = &'a str>) {
         for origin in urls.into_iter().filter_map(|url| UrlParts::parse(url).origin()) {
-            if !self.favicon_resolved.contains(&origin) {
-                self.favicon_fetcher.request(origin);
+            if !self.workers.favicon_resolved.contains(&origin) {
+                self.workers.favicon_fetcher.request(origin);
             }
         }
     }

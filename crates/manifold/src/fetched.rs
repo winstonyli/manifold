@@ -286,13 +286,13 @@ impl App {
         if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {
             if matches!(pdf.outcome, Some(Err(_))) {
                 pdf.outcome = None;
-                self.pdf_renderer.request(id, pdf.path.clone());
+                self.workers.pdf_renderer.request(id, pdf.path.clone());
             }
             return;
         }
         if let Some(image) = self.nodes.get_mut(&id).and_then(|n| n.as_image_mut()) {
             if image.error.take().is_some() {
-                self.image_decoder.request(id, image.path.clone());
+                self.workers.image_decoder.request(id, image.path.clone());
             }
             return;
         }
@@ -335,7 +335,7 @@ impl App {
         };
         let Some(url) = self.source_url(id).map(str::to_string) else { return };
         let job = FetchJob { target: FetchTarget::Node(id), node_id: id, url, kind };
-        self.redirect_fetcher.request(job);
+        self.workers.redirect_fetcher.request(job);
     }
 
     /// Reloads node `id` from freshly fetched content: same id, position,
@@ -559,7 +559,7 @@ impl App {
         // worker (`ImageDecoder`), and `tick_fetchers` sizes the card, uploads the texture, or toasts and keeps
         // the error as the card's tooltip. Decoded by content, not by `path`'s extension: `insert_content` already
         // sniffed this file as an image, which a lying extension (a `.pdf` that's really a PNG) would defeat.
-        self.image_decoder.request(id, path.clone());
+        self.workers.image_decoder.request(id, path.clone());
         let payload = ImagePayload { path, width: 0, height: 0, error: None };
         self.place_node(Some(id), Kind::Image, Runtime::Image(payload), Placement { group, pos });
     }
@@ -597,7 +597,7 @@ impl App {
     /// decoding a PDF is genuinely slow (see `PdfPayload`'s own doc comment);
     /// a bad/missing file surfaces later as a `Some(Err(_))` outcome.
     pub(crate) fn insert_pdf_node_with_id(&mut self, id: NodeId, path: String, pos: egui::Vec2, group: Option<NodeId>) {
-        self.pdf_renderer.request(id, path.clone());
+        self.workers.pdf_renderer.request(id, path.clone());
         let pdf = Runtime::Pdf(PdfPayload { path, outcome: None });
         self.place_node(Some(id), Kind::Pdf, pdf, Placement { group, pos });
     }

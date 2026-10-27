@@ -2,6 +2,41 @@
 
 use super::*;
 
+/// The background fetchers and decoders `tick_fetchers` drains (`App::workers`).
+pub(crate) struct Workers {
+    /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
+    /// module's own doc comment for why favicons are fetched independently
+    /// here rather than aggregated from each engine's own (inconsistent)
+    /// native favicon API.
+    pub(crate) favicon_fetcher: FaviconFetcher,
+    /// See `PdfPayload::outcome`'s own doc comment.
+    pub(crate) pdf_renderer: PdfRenderer,
+    /// Decodes image nodes' files off the UI thread (`insert_image_node_with_id`).
+    pub(crate) image_decoder: ImageDecoder,
+    /// See `redirect_fetch`'s own module doc comment.
+    pub(crate) redirect_fetcher: RedirectFetcher,
+    /// Origins already resolved (successfully or not) by `favicon_fetcher`
+    /// -- checked before requesting again, so a failed origin (no
+    /// `/favicon.ico`, a network error, undecodable bytes) isn't refetched
+    /// on every navigation back to it. A *successful* fetch's actual pixel
+    /// data lives in `GpuState::favicons` (keyed by the same origin
+    /// string), not duplicated here -- this only needs to remember whether
+    /// resolution was already attempted, not the result itself.
+    pub(crate) favicon_resolved: HashSet<String>,
+}
+
+impl Default for Workers {
+    fn default() -> Self {
+        Self {
+            favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
+            pdf_renderer: PdfRenderer::new(),
+            image_decoder: ImageDecoder::new(),
+            redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
+            favicon_resolved: HashSet::new(),
+        }
+    }
+}
+
 impl App {
     /// Drains every tab's `events_rx` (not just the focused one — a
     /// background tab can still crash, or finish an in-flight swap, while
@@ -33,7 +68,7 @@ impl App {
     #[cfg(test)]
     pub(crate) fn finish_image_decodes(&mut self) {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while self.image_decoder.pending() > 0 && std::time::Instant::now() < end {
+        while self.workers.image_decoder.pending() > 0 && std::time::Instant::now() < end {
             self.tick_fetchers();
             std::thread::yield_now();
         }
@@ -42,8 +77,8 @@ impl App {
 
     /// Applies what the favicon fetcher, PDF renderer and redirect fetcher finished since the last drain.
     fn tick_fetchers(&mut self) {
-        for (origin, result) in self.favicon_fetcher.tick() {
-            self.favicon_resolved.insert(origin.clone());
+        for (origin, result) in self.workers.favicon_fetcher.tick() {
+            self.workers.favicon_resolved.insert(origin.clone());
             if let Some(image) = result {
                 if let Some(gpu) = &mut self.gpu {
                     gpu.upload_favicon(&origin, &image.rgba, image.width, image.height);
@@ -51,7 +86,7 @@ impl App {
             }
         }
 
-        for (id, result) in self.image_decoder.tick() {
+        for (id, result) in self.workers.image_decoder.tick() {
             // A node deleted (or already failed and retried) while its decode ran has nothing to receive it.
             if self.nodes.get(&id).and_then(|n| n.as_image()).is_none() {
                 continue;
@@ -74,7 +109,7 @@ impl App {
             }
         }
 
-        for (id, result) in self.pdf_renderer.tick() {
+        for (id, result) in self.workers.pdf_renderer.tick() {
             // The node may have been deleted while this render was still
             // in flight -- skip a late-arriving result entirely rather
             // than uploading a texture nothing will ever free (`delete`'s
@@ -127,7 +162,7 @@ impl App {
             }
         }
 
-        for FetchResult { job, body } in self.redirect_fetcher.tick() {
+        for FetchResult { job, body } in self.workers.redirect_fetcher.tick() {
             let Some(body) = body else {
                 // A tab whose fetch failed just stays an ordinary tab (see
                 // `RedirectFetcher::tick`'s own doc comment) -- silent by

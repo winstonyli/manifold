@@ -199,7 +199,7 @@ impl App {
                 if let (Some(url), K::Image | K::Pdf | K::Json | K::Note) = (url, kind) {
                     let node_id = self.alloc_node_id();
                     let target = FetchTarget::Tab(tab_id);
-                    self.redirect_fetcher.request(FetchJob { target, node_id, url, kind });
+                    self.workers.redirect_fetcher.request(FetchJob { target, node_id, url, kind });
                 }
             }
             ViewToHost::ContextMenuLink { x, y, href } => {

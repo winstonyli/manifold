@@ -141,7 +141,7 @@ impl App {
     pub(crate) fn unshow(&mut self, id: NodeId) -> Option<crate::GraphNode> {
         let removed = self.nodes.remove(&id);
         if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
-            self.pdf_renderer.cancel(id);
+            self.workers.pdf_renderer.cancel(id);
         }
         self.node_order.retain(|d| *d != id);
         // A split only makes sense paired with its focused tab (`focus_tab`): losing either half clears it.

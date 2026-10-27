@@ -489,7 +489,7 @@ impl App {
     /// not yet started is skipped, as `remove_node` does.
     pub(crate) fn teardown_running_session(&mut self) {
         for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
-            self.pdf_renderer.cancel(*id);
+            self.workers.pdf_renderer.cancel(*id);
         }
         // The Default jar is the profile's own: the replaced session's cards go, it stays (spec "The Default jar").
         let default = self.default_jar();
