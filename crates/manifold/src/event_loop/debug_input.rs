@@ -50,14 +50,27 @@ impl App {
     /// that places it, and a click aimed at what the first drew can miss.
     pub(crate) fn release_idle_waiters(&mut self) {
         const QUIET_FRAMES: u8 = 3;
-        if self.debug.idle_waiters.is_empty() {
+        self.release_when(
+            |app| &mut app.debug.idle_waiters,
+            |app| {
+                app.debug.idle_frames = if app.debug_idle() { app.debug.idle_frames.saturating_add(1) } else { 0 };
+                app.debug.idle_frames >= QUIET_FRAMES
+            },
+        );
+    }
+
+    /// Releases the waiters `waiters` names once `ready` holds, and until then asks for the next frame: a headless
+    /// window draws only when asked. `ready` runs only while someone waits.
+    fn release_when(
+        &mut self,
+        waiters: fn(&mut Self) -> &mut crate::debug_control::Waiters,
+        ready: impl FnOnce(&mut Self) -> bool,
+    ) {
+        if waiters(self).is_empty() {
             return;
         }
-        self.debug.idle_frames = if self.debug_idle() { self.debug.idle_frames.saturating_add(1) } else { 0 };
-        if self.debug.idle_frames >= QUIET_FRAMES {
-            for waiter in self.debug.idle_waiters.drain(..) {
-                let _ = waiter.send(());
-            }
+        if ready(self) {
+            waiters(self).release();
         } else if let Some(window) = &self.window {
             window.request_redraw();
         }
@@ -75,16 +88,7 @@ impl App {
     /// Releases the `WAITINDEX` commands waiting once `index_settled` holds, and until then asks for the next frame
     /// (the sync pass runs on the tick, and a headless window draws only when asked).
     pub(crate) fn release_index_waiters(&mut self) {
-        if self.debug.index_waiters.is_empty() {
-            return;
-        }
-        if self.index_settled() {
-            for waiter in self.debug.index_waiters.drain(..) {
-                let _ = waiter.send(());
-            }
-        } else if let Some(window) = &self.window {
-            window.request_redraw();
-        }
+        self.release_when(|app| &mut app.debug.index_waiters, |app| app.index_settled());
     }
 
     /// Moves the pointer to (x, y), then presses and releases `button`

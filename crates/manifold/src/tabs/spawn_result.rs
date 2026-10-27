@@ -21,9 +21,7 @@ impl App {
         let remote = self.spawns.remote_in_flight.remove(&id);
         self.spawns.tab_spawns_in_flight = self.spawns.tab_spawns_in_flight.saturating_sub(1);
         if self.spawns.tab_spawns_in_flight == 0 {
-            for waiter in self.spawns.tabs_spawned_waiters.drain(..) {
-                let _ = waiter.send(());
-            }
+            self.spawns.tabs_spawned_waiters.release();
         }
         // Spawned for a session that's since been replaced: dropping the
         // `ViewTab` shuts its engine host down. See `session_generation`.

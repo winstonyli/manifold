@@ -1133,6 +1133,27 @@ pub fn spawn_stdin_reader(proxy: EventLoopProxy<UserEvent>) {
     });
 }
 
+/// Senders of the headless waits (`WAITTABS`, `WAITIDLE`, `WAITINDEX`) parked until their condition holds.
+#[derive(Default)]
+pub(crate) struct Waiters(Vec<std::sync::mpsc::Sender<()>>);
+
+impl Waiters {
+    pub(crate) fn push(&mut self, waiter: std::sync::mpsc::Sender<()>) {
+        self.0.push(waiter);
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Sends `()` to every waiter and forgets them.
+    pub(crate) fn release(&mut self) {
+        for waiter in self.0.drain(..) {
+            let _ = waiter.send(());
+        }
+    }
+}
+
 /// The headless debug channel's pending work (`App::debug`): synthetic input, deferred quits and the capture/idle waiters.
 #[derive(Default)]
 pub(crate) struct HeadlessDebug {
@@ -1171,10 +1192,10 @@ pub(crate) struct HeadlessDebug {
     /// `pdf::write_image_as_pdf` and deleted. `None` the rest of the time,
     /// including for an ordinary "Screenshot" button click.
     pub(crate) pending_print_to_pdf: Option<(String, String)>,
-    /// Senders of the headless `WAITIDLE` commands waiting for `debug_idle`.
-    pub(crate) idle_waiters: Vec<std::sync::mpsc::Sender<()>>,
-    /// Senders of the headless `WAITINDEX` commands waiting for `index_settled`.
-    pub(crate) index_waiters: Vec<std::sync::mpsc::Sender<()>>,
+    /// The headless `WAITIDLE` commands waiting for `debug_idle`.
+    pub(crate) idle_waiters: Waiters,
+    /// The headless `WAITINDEX` commands waiting for `index_settled`.
+    pub(crate) index_waiters: Waiters,
     /// Consecutive frame ends at which `debug_idle` held, while `idle_waiters` waits; `QUIET_FRAMES` releases them.
     pub(crate) idle_frames: u8,
 }
