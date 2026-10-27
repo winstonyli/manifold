@@ -266,7 +266,7 @@ pub(crate) fn danger_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 fn filled_button(ui: &mut egui::Ui, label: &str, fill: egui::Color32) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding.x = 11.0;
-        let ink = ui.visuals().widgets.active.fg_stroke.color;
+        let ink = palette(ui.visuals()).on_accent;
         add_borderless(
             ui,
             true,
@@ -376,6 +376,9 @@ pub(crate) const NOTE_CARD_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 2
 pub(crate) struct Palette {
     pub text: egui::Color32,
     pub text_weak: egui::Color32,
+    /// Text on a solid accent or danger fill (`filled_button`, the selection): the dark ground on the light accent,
+    /// white on the light theme's deep one.
+    pub on_accent: egui::Color32,
     /// A darker rust than `danger`, for a solid fill that carries `text` (the graph close button's hover).
     pub danger_fill: egui::Color32,
     pub success: egui::Color32,
@@ -392,6 +395,7 @@ pub(crate) const INK_LIGHT: egui::Color32 = egui::Color32::from_rgb(233, 226, 21
 static DARK_PALETTE: Palette = Palette {
     text: color(manifold_pages::palette::DARK.text_primary),
     text_weak: color(manifold_pages::palette::DARK.text_weak),
+    on_accent: color(manifold_pages::palette::DARK.bg),
     danger_fill: egui::Color32::from_rgb(150, 52, 38),
     success: egui::Color32::from_rgb(150, 190, 90),
     canvas: color(manifold_pages::palette::DARK.bg),
@@ -401,6 +405,7 @@ static DARK_PALETTE: Palette = Palette {
 static LIGHT_PALETTE: Palette = Palette {
     text: color(manifold_pages::palette::LIGHT.text_primary),
     text_weak: color(manifold_pages::palette::LIGHT.text_weak),
+    on_accent: color(manifold_pages::palette::LIGHT.surface_raised),
     danger_fill: egui::Color32::from_rgb(230, 125, 105),
     success: egui::Color32::from_rgb(38, 112, 42),
     canvas: color(manifold_pages::palette::LIGHT.bg),
@@ -423,20 +428,6 @@ pub(crate) fn accent(visuals: &egui::Visuals) -> egui::Color32 {
 /// The one severity-red, for text, icons and borders.
 pub(crate) fn danger(visuals: &egui::Visuals) -> egui::Color32 {
     visuals.error_fg_color
-}
-
-/// Emphasised text, in the primary text color. egui's `RichText::strong` takes the active widget's ink, which this
-/// theme sets for the accent fill (the ground color in the dark theme), so on a plain surface it vanishes;
-/// `clippy.toml` bans it for this.
-pub(crate) fn strong(visuals: &egui::Visuals, text: impl Into<String>) -> egui::RichText {
-    egui::RichText::new(text).color(palette(visuals).text)
-}
-
-/// A spinner in the primary text color. egui's default color is the same active-widget ink as `RichText::strong`
-/// (`clippy.toml` bans `Spinner::new` for this).
-pub(crate) fn spinner(visuals: &egui::Visuals) -> egui::Spinner {
-    #[expect(clippy::disallowed_methods, reason = "the one place a Spinner gets its color")]
-    egui::Spinner::new().color(palette(visuals).text)
 }
 
 /// Fills egui's dark and light style slots (`style_mut_of` keeps one `Style` per theme), so `set_theme` switches the
@@ -505,11 +496,13 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals.widgets.hovered.fg_stroke.color = text;
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, outline);
 
+    // Focused, pressed or just clicked. egui gives the active ink to widgets that paint no fill too (a clickable label,
+    // a checkbox's text, `RichText::strong`, `Spinner`), so it stays the primary text on the hover fill, and the
+    // accent outline marks the state. Ink on a solid accent fill is `Palette::on_accent`.
     style.visuals.widgets.active.corner_radius = corner_radius;
-    style.visuals.widgets.active.bg_fill = accent;
-    style.visuals.widgets.active.weak_bg_fill = accent;
-    // Ink on the accent fill: the dark ground on the light accent, white on the light theme's deep one.
-    style.visuals.widgets.active.fg_stroke.color = if dark { bg } else { raised };
+    style.visuals.widgets.active.bg_fill = hover;
+    style.visuals.widgets.active.weak_bg_fill = hover;
+    style.visuals.widgets.active.fg_stroke.color = text;
     style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, accent);
 
     style.visuals.widgets.open.corner_radius = corner_radius;
@@ -527,8 +520,8 @@ fn fill_style(style: &mut egui::Style, dark: bool) {
     style.visuals.window_stroke = egui::Stroke::new(1.0, raised);
 
     style.visuals.selection.bg_fill = accent;
-    // The same ink as an active widget: text drawn on the selection fill (a selected row, a toggle).
-    style.visuals.selection.stroke.color = style.visuals.widgets.active.fg_stroke.color;
+    // Text drawn on the selection fill (a selected row, a toggle).
+    style.visuals.selection.stroke.color = if dark { DARK_PALETTE.on_accent } else { LIGHT_PALETTE.on_accent };
     style.visuals.hyperlink_color = accent;
     style.visuals.override_text_color = None;
     style.visuals.error_fg_color = danger;
@@ -841,19 +834,22 @@ mod tests {
             let p = palette(&visuals);
             let [bg, toolbar, raised, hover] = [t.bg, t.toolbar_fill, t.surface_raised, t.surface_hover].map(color);
             let [accent, danger, outline] = [t.accent, t.danger, t.outline].map(color);
-            let ink = visuals.widgets.active.fg_stroke.color;
+            let active = visuals.widgets.active;
             let surfaces = [bg, toolbar, raised, hover];
+            // A focused or pressed widget may paint its fill or none (a clickable label, a checkbox's text, `strong`).
+            let under_active = [bg, toolbar, raised, hover, active.bg_fill, active.weak_bg_fill];
             // (role, color, the surfaces it is drawn on, the ratio it needs). Accent and danger text is drawn on the page
             // and raised surfaces only (a hovered row shows weak or primary text).
-            let roles: [(&str, egui::Color32, &[egui::Color32], f32); 8] = [
+            let roles: [(&str, egui::Color32, &[egui::Color32], f32); 9] = [
                 ("text", p.text, &surfaces, 4.5),
                 ("text_weak", p.text_weak, &surfaces, 4.5),
                 ("accent", accent, &[bg, toolbar, raised], 4.5),
                 ("danger", danger, &[bg, toolbar, raised], 4.5),
                 ("success", p.success, &[bg, toolbar, raised], 4.5),
                 ("outline", outline, &[hover], 3.0),
-                // Text on a solid fill: `filled_button` and the active widget set `ink`; the close hover sets primary.
-                ("ink on accent", ink, &[accent, danger], 4.5),
+                ("active text", active.fg_stroke.color, &under_active, 4.5),
+                // Text on a solid fill: `filled_button` and the selection set `on_accent`; the close hover sets primary.
+                ("on_accent", p.on_accent, &[accent, danger], 4.5),
                 ("text on danger_fill", p.text, &[p.danger_fill], 4.5),
             ];
             for (name, color, surfaces, needed) in roles {

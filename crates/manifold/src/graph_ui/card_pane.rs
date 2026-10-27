@@ -80,7 +80,7 @@ impl App {
             }
         } else {
             ui.horizontal(|ui| {
-                let name = crate::theme::strong(ui.visuals(), self.accessible_name(id).unwrap_or_default());
+                let name = egui::RichText::new(self.accessible_name(id).unwrap_or_default()).strong();
                 ui.add(egui::Label::new(name).wrap());
                 if ui.small_button(egui_phosphor::light::PENCIL_SIMPLE).on_hover_text("Rename").clicked() {
                     actions.push(GraphAction::Node(id, NodeAction::Rename));

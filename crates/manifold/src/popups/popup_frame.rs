@@ -118,14 +118,9 @@ pub(crate) fn list_popup(
 /// A clickable text row in a list popup (`build_list_popup_frame`). Keyboard-focusable: a focused
 /// row shows `focus_ring`, Enter clicks it, and the popup's Up/Down move between rows.
 pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> egui::Response {
-    // A focused widget gets the "active" text color, which is black in this theme.
-    let active_fg = ui.visuals().widgets.active.fg_stroke;
-    ui.visuals_mut().widgets.active.fg_stroke =
-        egui::Stroke::new(active_fg.width, crate::theme::palette(ui.visuals()).text);
     let response = ui
         .add(egui::Label::new(text).truncate().sense(egui::Sense::click()))
         .on_hover_cursor(egui::CursorIcon::PointingHand);
-    ui.visuals_mut().widgets.active.fg_stroke = active_fg;
     nav_row(ui, &response);
     response
 }

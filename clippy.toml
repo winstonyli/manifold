@@ -1,6 +1,0 @@
-disallowed-methods = [
-    # Both draw in the active widget's ink, which the theme sets for the accent fill: invisible on a plain surface.
-    { path = "egui::RichText::strong", reason = "use theme::strong: egui's strong text takes the accent fill's ink" },
-    { path = "egui::WidgetText::strong", reason = "use theme::strong: egui's strong text takes the accent fill's ink" },
-    { path = "egui::Spinner::new", reason = "use theme::spinner: egui's default spinner takes the accent fill's ink" },
-]

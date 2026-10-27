@@ -184,26 +184,15 @@ impl App {
         egui::Id::new(("popup_opener", which))
     }
 
-    /// The settings page's button showing `kind`, opening engine picker `which`. Its label is
-    /// the engine's color, which is unreadable on the gold a focused button gets, so a
-    /// focused one uses the dark label instead.
+    /// The settings page's button showing `kind`, opening engine picker `which`, labelled in the engine's color.
     pub(crate) fn view_opener_button(
         &mut self,
         ui: &mut egui::Ui,
         which: AnchoredPopup,
         kind: ViewKind,
     ) -> egui::Response {
-        let focused = ui
-            .data(|d| d.get_temp::<egui::Id>(Self::popup_opener_key(which)))
-            .is_some_and(|id| ui.memory(|m| m.has_focus(id)));
         let unavailable = matches!(self.view_status(kind), crate::view_install::ViewStatus::Unavailable(_));
-        let color = if focused {
-            ui.visuals().widgets.active.fg_stroke.color
-        } else if unavailable {
-            palette(ui.visuals()).text_weak
-        } else {
-            view_color(kind)
-        };
+        let color = if unavailable { palette(ui.visuals()).text_weak } else { view_color(kind) };
         // The caret says it opens a list (the `▼` glyph is missing from the font; Phosphor's draws).
         let label = format!("{} {}", view_label(kind), egui_phosphor::light::CARET_DOWN);
         let response = ui.button(egui::RichText::new(label).color(color));

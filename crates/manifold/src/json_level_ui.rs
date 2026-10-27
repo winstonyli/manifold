@@ -850,11 +850,7 @@ impl App {
         } else {
             egui::Color32::TRANSPARENT
         };
-        let toggle = add_borderless(
-            ui,
-            true,
-            egui::Button::new(egui::RichText::new(outline).color(crate::theme::palette(ui.visuals()).text)).fill(on),
-        );
+        let toggle = add_borderless(ui, true, egui::Button::new(outline).fill(on));
         if toggle.on_hover_text("Outline").clicked() {
             self.json_ui.json_outline_visible = !self.json_ui.json_outline_visible;
         }
@@ -1075,13 +1071,7 @@ impl App {
                     if json_view::is_card(value) && !searching {
                         let caret =
                             if open { egui_phosphor::light::CARET_DOWN } else { egui_phosphor::light::CARET_RIGHT };
-                        let caret_button = ui.add_sized(
-                            CARET_SIZE,
-                            egui::Button::new(
-                                egui::RichText::new(caret).color(crate::theme::palette(ui.visuals()).text),
-                            )
-                            .frame(false),
-                        );
+                        let caret_button = ui.add_sized(CARET_SIZE, egui::Button::new(caret).frame(false));
                         focus_ring(ui, &caret_button);
                         if caret_button.clicked() {
                             flip = Some(row.pointer.clone());
