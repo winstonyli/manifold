@@ -7,8 +7,6 @@
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
-#![allow(dead_code, reason = "the runner core's API is used by the link and smoke ports of later tasks, and by tests")]
-
 #[cfg(windows)]
 mod ab;
 #[cfg(windows)]
@@ -33,7 +31,6 @@ mod instance;
 #[cfg(windows)]
 mod jar;
 mod labels;
-#[cfg(windows)]
 #[cfg(windows)]
 mod launch_forms;
 #[cfg(windows)]

@@ -4,8 +4,7 @@
 //! network. The body is DuckDuckGo's `type=list` shape: `[q, [q one, q two, q three]]`.
 //!
 //! The python server also served the key-probe, scroll and page-kind routes; no smoke check uses them, so any
-//! other path is a 404 here. It kept a `page.log` of those routes' requests; the smoke test never reads one, so
-//! the log here is the paths requested, in memory (`Server::requests`).
+//! other path is a 404 here.
 //!
 //! The server itself is `http::Server`.
 //!
@@ -13,7 +12,7 @@
 //! `urllib.parse.parse_qs`).
 
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::http;
 
@@ -84,31 +83,18 @@ pub fn respond(request_line: &str) -> Vec<u8> {
 /// The running endpoint. Dropping it stops the server.
 pub struct Server {
     http: http::Server,
-    log: Arc<Mutex<Vec<String>>>,
 }
 
 impl Server {
     /// Listens on `127.0.0.1` (or `SITE_HOST`) with an ephemeral port and answers each connection on a thread of its own.
     pub fn start() -> io::Result<Server> {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let log2 = log.clone();
-        let http = http::Server::start(Arc::new(move |line: &str| {
-            if let Ok(mut l) = log2.lock() {
-                l.push(line.split(' ').nth(1).unwrap_or("").to_string());
-            }
-            respond(line)
-        }))?;
-        Ok(Server { http, log })
+        let http = http::Server::start(Arc::new(respond))?;
+        Ok(Server { http })
     }
 
     /// The value for `MANIFOLD_SUGGESTIONS_URL`.
     pub fn url(&self) -> String {
         format!("http://{}:{}/ac/", http::site_host(), self.http.port())
-    }
-
-    /// The request targets seen so far (path and query), oldest first.
-    pub fn requests(&self) -> Vec<String> {
-        self.log.lock().map(|l| l.clone()).unwrap_or_default()
     }
 }
 
@@ -166,7 +152,7 @@ mod tests {
     }
 
     #[test]
-    fn serves_over_a_socket_and_logs_the_request() {
+    fn serves_over_a_socket() {
         let server = Server::start().unwrap();
         let addr = server.url().trim_start_matches("http://").trim_end_matches("/ac/").to_string();
         let mut c = TcpStream::connect(&addr).unwrap();
@@ -174,6 +160,5 @@ mod tests {
         let mut got = String::new();
         c.read_to_string(&mut got).unwrap();
         assert!(got.ends_with(r#"["weather",["weather one","weather two","weather three"]]"#), "{got}");
-        assert_eq!(server.requests(), ["/ac/?q=weather&type=list"]);
     }
 }

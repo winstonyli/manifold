@@ -162,11 +162,6 @@ impl Two {
         read_json(&p)
     }
 
-    fn state(&mut self, who: Who, name: &str) -> Step<Value> {
-        let p = self.request(who, "EXPORTSTATE", name)?;
-        read_json(&p)
-    }
-
     /// A no-op that still draws a frame (unlike SLEEP), so the instance's per-frame poll_store can pick up the other
     /// instance's edits. One file per instance (plan, risk R7).
     fn tick(&mut self, who: Who) -> Step {
