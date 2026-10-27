@@ -140,6 +140,7 @@ Done: 76efb88
 - **M1** `main.rs:181-533`: about 100 fields, a 120-line hand-written `Default` that also loads files. Group into
   sub-structs (like `pacing`, `menus`, `debug` already are), derive their `Default`, and move the loads to a
   constructor. `main/tests.rs` `NOT_FORGOTTEN` pins field names.
+  Done: 94b548f (`PageInput`), 9ceeac6 (`Workers`), 5114d51 (`GraphUi`), 2ecd007 (`SettingsState`), 52ac11d (`App::load`)
 
 ### B10. Theme helpers
 
