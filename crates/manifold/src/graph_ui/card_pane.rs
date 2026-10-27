@@ -192,10 +192,20 @@ fn label_row(
             actions.push(GraphAction::RenameLabel { label: id, name: std::mem::take(draft) });
         }
         // Escape, Tab or a click outside the field and its swatches cancels: the pane stays open, so a rename that
-        // outlived its focus would keep the keys from the graph.
-        let swatch_press = ui.input(|i| i.pointer.press_origin()).is_some_and(|p| edit.response.rect.contains(p));
-        if enter || (field.lost_focus() && !swatch_press) {
+        // outlived its focus would keep the keys from the graph. A click inside (a swatch) hands the keys back. egui
+        // surrenders focus on the click's release, so test the pointer's position, not the press origin (gone by then).
+        let click_inside = ui.input(|i| {
+            (i.pointer.any_pressed() || i.pointer.any_released())
+                && i.pointer.interact_pos().is_some_and(|p| edit.response.rect.contains(p))
+        });
+        if enter {
             section.editing = None;
+        } else if field.lost_focus() {
+            if click_inside {
+                section.focus_pending = true;
+            } else {
+                section.editing = None;
+            }
         }
         return;
     }
@@ -377,6 +387,57 @@ mod tests {
         assert!(app.interaction.label_section.editing.is_none(), "the click cancelled it");
         assert!(!actions.iter().any(|a| matches!(a, GraphAction::RenameLabel { .. })), "without renaming");
         assert_eq!(ctx.memory(|m| m.focused()), None, "and the field did not take the keys back");
+    }
+
+    /// A swatch click during a label rename recolours the label and keeps the rename and its draft. egui surrenders
+    /// the field's focus on the click's release, when the press is already over.
+    #[test]
+    fn a_swatch_click_keeps_a_label_rename() {
+        let mut app = App::default();
+        let a = crate::session_sync::tests::add_note(&mut app, "a");
+        let urgent = app.create_label("urgent", None).unwrap();
+        app.interaction.selected.insert(CardId::from(a));
+        let ctx = crate::theme::testutil::ctx(true);
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let mut actions = Vec::new();
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| app.build_right_panel(ui, &mut actions));
+            output.textures_delta.clear(); // nothing uploads the font atlas here
+            actions
+        };
+        frame(&mut app, vec![]);
+        app.interaction.label_section.start_editing(urgent, "urgent");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![egui::Event::Text("x".into())]);
+        let field = ctx.memory(|m| m.focused()).expect("the field took the keys");
+        let below = ctx.read_response(field).unwrap().rect.bottom();
+        // The first swatch: the first small square widget under the field.
+        let swatch = ctx.viewport(|v| {
+            v.prev_pass
+                .widgets
+                .layers()
+                .flat_map(|(_, rects)| rects)
+                .map(|w| w.rect)
+                .find(|r| r.top() > below && (r.width() - r.height()).abs() < 0.5 && r.width() < 30.0)
+        });
+        let at = swatch.expect("a swatch under the field").center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&mut app, vec![button(true)]);
+        let actions = frame(&mut app, vec![button(false)]);
+        frame(&mut app, vec![]);
+        assert!(actions.iter().any(|a| matches!(a, GraphAction::RecolorLabel { .. })), "the swatch recoloured");
+        assert_eq!(
+            app.interaction.label_section.editing.as_ref().map(|(id, draft)| (*id, draft.as_str())),
+            Some((urgent, "urgentx")),
+            "the rename and its draft stay"
+        );
+        assert_eq!(ctx.memory(|m| m.focused()), Some(field), "and the field has the keys back");
     }
 
     /// A label rename in progress is dropped with the pane, not carried to the next selection.
