@@ -110,7 +110,7 @@ mod view_picker_tests {
                     rows.push(list_row(ui, label).id);
                 }
                 let list = take_list_rows(ui);
-                step_focused_row(ui, &list.rows, list.partial);
+                step_focused_row(ui, &list.rows, list.partial, RowKeys::Arrows);
                 left = ui.input(|i| i.key_pressed(egui::Key::ArrowDown));
             });
             output.textures_delta.clear();
@@ -130,6 +130,62 @@ mod view_picker_tests {
         frame(vec![key(egui::Key::ArrowUp)]);
         frame(vec![]);
         assert!(ctx.memory(|m| m.has_focus(rows[2])), "and wraps");
+    }
+
+    fn shift_tab() -> egui::Event {
+        let key = egui::Key::Tab;
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        }
+    }
+
+    /// Outside a popup (the card pane) Tab is egui's own: it leaves a focused row for the next widget.
+    #[test]
+    fn tab_leaves_a_focused_row_outside_a_popup() {
+        let ctx = crate::theme::testutil::ctx(true);
+        let frame = |events: Vec<egui::Event>| -> (Vec<egui::Id>, egui::Id) {
+            let mut rows = Vec::new();
+            let mut after = egui::Id::NULL;
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| {
+                for label in ["a", "b", "c"] {
+                    rows.push(list_row(ui, label).id);
+                }
+                after = ui.button("after").id;
+                let list = take_list_rows(ui);
+                step_focused_row(ui, &list.rows, list.partial, RowKeys::Arrows);
+            });
+            output.textures_delta.clear();
+            (rows, after)
+        };
+        let (rows, after) = frame(vec![]);
+        ctx.memory_mut(|m| m.request_focus(rows[2]));
+        frame(vec![]);
+        frame(vec![]);
+        frame(vec![key(egui::Key::Tab)]);
+        frame(vec![]);
+        assert!(ctx.memory(|m| m.has_focus(after)), "Tab moved on from the last row");
+    }
+
+    /// In a list popup Tab and Shift+Tab step the rows as Down and Up do, wrapping.
+    #[test]
+    fn tab_and_shift_tab_step_a_list_popup() {
+        let ctx = egui::Context::default();
+        theme::apply_style(&ctx);
+        for _ in 0..3 {
+            list_frame(&ctx, vec![]);
+        }
+        list_frame(&ctx, vec![key(egui::Key::Tab)]);
+        list_frame(&ctx, vec![]);
+        assert_eq!(list_frame(&ctx, vec![key(egui::Key::Enter)]), Some(1), "Tab steps down");
+        list_frame(&ctx, vec![shift_tab()]);
+        list_frame(&ctx, vec![shift_tab()]);
+        list_frame(&ctx, vec![]);
+        assert_eq!(list_frame(&ctx, vec![key(egui::Key::Enter)]), Some(2), "Shift+Tab steps up and wraps");
     }
 
     /// One frame of a three-row list popup; returns the row clicked.

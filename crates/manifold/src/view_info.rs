@@ -487,18 +487,19 @@ mod tests {
         );
     }
 
-    /// Tab must not leave the popup: Enter after it still picks the focused card.
+    /// Tab must not leave the popup: it steps to the next card, as Down does, and Enter picks that one.
     #[test]
-    fn tab_keeps_focus_on_the_card() {
+    fn tab_steps_to_the_next_card() {
         let ctx = egui::Context::default();
         apply_style(&ctx);
-        let selected = ViewKind::picker_order()[1];
+        let order = ViewKind::picker_order();
+        let selected = order[1];
         for _ in 0..3 {
             frame(&ctx, selected, vec![]);
         }
         frame(&ctx, selected, vec![key(egui::Key::Tab)]);
         frame(&ctx, selected, vec![]);
-        assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(selected));
+        assert_eq!(frame(&ctx, selected, vec![key(egui::Key::Enter)]), Some(order[2 % order.len()]));
     }
 
     #[test]

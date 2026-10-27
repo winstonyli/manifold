@@ -130,8 +130,8 @@ pub(crate) fn list_row(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>) -> 
     response
 }
 
-/// Makes `response` a row of its popup's keyboard navigation (`list_row_nav`): a focused row shows `focus_ring`, is
-/// scrolled into view and keeps Tab and Up/Down inside the popup. Call it for every row, in order.
+/// Makes `response` a row of its list's keyboard navigation (`list_row_nav`, `step_focused_row`): a focused row shows
+/// `focus_ring`, is scrolled into view and keeps Up/Down (a popup's also Tab). Call it for every row, in order.
 pub(crate) fn nav_row(ui: &egui::Ui, response: &egui::Response) {
     if response.has_focus() {
         focus_ring(ui, response);
@@ -140,20 +140,11 @@ pub(crate) fn nav_row(ui: &egui::Ui, response: &egui::Response) {
     nav_stop(ui, std::slice::from_ref(&response.id));
 }
 
-/// One stop of the popup's Up/Down navigation made of several widgets (a row of swatches): any of `ids` focused is at
+/// One stop of the list's Up/Down navigation made of several widgets (a row of swatches): any of `ids` focused is at
 /// the stop, Up/Down leave it, and entering it from a neighbour lands on its first widget. Left/Right inside it are
 /// egui's own. The caller draws the focus rings.
 pub(crate) fn nav_stop(ui: &egui::Ui, ids: &[egui::Id]) {
-    ui.memory_mut(|m| {
-        for id in ids {
-            if m.has_focus(*id) {
-                m.set_focus_lock_filter(
-                    *id,
-                    egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() },
-                );
-            }
-        }
-    });
+    lock_focused(ui, ids, egui::EventFilter { vertical_arrows: true, ..Default::default() });
     let key = list_rows_key(ui);
     ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<Vec<egui::Id>>>(key).push(ids.to_vec()));
 }
@@ -211,17 +202,49 @@ pub(crate) fn take_list_rows(ui: &egui::Ui) -> ListRows {
     }
 }
 
-/// While one of `rows` has focus, Up/Down move it (wrapping unless `partial`), every press counted; returns whether
+/// Sets `filter` on whichever of `ids` has focus, so egui leaves those keys to the list.
+fn lock_focused(ui: &egui::Ui, ids: &[egui::Id], filter: egui::EventFilter) {
+    ui.memory_mut(|m| {
+        for id in ids {
+            if m.has_focus(*id) {
+                m.set_focus_lock_filter(*id, filter);
+            }
+        }
+    });
+}
+
+/// Which keys a list's focused row steps with.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum RowKeys {
+    /// Up/Down; Tab is egui's, leaving the list (the card pane, spec R5).
+    Arrows,
+    /// Up/Down, and Tab/Shift+Tab as Down/Up, so Tab stays in the popup.
+    ArrowsAndTab,
+}
+
+/// While one of `rows` has focus, `keys` move it (wrapping unless `partial`), every press counted; returns whether
 /// one had focus. With none focused it leaves the keys alone: the card pane's rows (spec R5) use only this.
-pub(crate) fn step_focused_row(ui: &egui::Ui, rows: &[Vec<egui::Id>], partial: bool) -> bool {
+pub(crate) fn step_focused_row(ui: &egui::Ui, rows: &[Vec<egui::Id>], partial: bool, keys: RowKeys) -> bool {
     let Some(at) = rows.iter().position(|stop| stop.iter().any(|id| ui.memory(|m| m.has_focus(*id)))) else {
         return false;
     };
-    // Presses that land in one frame (a slow frame, a key repeat) are each a step.
+    let tab = keys == RowKeys::ArrowsAndTab;
+    if tab {
+        lock_focused(ui, &rows[at], egui::EventFilter { tab: true, vertical_arrows: true, ..Default::default() });
+    }
+    // Presses that land in one frame (a slow frame, a key repeat) are each a step. Shift+Tab is counted first: a plain
+    // Tab pattern would match it too.
     let (downs, ups) = ui.input_mut(|i| {
+        let (back, forth) = match tab {
+            true => (
+                i.count_and_consume_key(egui::Modifiers::SHIFT, egui::Key::Tab),
+                i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::Tab),
+            ),
+            false => (0, 0),
+        };
         (
-            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
-            i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
+            forth + i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown),
+            back + i.count_and_consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp),
         )
     });
     // Wraps at the ends, unless the rows are only a window of the list (`mark_list_partial`).
@@ -255,7 +278,7 @@ pub(crate) fn list_row_nav(ui: &mut egui::Ui, interactable: bool) {
         ui.memory_mut(|m| m.request_focus(opens_on.unwrap_or(rows[0][0])));
         return;
     }
-    if step_focused_row(ui, &rows, partial) {
+    if step_focused_row(ui, &rows, partial, RowKeys::ArrowsAndTab) {
         return;
     }
     // Nothing focused (the focused row went away with a page swap, as in the node menu's Color page, or the popup

@@ -48,7 +48,7 @@ impl App {
             }
         });
         let rows = crate::popups::take_list_rows(ui);
-        crate::popups::step_focused_row(ui, &rows.rows, rows.partial);
+        crate::popups::step_focused_row(ui, &rows.rows, rows.partial, crate::popups::RowKeys::Arrows);
     }
 
     /// Whether the pane shows the rename field for `id`: the one draft (`renaming_group`) is this card's and its
