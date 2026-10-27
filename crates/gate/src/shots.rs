@@ -40,7 +40,7 @@
 //! on 2026-10-27 (60412333; run `chrome-shots-aa-5` in `docs/runs.md`): all 67 default views matched. What made that
 //! possible: headless mode's caret doesn't blink, the download server keeps one port (`shots_net`; a busy port is
 //! logged, and then the two download views won't match), and the address bar's suggestions come from the local
-//! `suggest::Server`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! `suggest::Server`. `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
@@ -97,19 +97,50 @@ fn default_out(exe: &Path, leaf: &str) -> PathBuf {
     exe.parent().and_then(Path::parent).map_or_else(|| PathBuf::from("target"), Path::to_path_buf).join(leaf)
 }
 
-pub(crate) fn chrome_shots(exe: &Path, work: &Path) -> ExitCode {
+/// A `chrome-shots` run from `SIZE`, `VIEWS` and `CROP_PX`, into `out`; `None` (and said) when `SIZE` isn't "W H".
+fn config(out: PathBuf) -> Option<Config> {
     let Some(size) = parse_size(&std::env::var("SIZE").unwrap_or_else(|_| "1280 800".into())) else {
         eprintln!("SIZE is \"W H\"");
-        return ExitCode::from(2);
+        return None;
     };
     let views = std::env::var("VIEWS").unwrap_or_else(|_| DEFAULT_VIEWS.into());
-    let cfg = Config {
+    Some(Config {
         size,
         views: views.split_whitespace().map(str::to_owned).collect(),
-        out: std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots"), PathBuf::from),
+        out,
         crop_px: knob("CROP_PX", 110),
+    })
+}
+
+pub(crate) fn chrome_shots(exe: &Path, work: &Path) -> ExitCode {
+    let Some(cfg) = config(std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots"), PathBuf::from)) else {
+        return ExitCode::from(2);
     };
     run(exe, work, cfg);
+    finish(work)
+}
+
+/// `gate shots-aa`: `chrome-shots` twice, into `OUT/a` and `OUT/b` (default `target/shots-aa`, emptied first), then
+/// `shots-diff` of the two. Fails unless every shot matches pixel for pixel: a shot that depends on more than the
+/// commit (a settle's path, a clock, a port) shows up here before it confuses a comparison across commits.
+pub(crate) fn shots_aa(exe: &Path, work: &Path) -> ExitCode {
+    let out = std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots-aa"), PathBuf::from);
+    for leaf in ["a", "b"] {
+        let Some(cfg) = config(out.join(leaf)) else { return ExitCode::from(2) };
+        println!("== {leaf} -> {}", cfg.out.display());
+        let _ = fs::remove_dir_all(&cfg.out);
+        run(exe, &work.join(leaf), cfg);
+    }
+    match crate::shots_img::diff_trees(&out.join("a"), &out.join("b")) {
+        Ok((lines, same)) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            check("the two runs' shots match pixel for pixel", same);
+        }
+        Err(e) => {
+            println!("FAIL: shots-diff: {e}");
+            note_failure();
+        }
+    }
     finish(work)
 }
 

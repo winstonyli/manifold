@@ -3,9 +3,9 @@
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`. For any change to sync, the store, the
+//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `shots-aa`. For any change to sync, the store, the
 //!   mirror, session save/restore or the view hosts.
-//! - `light`: the same with `two` once. For UI code that writes the store or reaches a view, and scripts. The repeats in
+//! - `light`: the same with `two` once and no `shots-aa`. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
 //! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
@@ -19,7 +19,7 @@
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
 //! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .labels.log, .arrange.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
-//! .sleep-history.log, .layout.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
+//! .sleep-history.log, .layout.log, .shots-aa.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
 //! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 
@@ -164,64 +164,83 @@ impl Gate {
     }
 }
 
+/// How much `gate all` runs, least first: a step runs in its own mode and every larger one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Mode {
+    Ui,
+    Light,
+    Full,
+}
+
+impl Mode {
+    fn parse(s: &str) -> Option<Mode> {
+        [("ui", Mode::Ui), ("light", Mode::Light), ("full", Mode::Full)].into_iter().find(|m| m.0 == s).map(|m| m.1)
+    }
+
+    /// How many times `gate two` runs.
+    fn runs(self) -> usize {
+        match self {
+            Mode::Ui => 0,
+            Mode::Light => 1,
+            Mode::Full => 3,
+        }
+    }
+}
+
 /// One stage `gate all` runs after the `two` runs, in order: `gate <stage>` with `env`, its output in `LOG.<name>.log`.
 struct Step {
     name: &'static str,
     stage: &'static str,
     env: &'static [(&'static str, &'static str)],
-    /// Whether mode `ui` runs it (`full` and `light` run every step).
-    in_ui: bool,
+    /// The least mode that runs it.
+    from: Mode,
     /// The engine whose host must be listed in `WITH_ENGINES` for the step to run (`webkit` also needs `SITE_HOST`).
     engine: Option<&'static str>,
 }
 
-const fn step(name: &'static str, in_ui: bool) -> Step {
-    Step { name, stage: name, env: &[], in_ui, engine: None }
+const fn step(name: &'static str, from: Mode) -> Step {
+    Step { name, stage: name, env: &[], from, engine: None }
 }
 
 const STEPS: &[Step] = &[
-    step("smoke", false),
-    step("launch-forms", false),
-    step("page-text", false),
-    step("click-count", false),
-    step("iframe-typing", false),
-    step("surface", false),
-    step("search", false),
-    step("suggest-groups", false),
-    step("labels", false),
-    step("arrange", false),
-    step("link", true),
-    step("unknown-type", true),
-    step("closed", true),
-    step("trail", true),
-    Step { stage: "sleep", env: &[("VIEWS", "webview2"), ("CASES", "history")], ..step("sleep-history", true) },
-    Step { stage: "trail", env: &[("ENGINE", "webkit")], engine: Some("webkit"), ..step("trail-webkit", true) },
+    step("smoke", Mode::Light),
+    step("launch-forms", Mode::Light),
+    step("page-text", Mode::Light),
+    step("click-count", Mode::Light),
+    step("iframe-typing", Mode::Light),
+    step("surface", Mode::Light),
+    step("search", Mode::Light),
+    step("suggest-groups", Mode::Light),
+    step("labels", Mode::Light),
+    step("arrange", Mode::Light),
+    step("link", Mode::Ui),
+    step("unknown-type", Mode::Ui),
+    step("closed", Mode::Ui),
+    step("trail", Mode::Ui),
+    Step { stage: "sleep", env: &[("VIEWS", "webview2"), ("CASES", "history")], ..step("sleep-history", Mode::Ui) },
+    Step { stage: "trail", env: &[("ENGINE", "webkit")], engine: Some("webkit"), ..step("trail-webkit", Mode::Ui) },
     Step {
         stage: "sleep",
         env: &[("VIEWS", "webkit"), ("CASES", "manual idle scroll history dirty")],
         engine: Some("webkit"),
-        ..step("sleep-webkit", true)
+        ..step("sleep-webkit", Mode::Ui)
     },
-    Step { stage: "trail", env: &[("ENGINE", "servo")], engine: Some("servo"), ..step("trail-servo", true) },
+    Step { stage: "trail", env: &[("ENGINE", "servo")], engine: Some("servo"), ..step("trail-servo", Mode::Ui) },
     Step {
         stage: "sleep",
         env: &[("VIEWS", "servo"), ("CASES", "history crash restart")],
         engine: Some("servo"),
-        ..step("sleep-servo", true)
+        ..step("sleep-servo", Mode::Ui)
     },
-    step("layout", true),
+    step("layout", Mode::Ui),
+    step("shots-aa", Mode::Full),
 ];
 
 pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
-    let mode = mode.as_deref().unwrap_or("full");
-    let runs = match mode {
-        "full" => 3,
-        "light" => 1,
-        "ui" => 0,
-        _ => {
-            eprintln!("mode must be full, light or ui");
-            return ExitCode::from(2);
-        }
+    let mode_name = mode.as_deref().unwrap_or("full");
+    let Some(mode) = Mode::parse(mode_name) else {
+        eprintln!("mode must be full, light or ui");
+        return ExitCode::from(2);
     };
     let Some(log) = log else {
         eprintln!("usage: gate all LOG [full|light|ui]");
@@ -251,7 +270,10 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         })
     };
 
-    append(&log, &format!("GATE start ({mode}) {} cpu={}% defender_rt={}", clock(), cpu_now(), defender_realtime()));
+    append(
+        &log,
+        &format!("GATE start ({mode_name}) {} cpu={}% defender_rt={}", clock(), cpu_now(), defender_realtime()),
+    );
     let mut g = Gate { log: log.clone(), cpu_log, failed: false };
     let gate = |stage: &str| {
         assert!(crate::windows_main::is_stage(stage), "`gate all` launches `gate {stage}`, which is not a stage");
@@ -261,7 +283,7 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         c.env_remove("SITE_HOST");
         c
     };
-    if mode == "ui" {
+    if mode == Mode::Ui {
         let mut c = Command::new("cargo");
         c.args([
             "test",
@@ -278,13 +300,13 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         ]);
         g.stage("unit", &sibling(&log, "unit.log"), c);
     }
-    for i in 1..=runs {
+    for i in 1..=mode.runs() {
         g.stage(&format!("two-{i}"), &sibling(&log, &format!("two-{i}.log")), gate("two"));
     }
     let with_engines: Vec<String> =
         std::env::var("WITH_ENGINES").map(|v| v.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
     for step in STEPS {
-        if mode == "ui" && !step.in_ui {
+        if step.from > mode {
             continue;
         }
         if step.engine.is_some_and(|e| !with_engines.iter().any(|w| w == e)) {
@@ -342,9 +364,22 @@ mod tests {
         }
     }
 
+    /// Each mode runs its own steps and every smaller mode's: `light` adds the store's, `full` the A/A of the shots.
+    #[test]
+    fn a_mode_runs_the_steps_from_it_and_below() {
+        let runs = |mode: Mode| STEPS.iter().filter(|s| s.from <= mode).count();
+        let only = |mode: Mode| STEPS.iter().filter(|s| s.from == mode).map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(only(Mode::Full), ["shots-aa"]);
+        assert_eq!(runs(Mode::Full), STEPS.len());
+        assert_eq!(runs(Mode::Light), STEPS.len() - 1);
+        assert_eq!(runs(Mode::Ui), only(Mode::Ui).len());
+        assert_eq!(Mode::parse("light"), Some(Mode::Light));
+        assert_eq!(Mode::parse("most"), None);
+    }
+
     #[test]
     fn ui_mode_keeps_the_store_free_steps_in_order() {
-        let ui: Vec<&str> = STEPS.iter().filter(|s| s.in_ui).map(|s| s.name).collect();
+        let ui: Vec<&str> = STEPS.iter().filter(|s| s.from == Mode::Ui).map(|s| s.name).collect();
         assert_eq!(
             ui,
             [

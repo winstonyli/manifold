@@ -156,6 +156,7 @@ mod windows_main {
         Stage::work("page-kind", crate::probes::page_kind),
         Stage::work("chrome-shots", crate::shots::chrome_shots),
         Stage::work("chrome-shots-sizes", crate::shots::chrome_shots_sizes),
+        Stage::work("shots-aa", crate::shots::shots_aa),
         Stage::args("shots-diff", "A B", crate::shots_img::shots_diff),
         Stage::work("click-count", crate::click_count::click_count),
         Stage::work("iframe-typing", crate::iframe_typing::iframe_typing),

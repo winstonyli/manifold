@@ -157,7 +157,7 @@ fn shot_paths(root: &Path) -> io::Result<BTreeSet<String>> {
 
 /// Compares two `chrome-shots` output trees by decoded pixels (two runs on one commit match pixel for pixel, but their
 /// PNG bytes mostly don't). Returns a line per shot that differs or is missing, a summary line, and whether all match.
-fn diff_trees(a: &Path, b: &Path) -> io::Result<(Vec<String>, bool)> {
+pub(crate) fn diff_trees(a: &Path, b: &Path) -> io::Result<(Vec<String>, bool)> {
     let (in_a, in_b) = (shot_paths(a)?, shot_paths(b)?);
     let (mut lines, mut differ, mut missing) = (Vec::new(), 0, 0);
     for rel in &in_a {
