@@ -119,6 +119,7 @@ Done: 76efb88
   signatures.
 - **S5** `bookmarks.rs`, `history.rs`, `nav_history.rs`, `settings.rs`: one profile-file load/save helper; each
   keeps its own fixup. `HistoryUi` holds bookmark popup state; name or split it to match.
+  Done: a57547c (E2), bc80766 (E3), ff5496d (S5)
 
 ### B8. Long functions split by concern
 
