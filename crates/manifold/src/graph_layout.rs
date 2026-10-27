@@ -120,11 +120,7 @@ pub fn step_sized(
             // Two nodes on one point have no direction between them: pick a
             // fixed one from their ids so they still push apart, gently (see
             // `REPULSION_SOFT_DISTANCE`).
-            let dir = if length > f32::EPSILON {
-                delta / length
-            } else {
-                jitter_from_text(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
-            };
+            let dir = if length > f32::EPSILON { delta / length } else { pair_direction(ids[i], ids[j]) };
             let dist = length.max(REPULSION_SOFT_DISTANCE);
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
             forces[i] += force;
@@ -200,8 +196,21 @@ pub fn step_sized(
 /// spawns near where the spring will settle it anyway, instead of starting
 /// deep inside its parent's/siblings' repulsion field and relying on the
 /// simulation to slowly push it out from near-zero distance.
-pub fn spawn_jitter(seed: impl std::fmt::Display) -> egui::Vec2 {
-    jitter_from_text(&seed.to_string())
+///
+/// Only the id's counter feeds it, not its actor (random per launch), so the same steps place cards the same way in
+/// every run (`gate chrome-shots` pixel-diffs two runs).
+pub fn spawn_jitter(id: NodeId) -> egui::Vec2 {
+    jitter_from_text(&id.counter.to_string())
+}
+
+/// `spawn_jitter` for a card placed before it has an id, seeded by its name.
+pub fn named_jitter(name: &str) -> egui::Vec2 {
+    jitter_from_text(name)
+}
+
+/// The fixed direction two cards on one point push apart along, from their counters (see `spawn_jitter`).
+fn pair_direction(a: NodeId, b: NodeId) -> egui::Vec2 {
+    jitter_from_text(&format!("{}\u{0}{}", a.counter, b.counter)).normalized()
 }
 
 fn jitter_from_text(seed_str: &str) -> egui::Vec2 {
@@ -222,6 +231,13 @@ mod prototype;
 mod tests {
     use super::*;
     use crate::card_id::testutil::node;
+
+    #[test]
+    fn spawn_jitter_ignores_the_launchs_random_actor() {
+        let other_launch = NodeId { actor: crate::store::model::ActorId(0x8465_e505_d55c_d396), counter: 5 };
+        assert_eq!(spawn_jitter(node(5)), spawn_jitter(other_launch));
+        assert_ne!(spawn_jitter(node(5)), spawn_jitter(node(6)));
+    }
 
     fn edge(from: NodeId, to: NodeId) -> Edge {
         Edge { from, to, weight: 1.0 }
@@ -252,11 +268,7 @@ mod tests {
             for j in (i + 1)..pos.len() {
                 let delta = pos[i] - pos[j];
                 let length = delta.length();
-                let dir = if length > f32::EPSILON {
-                    delta / length
-                } else {
-                    jitter_from_text(&format!("{}\u{0}{}", ids[i], ids[j])).normalized()
-                };
+                let dir = if length > f32::EPSILON { delta / length } else { pair_direction(ids[i], ids[j]) };
                 let dist = length.max(REPULSION_SOFT_DISTANCE);
                 let force = dir * (REPULSION_STRENGTH / (dist * dist));
                 forces[i] += force;

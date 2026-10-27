@@ -52,7 +52,7 @@ impl App {
         }
         let defaults: Vec<NodeId> = self.doc.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
         let Some((_, losers)) = defaults.split_first() else {
-            let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(DEFAULT_NAME);
+            let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::named_jitter(DEFAULT_NAME);
             let id = self.create_jar(DEFAULT_NAME, crate::fetched::Placement { group: None, pos });
             self.edit_field(id, field::IS_DEFAULT, FieldValue::Bool(true));
             return true;
