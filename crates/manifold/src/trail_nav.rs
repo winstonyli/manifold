@@ -11,11 +11,7 @@ use crate::store::model::{Kind, NodeId};
 /// `id`'s raw `PARENT` in the document.
 fn doc_parent(doc: &crate::store::model::Doc, id: NodeId) -> Option<NodeId> {
     let node = doc.nodes.get(&id)?;
-    if let FieldValue::Id(Some(p)) = node.get(field::PARENT) {
-        Some(p)
-    } else {
-        None
-    }
+    node.get(field::PARENT).as_id()
 }
 
 impl App {

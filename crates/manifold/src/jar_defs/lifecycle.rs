@@ -32,7 +32,7 @@ impl App {
                 let doc = j.doc();
                 doc.live()
                     .filter(|&(id, n)| n.kind() == Kind::Jar && doc.effective_group(id).is_some())
-                    .filter(|(_, n)| n.get(field::IS_DEFAULT) == FieldValue::Bool(true))
+                    .filter(|(_, n)| n.get(field::IS_DEFAULT).as_bool())
                     .map(|(id, _)| (id, self.nodes.contains_key(&id)))
                     .collect()
             })
@@ -269,7 +269,7 @@ impl App {
         for (edge, no) in rows {
             let scope = crate::caps::edges().row(edge).expect("a listed row").scope();
             for source in self.linked_ids().collect::<Vec<_>>() {
-                let FieldValue::Id(Some(target)) = self.doc.mirror.get(source, no) else { continue };
+                let Some(target) = self.doc.mirror.get(source, no).as_id() else { continue };
                 let touched = self.within(source, moved) || self.within(target, moved);
                 if touched && self.nodes.contains_key(&target) && !self.in_scope(scope, source, target) {
                     self.edit_field(source, no, FieldValue::Id(None));

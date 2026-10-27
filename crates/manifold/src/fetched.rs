@@ -31,8 +31,8 @@ pub(crate) fn doc_backing_names(
     let mut names = HashSet::new();
     for (id, node) in doc.live().filter(|&(id, _)| Some(id) != except) {
         names.insert(id.to_string());
-        if let crate::store::model::FieldValue::Str(path) = node.get(crate::store::model::field::PATH) {
-            names.extend(content::file_name(&path));
+        if let Some(path) = node.get(crate::store::model::field::PATH).as_str() {
+            names.extend(content::file_name(path));
         }
     }
     names

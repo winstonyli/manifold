@@ -270,7 +270,7 @@ impl App {
             })
             .collect();
         for (edge, no) in field_rows {
-            if let FieldValue::Id(Some(to)) = self.doc.mirror.get(node, no) {
+            if let Some(to) = self.doc.mirror.get(node, no).as_id() {
                 if self.shown_with(node, to) {
                     edges.push(EdgeRef { edge, other: to, link: None, outgoing: true });
                 }

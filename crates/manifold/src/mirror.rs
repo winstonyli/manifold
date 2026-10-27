@@ -82,7 +82,7 @@ impl Mirror {
             }
         }
         if no == field::IS_DEFAULT {
-            if value == FieldValue::Bool(true) {
+            if value.as_bool() {
                 self.defaults.insert(id);
             } else {
                 self.defaults.remove(&id);
@@ -264,11 +264,7 @@ impl Mirror {
     /// A link's `from` and `to` (`field::FROM`, `field::TO`), read through the plain field map as `default_jar` is.
     /// Either may name a card that no longer exists, or be `None`.
     pub(crate) fn link_ends(&self, id: NodeId) -> (Option<NodeId>, Option<NodeId>) {
-        let end = |no| match self.get(id, no) {
-            FieldValue::Id(end) => end,
-            _ => None,
-        };
-        (end(field::FROM), end(field::TO))
+        (self.get(id, field::FROM).as_id(), self.get(id, field::TO).as_id())
     }
 
     /// A jar's definition, decoded from its mirrored fields.

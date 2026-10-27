@@ -5,7 +5,7 @@
 
 use super::{page_doc, DocKey};
 use crate::card::card_filter_text;
-use crate::store::model::{field, FieldValue, NodeId};
+use crate::store::model::{field, NodeId};
 use crate::App;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
@@ -30,7 +30,7 @@ impl App {
         let mut at = Some(id);
         for _ in 0..=doc.nodes.len() {
             let Some(node) = at.and_then(|n| doc.nodes.get(&n)) else { break };
-            if let FieldValue::Id(Some(jar)) = node.get(field::JAR) {
+            if let Some(jar) = node.get(field::JAR).as_id() {
                 return self.jar_exists(jar) && self.doc.mirror.jar_def(jar).ephemeral;
             }
             at = node.group;

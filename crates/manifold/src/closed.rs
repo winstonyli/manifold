@@ -16,7 +16,7 @@ pub(crate) fn worth_reopening(ty: &str, fields: &session_sync::Fields) -> bool {
     use crate::caps::{Tag, TagSet};
     let ty = crate::card_kind::canonical_type(ty);
     let text = fields.get(&field::TEXT);
-    let blank = !matches!(text, Some(store::model::FieldValue::Str(text)) if !text.trim().is_empty());
+    let blank = !text.and_then(store::model::FieldValue::as_str).is_some_and(|text| !text.trim().is_empty());
     let tags = if ty == store::model::TYPE_NOTE && blank { TagSet::of(&[Tag::Blank]) } else { TagSet::EMPTY };
     crate::caps::registry().caps(ty, tags).restorable
 }
@@ -538,7 +538,7 @@ mod tests {
         assert_eq!(app.default_jar(), Some(default), "the same Default, shown again");
         let doc = app.doc.journal.as_ref().unwrap().doc();
         assert_eq!(doc.nodes[&default].group, None);
-        let defaults = doc.live().filter(|(_, n)| n.get(field::IS_DEFAULT) == FieldValue::Bool(true)).count();
+        let defaults = doc.live().filter(|(_, n)| n.get(field::IS_DEFAULT).as_bool()).count();
         assert_eq!(defaults, 1, "no second Default was made");
     }
 
