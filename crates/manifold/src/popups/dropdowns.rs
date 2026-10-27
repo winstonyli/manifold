@@ -110,8 +110,8 @@ impl App {
         let outcome = picked.map(|kind| pick_outcome(kind, &state_of(kind)));
         // A click on an unavailable engine only explains: the picker stays open.
         let explains_only = matches!(outcome, Some(PickOutcome::Unavailable(..)));
-        let applied = (picked.is_some() && !explains_only) || escape;
-        settle_popup(&mut self.menus.open_popup, which, applied, clicked_outside_popup(ui, area_rect, Some(rect)));
+        let settled = (picked.is_some() && !explains_only) || escape;
+        settle_popup(&mut self.menus.open_popup, which, settled, clicked_outside_popup(ui, area_rect, Some(rect)));
         // An engine that isn't installed stays selectable, but choosing it asks to install it: no
         // silent switch, and no silent fallback to another engine.
         match outcome? {

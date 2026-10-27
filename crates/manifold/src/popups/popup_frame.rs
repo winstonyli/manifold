@@ -115,15 +115,16 @@ pub(crate) fn list_popup(
     clicked_outside_popup(ui, area_rect, Some(anchor_rect))
 }
 
-/// The end of an anchored popup's frame, whichever shell drew it: closes `which` when a row `applied` its action or
-/// `clicked_outside` it (the caller folds in any reason to ignore that click). Returns whether it closed.
+/// The end of an anchored popup's frame, whichever shell drew it: closes `which` when it is `settled` (a row applied
+/// its action, Escape, nothing left to pick) or `clicked_outside` it (the caller folds in any reason to ignore that
+/// click). Returns whether it closed.
 pub(crate) fn settle_popup(
     open_popup: &mut Option<AnchoredPopup>,
     which: AnchoredPopup,
-    applied: bool,
+    settled: bool,
     clicked_outside: bool,
 ) -> bool {
-    let close = applied || clicked_outside;
+    let close = settled || clicked_outside;
     if close {
         close_popup(open_popup, which);
     }
