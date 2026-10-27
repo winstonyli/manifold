@@ -155,6 +155,8 @@ fn run(exe: &Path, work: &Path, cfg: Config) {
 
 struct Shots {
     work: PathBuf,
+    /// `pic.png` and `data.json`, the files ADDFILE adds (`content_dir`).
+    seed: PathBuf,
     inst: Instance,
     out: PathBuf,
     size: (u32, u32),
@@ -193,30 +195,28 @@ impl Shots {
             ])
             .to_string(),
         )?;
-        // No card at the exact origin: the store reads it as unplaced and jitters it from its id, which is random per
-        // run, so the whole layout (and the fitted zoom) would differ between runs.
         import_session(
             exe,
             &profile,
             &[
-                json!({"id": "t1", "type": TAB, "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 40.0]}),
+                json!({"id": "t1", "type": TAB, "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 0.0]}),
                 json!({"id": "g", "type": GROUP, "name": "Research", "pos": [300.0, 0.0]}),
-                json!({"id": "t2", "type": TAB, "url": "about:blank", "view_kind": "webview2", "group": "g", "pos": [0.0, 40.0]}),
+                json!({"id": "t2", "type": TAB, "url": "about:blank", "view_kind": "webview2", "group": "g", "pos": [0.0, 0.0]}),
                 json!({"id": "n1", "type": NOTE, "text": "a note", "pos": [-300.0, 0.0]}),
             ],
         )?;
         // An image and a JSON file, added by ADDFILE once the app is up.
+        let mut png = io::Cursor::new(Vec::new());
         image::RgbImage::from_pixel(240, 160, image::Rgb([70, 110, 160]))
-            .save(work.join("pic.png"))
+            .write_to(&mut png, image::ImageFormat::Png)
             .map_err(io::Error::other)?;
-        fs::write(
-            work.join("data.json"),
-            json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string(),
-        )?;
+        let data = json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string();
+        let seed = content_dir(&std::env::temp_dir(), &[("pic.png", png.get_ref()), ("data.json", data.as_bytes())])?;
         let appdata = root.display().to_string();
         let inst = Instance::launch_env(exe, &profile, work, "log", &[("APPDATA", &appdata)])?;
         Ok(Shots {
             work: work.to_path_buf(),
+            seed,
             inst,
             out: cfg.out,
             size: cfg.size,
@@ -455,10 +455,10 @@ impl Shots {
 
     fn run_views(&mut self, exe: &Path) -> io::Result<()> {
         let (w, h) = self.size;
-        let work = self.work.clone();
+        let (work, seed) = (self.work.clone(), self.seed.clone());
         send!(self, format!("RESIZE {w} {h}"), "WAITTABS", "SLEEP 3")?;
-        send!(self, format!("ADDFILE {} 200 640", work.join("pic.png").display()))?;
-        send!(self, format!("ADDFILE {} 640 700", work.join("data.json").display()), "SLEEP 2")?;
+        send!(self, format!("ADDFILE {} 200 640", seed.join("pic.png").display()))?;
+        send!(self, format!("ADDFILE {} 640 700", seed.join("data.json").display()), "SLEEP 2")?;
 
         self.view("graph", |s| s.shot("graph"))?;
         self.graph_menus()?;
@@ -505,7 +505,7 @@ impl Shots {
         })?;
         // A download card and a sleeping tab beside the live cards (header F on cards with no seeded kind of their own).
         self.view("cards-f", |s| {
-            send!(s, format!("ADDDOWNLOAD {}", work.join("data.json").display()), "SLEEPNODE t1", "SLEEP 6")?;
+            send!(s, format!("ADDDOWNLOAD {}", seed.join("data.json").display()), "SLEEPNODE t1", "SLEEP 6")?;
             s.inst.click_control(crate::state::FIT_VIEW)?;
             send!(s, "SLEEP 2")?;
             s.shot("cards-f")
@@ -576,9 +576,9 @@ impl Shots {
         // open it again. Before json-zoom, which must run last.
         self.view("missing-file", |s| {
             let (pic, data) = (work.join("gone.png"), work.join("gone.json"));
-            fs::copy(work.join("pic.png"), &pic)?;
+            fs::copy(seed.join("pic.png"), &pic)?;
             append(&pic, b"x")?;
-            fs::copy(work.join("data.json"), &data)?;
+            fs::copy(seed.join("data.json"), &data)?;
             append(&data, b" ")?;
             let session = work.join("missing.mnf");
             send!(
@@ -1184,7 +1184,7 @@ impl Shots {
         if !self.has_any(&names) {
             return Ok(());
         }
-        let data = self.work.join("data.json");
+        let data = self.seed.join("data.json");
         self.step("settings", |s| {
             // Taller, so a popup opening below the Lists buttons is not pushed up over them.
             send!(s, format!("RESIZE {} 1000", s.size.0), "TOGGLESETTINGSPAGE", "SLEEP 2")?;
@@ -1441,14 +1441,10 @@ impl Shots {
         // Bring-your-own folders: one whose archive.json names this pin (Custom), one that names another build.
         for (name, archive) in [("custom", pin_version.as_str()), ("custom-bad", "151.0.1+gabcdef+chromium-151.0.0.1")]
         {
-            let dir = self.work.join(format!("mycef-{name}"));
-            fs::create_dir_all(&dir)?;
-            fs::write(dir.join("libcef.dll"), "")?;
-            fs::write(
-                dir.join("archive.json"),
-                json!({"type": "minimal", "name": format!("cef_binary_{archive}_windows64_minimal.tar.bz2")})
-                    .to_string(),
-            )?;
+            // Its path shows on the settings page, so it is named by its files, not kept in the work dir.
+            let archive = json!({"type": "minimal", "name": format!("cef_binary_{archive}_windows64_minimal.tar.bz2")})
+                .to_string();
+            let dir = content_dir(&std::env::temp_dir(), &[("libcef.dll", b""), ("archive.json", archive.as_bytes())])?;
             let more = format!(", \"cef_directory\": {}", Value::String(dir.display().to_string().replace('\\', "/")));
             self.engine_app(&eng_exe, &proxy, name, &more)?;
             self.fake_host(&pins, false)?; // a bring-your-own runtime still needs the downloaded host
@@ -1487,6 +1483,40 @@ fn between<'a>(text: &'a str, after: &str, until: &str) -> Option<&'a str> {
     Some(&rest[..rest.find(until)?])
 }
 
+/// A folder in `root` named after the SHA-256 of `files` (name, contents), holding them. A file whose path shows in a
+/// shot goes here rather than in the work dir, whose name holds the pid, so the shot repeats between runs. An
+/// existing folder is reused; each file is written under a per-process name and renamed into place, so runs at once
+/// never read half a file.
+fn content_dir(root: &Path, files: &[(&str, &[u8])]) -> io::Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for (name, bytes) in files {
+        for part in [name.as_bytes(), bytes] {
+            hash.update((part.len() as u64).to_le_bytes());
+            hash.update(part);
+        }
+    }
+    let hex: String = hash.finalize()[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let dir = root.join(format!("gate-shots-{hex}"));
+    fs::create_dir_all(&dir)?;
+    for (name, bytes) in files {
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        let part = dir.join(format!("{name}.{}.part", std::process::id()));
+        fs::write(&part, bytes)?;
+        // Another run may have renamed its copy in first, and hold it open; theirs is the same bytes.
+        if let Err(e) = fs::rename(&part, &path) {
+            fs::remove_file(&part)?;
+            if !path.exists() {
+                return Err(e);
+            }
+        }
+    }
+    Ok(dir)
+}
+
 /// The CEF version cef_pin.rs pins (its first `version: "..."`).
 fn pin_version(src: &str) -> Option<String> {
     between(src, "version: \"", "\"").map(str::to_string)
@@ -1509,5 +1539,18 @@ mod tests {
         assert_eq!(parse_size(" 400  300 "), Some((400, 300)));
         assert_eq!(parse_size("400"), None);
         assert_eq!(parse_size("1 2 3"), None);
+    }
+
+    #[test]
+    fn content_dirs_are_named_by_their_files_and_reused() {
+        let root = std::env::temp_dir().join(format!("gate-content-dir-test-{}", std::process::id()));
+        let a = content_dir(&root, &[("x.txt", b"one"), ("y.txt", b"")]).unwrap();
+        assert_eq!(fs::read(a.join("x.txt")).unwrap(), b"one");
+        assert_eq!(fs::read(a.join("y.txt")).unwrap(), b"");
+        assert_eq!(content_dir(&root, &[("x.txt", b"one"), ("y.txt", b"")]).unwrap(), a, "same files, same folder");
+        assert_ne!(content_dir(&root, &[("x.txt", b"two"), ("y.txt", b"")]).unwrap(), a, "new bytes, new folder");
+        assert_ne!(content_dir(&root, &[("z.txt", b"one"), ("y.txt", b"")]).unwrap(), a, "new name, new folder");
+        assert_eq!(fs::read_dir(&a).unwrap().count(), 2, "no temp files left behind");
+        fs::remove_dir_all(&root).unwrap();
     }
 }
