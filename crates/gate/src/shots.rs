@@ -56,6 +56,7 @@ use crate::probes::{finish, import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{Downloads, Proxy};
 use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
+use crate::suggest;
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
@@ -167,6 +168,8 @@ struct Shots {
     views: Vec<String>,
     /// The engine-states instance's data dir for the engine hosts.
     eng_data: PathBuf,
+    /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
+    suggestions: suggest::Server,
 }
 
 macro_rules! send {
@@ -216,8 +219,15 @@ impl Shots {
             .map_err(io::Error::other)?;
         let data = json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string();
         let seed = content_dir(&std::env::temp_dir(), &[("pic.png", png.get_ref()), ("data.json", data.as_bytes())])?;
-        let appdata = root.display().to_string();
-        let inst = Instance::launch_env(exe, &profile, work, "log", &[("APPDATA", &appdata)])?;
+        let suggestions = suggest::Server::start()?;
+        let (appdata, suggest_url) = (root.display().to_string(), suggestions.url());
+        let inst = Instance::launch_env(
+            exe,
+            &profile,
+            work,
+            "log",
+            &[("APPDATA", &appdata), ("MANIFOLD_SUGGESTIONS_URL", &suggest_url)],
+        )?;
         Ok(Shots {
             work: work.to_path_buf(),
             seed,
@@ -226,6 +236,7 @@ impl Shots {
             size: cfg.size,
             views: cfg.views,
             eng_data: PathBuf::new(),
+            suggestions,
         })
     }
 
@@ -1358,14 +1369,19 @@ impl Shots {
                 json!({"id": "t3", "type": TAB, "url": "https://example.com/", "view_kind": "cef", "pos": [300.0, 0.0]}),
             ],
         )?;
-        let (appdata, proxy_url) = (root.display().to_string(), proxy.url());
+        let (appdata, proxy_url, suggest_url) = (root.display().to_string(), proxy.url(), self.suggestions.url());
         let pins_file = self.work.join("host-pins.json").display().to_string();
         self.inst = Instance::launch_env(
             eng_exe,
             &profile,
             &self.work,
             &format!("log-eng-{name}"),
-            &[("APPDATA", &appdata), ("HTTPS_PROXY", &proxy_url), ("MANIFOLD_HOST_PINS_FILE", &pins_file)],
+            &[
+                ("APPDATA", &appdata),
+                ("HTTPS_PROXY", &proxy_url),
+                ("MANIFOLD_HOST_PINS_FILE", &pins_file),
+                ("MANIFOLD_SUGGESTIONS_URL", &suggest_url),
+            ],
         )?;
         send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "SLEEP 3")
     }
