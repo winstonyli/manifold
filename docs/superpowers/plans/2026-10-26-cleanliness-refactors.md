@@ -109,6 +109,7 @@ Done: 76efb88
   iframe_typing, page_text, search, probes, sleep.
 - **M2** Drop the blanket `#![allow(dead_code)]` (`gate/src/main.rs:10`) and act on what it hid; drop the doubled
   `#[cfg(windows)]` (36-37).
+  Done: 08968d0 (GT1), 65c9eb3 (GT2), f32cf5b (M2)
 
 ### B7. Error and file plumbing
 
