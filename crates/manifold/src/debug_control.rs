@@ -777,7 +777,7 @@ const VERBS: &[Verb] = &[
     }),
     // A driver script's own `sleep` doesn't stay in order: while the reader is blocked (`WAITTABS`, `SCREENSHOT`) the
     // script keeps writing, and the lines it buffered arrive back to back.
-    row("SLEEP secs", "Hold later commands for `secs` (in order, unlike a driver script's own sleep)", |rest| {
+    row("SLEEP secs", "Hold later commands for `secs` seconds, not milliseconds (fractions too: `SLEEP 0.2`; in order, unlike a driver script's own sleep)", |rest| {
         parse_secs(rest).map(|duration| Parsed::Reader(ReaderOp::Sleep(duration)))
     }),
     row("TOGGLESHORTCUTSHELP", "F1 -- toggle the keyboard-shortcut reference popup", |_| {
