@@ -68,6 +68,8 @@ Done: 6fd6cf7
 
 ### B3. One popup lifecycle
 
+Done: 76efb88
+
 - **UI1** A `popup_frame.rs` helper owns `interactable(open == Some(which))`, the clicked-outside test and
   `close_popup`; the body returns whether a row closed it. Covers `build_recently_closed_popup`,
   `build_bookmarks_popup` (outside clicks ignored while renaming), `build_history_popup`, `build_downloads_popup`,
