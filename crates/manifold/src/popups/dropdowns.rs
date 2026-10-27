@@ -784,12 +784,12 @@ impl App {
                                 cards.iter().find(|e| e.id == id).map(|e| e.rect)
                             });
                             for entry in &cards {
-                                if let Some(response) = self.virtual_card_click(ui, &mut pass, entry, "trail", false) {
+                                if let Some(response) = self.virtual_card_click(ui, &mut pass, entry, false) {
                                     clicked |= response.clicked();
                                     if response.secondary_clicked() {
                                         let at =
                                             ui.input(|i| i.pointer.interact_pos()).unwrap_or(response.rect.center());
-                                        if let Some(source) = self.virtual_source("trail") {
+                                        if let Some(source) = self.entry_source(entry) {
                                             source.on_menu(self, entry, at);
                                         }
                                     }

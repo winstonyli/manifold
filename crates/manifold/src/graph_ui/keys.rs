@@ -239,10 +239,10 @@ impl App {
                     }
                     // A virtual card has no node menu and no jar chip: its source opens whatever menu the kind's
                     // `menu` ability grants.
-                    Some(entry @ CardEntry { origin: Origin::Virtual(name), .. }) => {
+                    Some(entry @ CardEntry { origin: Origin::Virtual(_), .. }) => {
                         self.interaction.rect_select_start = None;
                         if entry.caps().menu {
-                            if let Some(source) = self.virtual_source(name) {
+                            if let Some(source) = self.entry_source(&entry) {
                                 source.on_menu(self, &entry, pos);
                             }
                         }

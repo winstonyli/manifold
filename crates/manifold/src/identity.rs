@@ -176,9 +176,25 @@ pub(crate) fn drawn_controls(ctx: &egui::Context) -> Vec<DrawnControl> {
     ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.controls_done).unwrap_or_default())
 }
 
+/// A point or rect in `layer`'s space, in window space (unchanged for a layer with no transform).
+pub(crate) fn to_global<T: Copy>(ctx: &egui::Context, layer: egui::LayerId, p: T) -> T
+where
+    egui::emath::TSTransform: std::ops::Mul<T, Output = T>,
+{
+    ctx.layer_transform_to_global(layer).map_or(p, |t| t * p)
+}
+
+/// A point or rect in window space, in `layer`'s space (`to_global`'s inverse).
+pub(crate) fn from_global<T: Copy>(ctx: &egui::Context, layer: egui::LayerId, p: T) -> T
+where
+    egui::emath::TSTransform: std::ops::Mul<T, Output = T>,
+{
+    ctx.layer_transform_from_global(layer).map_or(p, |t| t * p)
+}
+
 /// Notes the control `name` drawn at `rect` (in `layer`'s space).
 pub(crate) fn note_control(ctx: &egui::Context, layer: egui::LayerId, name: &str, rect: egui::Rect) {
-    let rect = ctx.layer_transform_to_global(layer).map_or(rect, |t| t * rect);
+    let rect = to_global(ctx, layer, rect);
     ctx.data_mut(|d| {
         d.get_temp_mut_or_default::<IconLog>(icon_log_id())
             .controls_building
@@ -191,7 +207,7 @@ fn note_row(ui: &egui::Ui, label: &str, selected: bool, rect: egui::Rect) {
     if label.is_empty() {
         return;
     }
-    let rect = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(rect, |t| t * rect);
+    let rect = to_global(ui.ctx(), ui.layer_id(), rect);
     ui.ctx().data_mut(|d| {
         d.get_temp_mut_or_default::<IconLog>(icon_log_id()).rows_building.push(DrawnRow {
             text: label.to_owned(),
@@ -209,7 +225,7 @@ fn record_icon(ui: &egui::Ui, identity: Identity, square: egui::Rect) {
         Identity::Glyph { glyph, .. } => ("glyph", glyph.to_owned()),
         Identity::Tile { letter, .. } => ("tile", letter.map(String::from).unwrap_or_default()),
     };
-    let rect = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(square, |t| t * square);
+    let rect = to_global(ui.ctx(), ui.layer_id(), square);
     ui.ctx().data_mut(|d| {
         d.get_temp_mut_or_default::<IconLog>(icon_log_id()).building.push(DrawnIcon { kind, text, rect })
     });

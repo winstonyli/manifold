@@ -451,7 +451,7 @@ impl App {
     /// The pointer in world space, inside `build_graph_ui`'s Scene (this frame's layer transform).
     fn scene_pointer(ui: &egui::Ui) -> Option<egui::Pos2> {
         let pointer = ui.input(|i| i.pointer.interact_pos())?;
-        Some(ui.ctx().layer_transform_from_global(ui.layer_id()).map_or(pointer, |t| t * pointer))
+        Some(crate::identity::from_global(ui.ctx(), ui.layer_id(), pointer))
     }
 
     /// Where a connect-drag released at screen point `pointer` ends (`DragEnd`). A card (`DragEnd::Card`) is the topmost one under it,

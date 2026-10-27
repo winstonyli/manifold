@@ -91,8 +91,8 @@ impl App {
         };
         for entry in self.level_items_from(at_level) {
             let kind = entry.kind;
-            if let Origin::Virtual(name) = entry.origin {
-                self.virtual_card_click(ui, &mut pass, &entry, name, pick_targets.is_some());
+            if let Origin::Virtual(_) = entry.origin {
+                self.virtual_card_click(ui, &mut pass, &entry, pick_targets.is_some());
                 continue;
             }
             let Some(id) = entry.id.node() else { continue };
@@ -183,7 +183,6 @@ impl App {
         ui: &mut egui::Ui,
         pass: &mut CardPass,
         entry: &CardEntry,
-        name: &str,
         picking: bool,
     ) -> Option<egui::Response> {
         let card = self.draw_graph_card(ui, pass, entry)?;
@@ -192,7 +191,7 @@ impl App {
         }
         if ui.input(|i| i.modifiers.ctrl) && entry.caps().selectable {
             self.toggle_selected(entry.id);
-        } else if let Some(source) = self.virtual_source(name) {
+        } else if let Some(source) = self.entry_source(entry) {
             pass.actions.extend(source.on_click(self, entry));
         }
         Some(card.response)

@@ -1149,8 +1149,7 @@ impl App {
         }
         // The focused card's hint wins over a hovered one's, whichever draws first.
         if response.has_focus() || (response.hovered() && self.card_hint.is_none()) {
-            let to_screen = ui.ctx().layer_transform_to_global(ui.layer_id());
-            self.card_hint = Some((view.kind, to_screen.map_or(rect, |t| t * rect)));
+            self.card_hint = Some((view.kind, crate::identity::to_global(ui.ctx(), ui.layer_id(), rect)));
         }
         if response.gained_focus() {
             pass.pan_target = Some(rect);
@@ -1260,10 +1259,10 @@ impl App {
         if caps.menu && response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10))
         {
             let corner = rect.left_bottom();
-            let at = ui.ctx().layer_transform_to_global(ui.layer_id()).map_or(corner, |t| t * corner);
+            let at = crate::identity::to_global(ui.ctx(), ui.layer_id(), corner);
             match entry.origin {
-                Origin::Virtual(name) => {
-                    if let Some(source) = self.virtual_source(name) {
+                Origin::Virtual(_) => {
+                    if let Some(source) = self.entry_source(entry) {
                         source.on_menu(self, entry, at);
                     }
                 }
@@ -1335,10 +1334,9 @@ impl App {
         if carried && response.dragged() {
             self.interaction.dragging = Some(card);
             self.interaction.drag_moved = Vec::new();
-            let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
             let (press, now) = (ui.input(|i| i.pointer.press_origin()), response.interact_pointer_pos());
             let shift = match (press, now) {
-                (Some(press), Some(now)) => now - to_local.map_or(press, |t| t * press),
+                (Some(press), Some(now)) => now - crate::identity::from_global(ui.ctx(), ui.layer_id(), press),
                 _ => egui::Vec2::ZERO,
             };
             let (ghost, fill, ring) = (rect.translate(shift), style.fill, accent(ui.visuals()));
@@ -1351,12 +1349,11 @@ impl App {
             self.release_drag();
             let target = *pass.drop_preview;
             // Where the pointer let go, in world space: the ghost's transform, applied to the latest pointer position.
-            let to_local = ui.ctx().layer_transform_from_global(ui.layer_id());
-            let at = ui.input(|i| i.pointer.interact_pos()).map_or(rect.center(), |p| to_local.map_or(p, |t| t * p));
-            if let Origin::Virtual(name) = entry.origin {
-                if let Some(source) = self.virtual_source(name) {
-                    pass.actions.extend(source.on_drop(self, entry, target, at));
-                }
+            let at = ui
+                .input(|i| i.pointer.interact_pos())
+                .map_or(rect.center(), |p| crate::identity::from_global(ui.ctx(), ui.layer_id(), p));
+            if let Some(source) = self.entry_source(entry) {
+                pass.actions.extend(source.on_drop(self, entry, target, at));
             }
         }
         if (stored || carried) && response.dragged() {
@@ -1415,8 +1412,8 @@ impl App {
         rect: egui::Rect,
     ) -> CardBody {
         // A virtual card's source paints it (the entry's own rect: `rect` is the same for it).
-        if let Origin::Virtual(name) = entry.origin {
-            return match self.virtual_source(name) {
+        if let Origin::Virtual(_) = entry.origin {
+            return match self.entry_source(entry) {
                 Some(source) => source.paint_body(self, ui, pass, entry),
                 None => CardBody { interact_rect: rect, tooltip: None },
             };

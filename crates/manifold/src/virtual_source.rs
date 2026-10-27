@@ -47,9 +47,16 @@ pub(crate) trait VirtualSource {
 impl App {
     /// Whether the toolbar filter dims virtual card `entry`: its source gives searchable text and the filter misses it.
     pub(crate) fn virtual_card_dimmed(&self, entry: &CardEntry) -> bool {
-        let Origin::Virtual(name) = entry.origin else { return false };
-        let text = self.virtual_source(name).and_then(|source| source.searchable_text(entry));
+        let text = self.entry_source(entry).and_then(|source| source.searchable_text(entry));
         text.is_some_and(|text| !crate::text::filter_matches(self.omni_filter(), &[&text]))
+    }
+
+    /// The source that yielded `entry`: `None` for a stored or JSON entry, or a virtual one whose source is gone.
+    pub(crate) fn entry_source(&self, entry: &CardEntry) -> Option<Rc<dyn VirtualSource>> {
+        match entry.origin {
+            Origin::Virtual(name) => self.virtual_source(name),
+            _ => None,
+        }
     }
 
     /// Registers `source` after the sources already there. Each name hashes to its cards' `CardId` tag, so a clash (or
