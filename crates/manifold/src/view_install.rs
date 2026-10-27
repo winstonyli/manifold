@@ -336,6 +336,12 @@ pub(crate) fn newer_than_tested(dir: &Path, pin: &Pin) -> Option<String> {
     })
 }
 
+impl From<std::io::Error> for InstallError {
+    fn from(e: std::io::Error) -> Self {
+        Self::Io(e.to_string())
+    }
+}
+
 /// Why an install step failed.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum InstallError {
@@ -412,11 +418,7 @@ fn download_with_idle(
     if fetch(url, part, total, have, progress, cancel, idle)? == Fetched::Done {
         return Ok(());
     }
-    match std::fs::remove_file(part) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(InstallError::Io(e.to_string())),
-    }
+    remove_path(part)?;
     match fetch(url, part, total, 0, progress, cancel, idle)? {
         Fetched::Done => Ok(()),
         Fetched::Restart => Err(InstallError::Network("the server rejected the request".into())),
@@ -443,7 +445,6 @@ fn fetch(
     cancel: &AtomicBool,
     idle: Duration,
 ) -> Result<Fetched, InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
     // The most the body read may take in total: the time the remaining bytes need at
     // `SLOW_BYTES_PER_SEC`, at least two minutes. The idle timeout is what ends a quiet connection
     // from the caller's side; this total only bounds the helper thread left blocked on a dead socket,
@@ -480,9 +481,9 @@ fn fetch(
     } else {
         have = 0;
     }
-    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(part).map_err(io)?;
-    file.set_len(have).map_err(io)?;
-    file.seek(SeekFrom::Start(have)).map_err(io)?;
+    let mut file = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(part)?;
+    file.set_len(have)?;
+    file.seek(SeekFrom::Start(have))?;
     let mut body = response.into_body().into_reader();
     let (tx, rx) = std::sync::mpsc::sync_channel::<std::io::Result<Vec<u8>>>(4);
     std::thread::spawn(move || loop {
@@ -513,10 +514,10 @@ fn fetch(
                     // The pin says how big the file is. More than that is a wrong or hostile stream: stop
                     // before it fills the disk, and drop what arrived (a resume would ask the same server).
                     drop(file);
-                    let _ = std::fs::remove_file(part);
+                    let _ = remove_path(part);
                     return Err(InstallError::Network(format!("the server sent more than the {total} bytes expected")));
                 }
-                file.write_all(&chunk).map_err(io)?;
+                file.write_all(&chunk)?;
                 have += chunk.len() as u64;
                 progress(have);
             }
@@ -536,12 +537,11 @@ fn fetch(
 
 /// Stream `path` through SHA-256 and SHA-1 and require both to match the pin (hex, any case).
 pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut file = std::fs::File::open(path)?;
     let (mut sha256, mut sha1) = (Sha256::new(), Sha1::new());
     let mut buf = vec![0u8; CHUNK];
     loop {
-        let n = file.read(&mut buf).map_err(io)?;
+        let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -560,12 +560,11 @@ pub(crate) fn verify(path: &Path, pin: &Pin) -> Result<(), InstallError> {
 pub(crate) fn sha256_file(path: &Path) -> Result<String, InstallError> {
     #[cfg(test)]
     HASHED.with(|n| n.set(n.get() + 1));
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    let mut file = std::fs::File::open(path).map_err(io)?;
+    let mut file = std::fs::File::open(path)?;
     let mut sha256 = Sha256::new();
     let mut buf = vec![0u8; CHUNK];
     loop {
-        let n = file.read(&mut buf).map_err(io)?;
+        let n = file.read(&mut buf)?;
         if n == 0 {
             break;
         }
@@ -646,7 +645,6 @@ fn unpack_with(
     cancel: &AtomicBool,
     on_entry: &mut dyn FnMut(),
 ) -> Result<(), InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
     // A bad archive (corrupt bz2, truncated tar) is `Unpack`; any other failure (disk full, access denied)
     // is `Io`, which `install` treats as retryable without downloading again.
     let bad = |e: std::io::Error| {
@@ -657,9 +655,9 @@ fn unpack_with(
             InstallError::Io(e.to_string())
         }
     };
-    let file = std::fs::File::open(archive).map_err(io)?;
+    let file = std::fs::File::open(archive)?;
     let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
-    std::fs::create_dir_all(into).map_err(io)?;
+    std::fs::create_dir_all(into)?;
     let mut files = 0usize;
     // Reading the tar itself failing (a bad header checksum is `ErrorKind::Other`) is a bad archive whatever the kind.
     let corrupt = |e: std::io::Error| InstallError::Unpack(e.to_string());
@@ -681,35 +679,32 @@ fn unpack_with(
         }
         let Some(dest) = dest else { continue };
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(io)?;
+            std::fs::create_dir_all(parent)?;
         }
-        let mut out = std::fs::File::create(&dest).map_err(io)?;
+        let mut out = std::fs::File::create(&dest)?;
         std::io::copy(&mut entry, &mut out).map_err(bad)?;
         // Without this every file lands 0644 and the CEF host can't exec its helpers.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = entry.header().mode().map_err(corrupt)?;
-            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(unpacked_mode(mode))).map_err(io)?;
+            std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(unpacked_mode(mode)))?;
         }
         files += 1;
     }
     if files == 0 {
         return Err(InstallError::Unpack("the archive held no runtime files".into()));
     }
-    std::fs::write(into.join(MARKER), pin.version).map_err(io)
+    Ok(std::fs::write(into.join(MARKER), pin.version)?)
 }
 
-fn remove_dir(dir: &Path) -> Result<(), InstallError> {
-    match std::fs::remove_dir_all(dir) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(InstallError::Io(e.to_string())),
+/// Delete the file or directory at `path`; one that is already gone is fine.
+fn remove_path(path: &Path) -> std::io::Result<()> {
+    let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+    match removed {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
     }
-}
-
-fn remove_file(path: &Path) {
-    let _ = std::fs::remove_file(path);
 }
 
 /// Download `pin`, verify it, unpack it beside the final directory and swap it in; returns
@@ -735,60 +730,58 @@ fn install_with(
     cancel: &AtomicBool,
     on_entry: &mut dyn FnMut(),
 ) -> Result<PathBuf, InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    std::fs::create_dir_all(data_dir).map_err(io)?;
+    std::fs::create_dir_all(data_dir)?;
     let part = data_dir.join(format!("{CEF_RUNTIME_DIR}.part"));
     let tmp = data_dir.join(format!("{CEF_RUNTIME_DIR}.tmp"));
     let live = data_dir.join(CEF_RUNTIME_DIR);
     download(pin.url, &part, pin.size, progress, cancel)?;
     if let Err(e) = verify(&part, pin) {
         if matches!(e, InstallError::BadHash { .. }) {
-            remove_file(&part);
-            let _ = remove_dir(&tmp);
+            let _ = remove_path(&part);
+            let _ = remove_path(&tmp);
         }
         return Err(e);
     }
     let cancelled = || cancel.load(Ordering::Relaxed);
     // A cancel that arrives after the download is seen by the first unpack entry, so no separate check here.
-    remove_dir(&tmp)?;
+    remove_path(&tmp)?;
     if let Err(e) = unpack_with(&part, &tmp, pin, cancel, on_entry) {
-        let _ = remove_dir(&tmp);
+        let _ = remove_path(&tmp);
         // The archive itself is bad: a retry must download afresh. Cancel and disk errors keep it.
         if matches!(e, InstallError::Unpack(_)) {
-            remove_file(&part);
+            let _ = remove_path(&part);
         }
         return Err(e);
     }
     if cancelled() {
-        let _ = remove_dir(&tmp);
+        let _ = remove_path(&tmp);
         return Err(InstallError::Cancelled);
     }
     if let Err(e) = swap(&tmp, &live) {
-        let _ = remove_dir(&tmp);
+        let _ = remove_path(&tmp);
         return Err(e);
     }
-    remove_file(&part);
+    let _ = remove_path(&part);
     Ok(live)
 }
 
 /// Put `new` at `live`, keeping the previous `live` aside as `live.old` until the new one is in place.
 /// If the second rename fails, the previous install is moved back, so `live` is never half-deleted.
 fn swap(new: &Path, live: &Path) -> Result<(), InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
     let old = live.with_extension("old");
-    remove_dir(&old)?;
+    remove_path(&old)?;
     let had_old = match std::fs::rename(live, &old) {
         Ok(()) => true,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => return Err(io(e)),
+        Err(e) => return Err(e.into()),
     };
     if let Err(e) = std::fs::rename(new, live) {
         if had_old {
             let _ = std::fs::rename(&old, live);
         }
-        return Err(io(e));
+        return Err(e.into());
     }
-    let _ = remove_dir(&old);
+    let _ = remove_path(&old);
     Ok(())
 }
 
@@ -805,8 +798,7 @@ pub(crate) fn install_host(
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<(), InstallError> {
-    let io = |e: std::io::Error| InstallError::Io(e.to_string());
-    std::fs::create_dir_all(dir).map_err(io)?;
+    std::fs::create_dir_all(dir)?;
     let mut done = 0u64;
     for file in files {
         let dest = dir.join(file.file);
@@ -817,19 +809,19 @@ pub(crate) fn install_host(
             download(file.url, &part, file.size, &mut |n| progress(done + n), cancel)?;
             if let Err(e) = verify_sha256(&part, file.sha256) {
                 if matches!(e, InstallError::BadHash { .. }) {
-                    remove_file(&part);
+                    let _ = remove_path(&part);
                 }
                 return Err(e);
             }
-            std::fs::rename(&part, &dest).map_err(io)?;
+            std::fs::rename(&part, &dest)?;
         }
         done += file.size;
         progress(done);
     }
     let marker = host_marker_path(dir, kind);
     let tmp = marker.with_extension("host.tmp");
-    std::fs::write(&tmp, marker_text(files)).map_err(io)?;
-    std::fs::rename(&tmp, &marker).map_err(io)
+    std::fs::write(&tmp, marker_text(files))?;
+    Ok(std::fs::rename(&tmp, &marker)?)
 }
 
 /// Install everything `plan` names under the data directory `dir`: the host files, then CEF's runtime archive.
@@ -924,14 +916,6 @@ pub(crate) fn kind_has_leftovers(kind: ViewKind) -> bool {
     crate::process_manager::view_hosts_dir().is_some_and(|dir| has_leftovers(&dir, kind, host_components(kind)))
 }
 
-fn remove_if_present(path: &Path) -> Result<(), String> {
-    let removed = if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
-    match removed {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
-        _ => Ok(()),
-    }
-}
-
 /// Delete what `kind` installed in `dir` (its host files, `.part`/`.tmp` leftovers and marker, and for CEF the
 /// runtime directory and its leftovers) and nothing else. The markers go first, so a delete that stops partway
 /// never reads as Installed. Refused, with the reason, while an engine process is using it (`running`) or an
@@ -950,20 +934,21 @@ pub(crate) fn remove_view_files(
         return Err("It is installing; cancel that first".into());
     }
     let live = dir.join(CEF_RUNTIME_DIR);
-    remove_if_present(&host_marker_path(dir, kind))?;
+    let remove = |path: &Path| remove_path(path).map_err(|e| e.to_string());
+    remove(&host_marker_path(dir, kind))?;
     if has_runtime(kind) {
-        remove_if_present(&live.join(MARKER))?;
+        remove(&live.join(MARKER))?;
     }
     for name in host_file_names(dir, kind, files) {
-        remove_if_present(&dir.join(name))?;
+        remove(&dir.join(name))?;
     }
     for leftover in host_leftovers(dir, kind, files) {
-        remove_if_present(&leftover)?;
+        remove(&leftover)?;
     }
     if has_runtime(kind) {
-        remove_if_present(&live)?;
+        remove(&live)?;
         for name in leftovers() {
-            remove_if_present(&dir.join(name))?;
+            remove(&dir.join(name))?;
         }
     }
     Ok(())

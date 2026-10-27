@@ -803,21 +803,16 @@ fn a_stalled_download_is_cancelled_promptly() {
 }
 
 #[test]
-fn a_failed_swap_removes_tmp_and_keeps_the_part() {
+fn a_file_where_the_old_install_is_set_aside_is_cleared() {
     let dir = temp_dir("ei46");
     let a = archive(&dir, &GOOD);
     let pin = pin_for(&a, serve_file(&a));
     let data = dir.join("data");
-    std::fs::create_dir_all(&data).unwrap();
-    // A file where `cef-runtime.old` should be a directory: the swap cannot clear it.
-    std::fs::write(data.join("cef-runtime.old"), b"x").unwrap();
     std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
-    std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
-    let err = install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap_err();
-    assert!(matches!(err, InstallError::Io(_)), "{err:?}");
-    assert!(!data.join("cef-runtime.tmp").exists(), "tmp removed");
-    assert!(data.join("cef-runtime.part").exists(), "a file error keeps the part");
-    assert!(data.join("cef-runtime").join("old").exists());
+    std::fs::write(data.join("cef-runtime.old"), b"x").unwrap();
+    install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap();
+    assert!(data.join("cef-runtime").join(MARKER).exists());
+    assert!(!data.join("cef-runtime.old").exists() && !data.join("cef-runtime.tmp").exists());
 }
 
 #[test]
