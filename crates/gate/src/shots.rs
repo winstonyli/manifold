@@ -37,8 +37,10 @@
 //!
 //! `gate shots-diff A B` compares two runs' trees by decoded pixels (PNG bytes differ even where pixels match). Files
 //! whose path shows in a shot live in a folder named by their contents (`content_dir`), not the pid-named work dir. A/A
-//! on 2026-10-27 (ad033e0d; run `chrome-shots-aa-3` in `docs/runs.md`): 45 of 67 default views matched; graph views shot
-//! after an image card's decode may settle differently (PARKED.md, `chrome-shots` graph views). Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! on 2026-10-27 (4969b539; run `chrome-shots-aa-4` in `docs/runs.md`): 61 of 67 default views matched. The other six
+//! differ only where the harness isn't fixed: the text caret's blink (`note-edit`, `quickswitch`, `tabview-find`), the
+//! page server's random port in a download's url (`download-progress`, `download-failed`) and the search provider's
+//! live suggestions (`tabview-dropdown`). Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
