@@ -138,9 +138,12 @@ impl App {
                         // The editor appears next frame; focus it so typing can start at once.
                         ui.memory_mut(|m| m.request_focus(entry.id.editor()));
                     }
-                    // Enters the group's own subgraph or the JSON node's level, unless its file is still being
-                    // refetched (`JsonPayload::enterable`).
-                    Click::Enter if self.nodes.get(&id).and_then(|n| n.as_json()).is_none_or(|j| j.enterable()) => {
+                    // Enters the group's own subgraph or the JSON node's level; a JSON node needs its parsed
+                    // payload, and not one still being refetched (`JsonPayload::enterable`).
+                    Click::Enter
+                        if kind.ty != TYPE_JSON
+                            || self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
+                    {
                         // A JSON level entered from the keyboard: its root card takes focus (`draw_json_level`),
                         // sparing the toolbar's ~17 Tab stops.
                         if kind.ty == TYPE_JSON && !card.response.double_clicked() {
@@ -329,5 +332,30 @@ mod tests {
         };
         frame(&ctx, &mut app, vec![enter(true), enter(false)]);
         assert!(!app.nodes[&id].file_failed(), "Enter retried the image: its error was taken");
+    }
+
+    /// A JSON card with no parsed payload has no level to show, so Enter on it does nothing.
+    #[test]
+    fn enter_on_a_json_card_without_its_payload_stays_put() {
+        let ctx = crate::theme::testutil::ctx(true);
+        let mut app = App::default();
+        let id = app.alloc_node_id();
+        app.insert_placeholder_node(id, egui::Vec2::ZERO, Kind::Json, Runtime::Unknown);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        frame(&ctx, &mut app, vec![]);
+        ctx.memory_mut(|m| m.request_focus(CardId::from(id).widget()));
+        frame(&ctx, &mut app, vec![]);
+        let enter = |pressed| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut app, vec![enter(true), enter(false)]);
+        assert_eq!(app.current_group, None);
     }
 }

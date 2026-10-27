@@ -44,8 +44,8 @@ pub(crate) struct SettingsState {
     pub(crate) focus: Option<&'static str>,
 }
 
-/// What the Settings page's sections (`App::settings_general_section`
-/// and the rest) asked for or laid out this frame. `build_settings_page`
+/// What the Settings page's rows (`App::draw_setting_rows`) asked for or
+/// laid out this frame. `build_settings_page`
 /// acts on it after its scroll area: `apply_settings_requests`, then
 /// `build_settings_popups`.
 #[derive(Default)]

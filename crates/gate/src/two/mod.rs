@@ -29,7 +29,7 @@ use crate::windows_main::{manifold_exe, work_dir};
 const WAIT_FILE: Duration = Duration::from_secs(60);
 /// Between poll rounds (the script's `sleep 0.2`): the app's cadence, not a fixed wait.
 const PAUSE: Duration = Duration::from_millis(200);
-/// A positive wait's deadline; it only matters when the check is failing (plan, risk R6).
+/// A positive wait's deadline; it only matters when the check is failing.
 const POSITIVE: Duration = Duration::from_secs(90);
 const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -163,7 +163,7 @@ impl Two {
     }
 
     /// A no-op that still draws a frame (unlike SLEEP), so the instance's per-frame poll_store can pick up the other
-    /// instance's edits. One file per instance (plan, risk R7).
+    /// instance's edits. One file per instance.
     fn tick(&mut self, who: Who) -> Step {
         let p = self.path(&format!("{}-tick.json", who.tag()));
         self.send(who, &format!("EXPORTSTATE {}", p.display()))

@@ -419,7 +419,7 @@ struct App {
     /// `Transition`'s own doc comment.
     transition: Option<Transition>,
 
-    /// Set right after `App::default()` in `main`, before `run_app` — needed
+    /// Set right after `App::load()` in `main`, before `run_app` — needed
     /// by `spawn_tab_async` (called from `resumed`'s `spawn_root_tab`, which
     /// runs before any other opportunity to set it) to hand a background
     /// spawn thread a way to report back. `None` only in the brief window
