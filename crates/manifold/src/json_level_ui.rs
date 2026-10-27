@@ -882,7 +882,7 @@ impl App {
         let doc = level.value.clone();
         let mut close = false;
         let mut edit = None;
-        let area = egui::Area::new(egui::Id::new("json_context_menu")).fixed_pos(pos);
+        let area = egui::Area::new(egui::Id::new("json_level_context_menu")).fixed_pos(pos);
         let area = menu_popup(ui.ctx(), area, 1.0, |ui| {
             ui.set_min_width(150.0);
             for (label, what) in

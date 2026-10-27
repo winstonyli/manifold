@@ -448,12 +448,13 @@ pub(crate) fn del_verb(kind: CardKind) -> &'static str {
 /// - Image: maximizes it into Item view, the gesture a tab uses.
 /// - Download, Pdf: reveals the file. A PDF has no Item view, so it gets the other file card's click.
 ///
-/// A Note's double-click edits it in place and a Group or Json opens on it too, in the caller. A single click only
-/// selects (`App::select_only`).
+/// A Note's double-click edits it in place and a Group or Json enters its level, in the caller (`Click::Edit` and
+/// `Click::Enter`). A single click only selects (`App::select_only`).
 pub(crate) fn click_action(kind: CardKind) -> Option<NodeAction> {
-    kind.caps().click.map(|click| match click {
-        Click::Open => NodeAction::Open,
-        Click::Reveal => NodeAction::Reveal,
+    kind.caps().click.and_then(|click| match click {
+        Click::Open => Some(NodeAction::Open),
+        Click::Reveal => Some(NodeAction::Reveal),
+        Click::Edit | Click::Enter => None,
     })
 }
 

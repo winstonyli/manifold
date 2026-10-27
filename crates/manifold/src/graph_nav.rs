@@ -533,11 +533,10 @@ impl App {
             let Some(node) = self.nodes.get(&id).filter(|_| self.in_level(id)) else {
                 return;
             };
-            // A crashed focused tab stays focused as its failed card, which
-            // has no Item view: Enter retries it, as its click does. A
+            // A focused card whose file or load failed has no Item view: Enter retries it, as its click does. A
             // sleeping/waking card instead opens like a tab (its own
             // engine wakes via `focus_tab`).
-            if node.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))) {
+            if node.file_failed() {
                 self.retry_missing_file(id);
             } else {
                 self.start_transition_to_item(id);

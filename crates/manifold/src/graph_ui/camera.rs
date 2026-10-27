@@ -347,12 +347,7 @@ impl App {
                 // know draws as one of them.
                 _ => (2.0, accent(ui.visuals())),
             };
-            let failed = item
-                .id
-                .node()
-                .and_then(|id| self.nodes.get(&id))
-                .and_then(|n| n.as_unloaded())
-                .is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)));
+            let failed = item.id.node().and_then(|id| self.nodes.get(&id)).is_some_and(|n| n.tab_failed());
             let color = if failed { danger(ui.visuals()) } else { color };
             overlay_painter.circle_filled(world_to_minimap(item.rect.center()), radius, color);
         }

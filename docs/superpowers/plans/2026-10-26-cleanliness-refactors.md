@@ -55,6 +55,8 @@ A design note worth keeping moves to the doc it belongs in; a measurement moves 
 
 ### B2. `Caps` holds the per-kind card facts
 
+Done: 09d4c54
+
 - **GR2** `Click` gains `Edit` (note) and `Enter` (JSON, group). `card_hint_pairs` (`graph_ui/hints.rs:26-40`) reads
   its verb from `Caps::click`; the activation match in `graph_ui/cards.rs:143-174` becomes one match on it. The JSON
   `enterable()` and note `was_editing` checks stay as guards.

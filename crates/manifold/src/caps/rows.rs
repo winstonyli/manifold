@@ -155,7 +155,7 @@ pub(crate) struct Caps {
     pub(crate) framed: bool,
     /// What Del does to it, as the first word of its delete menu row ("close", "remove", "delete").
     pub(crate) delete_verb: &'static str,
-    /// What a double-click (or Enter) does where it is a `NodeAction`; `None` leaves the click to the caller.
+    /// What a double-click (or Enter) does; `None` does nothing.
     pub(crate) click: Option<Click>,
     /// A file on disk: its card is matched by filename, and its menu is Refresh, Open as Tab, Copy URL, then the
     /// file rows.
@@ -192,13 +192,30 @@ impl Default for Caps {
     }
 }
 
-/// A card's double-click where it is one action (`card::click_action` maps it to a `NodeAction`).
+/// What a card's double-click (or Enter) does (`card::click_action` maps `Open` and `Reveal` to a `NodeAction`; the
+/// caller does the rest).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Click {
     /// Opens it into Tab or Item view.
     Open,
     /// Reveals its file.
     Reveal,
+    /// Edits it in place (a note).
+    Edit,
+    /// Enters its level (a JSON file or a group).
+    Enter,
+}
+
+impl Click {
+    /// The verb the hint strip shows.
+    pub(crate) fn verb(self) -> &'static str {
+        match self {
+            Click::Open => "open",
+            Click::Reveal => "reveal",
+            Click::Edit => "edit",
+            Click::Enter => "enter",
+        }
+    }
 }
 
 /// How many draw layers the builtin rows use: every `Caps::draw_layer` is below this, so a level scan has this many
@@ -324,14 +341,17 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .draw_layer(1)
             .delete_verb("close")
             .click(Click::Open)
+            .menu_area("unloaded_tab_context_menu")
             .glyph(icon::BROWSER)
             .kind_name("Sleeping tab"), // a sleeping tab; a loaded one draws under it
         // Outranks the row above for a loaded tab: same pattern, more `requires` tags (`Row::rank`).
-        Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0).kind_name("Tab"),
+        Row::new(TYPE_TAB).requires(&[Tag::Loaded]).draw_layer(0).menu_area("tab_context_menu").kind_name("Tab"),
         Row::new(TYPE_GROUP)
             .restorable(true)
             .draw_layer(7)
             .delete_verb("close")
+            .click(Click::Enter)
+            .menu_area("group_context_menu")
             .glyph(icon::FOLDER)
             .kind_name("Group")
             .omni_row(true),
@@ -357,15 +377,24 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .restorable(true)
             .draw_layer(6)
             .file(true)
+            .click(Click::Enter)
             .menu_area("json_context_menu")
             .glyph(icon::BRACKETS_CURLY)
             .kind_name("JSON")
             .omni_row(true),
-        Row::new(TYPE_NOTE).restorable(true).draw_layer(3).glyph(icon::NOTE_PENCIL).kind_name("Note").omni_row(true),
+        Row::new(TYPE_NOTE)
+            .restorable(true)
+            .draw_layer(3)
+            .click(Click::Edit)
+            .menu_area("note_context_menu")
+            .glyph(icon::NOTE_PENCIL)
+            .kind_name("Note")
+            .omni_row(true),
         Row::new(TYPE_JAR)
             .restorable(true)
             .draw_layer(3)
             .delete_verb("close")
+            .menu_area("jar_context_menu")
             .glyph(icon::COOKIE)
             .kind_name("Cookie jar"), // a jar card, drawn with notes
         Row::new(TYPE_UNKNOWN).restorable(true).draw_layer(3), // a type this build doesn't know, drawn with notes
@@ -375,6 +404,7 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
             .draw_layer(2)
             .delete_verb("remove")
             .click(Click::Reveal)
+            .menu_area("download_context_menu")
             .glyph(icon::DOWNLOAD_SIMPLE)
             .kind_name("Download")
             .omni_row(true), // a download

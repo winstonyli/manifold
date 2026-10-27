@@ -2,7 +2,8 @@
 //! cards (`cards`), toolbar, camera, keyboard and hints are the children below.
 
 use super::*;
-use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_IMAGE, TYPE_JSON, TYPE_NOTE, TYPE_PDF, TYPE_TAB};
+use crate::caps::Click;
+use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
 
 mod camera;
 mod card_pane;

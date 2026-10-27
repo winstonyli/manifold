@@ -446,6 +446,20 @@ impl Layout {
 }
 
 impl GraphNode {
+    /// A sleeping tab whose engine failed to start.
+    pub(crate) fn tab_failed(&self) -> bool {
+        self.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
+    }
+
+    /// Its file or load failed: a placeholder card (`ImagePayload::error`, `JsonPayload::error`, a PDF that failed
+    /// to load, a failed sleeping tab) that has nothing to open; a click or Enter tries it again instead.
+    pub(crate) fn file_failed(&self) -> bool {
+        self.as_image().is_some_and(|i| i.error.is_some())
+            || self.tab_failed()
+            || self.as_json().is_some_and(|j| j.error.is_some())
+            || self.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
+    }
+
     /// What identifies the node's card to a screen reader, after its kind word (`Caps::kind_name`, joined by
     /// `App::accessible_name`). A content card is named by its web `source` (`App::source_url`), or by its file name
     /// when it has none; a note by the first line of `text` and a group or jar by `text`, the stored text its card

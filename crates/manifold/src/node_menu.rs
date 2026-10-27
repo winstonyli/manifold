@@ -487,7 +487,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
     // Every menu has the same order: the kind's own actions (open, copy, sleep, files), a rule, the shared
     // organising rows (Rename, Duplicate, Pin, Color, Links), then Move into and Remove from Group, then the
     // kind's delete items last.
-    let finish = |area_id, min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>, jar_page| {
+    let finish = |min_width, mut items: Vec<NodeMenuItem>, delete_items: Vec<NodeMenuItem>, jar_page| {
         if !items.is_empty() {
             items.push(Separator);
         }
@@ -510,7 +510,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             items.push(Separator);
             items.extend(delete_items);
         }
-        NodeMenuConfig { area_id, min_width, items, jar_page, page: None }
+        NodeMenuConfig { area_id: view.kind.caps().menu_area, min_width, items, jar_page, page: None }
     };
     let delete = |label| vec![Button(label, A::Delete)];
     // Tab, Unloaded and Group: the jar list and its actions, after the kind's own items. `live`: only a running tab
@@ -533,14 +533,14 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
         TYPE_DOWNLOAD => {
             let mut items = url_items(false);
             items.extend(file_items());
-            finish("download_context_menu", 170.0, items, delete("Remove from List"), Vec::new())
+            finish(170.0, items, delete("Remove from List"), Vec::new())
         }
         TYPE_NOTE => {
             let mut items = url_items(false);
             items.push(Button("Copy Text", A::CopyText));
-            finish("note_context_menu", 150.0, items, delete("Delete"), Vec::new())
+            finish(150.0, items, delete("Delete"), Vec::new())
         }
-        // Image, Pdf and Json: the kinds with `Caps::file`, each with its own area id.
+        // Image, Pdf and Json: the kinds with `Caps::file`.
         _ if view.kind.caps().file => {
             let mut items =
                 if view.inline_json { vec![Button("Export JSON...", A::ExportJson)] } else { url_items(true) };
@@ -550,7 +550,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             if view.kind.ty == TYPE_JSON && !view.inline_json {
                 items.push(Button("Detach to inline", A::DetachJson));
             }
-            finish(view.kind.caps().menu_area, 170.0, items, delete("Delete"), Vec::new())
+            finish(170.0, items, delete("Delete"), Vec::new())
         }
         TYPE_TAB if view.kind.loaded() => {
             let mut items = Vec::new();
@@ -563,7 +563,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Copy URL", A::CopyUrl),
             ]);
             let jar_page = jar_row(&mut items, true);
-            finish("tab_context_menu", 150.0, items, delete("Close"), jar_page)
+            finish(150.0, items, delete("Close"), jar_page)
         }
         TYPE_TAB => {
             // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
@@ -578,7 +578,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             }
             items.push(Button("Copy URL", A::CopyUrl));
             let jar_page = jar_row(&mut items, false);
-            finish("unloaded_tab_context_menu", 170.0, items, delete("Close"), jar_page)
+            finish(170.0, items, delete("Close"), jar_page)
         }
         // Presentation matches the type, not `is_container` (see `card_style`).
         TYPE_GROUP => {
@@ -590,7 +590,7 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 items.push(Button("Export Group...", A::ExportGroup));
             }
             let jar_page = jar_row(&mut items, false);
-            finish("group_context_menu", 150.0, items, delete_items, jar_page)
+            finish(150.0, items, delete_items, jar_page)
         }
         TYPE_JAR => {
             let ephemeral = if view.ephemeral {
@@ -599,17 +599,11 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
                 Button("Make Ephemeral", A::SetJarEphemeral(true))
             };
             let items = vec![Button("Clear Cookies...", A::ClearJarCookies), ephemeral];
-            finish(
-                "jar_context_menu",
-                150.0,
-                items,
-                if view.closable { delete("Close") } else { Vec::new() },
-                Vec::new(),
-            )
+            finish(150.0, items, if view.closable { delete("Close") } else { Vec::new() }, Vec::new())
         }
         // A type this build doesn't know (`TYPE_UNKNOWN`): the shared rows only (Rename, Duplicate, Pin, Color, links,
         // Move to) and Delete.
-        _ => finish("node_context_menu", 150.0, Vec::new(), delete("Delete"), Vec::new()),
+        _ => finish(150.0, Vec::new(), delete("Delete"), Vec::new()),
     }
 }
 
@@ -800,12 +794,11 @@ impl App {
             unresponsive: node.as_tab().is_some_and(|t| t.tab.is_unresponsive(std::time::Instant::now())),
             other_default_view_kind: node.runtime.as_unloaded().is_some()
                 && self.doc.mirror.view_kind(id) != self.settings.default_starting_view_kind,
-            failed: node.runtime.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_))),
-            view_missing: node.runtime.as_unloaded().is_some_and(|t| {
+            failed: node.tab_failed(),
+            view_missing: node.tab_failed() && {
                 let kind = self.doc.mirror.view_kind(id);
-                matches!(t.state, UnloadedState::Failed(_))
-                    && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_))
-            }),
+                !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_))
+            },
             move_targets: self
                 .node_order
                 .iter()

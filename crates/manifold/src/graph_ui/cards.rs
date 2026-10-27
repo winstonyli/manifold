@@ -125,13 +125,8 @@ impl App {
                 continue;
             }
             // A placeholder (see `ImagePayload::error`) has nothing
-            // to open; a click tries its file again instead.
-            let missing_file = self.nodes.get(&id).is_some_and(|n| {
-                n.as_image().is_some_and(|i| i.error.is_some())
-                    || n.as_unloaded().is_some_and(|t| matches!(t.state, UnloadedState::Failed(_)))
-                    || n.as_json().is_some_and(|j| j.error.is_some())
-                    || n.as_pdf().is_some_and(|p| matches!(p.outcome, Some(Err(_))))
-            });
+            // to open; a click or Enter tries its file again instead.
+            let missing_file = self.nodes.get(&id).is_some_and(|n| n.file_failed());
             // A double-click, or Enter on the keyboard-focused card: what opens a card. A plain click only selects it
             // (below); a double-click's first click selects it too, so nothing waits on the second.
             let activated = card.response.double_clicked()
@@ -140,37 +135,35 @@ impl App {
             if card.response.clicked() {
                 self.select_only(entry.id);
             }
-            let click = activated.then(|| click_action(kind)).flatten();
-            match (kind.ty, click) {
-                _ if missing_file => {
-                    if card.response.clicked() {
-                        pass.actions.push(GraphAction::Node(id, NodeAction::RetryMissingFile));
-                    }
+            if missing_file {
+                if card.response.clicked() || activated {
+                    pass.actions.push(GraphAction::Node(id, NodeAction::RetryMissingFile));
                 }
-                (_, Some(action)) => pass.actions.push(GraphAction::Node(id, action)),
-                // Click on the rendered note enters editing in place.
-                (TYPE_NOTE, _) if activated && !note_was_editing => {
-                    if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
-                        note.editing = true;
+            } else if let Some(click) = kind.caps().click.filter(|_| activated) {
+                match click {
+                    Click::Open | Click::Reveal => {
+                        pass.actions.extend(click_action(kind).map(|a| GraphAction::Node(id, a)))
                     }
-                    // The editor appears next frame; focus it so typing can start at once.
-                    ui.memory_mut(|m| m.request_focus(entry.id.editor()));
-                }
-                // Enters the node's JSON level, unless its file failed to
-                // load or it's still being refetched (`JsonPayload::enterable`).
-                (TYPE_JSON, _)
-                    if activated && self.nodes.get(&id).and_then(|n| n.as_json()).is_some_and(|j| j.enterable()) =>
-                {
-                    // Entered from the keyboard: the level's root card takes focus
-                    // (`draw_json_level`), sparing the toolbar's ~17 Tab stops.
-                    if !card.response.double_clicked() {
-                        ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                    // Click on the rendered note enters editing in place.
+                    Click::Edit if !note_was_editing => {
+                        if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
+                            note.editing = true;
+                        }
+                        // The editor appears next frame; focus it so typing can start at once.
+                        ui.memory_mut(|m| m.request_focus(entry.id.editor()));
                     }
-                    pass.actions.push(GraphAction::EnterGroup(id))
+                    // Enters the group's own subgraph or the JSON node's level, unless its file is still being
+                    // refetched (`JsonPayload::enterable`).
+                    Click::Enter if self.nodes.get(&id).and_then(|n| n.as_json()).is_none_or(|j| j.enterable()) => {
+                        // A JSON level entered from the keyboard: its root card takes focus (`draw_json_level`),
+                        // sparing the toolbar's ~17 Tab stops.
+                        if kind.ty == TYPE_JSON && !card.response.double_clicked() {
+                            ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                        }
+                        pass.actions.push(GraphAction::EnterGroup(id))
+                    }
+                    Click::Edit | Click::Enter => {}
                 }
-                // Drills into the group's own subgraph.
-                (ty, _) if is_container(ty) && activated => pass.actions.push(GraphAction::EnterGroup(id)),
-                _ => {}
             }
         }
         if let Some(rect) = pass.pan_target {
@@ -313,5 +306,47 @@ impl App {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::card_id::CardId;
+
+    fn frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| app.build_graph_ui(ui)).textures_delta.clear();
+    }
+
+    /// Enter on a keyboard-focused card whose file failed retries it, as a click on it does.
+    #[test]
+    fn enter_on_a_failed_image_card_retries_it() {
+        let ctx = crate::theme::testutil::ctx(true);
+        let mut app = App::default();
+        let id = app.alloc_node_id();
+        let image = ImagePayload { path: "gone.png".into(), width: 0, height: 0, error: Some("missing".into()) };
+        app.insert_placeholder_node(id, egui::Vec2::ZERO, Kind::Image, Runtime::Image(image));
+        for _ in 0..3 {
+            frame(&ctx, &mut app, vec![]);
+        }
+        app.camera.jump_to(app.fit_all_nodes_scene_rect());
+        frame(&ctx, &mut app, vec![]);
+        ctx.memory_mut(|m| m.request_focus(CardId::from(id).widget()));
+        frame(&ctx, &mut app, vec![]);
+        assert!(app.nodes[&id].file_failed());
+        let enter = |pressed| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut app, vec![enter(true), enter(false)]);
+        assert!(!app.nodes[&id].file_failed(), "Enter retried the image: its error was taken");
     }
 }

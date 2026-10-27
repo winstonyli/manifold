@@ -25,16 +25,8 @@ pub(super) fn paint_drop_hint(ctx: &egui::Context, at: egui::Pos2, text: &str) {
 /// The mouse and key pairs the hint strip shows for a `kind` of card: each gesture beside its keyboard twin.
 fn card_hint_pairs(kind: CardKind) -> Vec<(&'static str, &'static str)> {
     let select = if kind.ty == TYPE_TAB { ("Click / Space", "select") } else { ("Click", "select") };
-    let open = match kind.ty {
-        TYPE_TAB | TYPE_IMAGE => Some("open"),
-        TYPE_DOWNLOAD | TYPE_PDF => Some("reveal"),
-        TYPE_NOTE => Some("edit"),
-        TYPE_JSON => Some("enter"),
-        ty if is_container(ty) => Some("enter"),
-        _ => None,
-    };
     let mut pairs = vec![select];
-    pairs.extend(open.map(|verb| ("Dbl-click / Enter", verb)));
+    pairs.extend(kind.caps().click.map(|click| ("Dbl-click / Enter", click.verb())));
     pairs.extend([("Right-click / Shift+F10", "menu"), ("Tab", "next"), ("Del", del_verb(kind))]);
     pairs
 }
@@ -104,7 +96,7 @@ mod tests {
         use super::card_hint_pairs;
         use crate::card::click_action;
         use crate::card_kind::fixtures::plain;
-        use crate::store::model::TYPE_GROUP;
+        use crate::store::model::{TYPE_GROUP, TYPE_IMAGE, TYPE_PDF};
         let verb = |ty| card_hint_pairs(plain(ty)).iter().find(|(keys, _)| keys.starts_with("Dbl-click")).map(|p| p.1);
         assert_eq!(verb(TYPE_TAB), Some("open"));
         assert_eq!(verb(TYPE_IMAGE), Some("open"));
