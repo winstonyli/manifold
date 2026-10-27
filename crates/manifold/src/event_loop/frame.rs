@@ -60,6 +60,7 @@ impl App {
                 self.update_window_title();
                 let ctx = self.egui_ctx.clone();
                 let output = ctx.run_ui(raw_input, |ui| self.build_ui(ui));
+                crate::identity::finish_icon_frame(&ctx);
                 if let Some(update) = &output.platform_output.accesskit_update {
                     self.debug.controls = crate::identity::controls_in(&ctx, update);
                 }

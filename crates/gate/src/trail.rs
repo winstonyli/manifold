@@ -352,7 +352,6 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     // the text changes, so type, then change it.
     inst.send(&format!("ADDRESSBAR {}", run.site_host()))?;
     inst.send("EGUITEXT .")?;
-    let s = inst.export_until("dropdown", |s| !rows(s).is_empty())?;
     let led = |s: &State| {
         let ids = s.0["identities"].as_array().map_or(&[][..], Vec::as_slice);
         rows(s)
@@ -366,6 +365,7 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
             })
             .count()
     };
+    let s = inst.export_until("dropdown", |s| !rows(s).is_empty())?;
     check_is("every control in the dropdown has an icon inside it", rows(&s).len(), led(&s));
     let selected = |s: &State| s.popup_controls().iter().filter(|c| c["selected"] == true).count();
     check_is("no dropdown row is selected yet", 0, selected(&s));

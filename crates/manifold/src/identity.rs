@@ -178,8 +178,14 @@ fn icon_log_id() -> egui::Id {
     egui::Id::new("identity_icon_log")
 }
 
-/// Starts a frame's icon log: what was drawn becomes the finished frame's list.
+/// Starts a pass's icon log, dropping what a pass egui discarded drew.
 pub(crate) fn begin_icon_frame(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.get_temp_mut_or_default::<IconLog>(icon_log_id()).building.clear());
+}
+
+/// Ends a frame (after `run_ui`, where `controls_in` reads the same frame's tree): what it drew becomes the list
+/// `drawn_icons` gives.
+pub(crate) fn finish_icon_frame(ctx: &egui::Context) {
     ctx.data_mut(|d| {
         let log = d.get_temp_mut_or_default::<IconLog>(icon_log_id());
         log.done = std::mem::take(&mut log.building);
@@ -456,10 +462,13 @@ mod tests {
     }
 
     #[test]
-    fn painted_icons_are_logged_for_the_finished_frame_only() {
+    fn painted_icons_are_logged_once_the_frame_finishes() {
         let ctx = egui::Context::default();
         let paint = |ctx: &egui::Context| {
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                begin_icon_frame(ui.ctx());
+                // A pass egui discards: what it drew is not logged.
+                Identity::Spinner.paint(ui, egui::pos2(90.0, 90.0), 16.0, 1.0, egui::Color32::GRAY);
                 begin_icon_frame(ui.ctx());
                 Identity::Tile { fill: view_color(ViewKind::Cef), letter: Some('E') }.paint(
                     ui,
@@ -478,10 +487,9 @@ mod tests {
             });
             output.textures_delta.clear();
         };
-        assert!(drawn_icons(&ctx).is_empty());
         paint(&ctx);
-        assert!(drawn_icons(&ctx).is_empty(), "the frame is unfinished until the next begins");
-        paint(&ctx);
+        assert!(drawn_icons(&ctx).is_empty(), "the frame is unfinished until it finishes");
+        finish_icon_frame(&ctx);
         let icons = drawn_icons(&ctx);
         let seen: Vec<_> = icons.iter().map(|i| (i.kind, i.text.as_str(), i.rect.center())).collect();
         assert_eq!(seen.len(), 3);
