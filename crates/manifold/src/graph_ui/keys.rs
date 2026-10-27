@@ -138,7 +138,8 @@ impl App {
             });
             // An open node menu, or a focused widget that is not a card (a card pane row), keeps the arrows and Enter
             // for itself. egui gives focus by keyboard or code only, never by a click, so a focused widget here was
-            // stepped to.
+            // stepped to. The menu needs its own check: it can be open with no row focused (its first frame, or after a
+            // page swap), and Down then enters it (`list_row_nav`).
             let card_focused = self.card_nav_active;
             let widget_keys =
                 self.menus.node_menu.open.is_some() || (!card_focused && ui.memory(|m| m.focused()).is_some());
@@ -555,6 +556,37 @@ mod tests {
         };
         frame(&mut app, vec![key(egui::Key::ArrowRight), key(egui::Key::Enter)]);
         assert_eq!(app.focused, Some(ids[0]), "the arrow was the row's");
+        assert!(app.transition.is_none(), "and so was Enter");
+    }
+
+    /// An open node menu keeps the arrows and Enter even with none of its rows focused (its first frame, or after a
+    /// page swap took the focused row away), which the focused-widget rule above can't see.
+    #[test]
+    fn an_open_node_menu_keeps_the_arrows_and_enter_without_a_focused_row() {
+        use crate::session_sync::tests::sleeping_tab;
+        use crate::store::model::Kind;
+        let mut app = App::default();
+        let ids: Vec<crate::store::model::NodeId> = (0..2).map(|_| app.alloc_node_id()).collect();
+        for (i, id) in ids.iter().enumerate() {
+            let tab = sleeping_tab(&format!("https://{i}.test/"), &format!("t{i}"));
+            app.insert_placeholder_node(*id, egui::vec2(100.0 + 200.0 * i as f32, 0.0), Kind::Tab, tab);
+        }
+        app.focused = Some(ids[0]);
+        app.menus.node_menu.open = Some((ids[0], egui::pos2(0.0, 0.0)));
+        let ctx = egui::Context::default();
+        let key = |key| egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let input =
+            egui::RawInput { events: vec![key(egui::Key::ArrowRight), key(egui::Key::Enter)], ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| app.handle_graph_keys(ui, false));
+        output.textures_delta.clear();
+        assert!(ctx.memory(|m| m.focused()).is_none(), "no row has focus");
+        assert_eq!(app.focused, Some(ids[0]), "the arrow was the menu's");
         assert!(app.transition.is_none(), "and so was Enter");
     }
 
