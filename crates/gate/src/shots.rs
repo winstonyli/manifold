@@ -33,7 +33,13 @@
 //!
 //! `gate chrome-shots-sizes` runs it at each of `SIZES` (`"400 300,800 600,1920 1080"`) into `OUT/<W>x<H>/`, with
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
-//! by number; this is for looking. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! by number; this is for looking.
+//!
+//! Two runs on one commit give the same pixels, so a look change can be checked by a pixel diff of before and after.
+//! Compare decoded pixels, not files: the PNG bytes differ for most shots. A/A on 2026-10-27 (674f714; runs
+//! `chrome-shots-aa`, `chrome-shots-aa-hover` in `docs/runs.md`): all 112 default-view files, and `hover-graph`'s 93
+//! at 1280x800 and 30 at 400x300, matched pixel for pixel, the hover pair at 49% CPU load. An earlier report of the zoom
+//! readout differing between runs (134% vs 144%) did not reproduce. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;

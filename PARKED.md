@@ -117,5 +117,4 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 
 From `docs/superpowers/plans/2026-10-26-cleanliness-refactors.md` and its final review; verified 2026-10-27.
 
-- **No A/A for `chrome-shots`.** Two captures of an unchanged tree differ (zoom read 134% vs 144%, tooltip fade), so B10's before/after shots were compared by eye on the toolbar strip only. *Trigger:* the next drawing change that wants a byte diff of shots. *Fix:* run chrome-shots twice on one commit and record which shots repeat. *Status:* parked.
 - **Final-review minors.** (1) `App::load` starts from `..Self::default()`, so it builds workers and a memory-only `Search` and then replaces them: wasted work, no effect. (2) M2 removed `suggest::Server`'s request log with its assertion; the path was dead. *Trigger:* a touch of the code. *Status:* parked.
