@@ -468,7 +468,7 @@ impl App {
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
     pub(crate) fn current_level_settle_key(&self) -> (Option<NodeId>, crate::level::SettleKey) {
-        (self.current_group, crate::level::settle_key(&self.level_items()))
+        (self.current_group, self.settle_key(&self.level_items()))
     }
 
     /// Directional spatial navigation for arrow-key graph focus: among tab

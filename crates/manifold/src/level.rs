@@ -102,16 +102,22 @@ pub(crate) struct SettleKey {
     sizes: u64,
 }
 
-/// `items`' `SettleKey`: the one both the per-frame check and `App::current_level_settle_key` use.
-pub(crate) fn settle_key(items: &[CardEntry]) -> SettleKey {
-    use std::hash::{BuildHasher, BuildHasherDefault};
-    let hasher = BuildHasherDefault::<std::hash::DefaultHasher>::default();
-    let stored = items.iter().filter(|item| item.origin == Origin::Stored);
-    SettleKey {
-        count: items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count(),
-        sizes: stored
-            .map(|item| hasher.hash_one((item.rect.width().to_bits(), item.rect.height().to_bits())))
-            .fold(0, u64::wrapping_add),
+impl App {
+    /// `items`' `SettleKey`: the one both the per-frame check and `App::current_level_settle_key` use. The sizes are
+    /// the cards' own (`node_card_size`), not read back from `items`' rects: a rect's width depends in its last bit
+    /// on where the card sits, and the layout moves cards, so a key from it changed with every settle.
+    pub(crate) fn settle_key(&self, items: &[CardEntry]) -> SettleKey {
+        use std::hash::{BuildHasher, BuildHasherDefault};
+        let hasher = BuildHasherDefault::<std::hash::DefaultHasher>::default();
+        let stored = items.iter().filter(|item| item.origin == Origin::Stored);
+        let sizes = stored
+            .filter_map(|item| self.nodes.get(&item.id.node()?))
+            .map(|node| node_card_size(&node.runtime))
+            .map(|size| hasher.hash_one((size.x.to_bits(), size.y.to_bits())));
+        SettleKey {
+            count: items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count(),
+            sizes: sizes.fold(0, u64::wrapping_add),
+        }
     }
 }
 
@@ -339,19 +345,46 @@ mod tests {
     /// and a virtual card's size don't.
     #[test]
     fn a_stored_cards_size_is_part_of_the_settle_key() {
+        let mut app = App::default();
+        app.insert_placeholder_node(D1, egui::Vec2::ZERO, Kind::Download, download("a.bin"));
+        app.insert_placeholder_node(D2, egui::Vec2::ZERO, Kind::Download, download("b.bin"));
         let entry = |id: NodeId, width: f32, origin: Origin| CardEntry {
             id: CardId::from(id),
             kind: crate::card_kind::fixtures::plain(crate::store::model::TYPE_DOWNLOAD),
             origin,
             rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width, 90.0)),
         };
-        let key = |items: &[CardEntry]| settle_key(items);
         let base =
             [entry(D1, 160.0, Origin::Stored), entry(D2, 200.0, Origin::Stored), entry(P, 50.0, Origin::Virtual("v"))];
         let [a, b, v] = base.clone();
-        assert_ne!(key(&base), key(&[a.clone(), entry(D2, 260.0, Origin::Stored), v.clone()]), "a stored card grew");
-        assert_eq!(key(&base), key(&[b.clone(), a.clone(), v]), "the same cards in another order");
-        assert_eq!(key(&base), key(&[a, b, entry(P, 80.0, Origin::Virtual("v"))]), "a virtual card grew");
+        let before = app.settle_key(&base);
+        assert_eq!(before, app.settle_key(&[b, a.clone(), v]), "the same cards in another order");
+        assert_eq!(
+            before,
+            app.settle_key(&[a, base[1].clone(), entry(P, 80.0, Origin::Virtual("v"))]),
+            "a virtual card grew"
+        );
+        app.nodes.get_mut(&D2).unwrap().runtime = Runtime::Jar;
+        assert_ne!(before, app.settle_key(&base), "a stored card changed size");
+    }
+
+    /// The layout moves cards, so where a card sits must not change the key: a rect's width read back from its
+    /// centre and size differs in the last bit with the centre, and a key built from it re-laid-out the level on
+    /// every frame (smoke's dropped files, 2026-10-27; x -6143.999 was one such centre).
+    #[test]
+    fn moving_a_card_does_not_change_the_settle_key() {
+        let mut app = App::default();
+        app.insert_placeholder_node(D1, egui::Vec2::ZERO, Kind::Download, download("d.bin"));
+        let entry = |x: f32| CardEntry {
+            id: CardId::from(D1),
+            kind: crate::card_kind::fixtures::plain(crate::store::model::TYPE_DOWNLOAD),
+            origin: Origin::Stored,
+            rect: node_card_rect(egui::vec2(x, x / 3.0), &download("d.bin")),
+        };
+        let first = app.settle_key(&[entry(0.0)]);
+        for x in (0..20_000).map(|i| i as f32 * 0.731 - 7000.0) {
+            assert_eq!(app.settle_key(&[entry(x)]), first, "the card at x {x}");
+        }
     }
 
     #[test]
