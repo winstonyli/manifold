@@ -6,11 +6,11 @@ use super::*;
 fn jar_fields_belong_to_tabs_groups_and_jars() {
     use field::*;
     assert_eq!(Kind::Tab.fields(), &[POS, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]);
-    assert_eq!(Kind::Group.fields(), &[POS, NAME, JAR, CLOSED, HELD]);
-    assert_eq!(Kind::Jar.fields(), &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]);
+    assert_eq!(Kind::Group.fields(), &[POS, PINNED, NAME, JAR, CLOSED, HELD]);
+    assert_eq!(Kind::Jar.fields(), &[POS, PINNED, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]);
     assert!(!Kind::Note.fields().contains(&COLOR), "a card has no colour of its own; labels give it one");
     assert_eq!(Kind::Link.fields(), &[NAME, FROM, TO, CLOSED]);
-    assert_eq!(Kind::Unknown.fields(), &[POS, PARENT, NAME, CLOSED]);
+    assert_eq!(Kind::Unknown.fields(), &[POS, PINNED, PARENT, NAME, CLOSED]);
 }
 
 #[test]

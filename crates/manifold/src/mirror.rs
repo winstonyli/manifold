@@ -355,8 +355,8 @@ impl Mirror {
         self.nodes.get(&id).and_then(color_in)
     }
 
-    /// Graph view's pin toggle (tabs only): the force-directed layout never moves a pinned tab, as it never moves
-    /// a dragged node (`graph_layout::step`); it still pushes its neighbours. Only tabs carry the field.
+    /// Graph view's pin toggle, on any card: the force-directed layout never moves a pinned card, as it never moves
+    /// a dragged node (`graph_layout::step`); it still pushes its neighbours.
     pub(crate) fn pinned(&self, id: NodeId) -> bool {
         self.nodes.get(&id).is_some_and(pinned_in)
     }

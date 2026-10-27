@@ -438,6 +438,31 @@ fn a_remote_pos_snaps_the_layout() {
     assert_eq!(pos_stamp(app.doc.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
 }
 
+/// Two replicas of one session settle a level to the same places, and a card pinned on one stays on the other where
+/// the first showed it.
+#[test]
+fn a_card_pinned_on_one_replica_stays_where_it_was_shown_on_the_other() {
+    let path = temp_dir("pin-replicas").join("session.mnf");
+    let mut one = app_on(&path, 1);
+    let note = a_note_at(&mut one, egui::vec2(10.0, 10.0));
+    a_note_at(&mut one, egui::vec2(52.0, 10.0));
+    assert!(one.save_session());
+    let mut two = app_on(&path, 2);
+    assert!(two.restore_session());
+    one.settle_current_level();
+    two.settle_current_level();
+    let shown = one.layout_pos(note);
+    assert_ne!(shown, egui::vec2(10.0, 10.0), "the settle moved it");
+    assert_eq!(two.layout_pos(note), shown, "one document, one layout");
+    one.toggle_pin(note);
+    a_note_at(&mut one, egui::vec2(30.0, 40.0));
+    assert!(one.save_session());
+    assert!(two.save_session());
+    two.settle_current_level();
+    assert_eq!(two.layout_pos(note), shown);
+    assert_eq!(two.doc.mirror.pos(note), Some(shown));
+}
+
 /// A card the user is dragging is not snapped by a remote pos; its release then wins.
 #[test]
 fn a_remote_pos_does_not_snap_a_node_being_dragged() {

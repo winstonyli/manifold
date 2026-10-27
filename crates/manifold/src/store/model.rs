@@ -181,13 +181,13 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
     [
         (Kind::Tab, TYPE_TAB, &[POS, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
-        (Kind::Group, TYPE_GROUP, &[POS, NAME, JAR, CLOSED, HELD]),
-        (Kind::Note, TYPE_NOTE, &[POS, PARENT, URL, TEXT, NAME, CLOSED]),
-        (Kind::Image, TYPE_IMAGE, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Pdf, TYPE_PDF, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Json, TYPE_JSON, &[POS, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
-        (Kind::Download, TYPE_DOWNLOAD, &[POS, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Jar, TYPE_JAR, &[POS, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
+        (Kind::Group, TYPE_GROUP, &[POS, PINNED, NAME, JAR, CLOSED, HELD]),
+        (Kind::Note, TYPE_NOTE, &[POS, PINNED, PARENT, URL, TEXT, NAME, CLOSED]),
+        (Kind::Image, TYPE_IMAGE, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Pdf, TYPE_PDF, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Json, TYPE_JSON, &[POS, PINNED, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Jar, TYPE_JAR, &[POS, PINNED, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO, CLOSED]),
         (Kind::Label, TYPE_LABEL, &[NAME, COLOR, CLOSED]),
     ]
@@ -195,7 +195,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
 
 /// The fields every card carries whatever its type: all the app reads, mirrors and copies of a node of a type this
 /// build doesn't know (`Kind::Unknown`, spec decision 3). Its other fields stay raw in the document.
-pub(crate) const GENERIC: &[u32] = &[field::POS, field::PARENT, field::NAME, field::CLOSED];
+pub(crate) const GENERIC: &[u32] = &[field::POS, field::PINNED, field::PARENT, field::NAME, field::CLOSED];
 
 impl Kind {
     /// The type string a created node of this kind is stored under.
@@ -203,14 +203,14 @@ impl Kind {
         TYPES.iter().find(|t| t.0 == self).map(|t| t.1)
     }
 
-    /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
-    /// replica's change hands the app, and what a snapshot of the node holds. `GENERIC` for
-    /// `Unknown`.
     /// Whether a node of this kind is a graph card; a stored-only kind (a link, a label) never is.
     pub fn card(self) -> bool {
         !matches!(self, Kind::Link | Kind::Label)
     }
 
+    /// The fields a node of this kind carries, `group` aside (`TYPES`): what a `Create` writes, what another
+    /// replica's change hands the app, and what a snapshot of the node holds. `GENERIC` for
+    /// `Unknown`.
     pub fn fields(self) -> &'static [u32] {
         TYPES.iter().find(|t| t.0 == self).map_or(GENERIC, |t| t.2)
     }
@@ -938,12 +938,21 @@ mod tests {
         assert!(node.has_type() && !node.is_live(), "an empty type is no type");
     }
 
+    /// Any card can be pinned, so every card kind stores the pin (a kind that didn't lost it on restart and in sync).
+    #[test]
+    fn every_card_kind_carries_the_pin() {
+        let kinds = TYPES.iter().map(|t| t.0).chain([Kind::Unknown]);
+        for kind in kinds.filter(|k| k.card()) {
+            assert!(kind.fields().contains(&field::PINNED), "{kind:?}");
+        }
+    }
+
     /// A type this build doesn't know carries the generic fields (spec decision 3): what the app reads, mirrors and
     /// copies of it. Its type string is kept as written.
     #[test]
     fn an_unknown_kind_carries_the_generic_fields() {
         use field::*;
-        assert_eq!(Kind::Unknown.fields(), &[POS, PARENT, NAME, CLOSED]);
+        assert_eq!(Kind::Unknown.fields(), &[POS, PINNED, PARENT, NAME, CLOSED]);
         assert_eq!(Node::with_type("application/x-from-the-future").ty(), "application/x-from-the-future");
         assert_eq!(Node::with_type("Text/Markdown").ty(), "Text/Markdown", "kept as written, case and all");
         assert_eq!(Node::placeholder().ty(), "");
