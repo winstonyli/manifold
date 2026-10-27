@@ -821,6 +821,16 @@ fn a_file_where_the_old_install_is_set_aside_is_cleared() {
 }
 
 #[test]
+fn a_swap_that_fails_puts_the_old_install_back() {
+    let dir = temp_dir("ei48");
+    let live = dir.join("cef-runtime");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::write(live.join(MARKER), "v").unwrap();
+    assert!(super::swap(&dir.join("missing.tmp"), &live).is_err());
+    assert!(live.join(MARKER).exists() && !dir.join("cef-runtime.old").exists());
+}
+
+#[test]
 fn remove_deletes_the_marker_first_and_the_leftovers() {
     let dir = temp_dir("ei47");
     let live = dir.join("cef-runtime");
