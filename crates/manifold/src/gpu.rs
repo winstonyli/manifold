@@ -1045,17 +1045,72 @@ impl GpuState {
             let c = egui::Rgba::from(canvas);
             wgpu::Color { r: c.r() as f64, g: c.g() as f64, b: c.b() as f64, a: 1.0 }
         };
-        // Sync texture-atlas deltas (font glyphs, etc.) to the GPU-side
-        // renderer, and clear them, *before* checking whether this frame's
-        // surface can even be acquired. `TexturesDelta` panics on `Drop` if
-        // any `.set`/`.free` entry was never consumed, and this used to run
-        // only after a successful `get_current_texture()` below -- so a
-        // transient Occluded/Outdated/Timeout status on a frame that also
-        // introduced a new glyph (e.g. an icon font's first use) dropped
-        // `egui_output`'s `FullOutput` uncleared right at the early return,
-        // panicking with "Dropped TexturesDelta with 1 unapplied deltas".
-        // The atlas sync itself needs no surface -- only presentation does.
-        let egui_output = egui_output.map(|(ctx, mut full_output)| {
+        let egui_output = self.sync_atlas(egui_output);
+        let Some(frame) = self.acquire_frame() else {
+            return RenderOutcome { surface_ok: false, screenshot_result: None };
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder =
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tab render encoder") });
+
+        let width = self.config.width;
+        let height = self.config.height;
+        // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
+        // and reused for both the on-screen pass and, if requested, the
+        // offscreen screenshot pass below.
+        let (egui_draw, extra_command_buffers) = match egui_output {
+            Some((ctx, full_output)) => {
+                let (draw, buffers) = self.tessellate_and_upload(&mut encoder, ctx, full_output);
+                (Some(draw), buffers)
+            }
+            None => (None, Vec::new()),
+        };
+
+        Self::record_scene(
+            &mut encoder,
+            &view,
+            &Self::pane_textures(&self.tab_textures, panes),
+            (width, height),
+            &self.pipeline,
+            &mut self.egui_renderer,
+            egui_draw.as_ref(),
+            content_on_top,
+            canvas,
+        );
+
+        let pending_screenshot = screenshot_path.map(|path| {
+            (path, self.record_screenshot(&mut encoder, panes, egui_draw.as_ref(), content_on_top, canvas))
+        });
+
+        let submit = tracing::info_span!("submit").entered();
+        self.queue.submit(extra_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
+        drop(submit);
+        let present = tracing::info_span!("present").entered();
+        self.queue.present(frame);
+        drop(present);
+
+        let screenshot_result = pending_screenshot.map(|(path, (readback_buffer, padded_bytes_per_row))| {
+            self.read_back_screenshot(path, readback_buffer, padded_bytes_per_row)
+        });
+
+        RenderOutcome { surface_ok: true, screenshot_result }
+    }
+
+    /// Sync texture-atlas deltas (font glyphs, etc.) to the GPU-side
+    /// renderer, and clear them, *before* checking whether this frame's
+    /// surface can even be acquired. `TexturesDelta` panics on `Drop` if
+    /// any `.set`/`.free` entry was never consumed, and this used to run
+    /// only after a successful `get_current_texture()` -- so a
+    /// transient Occluded/Outdated/Timeout status on a frame that also
+    /// introduced a new glyph (e.g. an icon font's first use) dropped
+    /// `egui_output`'s `FullOutput` uncleared right at the early return,
+    /// panicking with "Dropped TexturesDelta with 1 unapplied deltas".
+    /// The atlas sync itself needs no surface -- only presentation does.
+    fn sync_atlas<'a>(
+        &mut self,
+        egui_output: Option<(&'a egui::Context, egui::FullOutput)>,
+    ) -> Option<(&'a egui::Context, egui::FullOutput)> {
+        egui_output.map(|(ctx, mut full_output)| {
             for (id, deltas) in &full_output.textures_delta.set {
                 for delta in deltas {
                     self.egui_renderer.update_texture(&self.device, &self.queue, *id, delta);
@@ -1066,30 +1121,34 @@ impl GpuState {
             }
             full_output.textures_delta.clear();
             (ctx, full_output)
-        });
+        })
+    }
 
+    /// The surface's texture for this frame, or `None` when it can't be drawn to: the surface is recovered (or
+    /// the failure logged) for the next redraw.
+    fn acquire_frame(&mut self) -> Option<wgpu::SurfaceTexture> {
         if std::mem::take(&mut self.reconfigure) {
             self.reconfigure_surface();
         }
-        let acquire = tracing::info_span!("acquire").entered();
+        let _acquire = tracing::info_span!("acquire").entered();
         let acquired = match self.forced.take() {
             Some(SurfaceFault::Outdated) => wgpu::CurrentSurfaceTexture::Outdated,
             Some(SurfaceFault::Lost) => wgpu::CurrentSurfaceTexture::Lost,
             None => self.surface.get_current_texture(),
         };
-        let frame = match acquired {
-            wgpu::CurrentSurfaceTexture::Success(t) => t,
+        match acquired {
+            wgpu::CurrentSurfaceTexture::Success(t) => Some(t),
             // Presentable now, but wgpu asks for a reconfigure; done before the next acquire.
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
                 self.reconfigure = true;
-                t
+                Some(t)
             }
             // The swapchain no longer matches the window (mode change, eGPU replug
             // with no resize event): without a reconfigure every later acquire fails too.
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.reconfigure_surface();
                 self.recoveries += 1;
-                return RenderOutcome { surface_ok: false, screenshot_result: None };
+                None
             }
             // The surface itself is gone: make a new one for the same window.
             wgpu::CurrentSurfaceTexture::Lost => {
@@ -1108,205 +1167,201 @@ impl GpuState {
                         }
                     }
                 }
-                return RenderOutcome { surface_ok: false, screenshot_result: None };
+                None
             }
             // Timeout/Occluded/Validation: skip this frame and
             // try again next redraw rather than treating it as fatal. A
             // requested screenshot was never attempted here -- the caller
             // must not drop it, only retry on a later frame whose surface
-            // actually comes back usable. `egui_output`'s texture delta was
-            // already applied and cleared above, so dropping it here now is
-            // safe -- only the shapes (tessellated below, never touched
-            // yet) go unused this frame.
-            _ => return RenderOutcome { surface_ok: false, screenshot_result: None },
-        };
-        drop(acquire);
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("tab render encoder") });
+            // actually comes back usable. `render`'s texture delta was
+            // already applied and cleared (`sync_atlas`), so dropping the
+            // egui output now is safe -- only the shapes (never tessellated)
+            // go unused this frame.
+            _ => None,
+        }
+    }
 
-        let width = self.config.width;
-        let height = self.config.height;
-        // Resolved once, up front -- `panes` (the parameter) is just
-        // `(rect, tab_id)` pairs; this pairs each with whatever texture
-        // `tab_id` currently has uploaded, if any (a tab that hasn't sent
-        // its first frame yet, or whose texture was already freed, simply
-        // draws nothing for this frame, same tolerance a single-pane render
-        // already had).
-        let panes: Vec<(PanePx, Option<&TabTexture>)> =
-            panes.iter().map(|(pane, id)| (*pane, self.tab_textures.get(id))).collect();
+    /// Resolved once per use -- `panes` is just `(rect, tab_id)` pairs; this pairs each with whatever texture
+    /// `tab_id` currently has uploaded, if any (a tab that hasn't sent
+    /// its first frame yet, or whose texture was already freed, simply
+    /// draws nothing for this frame, same tolerance a single-pane render
+    /// already had).
+    fn pane_textures<'a>(
+        tab_textures: &'a HashMap<NodeId, TabTexture>,
+        panes: &[(PanePx, NodeId)],
+    ) -> Vec<(PanePx, Option<&'a TabTexture>)> {
+        panes.iter().map(|(pane, id)| (*pane, tab_textures.get(id))).collect()
+    }
 
-        // Tessellated once (`ctx.tessellate` consumes `full_output.shapes`)
-        // and reused for both the on-screen pass and, if requested, the
-        // offscreen screenshot pass below.
-        let mut extra_command_buffers = Vec::new();
-        let egui_draw = if let Some((ctx, full_output)) = egui_output {
-            let clipped_primitives = tracing::info_span!("tessellate")
-                .in_scope(|| ctx.tessellate(full_output.shapes, full_output.pixels_per_point));
-            if tracing::enabled!(target: "mesh", tracing::Level::TRACE) {
-                let (mut meshes, mut verts, mut indices) = (0, 0, 0);
-                for p in &clipped_primitives {
-                    if let egui::epaint::Primitive::Mesh(m) = &p.primitive {
-                        (meshes, verts, indices) = (meshes + 1, verts + m.vertices.len(), indices + m.indices.len());
-                    }
+    /// Tessellates the frame's shapes and uploads their buffers, flushing the thumbnails they draw first. The
+    /// primitives and screen are drawn by every `record_scene` of the frame; the command buffers go to the
+    /// submit ahead of the encoder's.
+    fn tessellate_and_upload(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        ctx: &egui::Context,
+        full_output: egui::FullOutput,
+    ) -> ((Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor), Vec<wgpu::CommandBuffer>) {
+        let clipped_primitives = tracing::info_span!("tessellate")
+            .in_scope(|| ctx.tessellate(full_output.shapes, full_output.pixels_per_point));
+        if tracing::enabled!(target: "mesh", tracing::Level::TRACE) {
+            let (mut meshes, mut verts, mut indices) = (0, 0, 0);
+            for p in &clipped_primitives {
+                if let egui::epaint::Primitive::Mesh(m) = &p.primitive {
+                    (meshes, verts, indices) = (meshes + 1, verts + m.vertices.len(), indices + m.indices.len());
                 }
-                tracing::trace!(target: "mesh", label = format!("meshes={meshes} verts={verts} indices={indices}").as_str());
             }
-            // Downsample the dirty thumbnails egui draws this frame (the screenshot pass draws the same
-            // primitives), before any pass that samples them.
-            if !self.thumbs_dirty.is_empty() {
-                let drawn: HashSet<egui::TextureId> = clipped_primitives
-                    .iter()
-                    .filter_map(|p| match &p.primitive {
-                        egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id),
-                        egui::epaint::Primitive::Callback(_) => None,
-                    })
-                    .collect();
-                self.thumbs_dirty.retain(|tab_id| {
-                    let (Some(source), Some(dest)) = (self.tab_textures.get(tab_id), self.thumbnails.get(tab_id))
-                    else {
-                        return true;
-                    };
-                    if !drawn.contains(&dest.egui_id) {
-                        return true;
-                    }
-                    Self::render_thumbnail(
-                        &mut encoder,
-                        &self.device,
-                        &self.downsample_pipeline,
-                        &self.downsample_bind_group_layout,
-                        &self.sampler,
-                        source,
-                        dest,
-                    );
-                    false
-                });
-            }
-            let screen_descriptor = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [width, height],
-                pixels_per_point: full_output.pixels_per_point,
-            };
-            let upload = tracing::info_span!("upload").entered();
-            extra_command_buffers = self.egui_renderer.update_buffers(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                &clipped_primitives,
-                &screen_descriptor,
-            );
-            drop(upload);
-            Some((clipped_primitives, screen_descriptor))
-        } else {
-            None
+            tracing::trace!(target: "mesh", label = format!("meshes={meshes} verts={verts} indices={indices}").as_str());
+        }
+        self.flush_thumbnails(encoder, &clipped_primitives);
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.config.width, self.config.height],
+            pixels_per_point: full_output.pixels_per_point,
         };
+        let upload = tracing::info_span!("upload").entered();
+        let extra_command_buffers = self.egui_renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            encoder,
+            &clipped_primitives,
+            &screen_descriptor,
+        );
+        drop(upload);
+        ((clipped_primitives, screen_descriptor), extra_command_buffers)
+    }
 
+    /// Downsample the dirty thumbnails egui draws this frame (the screenshot pass draws the same
+    /// primitives), before any pass that samples them.
+    fn flush_thumbnails(&mut self, encoder: &mut wgpu::CommandEncoder, primitives: &[egui::ClippedPrimitive]) {
+        if self.thumbs_dirty.is_empty() {
+            return;
+        }
+        let drawn: HashSet<egui::TextureId> = primitives
+            .iter()
+            .filter_map(|p| match &p.primitive {
+                egui::epaint::Primitive::Mesh(mesh) => Some(mesh.texture_id),
+                egui::epaint::Primitive::Callback(_) => None,
+            })
+            .collect();
+        self.thumbs_dirty.retain(|tab_id| {
+            let (Some(source), Some(dest)) = (self.tab_textures.get(tab_id), self.thumbnails.get(tab_id)) else {
+                return true;
+            };
+            if !drawn.contains(&dest.egui_id) {
+                return true;
+            }
+            Self::render_thumbnail(
+                encoder,
+                &self.device,
+                &self.downsample_pipeline,
+                &self.downsample_bind_group_layout,
+                &self.sampler,
+                source,
+                dest,
+            );
+            false
+        });
+    }
+
+    /// Draws the frame again into a `COPY_SRC` texture and copies it into a buffer, returned with its padded row
+    /// size for `read_back_screenshot` once the frame is submitted.
+    fn record_screenshot(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        panes: &[(PanePx, NodeId)],
+        egui_draw: Option<&(Vec<egui::ClippedPrimitive>, egui_wgpu::ScreenDescriptor)>,
+        content_on_top: bool,
+        canvas: wgpu::Color,
+    ) -> (wgpu::Buffer, u32) {
+        let (width, height) = (self.config.width, self.config.height);
+        let readback_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("screenshot readback texture"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self::record_scene(
-            &mut encoder,
-            &view,
-            &panes,
+            encoder,
+            &readback_view,
+            &Self::pane_textures(&self.tab_textures, panes),
             (width, height),
             &self.pipeline,
             &mut self.egui_renderer,
-            egui_draw.as_ref(),
+            egui_draw,
             content_on_top,
             canvas,
         );
 
-        let pending_screenshot = screenshot_path.map(|path| {
-            let readback_texture = self.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("screenshot readback texture"),
-                size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.config.format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[],
-            });
-            let readback_view = readback_texture.create_view(&wgpu::TextureViewDescriptor::default());
-            Self::record_scene(
-                &mut encoder,
-                &readback_view,
-                &panes,
-                (width, height),
-                &self.pipeline,
-                &mut self.egui_renderer,
-                egui_draw.as_ref(),
-                content_on_top,
-                canvas,
-            );
-
-            let unpadded_bytes_per_row = width * 4;
-            let padded_bytes_per_row = unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-            let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("screenshot readback buffer"),
-                size: (padded_bytes_per_row * height) as wgpu::BufferAddress,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-            encoder.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &readback_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &readback_buffer,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(padded_bytes_per_row),
-                        rows_per_image: Some(height),
-                    },
-                },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            );
-            (path.to_string(), readback_buffer, padded_bytes_per_row)
+        let unpadded_bytes_per_row = width * 4;
+        let padded_bytes_per_row =
+            unpadded_bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("screenshot readback buffer"),
+            size: (padded_bytes_per_row * height) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
         });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &readback_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback_buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        (readback_buffer, padded_bytes_per_row)
+    }
 
-        let submit = tracing::info_span!("submit").entered();
-        self.queue.submit(extra_command_buffers.into_iter().chain(std::iter::once(encoder.finish())));
-        drop(submit);
-        let present = tracing::info_span!("present").entered();
-        self.queue.present(frame);
-        drop(present);
-
-        let screenshot_result = pending_screenshot.map(|(path, readback_buffer, padded_bytes_per_row)| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            readback_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
-                let _ = tx.send(result);
-            });
-            let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
-            match rx.recv() {
-                Ok(Ok(())) => {
-                    let mapped = readback_buffer.get_mapped_range(..).expect("mapped screenshot buffer");
-                    let mut pixels = vec![0u8; (width * height * 4) as usize];
-                    let unpadded_bytes_per_row = width * 4;
-                    for row in 0..height {
-                        let src_start = (row * padded_bytes_per_row) as usize;
-                        let dst_start = (row * unpadded_bytes_per_row) as usize;
-                        pixels[dst_start..dst_start + unpadded_bytes_per_row as usize]
-                            .copy_from_slice(&mapped[src_start..src_start + unpadded_bytes_per_row as usize]);
-                    }
-                    drop(mapped);
-                    readback_buffer.unmap();
-                    if matches!(
-                        self.config.format,
-                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
-                    ) {
-                        for px in pixels.as_chunks_mut::<4>().0 {
-                            px.swap(0, 2);
-                        }
-                    }
-                    image::save_buffer(&path, &pixels, width, height, image::ColorType::Rgba8)
-                        .map_err(|err| format!("failed to save {path}: {err}"))
+    /// Waits for `record_screenshot`'s copy (submitted) and writes the pixels to `path` as a PNG.
+    fn read_back_screenshot(
+        &self,
+        path: &str,
+        readback_buffer: wgpu::Buffer,
+        padded_bytes_per_row: u32,
+    ) -> Result<(), String> {
+        let (width, height) = (self.config.width, self.config.height);
+        let (tx, rx) = std::sync::mpsc::channel();
+        readback_buffer.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::wait_indefinitely());
+        match rx.recv() {
+            Ok(Ok(())) => {
+                let mapped = readback_buffer.get_mapped_range(..).expect("mapped screenshot buffer");
+                let mut pixels = vec![0u8; (width * height * 4) as usize];
+                let unpadded_bytes_per_row = width * 4;
+                for row in 0..height {
+                    let src_start = (row * padded_bytes_per_row) as usize;
+                    let dst_start = (row * unpadded_bytes_per_row) as usize;
+                    pixels[dst_start..dst_start + unpadded_bytes_per_row as usize]
+                        .copy_from_slice(&mapped[src_start..src_start + unpadded_bytes_per_row as usize]);
                 }
-                _ => Err(format!("failed to read back GPU buffer for {path}")),
+                drop(mapped);
+                readback_buffer.unmap();
+                if matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb) {
+                    for px in pixels.as_chunks_mut::<4>().0 {
+                        px.swap(0, 2);
+                    }
+                }
+                image::save_buffer(path, &pixels, width, height, image::ColorType::Rgba8)
+                    .map_err(|err| format!("failed to save {path}: {err}"))
             }
-        });
-
-        RenderOutcome { surface_ok: true, screenshot_result }
+            _ => Err(format!("failed to read back GPU buffer for {path}")),
+        }
     }
 }
 
