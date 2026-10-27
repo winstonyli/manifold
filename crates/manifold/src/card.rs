@@ -579,6 +579,63 @@ pub(crate) struct CardPass<'a> {
     pub(crate) carry: bool,
 }
 
+/// What one card's steps in `App::draw_card_inside_overlay_scope` share.
+struct CardCtx<'a> {
+    entry: &'a CardEntry,
+    view: &'a CardView,
+    rect: egui::Rect,
+}
+
+/// The Tab-order number on a card's top-left corner while navigating by keyboard.
+fn push_order_badge(ui: &egui::Ui, pass: &mut CardPass, c: &CardCtx) {
+    if !pass.show_order {
+        return;
+    }
+    let number = pass.order.iter().position(|o| *o == c.entry.id).map_or(0, |s| s + 1);
+    let corner = c.rect.left_top();
+    let (text, panel) = (palette(ui.visuals()).text, ui.visuals().panel_fill);
+    pass.deferred_overlays.push_top(Box::new(move |painter, project| {
+        // Kept on screen: a card at the edge would clip its badge.
+        let center = project(corner);
+        let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
+        // A keycap: the number is the key that jumps to this card.
+        let galley = painter.layout_no_wrap(number.to_string(), egui::FontId::monospace(11.0), text);
+        let cap = egui::Rect::from_center_size(center, galley.size() + egui::vec2(8.0, 4.0));
+        painter.rect_filled(cap, 3.0, panel);
+        painter.rect_stroke(cap, 3.0, egui::Stroke::new(1.0, text), egui::StrokeKind::Inside);
+        painter.galley(cap.center() - galley.size() / 2.0, galley, text);
+    }));
+}
+
+/// The drop-target ring and the pick-target ring around a card.
+fn paint_card_rings(ui: &egui::Ui, pass: &CardPass, c: &CardCtx, pointer_on_card: bool) {
+    let (card, rect, inv_zoom) = (c.entry.id, c.rect, pass.inv_zoom);
+    // The card the dragged one would drop onto: a bold ring, expanded
+    // well past this card so it still shows around a larger dragged
+    // card on top of it. Tracks the pointer directly, not eased.
+    if pass.drop_preview.as_ref().and_then(|(_, target)| *target) == Some(card) {
+        ui.painter().rect_stroke(
+            rect.expand(16.0 * inv_zoom),
+            10.0 * inv_zoom,
+            egui::Stroke::new(4.0 * inv_zoom, accent(ui.visuals())),
+            egui::StrokeKind::Outside,
+        );
+    }
+    // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
+    // while hovered, where a click would connect.
+    let reached = pass.connect_target == Some(card);
+    if pass.pick_targets.contains(&card) || (reached && pass.connect_ring.is_some()) {
+        let alpha = if pointer_on_card || reached { 255 } else { 160 };
+        let ring = pass.connect_ring.filter(|_| reached).unwrap_or(accent(ui.visuals()));
+        ui.painter().rect_stroke(
+            rect.expand(6.0 * inv_zoom),
+            6.0 * inv_zoom,
+            egui::Stroke::new(2.5 * inv_zoom, with_alpha(ring, alpha)),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
 /// An outline on a keyboard-focused card or control, white so it reads differently from the gold
 /// border of the active tab. Outside the rect, in world units (`inv_zoom` keeps it a constant size).
 pub(crate) fn card_focus_ring(ui: &egui::Ui, rect: egui::Rect, inv_zoom: f32) {
@@ -1057,30 +1114,13 @@ impl App {
         entry: &CardEntry,
     ) -> Option<CardOutput> {
         let card = entry.id;
-        let node = card.node();
         let stored = entry.origin == Origin::Stored;
-        let inv_zoom = pass.inv_zoom;
         // A stored card's rect is read fresh: a drag earlier in this frame's loop may have moved it.
-        let rect = match node.filter(|_| stored) {
+        let rect = match card.node().filter(|_| stored) {
             Some(id) => self.card_rect(id)?,
             None => entry.rect,
         };
-        // Viewport culling: skip every bit of interact/paint
-        // work below for a node that isn't actually visible --
-        // the single highest-leverage fix for a graph with many
-        // more nodes than fit on screen at once. Never culls
-        // the node currently being dragged, even once it's
-        // moved outside the viewport -- `ui.interact`'s own
-        // drag tracking is what keeps a drag alive frame to
-        // frame, so skipping it mid-drag would freeze the node
-        // in place the instant it crossed the visible edge.
-        // The Tab entry (first card) and the card holding keyboard focus stay registered too, so
-        // Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
-        // a note being edited, whose editor must stay laid out to keep its focus.
-        let keeps_keyboard = pass.order.first() == Some(&card)
-            || ui.memory(|m| m.has_focus(card.widget()))
-            || ui.memory(|m| m.has_focus(card.editor()));
-        if self.interaction.dragging != Some(card) && !keeps_keyboard && !rect.intersects(pass.viewport) {
+        if self.card_culled(ui, pass, card, rect) {
             return None;
         }
         let view = self.card_view(entry, pass.members)?;
@@ -1090,25 +1130,81 @@ impl App {
         let background = ui.painter().add(egui::Shape::Noop);
         pass.deferred_overlays.begin_card(rect);
         let body = self.paint_card_body(ui, pass, entry, &view, rect);
-        let deferred_overlays = &mut *pass.deferred_overlays;
+        let c = CardCtx { entry, view: &view, rect };
 
-        // Both interacts are registered *after* the body, never before:
-        // egui (0.36, `interaction.rs`) gives the pointer to the
-        // last-registered interactive widget under it, and counts a
-        // hover-only widget as hovered only when it sits on top of that
-        // widget. Registered first, a body widget (a Note's markdown
-        // scope or `TextEdit`) outranked them: a Note card was never
-        // hovered at all, and a click on rendered markdown never reached
-        // the card. The hover-only one covers the whole card, so hovering
-        // a Note's text while editing (where `response` is only the
-        // header) still counts; being hover-only it takes no clicks.
+        let response = self.interact_card(ui, pass, &c, body);
+        self.note_card_focus(ui, pass, &c, &response);
+        push_order_badge(ui, pass, &c);
+        let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", card)), egui::Sense::hover());
+        let pointer_on_card = hover.hovered() || response.hovered();
+        // Last frame's hover too, which keeps the ✕ drawn while the
+        // pointer is on it: registered last, it takes the hover from both
+        // interacts above.
+        let is_hovered = self.interaction.hovered == Some(card) || pointer_on_card;
+
+        let style = self.paint_card_frame(ui, &c, background, pass.inv_zoom, is_hovered);
+        paint_card_rings(ui, pass, &c, pointer_on_card);
+        let close = self.card_key_actions(ui, &c, &response);
+        let (control, control_hovered) = self.draw_card_controls(ui, pass, &c, &style, is_hovered, close);
+        let handle_hovered = self.draw_link_handles(ui, pass, &c, is_hovered);
+
+        // This frame's hover only: passing `is_hovered` (which includes
+        // `self.interaction.hovered`) made a card stay hovered, ✕ and all, after the
+        // pointer left it, until another card was hovered. Never during a
+        // connect-drag, whose peek would cover the targets.
+        let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
+        self.drag_card(ui, pass, &c, &style, &response);
+        if still_hovered {
+            self.interaction.hovered = Some(card);
+        } else if self.interaction.hovered == Some(card) {
+            self.interaction.hovered = None;
+        }
+
+        self.push_filter_dim(ui, pass, &c);
+        Some(CardOutput { response, control })
+    }
+
+    /// Viewport culling: skip every bit of interact/paint
+    /// work below for a node that isn't actually visible --
+    /// the single highest-leverage fix for a graph with many
+    /// more nodes than fit on screen at once. Never culls
+    /// the node currently being dragged, even once it's
+    /// moved outside the viewport -- `ui.interact`'s own
+    /// drag tracking is what keeps a drag alive frame to
+    /// frame, so skipping it mid-drag would freeze the node
+    /// in place the instant it crossed the visible edge.
+    /// The Tab entry (first card) and the card holding keyboard focus stay registered too, so
+    /// Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
+    /// a note being edited, whose editor must stay laid out to keep its focus.
+    fn card_culled(&self, ui: &egui::Ui, pass: &CardPass, card: CardId, rect: egui::Rect) -> bool {
+        let keeps_keyboard = pass.order.first() == Some(&card)
+            || ui.memory(|m| m.has_focus(card.widget()))
+            || ui.memory(|m| m.has_focus(card.editor()));
+        self.interaction.dragging != Some(card) && !keeps_keyboard && !rect.intersects(pass.viewport)
+    }
+
+    /// The card's click/drag interact over `body`'s handle, with its tooltip and screen-reader name.
+    ///
+    /// Registered *after* the body, never before:
+    /// egui (0.36, `interaction.rs`) gives the pointer to the
+    /// last-registered interactive widget under it, and counts a
+    /// hover-only widget as hovered only when it sits on top of that
+    /// widget. Registered first, a body widget (a Note's markdown
+    /// scope or `TextEdit`) outranked them: a Note card was never
+    /// hovered at all, and a click on rendered markdown never reached
+    /// the card. The hover-only one (in the caller) covers the whole card, so hovering
+    /// a Note's text while editing (where `response` is only the
+    /// header) still counts; being hover-only it takes no clicks.
+    fn interact_card(&mut self, ui: &mut egui::Ui, pass: &CardPass, c: &CardCtx, body: CardBody) -> egui::Response {
+        let (card, entry) = (c.entry.id, c.entry);
+        let stored = entry.origin == Origin::Stored;
         // Focusable only as the Tab entry (first in `pass.order`) or while holding focus, so egui's
         // own traversal can't walk the cards in draw order.
         let card_id = card.widget();
         // The Tab entry is first in the order; the position (a scan) is only needed for the order badges.
         let is_tab_entry = pass.order.first() == Some(&card);
         // A card takes a drag (and so keeps the scene from panning under it) only if its kind may be picked up: a
-        // stored card is moved by it, a virtual one carried (handled below).
+        // stored card is moved by it, a virtual one carried (handled in `drag_card`).
         let draggable = entry.caps().drag_source && (stored || pass.carry);
         let focusable = is_tab_entry || ui.memory(|m| m.has_focus(card_id));
         let sense = match (draggable, focusable) {
@@ -1136,57 +1232,51 @@ impl App {
             _ => response,
         };
         // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
-        if let Some(id) = node.filter(|id| self.nodes.contains_key(id)) {
+        if let Some(id) = card.node().filter(|id| self.nodes.contains_key(id)) {
             response.widget_info(|| {
                 let name = self.accessible_name(id).unwrap_or_default();
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
             });
         }
-        // Keyboard: a focus ring, the camera follows focus, and the Tab-order number while navigating.
+        response
+    }
+
+    /// Keyboard: a focus ring, the camera follows focus, and the hint for the focused or hovered card.
+    fn note_card_focus(&mut self, ui: &egui::Ui, pass: &mut CardPass, c: &CardCtx, response: &egui::Response) {
         pass.any_focused |= response.has_focus();
         if response.has_focus() {
-            card_focus_ring(ui, rect, inv_zoom);
+            card_focus_ring(ui, c.rect, pass.inv_zoom);
         }
         // The focused card's hint wins over a hovered one's, whichever draws first.
         if response.has_focus() || (response.hovered() && self.card_hint.is_none()) {
-            self.card_hint = Some((view.kind, crate::identity::to_global(ui.ctx(), ui.layer_id(), rect)));
+            self.card_hint = Some((c.view.kind, crate::identity::to_global(ui.ctx(), ui.layer_id(), c.rect)));
         }
         if response.gained_focus() {
-            pass.pan_target = Some(rect);
+            pass.pan_target = Some(c.rect);
         }
-        if pass.show_order {
-            let number = pass.order.iter().position(|o| *o == card).map_or(0, |s| s + 1);
-            let corner = rect.left_top();
-            let (text, panel) = (palette(ui.visuals()).text, ui.visuals().panel_fill);
-            deferred_overlays.push_top(Box::new(move |painter, project| {
-                // Kept on screen: a card at the edge would clip its badge.
-                let center = project(corner);
-                let center = center.clamp(painter.clip_rect().shrink(10.0).min, painter.clip_rect().shrink(10.0).max);
-                // A keycap: the number is the key that jumps to this card.
-                let galley = painter.layout_no_wrap(number.to_string(), egui::FontId::monospace(11.0), text);
-                let cap = egui::Rect::from_center_size(center, galley.size() + egui::vec2(8.0, 4.0));
-                painter.rect_filled(cap, 3.0, panel);
-                painter.rect_stroke(cap, 3.0, egui::Stroke::new(1.0, text), egui::StrokeKind::Inside);
-                painter.galley(cap.center() - galley.size() / 2.0, galley, text);
-            }));
-        }
-        let hover = ui.interact(rect, egui::Id::new(("graph_card_hover", card)), egui::Sense::hover());
-        let pointer_on_card = hover.hovered() || response.hovered();
-        // Last frame's hover too, which keeps the ✕ drawn while the
-        // pointer is on it: registered last, it takes the hover from both
-        // interacts above.
-        let is_hovered = self.interaction.hovered == Some(card) || pointer_on_card;
+    }
 
+    /// The glow, fill, selection wash (in the slot reserved under the body) and border, on one eased hover; returns
+    /// the card's style for the controls and drag ghost.
+    fn paint_card_frame(
+        &self,
+        ui: &egui::Ui,
+        c: &CardCtx,
+        background: egui::layers::ShapeIdx,
+        inv_zoom: f32,
+        is_hovered: bool,
+    ) -> CardStyle {
+        let (rect, view) = (c.rect, c.view);
         // One eased hover drives the glow, the fill's brightening and the
         // border, so the three move together.
         let hover_t = crate::theme::animate(
             ui.ctx(),
-            egui::Id::new(("graph_card_hover_t", card)),
+            egui::Id::new(("graph_card_hover_t", c.entry.id)),
             is_hovered,
             egui::emath::easing::cubic_out,
         );
         let style = card_style(view.kind, ui.visuals());
-        let (border_width, border_color) = card_border(&view, &style, hover_t);
+        let (border_width, border_color) = card_border(view, &style, hover_t);
         // A soft black shadow at rest that takes on the border color as the card is hovered or open.
         let shadow_color = lerp_color32(egui::Color32::BLACK, border_color, if view.focused { 1.0 } else { hover_t });
         let mut background_shapes: Vec<egui::Shape> = card_glow_shapes(
@@ -1226,59 +1316,55 @@ impl App {
             egui::Stroke::new(border_width * inv_zoom, border_color),
             egui::StrokeKind::Inside,
         );
+        style
+    }
 
-        // The card the dragged one would drop onto: a bold ring, expanded
-        // well past this card so it still shows around a larger dragged
-        // card on top of it. Tracks the pointer directly, not eased.
-        if pass.drop_preview.as_ref().and_then(|(_, target)| *target) == Some(card) {
-            ui.painter().rect_stroke(
-                rect.expand(16.0 * inv_zoom),
-                10.0 * inv_zoom,
-                egui::Stroke::new(4.0 * inv_zoom, accent(ui.visuals())),
-                egui::StrokeKind::Outside,
-            );
-        }
-        // Pick-target mode: a valid target gets a thinner accent ring, closer in than the drop ring, and brighter
-        // while hovered, where a click would connect.
-        let reached = pass.connect_target == Some(card);
-        if pass.pick_targets.contains(&card) || (reached && pass.connect_ring.is_some()) {
-            let alpha = if pointer_on_card || reached { 255 } else { 160 };
-            let ring = pass.connect_ring.filter(|_| reached).unwrap_or(accent(ui.visuals()));
-            ui.painter().rect_stroke(
-                rect.expand(6.0 * inv_zoom),
-                6.0 * inv_zoom,
-                egui::Stroke::new(2.5 * inv_zoom, with_alpha(ring, alpha)),
-                egui::StrokeKind::Outside,
-            );
-        }
-        // Registered after both interacts above, so they take the pointer.
-        let caps = entry.caps();
+    /// Delete and Shift+F10 on the focused card, and a middle-click: the close action they ask for, if any.
+    /// Registered after both interacts, so they take the pointer.
+    fn card_key_actions(&mut self, ui: &egui::Ui, c: &CardCtx, response: &egui::Response) -> Option<NodeAction> {
+        let caps = c.entry.caps();
         let delete = caps.stored_controls && response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Delete));
         // Shift+F10 on a focused card opens its menu, anchored at the card's bottom-left: a stored card's node menu,
         // or whatever menu a virtual card's source opens.
         if caps.menu && response.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10))
         {
-            let corner = rect.left_bottom();
+            let corner = c.rect.left_bottom();
             let at = crate::identity::to_global(ui.ctx(), ui.layer_id(), corner);
-            match entry.origin {
+            match c.entry.origin {
                 Origin::Virtual(_) => {
-                    if let Some(source) = self.entry_source(entry) {
-                        source.on_menu(self, entry, at);
+                    if let Some(source) = self.entry_source(c.entry) {
+                        source.on_menu(self, c.entry, at);
                     }
                 }
                 _ => {
-                    if let Some(id) = node {
+                    if let Some(id) = c.entry.id.node() {
                         self.menus.node_menu.open(id, at);
                     }
                 }
             }
         }
-        let mut control = ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
-            .then(|| CardControl::Close.action());
+        ((caps.stored_controls && response.clicked_by(egui::PointerButton::Middle)) || delete)
+            .then(|| CardControl::Close.action())
+    }
+
+    /// The pinned mark, label chips and controls; returns the clicked control's action (`close` already counts) and
+    /// whether the pointer is on a control.
+    fn draw_card_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        pass: &mut CardPass,
+        c: &CardCtx,
+        style: &CardStyle,
+        is_hovered: bool,
+        close: Option<NodeAction>,
+    ) -> (Option<NodeAction>, bool) {
+        let (rect, view, inv_zoom) = (c.rect, c.view, pass.inv_zoom);
+        let deferred_overlays = &mut *pass.deferred_overlays;
+        let mut control = close;
         let mut control_hovered = false;
-        paint_pinned_mark(ui, deferred_overlays, rect, &view, inv_zoom, self.graph_detail);
-        paint_label_chips(deferred_overlays, rect, &view, inv_zoom, self.graph_detail, ui.visuals().dark_mode);
-        for card_control in card_controls(&view) {
+        paint_pinned_mark(ui, deferred_overlays, rect, view, inv_zoom, self.graph_detail);
+        paint_label_chips(deferred_overlays, rect, view, inv_zoom, self.graph_detail, ui.visuals().dark_mode);
+        for card_control in card_controls(view) {
             if card_control.hover_only() && !is_hovered {
                 continue;
             }
@@ -1287,26 +1373,32 @@ impl App {
                 deferred_overlays,
                 card_control,
                 rect,
-                card,
-                &view,
-                &style,
+                c.entry.id,
+                view,
+                style,
                 inv_zoom,
                 self.graph_detail,
             );
-            let control_response = control_response.on_hover_text(card_control.tip(&view));
+            let control_response = control_response.on_hover_text(card_control.tip(view));
             control_hovered |= control_response.hovered();
             if control_response.clicked() && control.is_none() {
                 control = Some(card_control.action());
             }
         }
+        (control, control_hovered)
+    }
 
-        // Connect-drag handles (link-gestures spec A), on a hovered card, and on every card while a drag runs.
-        // Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
-        // alone (no click below), so the card neither moves nor opens. Stored cards only, not an ability: a handle
-        // starts a Link node between two nodes.
+    /// Connect-drag handles (link-gestures spec A), on a hovered card, and on every card while a drag runs.
+    /// Registered after the card and its controls: egui gives a press on a drag-only widget on top to that widget
+    /// alone (no click below), so the card neither moves nor opens. Stored cards only, not an ability: a handle
+    /// starts a Link node between two nodes. Returns whether the pointer is on a handle.
+    fn draw_link_handles(&mut self, ui: &mut egui::Ui, pass: &CardPass, c: &CardCtx, is_hovered: bool) -> bool {
+        let (card, rect, inv_zoom) = (c.entry.id, c.rect, pass.inv_zoom);
+        let stored = c.entry.origin == Origin::Stored;
         let mut handle_hovered = false;
-        if let Some(id) =
-            node.filter(|_| stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles())
+        if let Some(id) = card
+            .node()
+            .filter(|_| stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles())
         {
             let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_detail);
             for (side, handle) in handles {
@@ -1322,12 +1414,20 @@ impl App {
                 }
             }
         }
+        handle_hovered
+    }
 
-        // This frame's hover only: passing `is_hovered` (which includes
-        // `self.interaction.hovered`) made a card stay hovered, ✕ and all, after the
-        // pointer left it, until another card was hovered. Never during a
-        // connect-drag, whose peek would cover the targets.
-        let still_hovered = self.link.connect_drag.is_none() && (pointer_on_card || control_hovered || handle_hovered);
+    /// A carried virtual card's ghost and release, a stored card's move and drop.
+    fn drag_card(
+        &mut self,
+        ui: &egui::Ui,
+        pass: &mut CardPass,
+        c: &CardCtx,
+        style: &CardStyle,
+        response: &egui::Response,
+    ) {
+        let (card, entry, rect) = (c.entry.id, c.entry, c.rect);
+        let stored = entry.origin == Origin::Stored;
         // A virtual card that is a `drag_source` is carried, never moved: its rect and the layout stay, a ghost
         // follows the pointer, and the release goes to its source (`VirtualSource::on_drop`).
         let carried = !stored && entry.caps().drag_source && pass.carry;
@@ -1340,7 +1440,7 @@ impl App {
                 _ => egui::Vec2::ZERO,
             };
             let (ghost, fill, ring) = (rect.translate(shift), style.fill, accent(ui.visuals()));
-            deferred_overlays.push_top(Box::new(move |painter, project| {
+            pass.deferred_overlays.push_top(Box::new(move |painter, project| {
                 let screen = egui::Rect::from_min_max(project(ghost.min), project(ghost.max));
                 painter.rect_filled(screen, CARD_RADIUS, fill.gamma_multiply(0.8));
                 painter.rect_stroke(screen, CARD_RADIUS, egui::Stroke::new(2.0, ring), egui::StrokeKind::Inside);
@@ -1369,7 +1469,7 @@ impl App {
             // set to save -- see the release branch below.
             let delta = response.drag_delta();
             let moved: Vec<CardId> =
-                if view.selected { self.interaction.selected.iter().copied().collect() } else { vec![card] };
+                if c.view.selected { self.interaction.selected.iter().copied().collect() } else { vec![card] };
             // The layout only: the document pos is written once, at release (`release_drag`).
             for moved_id in moved.iter().filter_map(|moved| moved.node()) {
                 if self.nodes.contains_key(&moved_id) {
@@ -1383,21 +1483,19 @@ impl App {
             // nothing moved it since (no drag delta on a release frame).
             pass.actions.push(GraphAction::Drop { id: card, target: *pass.drop_preview });
         }
-        if still_hovered {
-            self.interaction.hovered = Some(card);
-        } else if self.interaction.hovered == Some(card) {
-            self.interaction.hovered = None;
-        }
+    }
 
+    /// The filter's dim over a card that doesn't match it.
+    fn push_filter_dim(&self, ui: &egui::Ui, pass: &mut CardPass, c: &CardCtx) {
         let scrim = with_alpha(palette(ui.visuals()).canvas, FILTER_DIM_ALPHA);
-        if let Some(id) = node {
+        let rounding = CARD_RADIUS / pass.inv_zoom;
+        if let Some(id) = c.entry.id.node() {
             if !self.node_matches(self.omni_filter(), id) {
-                push_dim_scrim(deferred_overlays, rect, CARD_RADIUS / inv_zoom, scrim);
+                push_dim_scrim(pass.deferred_overlays, c.rect, rounding, scrim);
             }
-        } else if self.virtual_card_dimmed(entry) {
-            push_dim_scrim(deferred_overlays, rect, CARD_RADIUS / inv_zoom, scrim);
+        } else if self.virtual_card_dimmed(c.entry) {
+            push_dim_scrim(pass.deferred_overlays, c.rect, rounding, scrim);
         }
-        Some(CardOutput { response, control })
     }
 
     /// A graph card's own content, per kind -- everything under the
