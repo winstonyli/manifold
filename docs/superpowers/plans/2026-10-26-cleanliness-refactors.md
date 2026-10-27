@@ -12,6 +12,20 @@ each batch is built. Line numbers are as of `fe35568` and drift as batches land.
 Ids are stable: `UI` chrome, `GR` graph, `S` store and sync, `E` engines and event loop, `M` main and gate misc,
 `GT` gate.
 
+## Decisions (user, 2026-10-26)
+
+- GR5: Enter on a card whose file failed retries it, like a click does (a small behaviour change).
+- GR2: `Click::Edit` and `Click::Enter`, read by both the hint strip and the activation match.
+- M1: four groups: `PageInput` (`cursor_pos`, `native_drag_tab`, `key_modifiers`, `click_counter`,
+  `swallowed_keys`), `SettingsState` (`settings`, `settings_fingerprint`, `settings_save_due`,
+  `settings_return_view`, `home_page_draft`, `settings_focus`), `GraphUi` (`card_nav_active`, `hints_revealed`,
+  `card_hint`, `graph_detail`, `truncate_cache`, `pending_graph_zoom`, `graph_settled_key`), `Workers`
+  (`favicon_fetcher`, `pdf_renderer`, `image_decoder`, `redirect_fetcher`, `favicon_resolved`); file loads move to
+  a constructor.
+- Shapes: GR1 uses `emath::TSTransform`; UI1's body returns whether a row closed the popup, with a
+  `close_on_outside` flag; E1 a `Waiters` list with `release_when`; GT1 `Run::Work(fn(exe, work))`; S5 a
+  `ProfileFile { name, what }` with `load` and `save`.
+
 ## Batches, in order
 
 Each batch is its own commit or few, with `cargo test -p manifold` and the pre-commit hook. A batch is marked done
