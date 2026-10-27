@@ -129,11 +129,40 @@ pub(crate) struct DrawnRow {
     pub(crate) selected: bool,
 }
 
-/// A control with a name (`NamedTip`): its tooltip text and screen rect.
+/// A control with a name, as a screen reader hears it (`controls_in`), and its screen rect.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct DrawnControl {
     pub(crate) label: String,
     pub(crate) rect: egui::Rect,
+}
+
+/// The named controls of the pass `ctx` just finished, from its accesskit tree `update`: a widget's name is the text
+/// of what it is `labelled_by`, else its own label (a button's text, a `NamedTip`). A label is not a control, and a
+/// widget clipped away (scrolled out of its area) is left out. Frontmost layer first, in paint order within a layer.
+pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpdate) -> Vec<DrawnControl> {
+    use egui::accesskit::{Node, NodeId};
+    let nodes: std::collections::HashMap<NodeId, &Node> = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+    let name = |node: &Node| {
+        let by: Vec<&str> =
+            node.labelled_by().iter().filter_map(|id| nodes.get(id)).filter_map(|n| n.label().or(n.value())).collect();
+        if by.is_empty() {
+            node.label().map(str::to_owned)
+        } else {
+            Some(by.join(" "))
+        }
+    };
+    let layers: Vec<egui::LayerId> = ctx.memory(|m| m.layer_ids().collect());
+    // Copied out first: `to_global` locks the context, which `viewport` holds.
+    let widgets: Vec<egui::WidgetRect> = ctx
+        .viewport(|v| layers.iter().rev().flat_map(|layer| v.prev_pass.widgets.get_layer(*layer)).copied().collect());
+    widgets
+        .into_iter()
+        .filter(|w| w.interact_rect.is_positive())
+        .filter_map(|w| {
+            let label = name(nodes.get(&w.id.accesskit_id())?)?;
+            (!label.is_empty()).then(|| DrawnControl { label, rect: to_global(ctx, w.layer_id, w.interact_rect) })
+        })
+        .collect()
 }
 
 /// The icons drawn so far this frame and in the last finished one.
@@ -143,8 +172,6 @@ struct IconLog {
     done: Vec<DrawnIcon>,
     rows_building: Vec<DrawnRow>,
     rows_done: Vec<DrawnRow>,
-    controls_building: Vec<DrawnControl>,
-    controls_done: Vec<DrawnControl>,
 }
 
 fn icon_log_id() -> egui::Id {
@@ -157,7 +184,6 @@ pub(crate) fn begin_icon_frame(ctx: &egui::Context) {
         let log = d.get_temp_mut_or_default::<IconLog>(icon_log_id());
         log.done = std::mem::take(&mut log.building);
         log.rows_done = std::mem::take(&mut log.rows_building);
-        log.controls_done = std::mem::take(&mut log.controls_building);
     });
 }
 
@@ -169,11 +195,6 @@ pub(crate) fn drawn_icons(ctx: &egui::Context) -> Vec<DrawnIcon> {
 /// The labelled list rows (an icon row with a label) the last finished frame drew: text and screen rect.
 pub(crate) fn drawn_rows(ctx: &egui::Context) -> Vec<DrawnRow> {
     ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.rows_done).unwrap_or_default())
-}
-
-/// The named controls the last finished frame drew, in paint order.
-pub(crate) fn drawn_controls(ctx: &egui::Context) -> Vec<DrawnControl> {
-    ctx.data(|d| d.get_temp::<IconLog>(icon_log_id()).map(|log| log.controls_done).unwrap_or_default())
 }
 
 /// A point or rect in `layer`'s space, in window space (unchanged for a layer with no transform).
@@ -190,16 +211,6 @@ where
     egui::emath::TSTransform: std::ops::Mul<T, Output = T>,
 {
     ctx.layer_transform_from_global(layer).map_or(p, |t| t * p)
-}
-
-/// Notes the control `name` drawn at `rect` (in `layer`'s space).
-pub(crate) fn note_control(ctx: &egui::Context, layer: egui::LayerId, name: &str, rect: egui::Rect) {
-    let rect = to_global(ctx, layer, rect);
-    ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<IconLog>(icon_log_id())
-            .controls_building
-            .push(DrawnControl { label: name.to_owned(), rect })
-    });
 }
 
 /// Notes the labelled row `label` at `rect`; an empty label is no row.

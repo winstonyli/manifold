@@ -1198,6 +1198,12 @@ pub(crate) struct HeadlessDebug {
     pub(crate) index_waiters: Waiters,
     /// Consecutive frame ends at which `debug_idle` held, while `idle_waiters` waits; `QUIET_FRAMES` releases them.
     pub(crate) idle_frames: u8,
+    /// Whether the last frame's egui output asked for the next frame at once: an animation, a smooth scroll or a
+    /// layout still settling (a new `Area` or `Grid` measures itself over several frames).
+    pub(crate) egui_wants_frame: bool,
+    /// The named controls the last frame drew (`identity::controls_in`), for `EXPORTSTATE`'s `controls`. Filled
+    /// only while accesskit is on: always under `--headless` or `--debug-commands`.
+    pub(crate) controls: Vec<crate::identity::DrawnControl>,
 }
 
 impl App {

@@ -329,7 +329,7 @@ impl App {
         json!({
             "rows": crate::identity::drawn_rows(&self.egui_ctx).iter().map(|r| json!({"text": r.text, "selected": r.selected, "rect": rect_json(r.rect)})).collect::<Vec<_>>(),
             // The controls with a name (`NamedTip`) the last frame drew: the gate clicks them by name, not by pixel.
-            "controls": crate::identity::drawn_controls(&self.egui_ctx).iter().map(|c| json!({"name": c.label, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
+            "controls": self.debug.controls.iter().map(|c| json!({"name": c.label, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| json!({"kind": i.kind, "text": i.text, "rect": rect_json(i.rect)})).collect::<Vec<_>>(),
             "trail": self.trail_state(),

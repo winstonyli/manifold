@@ -121,6 +121,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             window.set_visible(true);
         }
+        // Debug commands find controls by name in the accesskit tree (`App::debug.controls`), screen reader or not.
+        if self.headless || self.debug_commands {
+            self.egui_ctx.enable_accesskit();
+        }
         self.egui_state = Some(egui_state);
         self.window = Some(window);
         self.open_store();
@@ -244,7 +248,10 @@ impl ApplicationHandler<UserEvent> for App {
                         }
                         self.egui_ctx.request_repaint();
                     }
-                    A11y::AccessibilityDeactivated => self.egui_ctx.disable_accesskit(),
+                    A11y::AccessibilityDeactivated if !(self.headless || self.debug_commands) => {
+                        self.egui_ctx.disable_accesskit()
+                    }
+                    A11y::AccessibilityDeactivated => {}
                 }
             }
             UserEvent::Debug(cmd) => {
@@ -358,7 +365,8 @@ impl ApplicationHandler<UserEvent> for App {
                 // draws is animating.
                 let repaint_in =
                     egui_output.as_ref().and_then(|o| o.viewport_output.values().map(|v| v.repaint_delay).min());
-                if repaint_in.is_some_and(|d| d.is_zero()) {
+                self.debug.egui_wants_frame = repaint_in.is_some_and(|d| d.is_zero());
+                if self.debug.egui_wants_frame {
                     // What keeps an idle window drawing: the `request_repaint` call sites, as `file:line reason`.
                     if tracing::enabled!(target: "repaint", tracing::Level::TRACE) {
                         let causes: Vec<String> =

@@ -63,6 +63,9 @@ const FAKE_CEF_HOST: (&str, u64, &str) =
 const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
+/// The settings page's pickers, by the labels of their rows (`labelled_by`).
+const DEFAULT_ENGINE: &str = "Default starting engine (new tabs)";
+const SEARCH_ENGINE: &str = "Default search engine";
 /// The zoom chip's zoom-out button, by name.
 const ZOOM_OUT: &str = "Zoom out (Ctrl+-)";
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -1200,22 +1203,25 @@ impl Shots {
             if s.has("hover-settings") {
                 s.hover_column("settings", 40, 44, 960, 520, 0)?;
             }
-            // Engine picker (Default starting engine) and the search-engine combo.
-            for (view, click) in [
-                ("settings-engine", "CLICK 63 180"),
-                ("settings-engine-tab", "CLICK 119 513"),
-                ("settings-combo", "CLICK 80 87"),
+            // The engine pickers and the search-engine combo, clicked by name: rows above them move them.
+            for (view, control) in [
+                ("settings-engine", DEFAULT_ENGINE),
+                ("settings-engine-tab", "Engine"),
+                ("settings-combo", SEARCH_ENGINE),
             ] {
                 if s.has(view) {
-                    send!(s, click, "SLEEP 1")?;
+                    s.inst.click_control(control)?;
+                    send!(s, "SLEEP 1")?;
                     s.shot(view)?;
                     send!(s, AWAY, "SLEEP 1")?;
                 }
             }
-            for (view, click, name) in [("tab-engine", "CLICK 63 180", "engine"), ("tab-combo", "CLICK 80 87", "combo")]
+            for (view, control, name) in
+                [("tab-engine", DEFAULT_ENGINE, "engine"), ("tab-combo", SEARCH_ENGINE, "combo")]
             {
                 if s.has(view) {
-                    send!(s, click, "SLEEP 1")?;
+                    s.inst.click_control(control)?;
+                    send!(s, "SLEEP 1")?;
                     s.tab_scan(name, 5, 1000)?;
                     send!(s, AWAY, "SLEEP 1")?;
                 }
@@ -1410,15 +1416,21 @@ impl Shots {
         self.shot("engine-states-settings-notinstalled")?;
         self.picker_shot("engine-states-picker-notinstalled")?;
         // The Engines section's Download button asks first, with the size.
-        send!(self, "CLICK 57 672", "SLEEP 1")?;
+        self.inst.click_control("Download")?;
+        send!(self, "SLEEP 1")?;
         self.shot("engine-install-confirm")?;
-        // Confirm with the proxy refusing: the install fails and the row says why, with Retry.
-        send!(self, "CLICK 476 529", "SLEEP 4")?;
+        // Confirm with the proxy refusing: the install fails and the row says why, with Retry. The dialog is in
+        // front, so its own Download button is the one found by that name.
+        self.inst.click_control("Download")?;
+        send!(self, "SLEEP 4")?;
         self.shot("engine-states-settings-failed")?;
         self.picker_shot("engine-states-picker-failed")?;
         // Retry with the proxy silent: Installing, with Cancel.
         proxy.set_refuse(false);
-        send!(self, "CLICK 57 672", "SLEEP 1", "CLICK 476 529", "SLEEP 2")?;
+        self.inst.click_control("Retry")?;
+        send!(self, "SLEEP 1")?;
+        self.inst.click_control("Download")?;
+        send!(self, "SLEEP 2")?;
         self.shot("engine-states-settings-installing")?;
         self.picker_shot("engine-states-picker-installing")?;
         self.engine_stop()?;
@@ -1457,7 +1469,8 @@ impl Shots {
 
     /// The Default starting engine picker open, shot, closed.
     fn picker_shot(&mut self, name: &str) -> io::Result<()> {
-        send!(self, "CLICK 63 180", "SLEEP 1")?;
+        self.inst.click_control(DEFAULT_ENGINE)?;
+        send!(self, "SLEEP 1")?;
         self.shot(name)?;
         send!(self, AWAY, "SLEEP 1")
     }

@@ -1269,8 +1269,7 @@ impl App {
         let (rect, view) = (c.rect, c.view);
         // One eased hover drives the glow, the fill's brightening and the
         // border, so the three move together.
-        let hover_t = crate::theme::animate(
-            ui.ctx(),
+        let hover_t = ui.ctx().animate_bool_with_easing(
             egui::Id::new(("graph_card_hover_t", c.entry.id)),
             is_hovered,
             egui::emath::easing::cubic_out,

@@ -74,7 +74,13 @@ impl App {
             self.toasts.save_toast = None;
             return;
         }
-        ui.ctx().request_repaint();
+        // Every frame while it fades; while it holds, one wake-up for the fade-out (so `WAITIDLE` sees it still).
+        let fade_out_at = SAVE_TOAST_DURATION.saturating_sub(TOAST_FADE_OUT);
+        if elapsed < TOAST_FADE_IN || elapsed >= fade_out_at {
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx().request_repaint_after(fade_out_at - elapsed);
+        }
         let fade_in = (elapsed.as_secs_f32() / TOAST_FADE_IN.as_secs_f32()).min(1.0);
         let remaining = SAVE_TOAST_DURATION.saturating_sub(elapsed);
         let fade_out = (remaining.as_secs_f32() / TOAST_FADE_OUT.as_secs_f32()).min(1.0);

@@ -246,8 +246,7 @@ impl App {
         // Polled every frame regardless of `peek_target`, as the dropdown popups' fades are: polling only
         // while a peek shows would let the elapsed time since the last poll make it jump to fully visible
         // when it reappears instead of fading in.
-        let peek_fade = crate::theme::animate(
-            ui.ctx(),
+        let peek_fade = ui.ctx().animate_bool_with_easing(
             egui::Id::new("peek_preview_fade"),
             peek_target.is_some(),
             egui::emath::easing::linear,

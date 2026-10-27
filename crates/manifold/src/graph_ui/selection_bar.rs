@@ -194,17 +194,14 @@ mod tests {
         let card = crate::session_sync::tests::add_note(&mut app, "n");
         app.interaction.selected.insert(CardId::from(card));
         let ctx = crate::theme::testutil::ctx(true);
+        ctx.enable_accesskit();
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        for _ in 0..2 {
-            let mut actions = Vec::new();
-            let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
-            let mut output = ctx.run_ui(input, |ui| {
-                crate::identity::begin_icon_frame(ui.ctx()); // the second frame reads what the first drew
-                app.draw_selection_bar(ui, &mut actions, screen, &|p| p)
-            });
-            output.textures_delta.clear(); // nothing uploads the font atlas here
-        }
-        let names: Vec<String> = crate::identity::drawn_controls(&ctx).into_iter().map(|c| c.label).collect();
+        let mut actions = Vec::new();
+        let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+        let mut output = ctx.run_ui(input, |ui| app.draw_selection_bar(ui, &mut actions, screen, &|p| p));
+        output.textures_delta.clear(); // nothing uploads the font atlas here
+        let update = output.platform_output.accesskit_update.expect("accesskit on");
+        let names: Vec<String> = crate::identity::controls_in(&ctx, &update).into_iter().map(|c| c.label).collect();
         assert!(names.iter().any(|n| n == "Group"), "the bar drew: {names:?}");
         assert!(!names.iter().any(|n| n == "Label"), "{names:?}");
     }

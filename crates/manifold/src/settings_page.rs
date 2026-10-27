@@ -176,7 +176,7 @@ impl App {
 
     /// Settings, General: where a search goes.
     pub(crate) fn settings_search_engine_row(&mut self, ui: &mut egui::Ui) {
-        ui.label("Default search engine");
+        let label = ui.label("Default search engine");
         egui::ComboBox::from_id_salt("settings_search_engine")
             .selected_text(self.settings.value.default_search_engine.label())
             .show_ui(ui, |ui| {
@@ -188,7 +188,9 @@ impl App {
                         self.save_settings();
                     }
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
         ui.add(
             egui::Label::new(
                 egui::RichText::new(
@@ -203,9 +205,10 @@ impl App {
 
     /// Settings, General: the engine new tabs start with.
     pub(crate) fn settings_starting_engine_row(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
-        ui.label("Default starting engine (new tabs)");
-        let default_view_response =
-            self.view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.value.default_starting_view_kind);
+        let label = ui.label("Default starting engine (new tabs)");
+        let default_view_response = self
+            .view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.value.default_starting_view_kind)
+            .labelled_by(label.id);
         req.default_view_button_rect = Some(default_view_response.rect);
         // A saved default this platform cannot run is kept, not replaced; say why new tabs will fail.
         let default_state = self.view_status(self.settings.value.default_starting_view_kind);
@@ -311,8 +314,9 @@ impl App {
                 ui.horizontal(|ui| {
                     // The row is as tall as the engine button, so the label is centered on it, not at the top.
                     ui.set_min_height(28.0);
-                    ui.label("Engine");
-                    let current_view_response = self.view_opener_button(ui, AnchoredPopup::CurrentViewKind, kind);
+                    let label = ui.label("Engine");
+                    let current_view_response =
+                        self.view_opener_button(ui, AnchoredPopup::CurrentViewKind, kind).labelled_by(label.id);
                     req.current_view_button_rect = Some(current_view_response.rect);
                 });
                 let node_muted = self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|n| n.muted);
