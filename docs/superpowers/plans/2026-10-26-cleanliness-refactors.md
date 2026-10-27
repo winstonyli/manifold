@@ -98,7 +98,7 @@ Done: 76efb88
 - **S3** `FieldValue::as_*` accessors in `store/model.rs`; `str_of`, `id_of`, `view_field`, `pos_of`
   (`session_sync.rs:231-266`), `str_field`, `pos_in`, `pinned_in`, `jar_in`, `color_in`, `view_code`
   (`mirror.rs`) collapse onto them, with one home for "(0, 0) is no position".
-  Done: 8e6a09e (GR1), 59210b0 (GR4), e925ca5 (S3)
+  Done: 8e6a09e (GR1), 59210b0 (GR4), e925ca5 (S3), 463c94b
 
 ### B6. Gate scaffolding
 
