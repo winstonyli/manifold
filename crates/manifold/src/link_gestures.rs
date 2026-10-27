@@ -256,7 +256,7 @@ pub(crate) const HANDLE_MIN_EDGE_PX: f32 = 2.0 * (16.0 + HANDLE_LONG_PX / 2.0);
 
 /// Card `card`'s handles (world space) at `zoom_scale`, each a `HANDLE_LONG_PX` by `HANDLE_SHORT_PX` pill on screen
 /// (long side along the edge), in `HandleSide::ALL` order. A side whose edge is under `HANDLE_MIN_EDGE_PX` on screen
-/// has none, and a `Simple` detail level (`graph_detail`) has none at all.
+/// has none, and a `Simple` detail level (`GraphUi::detail`) has none at all.
 pub(crate) fn link_handle_rects(
     card: egui::Rect,
     zoom_scale: f32,

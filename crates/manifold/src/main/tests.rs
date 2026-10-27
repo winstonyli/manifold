@@ -79,7 +79,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
     ("confirm", "a jar confirm is dropped by `confirm_text` once its jar is gone; the rest hold names and engines"),
     ("workers.favicon_resolved", "origins, not node ids"),
-    ("graph_settled_key", "a level fingerprint, rebuilt when it differs"),
+    ("graph.settled_key", "a level fingerprint, rebuilt when it differs"),
     ("debug.debug_address_bar_typing", "typed text, not a node id"),
     ("debug.pending_screenshot", "a file path, not a node id"),
     ("debug.pending_print_to_pdf", "a file path, not a node id"),
@@ -97,7 +97,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 15] = [
+    const GROUPS: [(&str, &str, &str); 16] = [
         ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
         ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
@@ -113,6 +113,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
         ("page_input", include_str!("../event_loop.rs"), "pub(crate) struct PageInput {"),
         ("workers", include_str!("../event_loop/fetchers.rs"), "pub(crate) struct Workers {"),
+        ("graph", include_str!("../graph_ui.rs"), "pub(crate) struct GraphUi {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()

@@ -214,16 +214,16 @@ impl App {
         )
     }
 
-    /// Flips `graph_detail` with hysteresis from how many of `items` are in view.
+    /// Flips `GraphUi::detail` with hysteresis from how many of `items` are in view.
     pub(super) fn update_graph_lod(&mut self, items: &[CardEntry]) {
         // Level-of-detail: count how many nodes at this level actually
-        // intersect the viewport, then step `graph_detail` with `Detail::next`'s
+        // intersect the viewport, then step `GraphUi::detail` with `Detail::next`'s
         // hysteresis gap (see `LOD_SIMPLIFY_COUNT`'s doc comment). Uses this frame's not-yet-updated `camera.rect`, the
         // same one-frame-stale viewport the render loops' own cull check
         // already accepts.
         let lod_visible_count: usize =
             items.iter().filter(|item| item.caps().framed && item.rect.intersects(self.camera.rect)).count();
-        self.graph_detail = self.graph_detail.next(lod_visible_count);
+        self.graph.detail = self.graph.detail.next(lod_visible_count);
     }
 
     /// Applies a pending frame-restore and the toolbar's Fit request to the camera.
@@ -234,7 +234,7 @@ impl App {
             // Settled first, as in `switch_group_level`: fitting the
             // pre-settle positions would leave spread-out nodes off screen.
             self.layout_current_level();
-            self.graph_settled_key = Some(self.current_level_settle_key());
+            self.graph.settled_key = Some(self.current_level_settle_key());
             self.camera.jump_to(self.fit_all_nodes_scene_rect());
         }
         if reset_view {
@@ -260,9 +260,9 @@ impl App {
             // built from this frame's already-cached `items` instead of
             // redoing the level scan a second time.
             let current_key = (self.current_group, item_count);
-            if self.graph_settled_key.as_ref() != Some(&current_key) {
+            if self.graph.settled_key.as_ref() != Some(&current_key) {
                 self.layout_current_level();
-                self.graph_settled_key = Some(current_key);
+                self.graph.settled_key = Some(current_key);
             }
         }
     }
@@ -284,7 +284,7 @@ impl App {
             let center = self.camera.rect.center();
             self.camera.rect = egui::Rect::from_center_size(center, scene_outer_rect.size());
         }
-        if let Some(scale) = self.pending_graph_zoom.take() {
+        if let Some(scale) = self.graph.pending_zoom.take() {
             let scale = scale.clamp(GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
             self.camera.rect = egui::Rect::from_center_size(self.camera.rect.center(), scene_outer_rect.size() / scale);
         }

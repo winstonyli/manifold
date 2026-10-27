@@ -463,7 +463,7 @@ impl App {
 
     /// `(level, node_count)` for whichever level `self.current_group` is
     /// currently viewing -- the key `build_graph_ui`'s settle-check
-    /// compares against `graph_settled_key`, factored out so every call
+    /// compares against `GraphUi::settled_key`, factored out so every call
     /// site that changes `current_group` (the per-frame check, and
     /// entering/leaving a group) computes it the same way rather than
     /// duplicating the formula.
@@ -549,7 +549,7 @@ impl App {
     /// static between calls. Nothing may move on its own while the user is
     /// pointing at it: a node reacting to forces while being dragged onto
     /// (a group, another tab) would flee the drag's own repulsion. Called
-    /// only when the visible node set changes (see `graph_settled_key`), so
+    /// only when the visible node set changes (see `GraphUi::settled_key`), so
     /// new and remaining nodes still spread apart instead of stacking.
     pub(crate) fn settle_current_level(&mut self) {
         // 90 iterations at a fixed 1/60s step is ~1.5 simulated seconds --

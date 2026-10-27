@@ -32,7 +32,7 @@ impl App {
             return body;
         }
         let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return body };
-        let text = self.graph_detail.content() && label_fits(rect, zoom_scale);
+        let text = self.graph.detail.content() && label_fits(rect, zoom_scale);
         let len = crate::json_view::entry_count(&json.value);
         // The header is 40 screen points, so at other zooms the rows get more or less of the card:
         // show only the rows that fit, with a `+ N more` row when some are cut. A card too short for
@@ -65,7 +65,7 @@ impl App {
                 - HEADER_TEXT_X;
             header.source = folder.map(|dir| {
                 let font = egui::FontId::proportional(11.0);
-                truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &dir, &font, width.max(0.0))
+                truncate_start_to_width(&mut self.graph.truncate_cache, ui.ctx(), &dir, &font, width.max(0.0))
             });
         }
         let pal = crate::json_level_ui::palette(ui.visuals().dark_mode);

@@ -117,7 +117,7 @@ impl App {
         self.link.line_press = None;
         self.sync_json_level();
         self.layout_current_level();
-        self.graph_settled_key = Some(self.current_level_settle_key());
+        self.graph.settled_key = Some(self.current_level_settle_key());
         self.camera.ease_to(self.fit_all_nodes_scene_rect());
         self.interaction.selected.clear();
         self.interaction.rect_select_start = None;

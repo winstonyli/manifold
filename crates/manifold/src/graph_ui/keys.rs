@@ -159,7 +159,7 @@ impl App {
             // for itself. egui gives focus by keyboard or code only, never by a click, so a focused widget here was
             // stepped to. The menu needs its own check: it can be open with no row focused (its first frame, or after a
             // page swap), and Down then enters it (`list_row_nav`).
-            let card_focused = self.card_nav_active;
+            let card_focused = self.graph.card_nav_active;
             let widget_keys =
                 self.menus.node_menu.open.is_some() || (!card_focused && ui.memory(|m| m.focused()).is_some());
             if !widget_keys {

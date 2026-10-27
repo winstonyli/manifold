@@ -67,6 +67,38 @@ pub(crate) enum Detail {
     Simple,
 }
 
+/// The Graph view's per-frame state on `App` (`App::graph`).
+#[derive(Default)]
+pub(crate) struct GraphUi {
+    /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
+    /// show their Tab-order numbers (`CardPass::show_order`).
+    pub(crate) card_nav_active: bool,
+    /// Ctrl has been held on its own long enough to reveal key hints (`ctrl_reveal_step`).
+    pub(crate) hints_revealed: bool,
+    /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
+    /// (`build_card_hint`).
+    pub(crate) card_hint: Option<(CardKind, egui::Rect)>,
+    /// Level-of-detail: `Simple` once a frame's own count of viewport-visible
+    /// nodes (post-cull, see `build_graph_ui`'s own pre-pass) crossed
+    /// `LOD_SIMPLIFY_COUNT`, gating the per-kind render loops' thumbnail/
+    /// title-text painting to keep dense views cheap. Flips back to
+    /// `Full` only once the count drops under the lower `LOD_RESTORE_
+    /// COUNT` -- a deliberate hysteresis gap, not a single threshold, so
+    /// a count sitting right at one boundary doesn't flicker every frame.
+    pub(crate) detail: Detail,
+    /// See `truncate_to_width`'s own doc comment.
+    pub(crate) truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
+    /// A zoom scale (1.0 = 100%) the next Graph frame sets the camera to (`GRAPHZOOM`).
+    pub(crate) pending_zoom: Option<f32>,
+    /// `(level, node_count)` for the graph level `graph_settle_current_level`
+    /// last ran a settle burst for -- `build_graph_ui` compares this
+    /// against the current level/count every frame and only re-settles
+    /// (and updates this) when they differ, instead of the physics sim
+    /// running continuously. See `graph_settle_current_level`'s own doc
+    /// comment for why continuous physics was replaced with this at all.
+    pub(crate) settled_key: Option<(Option<NodeId>, usize)>,
+}
+
 impl Detail {
     /// The level for a frame that sees `visible` framed cards in the viewport, given the last frame's level: `Simple`
     /// above `LOD_SIMPLIFY_COUNT`, `Full` again only below the lower `LOD_RESTORE_COUNT`, and unchanged in between.
@@ -291,7 +323,7 @@ impl App {
             // -- fitting first would target their old, pre-settle positions,
             // which then jump to their real spacing mid-animation once the
             // regular per-frame settle-check caught up one frame later.
-            // Updating `graph_settled_key` here too avoids that same settle
+            // Updating `GraphUi::settled_key` here too avoids that same settle
             // running a second time on the very next frame. See
             // `GraphCameraTween`'s doc comment for why the actual camera move
             // eases instead of snapping, and why that's a separate mechanism
@@ -521,7 +553,7 @@ mod tests {
         }
         app.camera.jump_to(app.fit_all_nodes_scene_rect());
         frame(&mut app);
-        app.card_nav_active = true; // read when the pass starts; the frame may clear it at its end
+        app.graph.card_nav_active = true; // read when the pass starts; the frame may clear it at its end
         let output = frame(&mut app);
         let badges: Vec<(String, egui::Pos2)> = output
             .shapes

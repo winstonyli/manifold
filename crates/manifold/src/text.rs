@@ -41,7 +41,7 @@ pub(crate) fn download_filename(path: &str) -> &str {
     std::path::Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path)
 }
 
-/// Cap on a truncation-style cache's size (`App::truncate_cache`) -- past this it is
+/// Cap on a truncation-style cache's size (`GraphUi::truncate_cache`) -- past this it is
 /// cleared outright rather than evicted incrementally. No LRU bookkeeping for what should, in steady state, only ever
 /// hold a small multiple of "how many labeled cards are visible at once"; a full clear is cheap insurance against
 /// unbounded growth if that assumption is ever wrong (e.g. many distinct titles cycling through over a long session).

@@ -45,7 +45,7 @@ impl App {
         // LOD: same "plain solid box instead of the real
         // content" simplification as `paint_image_body` -- see
         // `paint_tab_body`'s own LOD comment.
-        if self.graph_detail.content() {
+        if self.graph.detail.content() {
             match state {
                 Some(Ok((Some(tex_id), page_count))) => {
                     rounded_image(ui.painter(), tex_id, rect, FULL_UV, egui::Color32::WHITE, CARD_RADIUS * inv_zoom);

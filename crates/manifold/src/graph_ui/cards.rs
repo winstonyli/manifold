@@ -41,13 +41,13 @@ impl App {
         // the pointer, on top of an earlier one. Each kind's own
         // click action is applied here.
         let tab_order = self.card_tab_order();
-        self.card_hint = None;
+        self.graph.card_hint = None;
         if let Some(rect) = card_tab_step(ui, &tab_order, |id| self.level_card_rect(id)) {
             self.camera.pan_to(rect);
         }
         self.handle_card_digits(ui, &tab_order);
         self.handle_undo_keys(ui);
-        self.hints_revealed = ctrl_hints_revealed(ui);
+        self.graph.hints_revealed = ctrl_hints_revealed(ui);
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
         let pick_targets: Option<Vec<CardId>> =
@@ -66,7 +66,7 @@ impl App {
                 .link
                 .retarget_preview
                 .map(|outcome| crate::link_gestures::retarget_look(outcome, ui.visuals()).ring),
-            show_order: self.card_nav_active || self.hints_revealed,
+            show_order: self.graph.card_nav_active || self.graph.hints_revealed,
             order: &tab_order,
             any_focused: false,
             members: &members,
@@ -155,7 +155,7 @@ impl App {
         if let Some(rect) = pass.pan_target {
             self.camera.pan_to(rect);
         }
-        self.card_nav_active = pass.any_focused;
+        self.graph.card_nav_active = pass.any_focused;
         self.draw_connect_rubber_band(ui, inv_zoom, connect_target);
     }
 

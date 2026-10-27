@@ -867,7 +867,7 @@ mod settle_tests {
         assert_eq!(rig.app.level_items().len(), 4, "the tab and three virtual cards");
         let key = rig.app.current_level_settle_key();
         assert_eq!(key.1, 1, "the stored tab only");
-        assert_eq!(rig.app.graph_settled_key, Some(key), "the per-frame check keyed the same way");
+        assert_eq!(rig.app.graph.settled_key, Some(key), "the per-frame check keyed the same way");
     }
 }
 

@@ -275,7 +275,7 @@ impl VirtualSource for TrailSource {
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody {
         let page = live_page(app, entry.id).and_then(|(tab, i)| app.nav_history.get(&tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
-            let full = app.graph_detail.content();
+            let full = app.graph.detail.content();
             paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), full);
             // The icon needs only its own inset and width; the label needs the card-label minimum.
             let icon_fits = entry.rect.width() * pass.zoom_scale >= 2.0 * LABEL_INSET + ICON_SIZE_SMALL;
@@ -813,7 +813,7 @@ mod tests {
         let label = rig.app.nav_history[&tab].tree()[0].label.clone();
         let (mut overlapped, mut label_heights) = (false, Vec::new());
         for zoom in [0.8_f32, 1.0, 2.0] {
-            rig.app.pending_graph_zoom = Some(zoom);
+            rig.app.graph.pending_zoom = Some(zoom);
             let mut shapes = Vec::new();
             for _ in 0..4 {
                 shapes = frame_shapes(&mut rig);
@@ -981,7 +981,7 @@ mod tests {
             let mut rng = Lcg(seed + 1);
             let (mut rig, titles) = random_layout(&mut rng);
             let zoom = rng.between(0.5, 3.0);
-            rig.app.pending_graph_zoom = Some(zoom);
+            rig.app.graph.pending_zoom = Some(zoom);
             let shapes = settled_shapes(&mut rig);
             match titles_behind_later_cards(&rig, &shapes, &titles, &mut kinds) {
                 Ok(n) => checked += n,
@@ -1008,7 +1008,7 @@ mod tests {
             let mut rng = Lcg(1000 + seed);
             let (mut rig, titles) = random_layout(&mut rng);
             let zoom = rng.between(0.8, 2.0);
-            rig.app.pending_graph_zoom = Some(zoom);
+            rig.app.graph.pending_zoom = Some(zoom);
             settled_shapes(&mut rig);
             let ids: Vec<CardId> = if seed % 2 == 0 {
                 let mut ids: Vec<CardId> = titles.keys().copied().collect();

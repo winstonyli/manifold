@@ -535,7 +535,7 @@ impl App {
         self.interaction.hovered = None;
         self.interaction.selected.clear();
         self.interaction.rect_select_start = None;
-        self.graph_settled_key = None;
+        self.graph.settled_key = None;
         self.spawns.reset();
         self.doc.local_persist.pending_local = None;
     }

@@ -1248,8 +1248,8 @@ impl App {
             card_focus_ring(ui, c.rect, pass.inv_zoom);
         }
         // The focused card's hint wins over a hovered one's, whichever draws first.
-        if response.has_focus() || (response.hovered() && self.card_hint.is_none()) {
-            self.card_hint = Some((c.view.kind, crate::identity::to_global(ui.ctx(), ui.layer_id(), c.rect)));
+        if response.has_focus() || (response.hovered() && self.graph.card_hint.is_none()) {
+            self.graph.card_hint = Some((c.view.kind, crate::identity::to_global(ui.ctx(), ui.layer_id(), c.rect)));
         }
         if response.gained_focus() {
             pass.pan_target = Some(c.rect);
@@ -1289,7 +1289,7 @@ impl App {
             3.0,
         )
         .into_iter()
-        .take(self.graph_detail.glow_layers(hover_t > 0.0))
+        .take(self.graph.detail.glow_layers(hover_t > 0.0))
         .collect();
         background_shapes.push(egui::Shape::rect_filled(
             rect,
@@ -1362,8 +1362,8 @@ impl App {
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut control = close;
         let mut control_hovered = false;
-        paint_pinned_mark(ui, deferred_overlays, rect, view, inv_zoom, self.graph_detail);
-        paint_label_chips(deferred_overlays, rect, view, inv_zoom, self.graph_detail, ui.visuals().dark_mode);
+        paint_pinned_mark(ui, deferred_overlays, rect, view, inv_zoom, self.graph.detail);
+        paint_label_chips(deferred_overlays, rect, view, inv_zoom, self.graph.detail, ui.visuals().dark_mode);
         for card_control in card_controls(view) {
             if card_control.hover_only() && !is_hovered {
                 continue;
@@ -1377,7 +1377,7 @@ impl App {
                 view,
                 style,
                 inv_zoom,
-                self.graph_detail,
+                self.graph.detail,
             );
             let control_response = control_response.on_hover_text(card_control.tip(view));
             control_hovered |= control_response.hovered();
@@ -1400,7 +1400,7 @@ impl App {
             .node()
             .filter(|_| stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles())
         {
-            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph_detail);
+            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph.detail);
             for (side, handle) in handles {
                 let handle_response = ui
                     .interact(handle, egui::Id::new(("link_handle", side, card)), egui::Sense::DRAG)
@@ -1548,7 +1548,7 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
-        if !self.graph_detail.content() {
+        if !self.graph.detail.content() {
             return body;
         }
         let def = self.doc.mirror.jar_def(id);
@@ -1583,7 +1583,7 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
-        if !self.graph_detail.content() {
+        if !self.graph.detail.content() {
             return body;
         }
         let ty = self.doc.mirror.ty(id).to_owned();

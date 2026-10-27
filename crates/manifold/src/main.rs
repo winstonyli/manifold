@@ -347,25 +347,8 @@ struct App {
     spawns: SpawnTracker,
     /// Graph view's pan/zoom and its animations.
     camera: GraphCamera,
-    /// Level-of-detail: `Simple` once a frame's own count of viewport-visible
-    /// nodes (post-cull, see `build_graph_ui`'s own pre-pass) crossed
-    /// `LOD_SIMPLIFY_COUNT`, gating the per-kind render loops' thumbnail/
-    /// title-text painting to keep dense views cheap. Flips back to
-    /// `Full` only once the count drops under the lower `LOD_RESTORE_
-    /// COUNT` -- a deliberate hysteresis gap, not a single threshold, so
-    /// a count sitting right at one boundary doesn't flicker every frame.
-    graph_detail: graph_ui::Detail,
-    /// See `truncate_to_width`'s own doc comment.
-    truncate_cache: HashMap<TruncateCacheKey, (String, String)>,
-    /// A zoom scale (1.0 = 100%) the next Graph frame sets the camera to (`GRAPHZOOM`).
-    pending_graph_zoom: Option<f32>,
-    /// `(level, node_count)` for the graph level `graph_settle_current_level`
-    /// last ran a settle burst for -- `build_graph_ui` compares this
-    /// against the current level/count every frame and only re-settles
-    /// (and updates this) when they differ, instead of the physics sim
-    /// running continuously. See `graph_settle_current_level`'s own doc
-    /// comment for why continuous physics was replaced with this at all.
-    graph_settled_key: Option<(Option<NodeId>, usize)>,
+    /// Per-frame Graph view state: level of detail, key hints, text and settle caches (see `graph_ui::GraphUi`).
+    graph: graph_ui::GraphUi,
 
     /// Headless mode (`--headless`): the window is created real but
     /// positioned far off-screen (NOT invisible — a genuinely invisible
@@ -452,14 +435,6 @@ struct App {
     /// in-page navigation (clicked links) the same as address-bar entries,
     /// not just the latter. Persisted to `history.json` whenever saved.
     history: Vec<history::HistoryEntry>,
-    /// A graph card or one of its controls had keyboard focus in the last card pass: the cards
-    /// show their Tab-order numbers (`CardPass::show_order`).
-    card_nav_active: bool,
-    /// Ctrl has been held on its own long enough to reveal key hints (`ctrl_reveal_step`).
-    hints_revealed: bool,
-    /// The card holding keyboard focus this frame: its kind and screen rect, for the key-hint strip
-    /// (`build_card_hint`).
-    card_hint: Option<(CardKind, egui::Rect)>,
 
     /// The in-progress Tab↔Graph shrink/expand animation, if any — see
     /// `Transition`'s own doc comment.
@@ -552,10 +527,7 @@ impl Default for App {
             interaction: GraphInteraction::default(),
             spawns: SpawnTracker::default(),
             camera: GraphCamera::new(),
-            graph_detail: graph_ui::Detail::Full,
-            truncate_cache: HashMap::new(),
-            pending_graph_zoom: None,
-            graph_settled_key: None,
+            graph: Default::default(),
             headless: false,
             debug_commands: false,
             json_ui: json_level_ui::JsonLevelUi::default(),
@@ -579,9 +551,6 @@ impl Default for App {
             settings_return_view: ViewMode::Item,
             bookmarks,
             history,
-            card_nav_active: false,
-            hints_revealed: false,
-            card_hint: None,
             transition: None,
             event_proxy: None,
             #[cfg(test)]

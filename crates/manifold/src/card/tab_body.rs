@@ -67,7 +67,7 @@ impl App {
         });
         let chip = self.jar_chip(id);
         body.tooltip = chain_tooltip(body.tooltip, chip.as_ref().and_then(|c| c.tooltip.clone()));
-        if !self.graph_detail.content() {
+        if !self.graph.detail.content() {
             return body;
         }
         // Favicons aren't kept across restarts and no engine loads a sleeping tab's url, so the
@@ -206,20 +206,22 @@ impl App {
             (Some(_), _) => String::new(),
             // A clean name is one borrowed segment: cut it without copying (spaces collapsed need `to_plain`).
             (None, Some([crate::names::NameSeg::Plain(p)])) => {
-                truncate_to_width(&mut self.truncate_cache, ui.ctx(), p, &title_font, max_width)
+                truncate_to_width(&mut self.graph.truncate_cache, ui.ctx(), p, &title_font, max_width)
             }
             (None, Some(segs)) => {
                 let plain = crate::names::to_plain(segs);
-                truncate_to_width(&mut self.truncate_cache, ui.ctx(), &plain, &title_font, max_width)
+                truncate_to_width(&mut self.graph.truncate_cache, ui.ctx(), &plain, &title_font, max_width)
             }
-            (None, None) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &name, &title_font, max_width),
+            (None, None) => truncate_to_width(&mut self.graph.truncate_cache, ui.ctx(), &name, &title_font, max_width),
         };
         let source = match (tall, source_is_path) {
             (false, _) => String::new(),
             (true, true) => {
-                truncate_start_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width)
+                truncate_start_to_width(&mut self.graph.truncate_cache, ui.ctx(), &source, &source_font, max_width)
             }
-            (true, false) => truncate_to_width(&mut self.truncate_cache, ui.ctx(), &source, &source_font, max_width),
+            (true, false) => {
+                truncate_to_width(&mut self.graph.truncate_cache, ui.ctx(), &source, &source_font, max_width)
+            }
         };
         let icon_text = if tall {
             let center = band.left_top() + egui::vec2(HEADER_ICON_X, HEADER_CENTER_Y) * inv_zoom;
@@ -291,11 +293,11 @@ impl App {
         // favicon text below are this card's two genuinely
         // expensive parts (a real GPU texture sample, and
         // glyph rasterization queued on `overlay_painter`) --
-        // skipped once `graph_detail` is `Simple` (see its
+        // skipped once `GraphUi::detail` is `Simple` (see its
         // own doc comment), leaving the frame's plain card
         // and controls as the simplified card's whole
         // appearance.
-        if self.graph_detail.content() {
+        if self.graph.detail.content() {
             let header = tab_has_header(rect, inv_zoom);
             let thumb_rect = tab_thumb_rect(rect, inv_zoom);
             let thumb_id = self.gpu.as_ref().and_then(|g| g.thumbnail_id(id));
@@ -366,8 +368,13 @@ impl App {
                     // Screen width left for the label: the strip's, less the 16px left offset and some room on
                     // the right.
                     let label_max_width = (title_strip.width() * zoom_scale - 16.0 - 6.0).max(0.0);
-                    let label =
-                        truncate_to_width(&mut self.truncate_cache, ui.ctx(), label, &label_font, label_max_width);
+                    let label = truncate_to_width(
+                        &mut self.graph.truncate_cache,
+                        ui.ctx(),
+                        label,
+                        &label_font,
+                        label_max_width,
+                    );
                     let label_pos = egui::Pos2::new(title_strip.left(), title_strip.center().y);
                     deferred_overlays.push(Box::new(move |overlay_painter, project| {
                         overlay_painter.text(

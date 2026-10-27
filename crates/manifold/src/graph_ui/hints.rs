@@ -36,7 +36,7 @@ impl App {
     /// edge) lists the mouse and keys that act on it. Not while its menu is open.
     pub(super) fn build_card_hint(&self, ui: &egui::Ui) {
         let Some((kind, rect)) =
-            self.card_hint.filter(|_| self.menus.node_menu.open.is_none() && self.json_level.is_none())
+            self.graph.card_hint.filter(|_| self.menus.node_menu.open.is_none() && self.json_level.is_none())
         else {
             return;
         };
@@ -56,7 +56,7 @@ impl App {
     /// While Ctrl is held on its own (`ctrl_reveal_step`), a strip of the Ctrl chords at the bottom of
     /// the Graph view; the cards show their number badges too.
     pub(super) fn build_ctrl_hint(&self, ui: &egui::Ui) {
-        if !self.hints_revealed || self.json_level.is_some() || self.menus.node_menu.open.is_some() {
+        if !self.graph.hints_revealed || self.json_level.is_some() || self.menus.node_menu.open.is_some() {
             return;
         }
         let area = egui::Area::new(egui::Id::new("ctrl_key_hint")).anchor(egui::Align2::CENTER_BOTTOM, [0.0, -12.0]);

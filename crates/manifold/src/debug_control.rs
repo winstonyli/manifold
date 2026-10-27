@@ -464,7 +464,7 @@ const VERBS: &[Verb] = &[
     row("ZOOMRESET", "Ctrl+0 -- reset zoom", |_| job(|app, _| app.zoom_reset_shortcut())),
     row("GRAPHZOOM pct", "Graph view: set the camera zoom to pct percent (ZOOMIN/ZOOMOUT zoom the focused page there)", |rest| {
         let pct = parse_zoom_pct(rest)?;
-        job(move |app, _| app.pending_graph_zoom = Some(pct / 100.0))
+        job(move |app, _| app.graph.pending_zoom = Some(pct / 100.0))
     }),
     row("MARK label", "Write `label` into the timing trace (`MANIFOLD_TRACE`), to tell a script's phases apart", |rest| {
         with_text(rest, |_, label| tracing::info!(target: "mark", label = label.as_str()))
