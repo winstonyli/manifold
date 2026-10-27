@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(super::dir_from(&args(&["m"]), None), None);
     }
 
-    /// `App::default()` loads settings, bookmarks and history. Under test
+    /// `App::load()` loads settings, bookmarks and history; `App::default()` reads no file. Under test
     /// it must reach no real profile file, which holds as long as no other
     /// source file looks up `%APPDATA%` or an `etcetera` directory itself.
     #[test]

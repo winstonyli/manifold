@@ -2,7 +2,8 @@
 
 use super::*;
 
-/// The background fetchers and decoders `tick_fetchers` drains (`App::workers`).
+/// The background fetchers and decoders `tick_fetchers` drains (`App::workers`). `default()` keeps no files; `App::load`
+/// gives the favicon and redirect fetchers their directories.
 pub(crate) struct Workers {
     /// Background fetcher for `favicon_fetch::fetch_favicon` -- see that
     /// module's own doc comment for why favicons are fetched independently
@@ -28,10 +29,10 @@ pub(crate) struct Workers {
 impl Default for Workers {
     fn default() -> Self {
         Self {
-            favicon_fetcher: FaviconFetcher::new(profile::favicon_cache_dir()),
+            favicon_fetcher: FaviconFetcher::new(None),
             pdf_renderer: PdfRenderer::new(),
             image_decoder: ImageDecoder::new(),
-            redirect_fetcher: RedirectFetcher::new(profile::content_dir()),
+            redirect_fetcher: RedirectFetcher::new(None),
             favicon_resolved: HashSet::new(),
         }
     }

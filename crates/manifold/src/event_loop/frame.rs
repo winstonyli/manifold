@@ -326,7 +326,7 @@ impl App {
         }
         let dark = now == egui::Theme::Dark;
         manifold_pages::set_dark(dark);
-        // The first frame only records the theme: `App::default` and the spawn environment already applied it.
+        // The first frame only records the theme: `App::load` and the spawn environment already applied it.
         if first {
             return;
         }

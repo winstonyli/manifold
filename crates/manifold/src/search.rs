@@ -43,9 +43,9 @@ pub(crate) struct Search {
 }
 
 impl Search {
-    /// Opens the text log in the profile (memory only under test) and starts the index from it.
-    pub(crate) fn open() -> Self {
-        let mut texts = TextStore::open(crate::profile::search_dir().as_deref());
+    /// Opens the text log in `dir` (`None`: memory only) and starts the index from it.
+    pub(crate) fn open(dir: Option<&std::path::Path>) -> Self {
+        let mut texts = TextStore::open(dir);
         texts.compact_if_wasteful();
         Self::from_texts(texts)
     }
