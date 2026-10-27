@@ -54,7 +54,7 @@ here with its commit.
 
 A design note worth keeping moves to the doc it belongs in; a measurement moves to `docs/runs.md` or the commit.
 
-Done: 66c7d40. Comments outside these files that still read as history are in `PARKED.md`.
+Done: 66c7d40. The 33 history-style comments outside these files followed after the final review (2026-10-27).
 
 ### B2. `Caps` holds the per-kind card facts
 

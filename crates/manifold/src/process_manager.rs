@@ -400,7 +400,7 @@ impl Drop for ViewTab {
         let (cache_dir, slot) = (self.cache_dir.take(), self.profile_slot.take());
         if self.kind.desc().link == HostLink::Tcp {
             // Off the UI thread: a TCP host gets up to 3 s to exit on its own,
-            // and dropping a session of N of them used to freeze the window for 3N s.
+            // and dropping a session of N of them on that thread would freeze the window for 3N s.
             // It has no frame file (frames arrive over TCP) and no cache dir.
             // A writer stuck on its socket stays blocked until the Linux side dies: closing the
             // socket on this side does not unblock a send on Windows (measured, wave 3b).
@@ -441,7 +441,7 @@ fn reap_host(kind: ViewKind, mut child: Child) {
         // local-engine path below) does NOT terminate the actual
         // Linux-side process tree (fish/bash/xvfb-run/Xvfb/
         // manifold-view-webkitgtk), which WSL2 keeps running independently
-        // of any Windows-side process state: confirmed live, a killed
+        // of any Windows-side process state: a killed
         // relay leaves that whole tree orphaned and running
         // indefinitely, invisible to any further Windows-side cleanup.
         // The graceful `Shutdown` queued above (the writer sends it before the reaper gives up) already makes
@@ -449,7 +449,7 @@ fn reap_host(kind: ViewKind, mut child: Child) {
         // cascades correctly on the Linux side (xvfb-run's own EXIT
         // trap kills its Xvfb child once its wrapped command exits, and
         // so on up through bash/fish to `wsl.exe` itself returning) —
-        // also confirmed live, leaving zero orphaned processes. So wait
+        // and leaves zero orphaned processes. So wait
         // for that natural exit first, bounded in case the message
         // never lands (network hiccup, or the process was already
         // wedged for some unrelated reason), and only fall back to a
@@ -662,8 +662,8 @@ fn per_tab_log_files(tab_id: NodeId) -> std::io::Result<(std::fs::File, std::fs:
     // inside it, so an inherited view-host produces no visible output at
     // all even though it runs fine.
     let mut stdout_file = open_capped_log(&per_tab_log_path(tab_id), MAX_TAB_LOG_BYTES)?;
-    // Appended, not truncated: a second manifold, or a respawn racing the old
-    // host's last writes, used to wipe the log that explains a crash.
+    // Appended, not truncated: truncating would let a second manifold, or a respawn racing the old
+    // host's last writes, wipe the log that explains a crash.
     use std::io::Write as _;
     let _ = writeln!(stdout_file, "{}", spawn_header(tab_id));
     let stderr_file = stdout_file.try_clone()?;

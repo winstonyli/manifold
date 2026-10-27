@@ -24,31 +24,22 @@ impl App {
         // for a tab ever matters (each one fully supersedes the last in
         // `GpuState::upload_frame`'s own `tab_textures.insert`), matching the
         // same "keep only the newest, drop the rest" policy the WebView2
-        // view-host's own capture code already applies one layer down (see
-        // `capture.rs`'s `latest` field). A plain `Vec` here used to `push`
-        // every buffered `FrameReady` this drain found and then process each
-        // one in turn -- harmless while the main loop keeps up with the
-        // view-host's own frame rate, but a real, confirmed bug once it
-        // falls behind even slightly: found live via temporary
-        // instrumentation showing bursts of up to 81 queued frames processed
-        // in a single tick for one idle tab, each one a real, wasted GPU
-        // texture+bind-group+thumbnail creation immediately thrown away by
-        // the next -- severe enough burst GPU churn to both stall the main
-        // thread for whole seconds at a time (Windows' own "(Not
-        // Responding)", confirmed live) and outpace wgpu's own resource
-        // reclamation, observed as continuous unbounded memory growth
-        // (roughly 20MB/s from one idle default WebView2 tab). This bug
-        // itself is engine-agnostic -- every engine's `FrameReady` messages
-        // go through this same drain loop -- but WebView2 is the one that
-        // actually triggers it in practice: its `Windows.Graphics.Capture`
-        // pipeline captures continuously at the compositor's own refresh
-        // rate regardless of whether the page changed, while CEF/Servo/
-        // WebKit's paint-driven capture sends far fewer frames for a static,
-        // idle page, staying well within what this loop could already keep
-        // up with (confirmed live: an otherwise-identical idle-memory test
-        // with CEF as the default engine stayed flat).
-        // Since wave 3b the reader keeps one frame per tab itself (`ViewTab::take_frame`), so the burst described
-        // above cannot build up in the first place.
+        // view-host's own capture code applies one layer down (see
+        // `capture.rs`'s `latest` field). Processing every buffered
+        // `FrameReady` in turn costs a GPU texture+bind-group+thumbnail
+        // creation per frame, each thrown away by the next. Bursts of that
+        // (up to 81 queued frames in one tick for one idle tab) stall the
+        // main thread for whole seconds (Windows' own "(Not Responding)")
+        // and outpace wgpu's own resource reclamation (roughly 20MB/s of
+        // memory growth from one idle default WebView2 tab). This is
+        // engine-agnostic -- every engine's `FrameReady` messages go through
+        // this same drain loop -- but WebView2 is the one that triggers it
+        // in practice: its `Windows.Graphics.Capture` pipeline captures
+        // continuously at the compositor's own refresh rate regardless of
+        // whether the page changed, while CEF/Servo/WebKit's paint-driven
+        // capture sends far fewer frames for a static, idle page.
+        // The reader keeps one frame per tab itself (`ViewTab::take_frame`), so such a burst cannot build up in the
+        // first place.
         let mut frame_updates: std::collections::HashMap<NodeId, FrameUpdate> = std::collections::HashMap::new();
         let mut messages: Vec<(NodeId, ViewToHost)> = Vec::new();
         let now = std::time::Instant::now();

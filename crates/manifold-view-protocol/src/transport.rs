@@ -334,16 +334,14 @@ mod tests {
         assert!(wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {}).is_none());
     }
 
-    /// Regression test for the WebKit-view-host hang: `accept_remote`
-    /// used to call `TcpListener::accept()` directly, which blocks
-    /// indefinitely if nobody ever connects — back when spawns ran on the
-    /// UI thread, that froze the *entire app* (window, input, headless
-    /// stdin commands) for as long as a WSL2-hosted view-host took to dial
-    /// back, confirmed live to reach multiple hours in one real incident.
-    /// Spawns now run on a worker thread, but an unbounded wait would still
-    /// strand the tab and its launcher. This doesn't reproduce a cold
-    /// WSL2 boot (out of scope for a unit test), but it does pin the
-    /// actual behavioral contract the fix promises: given nobody ever
+    /// Pins the WebKit-view-host hang fix: `accept_remote` must not call
+    /// `TcpListener::accept()` unbounded, which blocks indefinitely if
+    /// nobody ever connects. Spawns run on a worker thread, but an
+    /// unbounded wait would still strand the tab and its launcher (on the
+    /// UI thread it would freeze the *entire app* for as long as a
+    /// WSL2-hosted view-host took to dial back, which can reach hours).
+    /// This doesn't reproduce a cold WSL2 boot (out of scope for a unit
+    /// test), but it does pin the actual behavioral contract: given nobody ever
     /// connects at all, `accept_remote` must return within (not much
     /// more than) its `timeout` argument, as a clean `TimedOut` error, not
     /// hang — the exact shape of the bug that let the freeze happen.
@@ -470,8 +468,8 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(2), "took {:?}", start.elapsed());
     }
 
-    /// Peers that connect and then say nothing each used to cost a full 1 s
-    /// read timeout, deadline or not, so a queue of them kept `accept_remote`
+    /// A peer that connects and says nothing must not cost a full 1 s read
+    /// timeout past the deadline, or a queue of them would keep `accept_remote`
     /// busy for as many seconds as there were peers.
     #[test]
     fn accept_remote_times_out_under_silent_peers() {

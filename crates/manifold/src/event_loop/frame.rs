@@ -172,7 +172,7 @@ impl App {
 
     /// The pointer's position (window points) straight from the OS, for
     /// `WindowEvent::DroppedFile` -- winit 0.30 sends no `CursorMoved`
-    /// during an OLE drag (confirmed live: `self.page_input.cursor_pos` still holds
+    /// during an OLE drag (`self.page_input.cursor_pos` still holds
     /// wherever the pointer was *before* the drag started), so the drop
     /// point has to be read some other way. `None` off Windows, or if the
     /// window handle/OS call fails; `last_pointer_point` is the fallback.

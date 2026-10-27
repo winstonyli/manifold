@@ -81,9 +81,8 @@ fn main() {
     // WebView2 is fundamentally a COM component -- unlike CEF/Servo (which
     // never touch raw COM from the Rust side), every `ICoreWebView2*` call
     // here needs an initialized apartment on this thread first, or every
-    // single one fails with CO_E_NOTINITIALIZED (confirmed live: exactly
-    // that HRESULT, 0x800401F0, on the very first environment-creation
-    // call). Apartment-threaded (STA), not multi-threaded, since WebView2
+    // single one fails with CO_E_NOTINITIALIZED (HRESULT 0x800401F0, starting
+    // with the very first environment-creation call). Apartment-threaded (STA), not multi-threaded, since WebView2
     // is a UI-affine component tied to the thread that pumps its message
     // loop (see window::pump_messages, called from this same thread below).
     unsafe {
@@ -116,7 +115,7 @@ fn main() {
     // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
     // direct children of this process in the Windows sense (they're
     // children of WebView2's own browser-process, a grandchild of us) --
-    // confirmed live that a hard-killed manifold-view-webview2.exe (e.g. an
+    // a hard-killed manifold-view-webview2.exe (e.g. an
     // external `timeout` cutting the whole tree, or a plain force-kill)
     // leaves those grandchildren running indefinitely, invisible to any
     // cleanup this process's own `Shutdown` handler could do (it never
@@ -249,7 +248,7 @@ fn main() {
     // naturally settles to a low steady-state frame rate) or WebKit (its
     // own GTK-driven capture), `Windows.Graphics.Capture` produces a new
     // frame on every compositor vsync *regardless of whether page content
-    // actually changed* -- confirmed live: a real page can flood ~60-70
+    // actually changed* -- a real page can flood ~60-70
     // `FrameReady` messages/sec continuously, even fully static, which
     // measurably overloaded manifold's per-frame handling badly enough
     // to make it stop responding to headless stdin commands for tens of
@@ -666,7 +665,7 @@ fn set_cookies(webview: &ICoreWebView2, cookies: &[serde_json::Value]) -> bool {
 /// `SetRootVisualTarget`; `controller` (`ICoreWebView2Controller`) for
 /// bounds/visibility/zoom/focus exactly as before (the object
 /// `CreateCoreWebView2CompositionController` returns implements both
-/// interfaces -- confirmed live this session, not assumed); `webview`
+/// interfaces); `webview`
 /// (`ICoreWebView2`) for navigation/events/keyboard input, also unchanged.
 ///
 /// The controller is InPrivate (an in-memory profile, so the jar is the only source of cookies) in the profile

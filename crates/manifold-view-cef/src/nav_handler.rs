@@ -106,12 +106,10 @@ wrap_display_handler! {
             state.dirty = true;
         }
 
-        // `on_favicon_urlchange` used to live here -- CEF's own favicon
-        // plumbing only ever handed over a URL, and its `icon_urls` list
-        // was confirmed live (a real page fully loaded and screenshotted,
-        // not just glanced at early) to always be empty anyway, for
-        // multiple real pages with real favicons (github.com, iana.org).
-        // Root cause, per CEF's own issue tracker (chromiumembedded/cef
+        // There is no `on_favicon_urlchange` handler: CEF's own favicon
+        // plumbing only ever hands over a URL, and its `icon_urls` list
+        // is always empty, even for pages with real favicons (github.com,
+        // iana.org). Root cause, per CEF's own issue tracker (chromiumembedded/cef
         // #3293/#3685): `windowless_rendering_enabled` forces CEF's legacy
         // "Alloy" runtime rather than the modern "Chrome" runtime (OSR
         // isn't supported by the Chrome runtime at all) — Alloy predates
@@ -119,9 +117,9 @@ wrap_display_handler! {
         // collection a normal windowed Chrome/CEF browser gets, which is
         // why the callback fired (it was genuinely called) but never
         // carried real candidate URLs -- a CEF/Alloy-runtime limitation in
-        // windowless mode, not fixable from this handler's side. Removed
-        // once favicon fetching moved to `manifold`'s own uniform
-        // `{origin}/favicon.ico` HTTP fetch, independent of any engine.
+        // windowless mode, not fixable from this handler's side. Favicons
+        // come from `manifold`'s own uniform `{origin}/favicon.ico` HTTP
+        // fetch, independent of any engine.
     }
 }
 

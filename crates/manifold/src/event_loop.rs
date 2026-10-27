@@ -467,8 +467,7 @@ impl App {
         let chrome_height = self.chrome_height_px() as f64;
         let (x, y) = self.page_input.cursor_pos;
         // `egui_winit` reports the right button as "consumed"
-        // unconditionally (confirmed live via temporary logging:
-        // `consumed_by_egui=true` even over this project's own raw
+        // unconditionally (`consumed_by_egui=true` even over this project's own raw
         // content quad, which isn't a real egui widget and has
         // nothing there to legitimately claim it) — bypassed for
         // right and middle specifically so a right/middle-click on

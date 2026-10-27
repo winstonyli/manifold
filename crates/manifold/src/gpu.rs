@@ -1099,11 +1099,11 @@ impl GpuState {
     /// Sync texture-atlas deltas (font glyphs, etc.) to the GPU-side
     /// renderer, and clear them, *before* checking whether this frame's
     /// surface can even be acquired. `TexturesDelta` panics on `Drop` if
-    /// any `.set`/`.free` entry was never consumed, and this used to run
-    /// only after a successful `get_current_texture()` -- so a
+    /// any `.set`/`.free` entry was never consumed, so running this only
+    /// after a successful `get_current_texture()` would let a
     /// transient Occluded/Outdated/Timeout status on a frame that also
-    /// introduced a new glyph (e.g. an icon font's first use) dropped
-    /// `egui_output`'s `FullOutput` uncleared right at the early return,
+    /// introduced a new glyph (e.g. an icon font's first use) drop
+    /// `egui_output`'s `FullOutput` uncleared at the early return,
     /// panicking with "Dropped TexturesDelta with 1 unapplied deltas".
     /// The atlas sync itself needs no surface -- only presentation does.
     fn sync_atlas<'a>(

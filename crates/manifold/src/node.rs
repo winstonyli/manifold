@@ -359,14 +359,13 @@ pub(crate) struct TabPayload {
     /// engine swap, same as every other per-tab UI-only flag here (nothing
     /// about mute state survives a swap to a different engine process).
     pub(crate) muted: bool,
-    /// This tab's own current zoom, as last sent via `SetZoom` -- was
-    /// implicitly just "whatever `Settings::zoom_factor` happens to be
-    /// right now" (a single global value with no per-tab tracking at
-    /// all), confirmed live to cause a real discrepancy: zooming tab A
-    /// then switching to tab B left the Settings page's zoom control
-    /// showing tab A's value while tab B's engine was still at its own
-    /// (different) real zoom, so pressing "-" from that stale display
-    /// jumped tab B's actual zoom by an unexpected amount. Initialized
+    /// This tab's own current zoom, as last sent via `SetZoom`. It is tracked
+    /// per tab because reading the single global `Settings::zoom_factor`
+    /// would cause a discrepancy: zooming tab A then switching to tab B
+    /// would leave the Settings page's zoom control showing tab A's value
+    /// while tab B's engine was still at its own (different) real zoom, so
+    /// pressing "-" from that stale display would jump tab B's actual zoom
+    /// by an unexpected amount. Initialized
     /// from `Settings::zoom_factor` at spawn time (a fresh tab still
     /// picks up "whatever the default is right now", unchanged), then
     /// tracked per-tab from there -- carried through a respawn/engine

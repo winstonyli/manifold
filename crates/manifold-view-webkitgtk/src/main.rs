@@ -61,14 +61,12 @@ fn main() {
 
     // `WebView::new()` uses the default context, so this must be created
     // before it -- kept for the download handling below, which needs a
-    // `WebContext` to attach `connect_download_started` to. Favicon
-    // fetching (which used to also live on this context, via WebKitGTK's
-    // own `FaviconDatabase` API) has been replaced by `manifold`'s own
-    // uniform HTTP fetch of `{origin}/favicon.ico`, independent of any
-    // engine -- see `favicon_fetch` in that crate. That per-engine
-    // approach was inconsistent across engines anyway (this one needed an
-    // extra "actively request the fetch" step CEF's own favicon plumbing
-    // never worked at all under, a confirmed platform limitation).
+    // `WebContext` to attach `connect_download_started` to. Favicons are
+    // not fetched on this context (no `FaviconDatabase`): `manifold` does
+    // its own uniform HTTP fetch of `{origin}/favicon.ico`, independent of
+    // any engine -- see `favicon_fetch` in that crate. Per-engine favicon
+    // plumbing is inconsistent (WebKitGTK needs an extra "actively request
+    // the fetch" step, and CEF's never works under windowless rendering).
     let web_context = webkit2gtk::WebContext::default();
 
     // Downloads: WebKitGTK has no default save location of its own (unlike

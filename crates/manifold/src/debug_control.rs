@@ -990,7 +990,7 @@ const VERBS: &[Verb] = &[
 pub(crate) fn parse_line(line: &str) -> Option<Line> {
     // Strip a leading BOM — several Windows-side tools that can drive this
     // protocol (PowerShell's default `StandardInput` stream encoding among
-    // them, confirmed live: a `Process.StandardInput.WriteLine` from
+    // them: a `Process.StandardInput.WriteLine` from
     // PowerShell prepends `\u{FEFF}` to the very first line) write one
     // unconditionally, and it isn't whitespace so `trim()` alone leaves it
     // stuck to the command name.

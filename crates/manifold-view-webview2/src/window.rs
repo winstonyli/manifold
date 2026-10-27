@@ -99,26 +99,24 @@ pub fn create_hidden_window() -> Result<HWND> {
 /// window that must stay a normal window for other reasons, but shouldn't
 /// show up in the taskbar"), not a window-style trick at all.
 ///
-/// Three window-style-based approaches were tried first and all made
-/// things *worse*, not better. **All three failed against the old
-/// `CreateForWindow`-based capture, which no longer exists** (capture reads
-/// the Composition visual now, and doesn't look at the window), so none of
-/// these is known to be a problem any more -- but none has been re-tested
-/// either. Kept here so a future session that wants to simplify this away
-/// (e.g. `WS_EX_TOOLWINDOW` at creation time, which would make this whole
-/// function unnecessary) knows exactly what to re-verify rather than
-/// assuming it always failed for reasons that still hold:
+/// Three window-style-based approaches broke the old `CreateForWindow`-based
+/// capture, **which no longer exists** (capture reads the Composition visual
+/// now, and doesn't look at the window), so none of these is known to be a
+/// problem any more -- but none has been tested against the current capture. Anyone who
+/// wants to simplify this away (e.g. `WS_EX_TOOLWINDOW` at creation time,
+/// which would make this whole function unnecessary) should re-verify them
+/// first rather than assuming they still fail:
 /// - `WS_EX_TOOLWINDOW`/`WS_POPUP` at window-creation time: `Windows.
 ///   Graphics.Capture`'s `CreateForWindow` rejects both outright with
 ///   `E_INVALIDARG` (this is *why* `create_hidden_window` uses plain
 ///   `WS_OVERLAPPEDWINDOW` at all).
 /// - Giving the window an owner (any owner, including a purpose-built
-///   invisible one): confirmed live, `CreateForWindow` rejects an *owned*
+///   invisible one): `CreateForWindow` rejects an *owned*
 ///   window with the identical `E_INVALIDARG` -- ownership status is
 ///   checked just as strictly as the style bits.
 /// - Adding `WS_EX_TOOLWINDOW` via `SetWindowLongPtrW` *after* capture
 ///   already started (this doesn't trip the `CreateForWindow` check, since
-///   that only validates once): confirmed live, this reliably corrupts the
+///   that only validates once): this reliably corrupts the
 ///   already-running capture -- with `SWP_FRAMECHANGED` forcing an
 ///   immediate non-client recalculation (`WS_EX_TOOLWINDOW` windows get a
 ///   shorter caption), content came back blank white with a
@@ -131,21 +129,13 @@ pub fn create_hidden_window() -> Result<HWND> {
 ///   visibility transition, no NC-area recalculation -- so it doesn't
 ///   share any of these failure modes.
 ///
-/// Runs on a **detached background thread**, not inline. An earlier round
-/// of live testing produced a zero-screenshot, unresponsive-looking
-/// `manifold-view-webview2.exe` right after adding this call and was first
-/// read as `DeleteTab` hanging -- **re-tested since, with a hard-timeout-
-/// wrapped synchronous call and diagnostic prints bracketing it, and it
-/// completed normally in well under the 2s retry budget below**. The
-/// original observation was actually this session's own well-documented
-/// coprocess/test-harness flakiness (a disabled-feature control run
-/// reproduced the identical symptom), not a real hang -- correcting the
-/// record here since an earlier commit message overstated this as
-/// "confirmed live." The real reason to background it: the retry loop
-/// below is a synchronous sleep totalling up to 2s, and blocking
-/// view-host startup for that long before the first frame is captured
-/// would be a real, avoidable regression, hang or not. Kept backgrounded
-/// on that basis, with the same best-effort shape as `favicon::register`.
+/// Runs on a **detached background thread**, not inline. `DeleteTab` itself
+/// does not hang (a synchronous call completes well under the 2s retry
+/// budget below); the reason to background it is that the retry loop below
+/// is a synchronous sleep totalling up to 2s, and blocking view-host
+/// startup for that long before the first frame is captured would be an
+/// avoidable regression. It has the same best-effort shape as
+/// `favicon::register`.
 /// `HWND` isn't `Send` (wraps a raw pointer Rust can't prove is
 /// thread-safe, even though Win32 handles are designed to cross threads
 /// freely) -- carried across as a plain `isize` and reconstructed on the

@@ -246,9 +246,8 @@ impl App {
     /// Reads "Help, Settings" left to right whether `ui` is a left-to-right
     /// row (the Graph toolbar) or a right-to-left child (the Item toolbar's
     /// trailing cluster) -- see `in_reading_order`. Drawing both in one
-    /// fixed call order once silently reversed them in the right-to-left
-    /// caller (confirmed live: Tab and Graph view screenshotted side by side
-    /// disagreed).
+    /// fixed call order would silently reverse them in the right-to-left
+    /// caller (the Tab and Graph views would disagree).
     pub(crate) fn render_universal_chip(&mut self, ui: &mut egui::Ui) -> egui::Rect {
         let mut help_rect = egui::Rect::NOTHING;
         toolbar_chip(ui, |ui| {

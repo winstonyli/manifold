@@ -142,13 +142,10 @@ impl App {
                         }
 
                         // Prev/Next stay plain ASCII labels, not Unicode
-                        // arrow glyphs — confirmed live that `▲`/`▼`
-                        // render as empty tofu boxes with this app's own
-                        // font (unlike `◀`/`▶`/`⚙` elsewhere in this same
-                        // toolbar, which do render). Not migrated to
-                        // `egui_phosphor` alongside the close button
-                        // below -- out of scope for the cosmetic-only
-                        // "x"/"X" pass that touched everything else here.
+                        // arrow glyphs — `▲`/`▼` render as empty tofu
+                        // boxes with this app's own font (unlike
+                        // `◀`/`▶`/`⚙` elsewhere in this same toolbar,
+                        // which do render).
                         let has_matches = matches!(self.find.result, Some((count, _)) if count > 0);
                         if ui.add_enabled(has_matches, egui::Button::new("Prev")).clicked() {
                             go_prev = true;
@@ -156,13 +153,9 @@ impl App {
                         if ui.add_enabled(has_matches, egui::Button::new("Next")).clicked() {
                             go_next = true;
                         }
-                        // Was a literal capital "X" -- confirmed live
-                        // that `✕` tofu-boxed here (same finding the
-                        // comment above already documents), so this one
-                        // used the ASCII fallback rather than a Unicode
-                        // glyph. Now the real `X` icon instead, once the
-                        // icon font was already in place for the other
-                        // close buttons in this app's chrome.
+                        // The real `X` icon, as on the other close buttons in
+                        // this app's chrome (a Unicode `✕` tofu-boxes here,
+                        // same as the arrows above).
                         if ui.button(egui_phosphor::light::X).named_tip("Close (Esc)").clicked() {
                             close = true;
                         }

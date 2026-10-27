@@ -144,12 +144,9 @@ impl App {
             let mut grow = |r: egui::Rect| {
                 bounds = Some(bounds.map_or(r, |b| b.union(r)));
             };
-            // `◀`/`▶` were already a proven-safe Unicode gamble
-            // (confirmed live elsewhere in this app), not a real
-            // problem -- migrated to `egui_phosphor::CARET_LEFT`/
-            // `CARET_RIGHT` anyway once the icon font was already
-            // in place, for the same visual consistency the other
-            // icon migrations this session already have.
+            // `◀`/`▶` render fine as Unicode in this app, but use
+            // `egui_phosphor::CARET_LEFT`/`CARET_RIGHT` for visual
+            // consistency with the other icons.
             let graph = chip_icon_button(ui, egui::Id::new("icon_btn_graph"), egui_phosphor::light::GRAPH)
                 .named_tip("Back to Graph (Esc, Ctrl+G)");
             grow(graph.rect);
@@ -453,7 +450,7 @@ impl App {
         // A freshly-spawned or just-respawned tab's content pane draws as
         // plain black until its view-host's first real frame arrives (see
         // `record_content_pass`'s own doc comment -- the pane still clears,
-        // it just has nothing to draw) -- confirmed live, a genuinely jarring
+        // it just has nothing to draw) -- a jarring
         // blank screen with zero feedback, unlike the Graph-view card's own
         // spinner for the exact same "no thumbnail yet" state. Only covers
         // the primary pane; the split view's secondary pane (view-only,

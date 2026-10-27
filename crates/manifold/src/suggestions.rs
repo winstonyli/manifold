@@ -98,8 +98,8 @@ const DEBOUNCE: Duration = Duration::from_millis(200);
 /// warm-up, not a real query.
 ///
 /// Called once, centrally, from `App::load()` — not from inside
-/// `SuggestionFetcher::new()` the way it used to be, once a second network
-/// consumer (favicon fetching) existed too: each doing its own redundant
+/// `SuggestionFetcher::new()`, because a second network consumer (favicon
+/// fetching) exists too: each doing its own redundant
 /// warm-up would be wasteful, and worse, whichever one wasn't constructed
 /// first could still race a real request against the *other's* not-yet-
 /// finished warm-up. One shared call, before either fetcher is built,

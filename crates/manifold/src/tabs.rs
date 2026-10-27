@@ -158,7 +158,7 @@ pub(crate) enum SpawnPurpose {
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
 /// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
 /// for why this exists: spawning WebKit's view-host blocks on a cold WSL2
-/// boot + Xvfb + WebKitGTK init (confirmed live to take several real seconds
+/// boot + Xvfb + WebKitGTK init (takes several real seconds
 /// on first use, occasionally much longer — see `process_manager::
 /// spawn_webkit_tab`'s own doc comment), which would otherwise freeze the
 /// whole app (redraw, input, headless stdin) for that entire duration if run
