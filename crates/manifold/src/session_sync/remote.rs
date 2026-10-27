@@ -265,8 +265,7 @@ impl App {
             Kind::Image => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
-                    let payload = ImagePayload { path, width: 0, height: 0, error: None };
-                    self.insert_placeholder_node(id, pos, kind, Runtime::Image(payload));
+                    self.insert_file_placeholder(id, pos, kind, path, None);
                 } else {
                     self.insert_image_node_with_id(id, path, pos, None);
                 }
@@ -274,8 +273,7 @@ impl App {
             Kind::Pdf => {
                 let path = content_path.clone().unwrap_or_default();
                 if missing_with_url {
-                    let payload = PdfPayload { path, outcome: None };
-                    self.insert_placeholder_node(id, pos, kind, Runtime::Pdf(payload));
+                    self.insert_file_placeholder(id, pos, kind, path, None);
                 } else {
                     self.insert_pdf_node_with_id(id, path, pos, None);
                 }
@@ -292,8 +290,7 @@ impl App {
                     self.insert_json_node_with_id(id, path.clone(), pos, None).err()
                 };
                 if missing_with_url || error.is_some() {
-                    let payload = JsonPayload::file(path, Default::default(), error);
-                    self.insert_placeholder_node(id, pos, kind, Runtime::Json(payload));
+                    self.insert_file_placeholder(id, pos, kind, path, error);
                 }
             }
             Kind::Download => {

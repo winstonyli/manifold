@@ -405,17 +405,14 @@ fn stamp_message(stamp: Stamp, actors: &Actors) -> Writer {
 }
 
 fn decode_stamp(buf: &[u8], actors: &Actors) -> Result<Stamp, JournalError> {
-    let (mut hlc, mut index) = (Hlc::default(), 0);
+    let mut index = 0;
     for field in Reader::new(buf) {
         let field = field?;
-        match field.no {
-            1 => hlc.ms = field.value.u64()?,
-            2 => hlc.logical = field.value.u32()?,
-            3 => index = field.value.u64()?,
-            _ => {}
+        if field.no == 3 {
+            index = field.value.u64()?;
         }
     }
-    Ok(Stamp { hlc, actor: actors.get(index)? })
+    Ok(Stamp { hlc: decode_hlc(buf)?, actor: actors.get(index)? })
 }
 
 /// Every actor `doc`'s structure names, sorted: a compacted file's table.
@@ -470,15 +467,7 @@ fn snapshot_message(doc: &Doc) -> Vec<u8> {
         w.message(2, &n);
     }
     for (actor, next) in &doc.version {
-        let mut v = Writer::new();
-        let index = actors.index(*actor);
-        if index != 0 {
-            v.varint(1, index);
-        }
-        if *next != 0 {
-            v.varint(2, *next);
-        }
-        w.message(3, &v);
+        w.message(3, &id_message(NodeId { actor: *actor, counter: *next }, actors));
     }
     let clock = hlc_message(doc.clock);
     if !clock.is_empty() {
@@ -531,16 +520,8 @@ fn decode_snapshot(buf: &[u8]) -> Result<Doc, JournalError> {
                 doc.nodes.insert(id, node);
             }
             3 => {
-                let (mut index, mut next) = (0, 0);
-                for f in Reader::new(field.value.bytes()?) {
-                    let f = f?;
-                    match f.no {
-                        1 => index = f.value.u64()?,
-                        2 => next = f.value.u64()?,
-                        _ => {}
-                    }
-                }
-                doc.version.insert(actors.get(index)?, next);
+                let next = decode_id(field.value.bytes()?, actors)?;
+                doc.version.insert(next.actor, next.counter);
             }
             5 => doc.clock = decode_hlc(field.value.bytes()?)?,
             _ => {}

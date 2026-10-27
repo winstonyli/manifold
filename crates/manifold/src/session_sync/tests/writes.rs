@@ -1,6 +1,7 @@
 //! Session-sync tests: save_session: the ops it builds, what it writes and when.
 
 use super::*;
+use crate::node::{ImagePayload, PdfPayload};
 
 /// The commit builder: a save creates every queued node the document lacks, each group before the
 /// nodes inside it, so a member's `Create` names a group that exists. The member's id sorts before its group's.

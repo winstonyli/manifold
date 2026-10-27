@@ -187,6 +187,25 @@ impl App {
         self.place_node(Some(id), kind, runtime, Placement { group: None, pos });
     }
 
+    /// `insert_placeholder_node` for an Image, Pdf or Json card whose file at `path` isn't loaded: not yet fetched
+    /// (`error` `None`) or failed with `error`.
+    pub(crate) fn insert_file_placeholder(
+        &mut self,
+        id: NodeId,
+        pos: egui::Vec2,
+        kind: Kind,
+        path: String,
+        error: Option<String>,
+    ) {
+        let runtime = match kind {
+            Kind::Image => Runtime::Image(ImagePayload { path, width: 0, height: 0, error }),
+            Kind::Pdf => Runtime::Pdf(PdfPayload { path, outcome: error.map(Err) }),
+            Kind::Json => Runtime::Json(JsonPayload::file(path, Default::default(), error)),
+            _ => unreachable!("a file placeholder is an Image, Pdf or Json card"),
+        };
+        self.insert_placeholder_node(id, pos, kind, runtime);
+    }
+
     /// The backing-file names this session still uses, for `content::kept` (spec "Backing files"): the shown
     /// nodes' ids (a replica's own content copy is `<id>.<ext>`, a jar's cookies `<id>.json`) and resolved file
     /// names, and every live node the document holds, closed and hidden ones included (`doc_backing_names`).
@@ -368,20 +387,15 @@ impl App {
         let source = ContentSource::Web { url: url.clone(), body };
         let result = self.insert_content(source, id, pos, group);
         if let Err(error) = &result {
-            let (ty, runtime) = match kind {
-                K::Image => (
-                    Kind::Image,
-                    Runtime::Image(ImagePayload { path, width: 0, height: 0, error: Some(error.clone()) }),
-                ),
-                K::Pdf => (Kind::Pdf, Runtime::Pdf(PdfPayload { path, outcome: Some(Err(error.clone())) })),
-                K::Json => {
-                    (Kind::Json, Runtime::Json(JsonPayload::file(path, Default::default(), Some(error.clone()))))
-                }
+            let ty = match kind {
+                K::Image => Kind::Image,
+                K::Pdf => Kind::Pdf,
+                K::Json => Kind::Json,
                 // Guarded above: `kind` is one of the three arms this
                 // matches.
                 _ => unreachable!("reload_fetched_node only reaches here for Image/Pdf/Json"),
             };
-            self.insert_placeholder_node(id, pos, ty, runtime);
+            self.insert_file_placeholder(id, pos, ty, path, Some(error.clone()));
         }
         self.edit_parent(id, parent);
         self.edit_group(id, group);

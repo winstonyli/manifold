@@ -10,9 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use manifold_view_protocol::HostToView;
 
 use crate::local_state::LocalNode;
-use crate::node::{
-    DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, UnloadedState, UnloadedTabPayload,
-};
+use crate::node::{DownloadPayload, JsonPayload, NotePayload, Runtime, UnloadedState, UnloadedTabPayload};
 use crate::process_manager::ViewKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::model::{
@@ -270,30 +268,15 @@ pub(crate) fn spawn_snapshot(
     view_kind: u64,
     jar: Option<NodeId>,
 ) -> Snapshot {
-    let pos = pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value);
-    let mut fields = Fields::from([(field::POS, pos)]);
-    let (pinned, parent) = (spawn.carry.pinned, spawn.parent);
-    let (url, view_kind) = (FieldValue::Str(url.to_owned()), FieldValue::ViewCode(view_kind));
-    let ty = tab_fields(&mut fields, url, view_kind, pinned, parent, jar);
-    Snapshot { ty: ty.to_owned(), group: spawn.group, fields, trees: Trees::new() }
-}
-
-/// A tab's fields beyond `pos`, live or failed. `url`, `view_kind` and `jar` are the shared ones
-/// (`Mirror::url`, the mirror's raw engine code, `Mirror::jar`).
-fn tab_fields(
-    fields: &mut Fields,
-    url: FieldValue,
-    view_kind: FieldValue,
-    pinned: bool,
-    parent: Option<NodeId>,
-    jar: Option<NodeId>,
-) -> &'static str {
-    fields.insert(field::URL, url);
-    fields.insert(field::VIEW_KIND, view_kind);
-    fields.insert(field::PINNED, FieldValue::Bool(pinned));
-    fields.insert(field::PARENT, FieldValue::Id(parent));
-    fields.insert(field::JAR, FieldValue::Id(jar));
-    TYPE_TAB
+    let fields = Fields::from([
+        (field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value)),
+        (field::URL, FieldValue::Str(url.to_owned())),
+        (field::VIEW_KIND, FieldValue::ViewCode(view_kind)),
+        (field::PINNED, FieldValue::Bool(spawn.carry.pinned)),
+        (field::PARENT, FieldValue::Id(spawn.parent)),
+        (field::JAR, FieldValue::Id(jar)),
+    ]);
+    Snapshot { ty: TYPE_TAB.to_owned(), group: spawn.group, fields, trees: Trees::new() }
 }
 
 /// `raw` (an imported node's field values, as `store::json::import` gave
