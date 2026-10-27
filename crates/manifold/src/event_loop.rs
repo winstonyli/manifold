@@ -125,6 +125,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.headless || self.debug_commands {
             self.egui_ctx.enable_accesskit();
         }
+        if self.headless {
+            crate::theme::steady_caret(&self.egui_ctx);
+        }
         self.egui_state = Some(egui_state);
         self.window = Some(window);
         self.open_store();

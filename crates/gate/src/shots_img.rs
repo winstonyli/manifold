@@ -63,7 +63,7 @@ fn changed_lines(im: &RgbImage, rest: &RgbImage, band: u32, column: bool, x0: u3
 }
 
 /// hover_diff.py's report from the changed lines of each hover (`position -> lines`): lines that change in most
-/// hovers are the app itself (a clock, a blinking cursor) and are dropped; per hover the span of changed lines and the
+/// hovers are the app itself (a clock, a page's animation) and are dropped; per hover the span of changed lines and the
 /// number of separate runs (a gap over 6 starts a new one). A hover should repaint one widget: one run.
 fn report_lines(mut changed: BTreeMap<u32, BTreeSet<u32>>) -> Vec<String> {
     if changed.len() >= 5 {
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn lines_changing_in_most_hovers_are_noise() {
-        // Line 0 changes in all five hovers (the app's own blink); line 40+i is each hover's own.
+        // Line 0 changes in all five hovers (a clock); line 40+i is each hover's own.
         let changed = (0..5).map(|i| (i, set(&[0, 40 + i * 20]))).collect();
         let report = report_lines(changed);
         assert!(report[..5].iter().all(|l| l.ends_with("runs=1")), "{report:?}");

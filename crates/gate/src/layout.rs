@@ -6,7 +6,7 @@
 //! - *inside the window*: every new `popups` entry of the exported state (`App::popups_state`) lies within `window`.
 //!   Catches a dialog taller than a short window, a menu opened past an edge.
 //! - *nothing shows through*: the popup is shot twice, once over the demo cards and once with every other card moved
-//!   far away, and its rect must come out pixel-identical (a few pixels of tolerance for a blinking caret). A card's
+//!   far away, and its rect must come out pixel-identical (headless mode draws a steady caret). A card's
 //!   text or chip painting over a popup, or a popup drawn under the cards (as the empty-canvas menu once was, inside
 //!   the Scene), makes the two differ. Pixels are compared in the screenshot, so this sees what a person sees.
 //!
@@ -32,13 +32,8 @@ const SIZES: [(u32, u32); 3] = [(800, 600), (480, 360), (1280, 800)];
 /// Where cards are parked for the "nothing under the popup" shot: far outside any window.
 const FAR: f64 = 200_000.0;
 
-/// Pixels that may differ between the two shots (a text caret blinks) before the popup counts as showing through.
 /// Points trimmed off each side of a popup's rect before comparing pixels.
 const EDGE: f64 = 4.0;
-
-/// Differing pixels tolerated per popup: a text caret that blinks between the two shots (2 px wide at 2x, 18 tall).
-/// Card text or a chip showing through is hundreds.
-const BLEED_PIXELS: usize = 60;
 
 /// A colour channel difference above this counts as a changed pixel (antialiasing and fades stay under it).
 const CHANNEL_TOLERANCE: i32 = 8;
@@ -351,7 +346,7 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
         let compared = [shot.region[0], shot.region[1], shot.region[2], shot.region[3].min(bottom - EDGE).min(header)];
         let bare = inst.screenshot(&format!("layout-bare-{}", sc.name))?;
         let (differing, bbox) = differing_pixels(&shot.over_cards, &bare, compared, w)?;
-        if !check(&format!("{label}: nothing shows through it"), differing <= BLEED_PIXELS) {
+        if !check(&format!("{label}: nothing shows through it"), differing == 0) {
             println!(
                 "  {differing} pixels differ in {:?} (box {bbox:?}): {} vs {}",
                 shot.region,

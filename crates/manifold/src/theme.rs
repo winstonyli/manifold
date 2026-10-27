@@ -431,6 +431,11 @@ pub(crate) fn apply_style(ctx: &egui::Context) {
     }
 }
 
+/// A text caret that is always drawn, in both themes: headless mode's, so two shots of a focused text box match.
+pub(crate) fn steady_caret(ctx: &egui::Context) {
+    ctx.all_styles_mut(|style| style.visuals.text_cursor.blink = false);
+}
+
 /// The theme setting as egui's preference: `System` follows winit's theme events.
 pub(crate) fn apply_theme_choice(ctx: &egui::Context, choice: ThemeChoice) {
     ctx.set_theme(match choice {
@@ -996,6 +1001,17 @@ mod tests {
         out.textures_delta.clear();
         let update = out.platform_output.accesskit_update.expect("accesskit enabled");
         assert!(update.nodes.iter().any(|(_, n)| n.label() == Some("Go to home page")), "no node carries the name");
+    }
+
+    /// Headless mode's caret stays drawn in both themes, so two shots of a focused text box match.
+    #[test]
+    fn a_steady_caret_does_not_blink_in_either_theme() {
+        let ctx = egui::Context::default();
+        apply_style(&ctx);
+        steady_caret(&ctx);
+        for theme in [egui::Theme::Dark, egui::Theme::Light] {
+            assert!(!ctx.style_of(theme).visuals.text_cursor.blink, "{theme:?}");
+        }
     }
 
     /// The size of the widget `add` lays out, after a few frames with the mouse over it or not
