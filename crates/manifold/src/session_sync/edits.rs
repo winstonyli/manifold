@@ -161,9 +161,9 @@ impl App {
 
     /// The one writer of a node's document pos: a drag release, with where the card was dropped
     /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
-    /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, Pos (0,0).
+    /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, `Pos(None)`.
     pub(crate) fn edit_pos(&mut self, id: NodeId, pos: Option<egui::Vec2>) {
-        self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value));
+        self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(None), pos_value));
     }
 
     /// The one writer of a tab's engine: called when a switch starts (`start_swap_to`, a wake into

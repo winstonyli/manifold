@@ -266,11 +266,11 @@ mod tests {
         doc.apply(&op(1, 0, 1, OpBody::create(t, "application/x-from-the-future", fields)));
         let raw = doc.nodes[&t].fields[&RegKey::of(40)].enc.clone();
         doc.apply(&op(1, 1, 2, name(t, "renamed")));
-        let pos = encode_field(field::POS, &FieldValue::Pos(5.0, 6.0));
+        let pos = encode_field(field::POS, &FieldValue::Pos(Some((5.0, 6.0))));
         doc.apply(&op(1, 2, 3, OpBody::set(t, field::POS, pos)));
         assert_eq!(doc.nodes[&t].fields[&RegKey::of(40)].enc, raw);
         assert_eq!(doc.nodes[&t].get(field::NAME), FieldValue::Str("renamed".into()));
-        assert_eq!(doc.nodes[&t].get(field::POS), FieldValue::Pos(5.0, 6.0));
+        assert_eq!(doc.nodes[&t].get(field::POS), FieldValue::Pos(Some((5.0, 6.0))));
     }
 
     fn name(node: NodeId, text: &str) -> OpBody {

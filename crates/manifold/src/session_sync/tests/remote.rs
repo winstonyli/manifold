@@ -72,7 +72,7 @@ fn a_restored_note_group_and_leaf_project_back_to_their_fields() {
                 Some(node(1)),
                 &[
                     (field::TEXT, FieldValue::Str("hello".into())),
-                    (field::POS, FieldValue::Pos(3.0, -4.0)),
+                    (field::POS, FieldValue::Pos(Some((3.0, -4.0)))),
                     (field::NAME, FieldValue::Str("Hi".into())),
                 ],
             ),
@@ -409,12 +409,12 @@ fn a_local_pos_edit_wins_over_a_remote_one() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     drag(&mut app, &[note], egui::vec2(80.0, 0.0));
     app.release_drag();
-    remote_set(&mut other, note, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, note, field::POS, FieldValue::Pos(Some((5.0, 6.0))));
     remote_set(&mut other, note, field::NAME, one());
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(90.0, 20.0)));
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(90.0, 20.0));
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((90.0, 20.0))));
     assert_eq!(app.layout_pos(note), egui::vec2(90.0, 20.0), "not snapped to theirs");
     assert_eq!(app.doc.mirror.get(note, field::NAME), one(), "their other field arrives");
 }
@@ -428,7 +428,7 @@ fn a_remote_pos_snaps_the_layout_and_zeroes_its_velocity() {
     assert!(app.save_session());
     app.layout.insert(note, crate::Layout { pos: egui::vec2(12.0, 22.0), vel: egui::vec2(3.0, 4.0) });
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, note, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, note, field::POS, FieldValue::Pos(Some((5.0, 6.0))));
     let pos_stamp = |doc: &Doc| doc.nodes[&note].fields[&crate::store::model::RegKey::of(field::POS)].stamp;
     let theirs = pos_stamp(other.doc());
     assert!(app.save_session());
@@ -448,16 +448,16 @@ fn a_remote_pos_does_not_snap_a_node_being_dragged() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     // `a` is dragged, `b` moves with it as part of the selection.
     drag(&mut app, &[a, b], egui::vec2(0.0, 50.0));
-    remote_set(&mut other, a, field::POS, FieldValue::Pos(5.0, 6.0));
-    remote_set(&mut other, b, field::POS, FieldValue::Pos(7.0, 8.0));
+    remote_set(&mut other, a, field::POS, FieldValue::Pos(Some((5.0, 6.0))));
+    remote_set(&mut other, b, field::POS, FieldValue::Pos(Some((7.0, 8.0))));
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.pos(a), Some(egui::vec2(5.0, 6.0)), "the document pos is theirs until the release");
     assert_eq!(app.layout_pos(a), egui::vec2(10.0, 70.0), "the dragged card stays under the pointer");
     assert_eq!(app.layout_pos(b), egui::vec2(300.0, 70.0), "and so does the rest of the selection");
     app.release_drag();
     assert!(app.save_session());
-    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(10.0, 70.0), "the release wins");
-    assert_eq!(stored(&app, b, field::POS), FieldValue::Pos(300.0, 70.0));
+    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(Some((10.0, 70.0))), "the release wins");
+    assert_eq!(stored(&app, b, field::POS), FieldValue::Pos(Some((300.0, 70.0))));
 }
 
 /// Another replica's url change moves a sleeping tab without waking it.
@@ -554,7 +554,7 @@ fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", ""));
     app.edit_pos(tab, Some(egui::vec2(5.0, 5.0)));
     let mut fields = app.snapshot(tab).unwrap().fields;
-    fields.insert(field::POS, FieldValue::Pos(9.0, 9.0));
+    fields.insert(field::POS, FieldValue::Pos(Some((9.0, 9.0))));
     fields.insert(field::URL, FieldValue::Str("https://b/".into()));
     let (held, changed) = app.mirror_remote(tab, &fields, &Default::default(), None);
     assert_eq!(held, [field::POS], "a pending edit holds the field");

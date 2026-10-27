@@ -76,7 +76,7 @@ pub(crate) fn subtree_json(app: &App, roots: &[NodeId], offset: egui::Vec2) -> O
     for &id in roots {
         let Some(root) = app.snapshot(id) else { continue };
         let mut root_fields = live_fields(app, id, &root.fields);
-        if let Some(store::model::FieldValue::Pos(x, y)) = root_fields.get_mut(&field::POS) {
+        if let Some(store::model::FieldValue::Pos(Some((x, y)))) = root_fields.get_mut(&field::POS) {
             (*x, *y) = (*x + offset.x, *y + offset.y);
         }
         nodes.push(store::json::node_json(&id.to_string(), &root.ty, &root_fields, &root.trees, None));

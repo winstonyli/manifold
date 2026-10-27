@@ -45,14 +45,14 @@ impl JsonNode {
 
 fn value_to_json(value: &FieldValue) -> Option<Value> {
     Some(match value {
-        FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => serde_json::json!([x, y]),
+        FieldValue::Pos(Some((x, y))) => serde_json::json!([x, y]),
         FieldValue::Color(Some(rgb)) => Value::String(format!("#{rgb:06x}")),
         FieldValue::Id(Some(id)) => Value::String(id.to_string()),
         FieldValue::Str(s) if !s.is_empty() => Value::String(s.clone()),
         FieldValue::Bool(true) => Value::Bool(true),
         FieldValue::ViewCode(code) if *code != 0 => Value::String(VIEW_KINDS.get(*code as usize - 1)?.to_string()),
         // The empty or zero value of each type is "absent", so it has no JSON.
-        FieldValue::Pos(..)
+        FieldValue::Pos(None)
         | FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
@@ -297,7 +297,7 @@ pub fn import_with(
             let parsed = match (def.ty, value) {
                 (FieldType::Pos, Value::Array(xy)) if xy.len() == 2 => {
                     let get = |v: &Value| v.as_f64().map(|f| f as f32).filter(|f| f.is_finite());
-                    FieldValue::Pos(get(&xy[0]).ok_or_else(bad)?, get(&xy[1]).ok_or_else(bad)?)
+                    FieldValue::Pos(Some((get(&xy[0]).ok_or_else(bad)?, get(&xy[1]).ok_or_else(bad)?)))
                 }
                 (FieldType::Color, Value::String(s)) => {
                     let hex = s.strip_prefix('#').filter(|h| h.len() == 6).ok_or_else(bad)?;
@@ -464,7 +464,7 @@ mod tests {
         assert_eq!(doc.nodes[&group].get(field::NAME), FieldValue::Str("Reading".into()));
         assert_eq!(tab2.group, Some(group));
         assert_eq!(tab2.get(field::PARENT), FieldValue::Id(Some(t1)));
-        assert_eq!(tab1.get(field::POS), FieldValue::Pos(10.5, -3.0));
+        assert_eq!(tab1.get(field::POS), FieldValue::Pos(Some((10.5, -3.0))));
         assert_eq!(tab1.get(field::VIEW_KIND), FieldValue::ViewCode(2));
         assert_eq!(tab1.get(field::PINNED), FieldValue::Bool(true));
     }
@@ -479,6 +479,15 @@ mod tests {
         assert_eq!(label.get(field::COLOR), FieldValue::Color(Some(0)));
         let json = serde_json::to_value(doc_to_json(&doc)).unwrap();
         assert!(json["nodes"].as_array().unwrap().iter().any(|n| n["color"] == "#000000"));
+    }
+
+    #[test]
+    fn the_origin_is_a_position_not_the_absence_of_one() {
+        let doc = doc_from(r##"{"nodes": [{"id": "n", "type": "text/plain", "pos": [0.0, 0.0]}]}"##, 1);
+        let (_, note) = doc.live().next().unwrap();
+        assert_eq!(note.get(field::POS), FieldValue::Pos(Some((0.0, 0.0))));
+        let json = serde_json::to_value(doc_to_json(&doc)).unwrap();
+        assert_eq!(json["nodes"][0]["pos"], serde_json::json!([0.0, 0.0]));
     }
 
     #[test]

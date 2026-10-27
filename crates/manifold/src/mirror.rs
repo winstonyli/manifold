@@ -326,8 +326,7 @@ impl Mirror {
     }
 
     /// A node's document pos: where it was placed or last dropped (`App::edit_pos`), or where another replica put
-    /// it. `None` when it has none. Pos (0,0) is the field's absent value in the encoding, so a node at the exact
-    /// origin reads as `None` too. Where the card is drawn is `App::layout`.
+    /// it. `None` when it has none; the origin is a position like any other. Where the card is drawn is `App::layout`.
     pub(crate) fn pos(&self, id: NodeId) -> Option<egui::Vec2> {
         self.nodes.get(&id).and_then(pos_in)
     }
@@ -596,7 +595,9 @@ mod tests {
         mirror.seed(node(7), &Carried::default().with_str(field::URL, "https://b/"));
         assert_eq!(mirror.carried(node(7)), first);
         mirror.seed(node(8), &Carried::default().with(field::POS, pos_value(egui::Vec2::ZERO)));
-        assert_eq!(mirror.pos(node(8)), None, "pos (0,0) is the absent value");
+        assert_eq!(mirror.pos(node(8)), Some(egui::Vec2::ZERO), "the origin is a position like any other");
+        mirror.seed(node(9), &Carried::default().with(field::POS, pos_value(egui::vec2(f32::NAN, 0.0))));
+        assert_eq!(mirror.pos(node(9)), None, "a non-finite pos is none");
     }
 
     /// An entry that exists without a type (a remote op named the node before it was placed) takes the placed
@@ -769,7 +770,7 @@ mod tests {
     fn carried_holds_every_tab_field() {
         use crate::store::model::{ActorId, FieldType};
         let sample = |ty: FieldType| match ty {
-            FieldType::Pos => FieldValue::Pos(1.5, -2.0),
+            FieldType::Pos => FieldValue::Pos(Some((1.5, -2.0))),
             FieldType::Color => FieldValue::Color(Some(0x123456)),
             FieldType::Id => FieldValue::Id(Some(NodeId { actor: ActorId(1), counter: 2 })),
             FieldType::Str => FieldValue::Str("s".into()),

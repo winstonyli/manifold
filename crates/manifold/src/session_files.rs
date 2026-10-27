@@ -383,7 +383,7 @@ impl App {
                 *parent = parent.filter(|p| ids.contains(p) || live(p));
             }
             if let (true, Some(pos)) = (is_root, root_pos) {
-                fields.insert(field::POS, FieldValue::Pos(pos.x, pos.y));
+                fields.insert(field::POS, FieldValue::Pos(Some((pos.x, pos.y))));
             }
             let snap = Snapshot { ty: node.ty.clone(), group, fields, trees: node.trees.clone() };
             self.materialize(node.id, &snap, None);

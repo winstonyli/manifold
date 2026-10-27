@@ -95,19 +95,23 @@ fn a_drag_release_saves_the_dropped_position() {
     assert!(app.save_session());
     drag(&mut app, &[note], egui::vec2(40.0, 0.0));
     assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(10.0, 10.0), "a drag in progress is not saved");
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((10.0, 10.0))), "a drag in progress is not saved");
     app.release_drag();
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(50.0, 10.0)), "shown at once");
     assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(50.0, 10.0));
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((50.0, 10.0))));
 
     app.settle_current_level();
     assert_ne!(app.layout_pos(note), egui::vec2(50.0, 10.0), "the overlapping cards were pushed apart");
     assert_ne!(app.layout_pos(other), egui::vec2(52.0, 10.0));
     assert!(app.save_session());
     assert!(!app.doc.writes.has_fields());
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(50.0, 10.0), "physics never writes the document");
-    assert_eq!(stored(&app, other, field::POS), FieldValue::Pos(52.0, 10.0));
+    assert_eq!(
+        stored(&app, note, field::POS),
+        FieldValue::Pos(Some((50.0, 10.0))),
+        "physics never writes the document"
+    );
+    assert_eq!(stored(&app, other, field::POS), FieldValue::Pos(Some((52.0, 10.0))));
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(50.0, 10.0)));
 }
 

@@ -1594,7 +1594,7 @@ mod tests {
         assert!(!app.debug_set_note_text(g, "x".into()), "not a note");
 
         assert!(app.debug_move_node(note, egui::vec2(12.0, -34.0)));
-        assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(12.0, -34.0));
+        assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((12.0, -34.0))));
         assert_eq!(app.layout_pos(note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
         assert!(!app.debug_move_node(node(9999), egui::vec2(1.0, 1.0)), "no such node");
     }

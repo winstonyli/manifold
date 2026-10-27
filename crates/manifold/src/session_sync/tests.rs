@@ -474,7 +474,7 @@ pub(crate) fn restored_unknown() -> (App, NodeId, std::path::PathBuf) {
         let mut txn = other.begin().unwrap();
         let node = txn.next_id();
         let mut fields = encode_field(field::NAME, &FieldValue::Str("Old".into()));
-        fields.extend(encode_field(field::POS, &FieldValue::Pos(5.0, 5.0)));
+        fields.extend(encode_field(field::POS, &FieldValue::Pos(Some((5.0, 5.0)))));
         fields.extend(encode_field(field::URL, &FieldValue::Str("https://x/".into())));
         fields.extend(encode_field(field::JAR, &FieldValue::Id(Some(node))));
         fields.extend(encode_field(40, &FieldValue::Str("theirs".into())));

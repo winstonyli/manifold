@@ -339,7 +339,8 @@ pub fn field_by_name(name: &str) -> Option<&'static FieldDef> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldValue {
-    Pos(f32, f32),
+    /// A card's document position; `None`: unplaced (it spawns at a jitter from its id, `session_sync::pos_of`).
+    Pos(Option<(f32, f32)>),
     Color(Option<u32>),
     Id(Option<NodeId>),
     Str(String),
@@ -357,7 +358,7 @@ impl FieldValue {
     /// What a missing field decodes to.
     pub fn absent(ty: FieldType) -> FieldValue {
         match ty {
-            FieldType::Pos => FieldValue::Pos(0.0, 0.0),
+            FieldType::Pos => FieldValue::Pos(None),
             FieldType::Color => FieldValue::Color(None),
             FieldType::Id => FieldValue::Id(None),
             FieldType::Str => FieldValue::Str(String::new()),
@@ -389,10 +390,10 @@ impl FieldValue {
         matches!(self, FieldValue::Bool(true))
     }
 
-    /// A placed `Pos`: (0, 0) is what a missing position decodes to (`absent`), so it is no position.
+    /// A placed `Pos`'s coordinates; `None` for an unplaced one or any other variant.
     pub fn as_pos(&self) -> Option<(f32, f32)> {
         match self {
-            FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some((*x, *y)),
+            FieldValue::Pos(pos) => *pos,
             _ => None,
         }
     }
@@ -419,7 +420,8 @@ pub fn encode_field(no: u32, value: &FieldValue) -> Vec<u8> {
 pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
     let mut w = Writer::reuse(std::mem::take(out));
     match value {
-        FieldValue::Pos(x, y) => {
+        // A placed position is written even at the origin (an empty message), so it never reads as unplaced.
+        FieldValue::Pos(Some((x, y))) => {
             let mut m = Writer::new();
             if *x != 0.0 {
                 m.f32(1, *x);
@@ -427,9 +429,7 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
             if *y != 0.0 {
                 m.f32(2, *y);
             }
-            if !m.is_empty() {
-                w.message(no, &m);
-            }
+            w.message(no, &m);
         }
         FieldValue::Color(Some(rgb)) => w.varint(no, u64::from(*rgb)),
         FieldValue::Id(Some(id)) => w.message(no, &id_message(*id)),
@@ -447,7 +447,8 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
             w.message(no, &m);
         }
         // The empty or zero value of each type is "absent": nothing is written.
-        FieldValue::Color(None)
+        FieldValue::Pos(None)
+        | FieldValue::Color(None)
         | FieldValue::Id(None)
         | FieldValue::Str(_)
         | FieldValue::Bool(false)
@@ -500,11 +501,7 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
                         _ => {}
                     }
                 }
-                if x.is_finite() && y.is_finite() {
-                    FieldValue::Pos(x, y)
-                } else {
-                    FieldValue::absent(def.ty)
-                }
+                FieldValue::Pos((x.is_finite() && y.is_finite()).then_some((x, y)))
             }
             FieldType::Color => FieldValue::Color(Some(v.u32()?)),
             FieldType::Id => FieldValue::Id(Some(decode_id(v.bytes()?)?)),
@@ -843,8 +840,9 @@ mod tests {
     fn values_round_trip_and_defaults_encode_to_nothing() {
         let id = NodeId { actor: ActorId(9), counter: 4 };
         let cases = [
-            (field::POS, FieldValue::Pos(1.5, -2.0)),
-            (field::POS, FieldValue::Pos(0.0, 3.0)),
+            (field::POS, FieldValue::Pos(Some((1.5, -2.0)))),
+            (field::POS, FieldValue::Pos(Some((0.0, 3.0)))),
+            (field::POS, FieldValue::Pos(Some((0.0, 0.0)))),
             (field::COLOR, FieldValue::Color(Some(0))),
             (field::COLOR, FieldValue::Color(Some(0x12_34_56))),
             (field::PARENT, FieldValue::Id(Some(id))),
@@ -864,7 +862,6 @@ mod tests {
             assert!(encode_field(def.no, &FieldValue::absent(def.ty)).is_empty(), "{}", def.name);
             assert_eq!(decode_field(def, &[]), Ok(FieldValue::absent(def.ty)));
         }
-        assert_eq!(encode_field(field::POS, &FieldValue::Pos(-0.0, -0.0)), Vec::<u8>::new());
     }
 
     fn reg(counter: u64, ty: &str) -> Reg {
@@ -960,7 +957,7 @@ mod tests {
             pos.fixed32(1, bad.to_bits());
             let mut enc = Writer::new();
             enc.message(field::POS, &pos);
-            assert_eq!(decode_field(def, &enc.into_bytes()).unwrap(), FieldValue::Pos(0.0, 0.0));
+            assert_eq!(decode_field(def, &enc.into_bytes()).unwrap(), FieldValue::Pos(None));
         }
     }
 

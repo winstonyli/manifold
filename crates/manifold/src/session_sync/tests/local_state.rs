@@ -40,7 +40,7 @@ fn a_restart_places_a_node_at_its_personal_position_while_the_mirror_holds_the_d
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(10.0, 20.0)));
     assert!(app.save_session());
     assert!(!app.doc.writes.has_fields());
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(10.0, 20.0));
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((10.0, 20.0))));
 }
 
 /// Item view (`view_item`) restoring onto a tab that's still spawning

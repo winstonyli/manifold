@@ -259,7 +259,7 @@ mod tests {
         app.snap_layout(n, egui::vec2(120.0, 80.0));
         app.close_node(n);
         assert_eq!(stored(&app, n, field::TEXT), FieldValue::Str("typed".into()));
-        assert_eq!(stored(&app, n, field::POS), FieldValue::Pos(120.0, 80.0));
+        assert_eq!(stored(&app, n, field::POS), FieldValue::Pos(Some((120.0, 80.0))));
         app.reopen_node(n);
         assert_eq!(app.note_text(n), "typed");
         assert_eq!(app.layout_pos(n), egui::vec2(120.0, 80.0));

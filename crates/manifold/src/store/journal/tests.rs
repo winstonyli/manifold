@@ -464,7 +464,7 @@ fn rich_file(path: &Path) -> Vec<u8> {
     let group = txn.next_id();
     let (tab, create) = create_tab(&mut txn, "https://a.example/");
     let note = txn.next_id();
-    let mut note_fields = encode_field(field::POS, &FieldValue::Pos(1.5, -2.0));
+    let mut note_fields = encode_field(field::POS, &FieldValue::Pos(Some((1.5, -2.0))));
     note_fields.extend(encode_field(field::COLOR, &FieldValue::Color(Some(0x12ab34))));
     note_fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(group))));
     note_fields.extend(encode_field(field::TEXT, &FieldValue::Str("hi".into())));
@@ -1379,7 +1379,7 @@ fn save_path_costs() {
             let node = txn.next_id();
             let url = format!("https://www.example{}.com/articles/2026/09/some-long-article-slug-{i}?ref=home", i % 50);
             let mut fields = encode_field(field::URL, &FieldValue::Str(url));
-            fields.extend(encode_field(field::POS, &FieldValue::Pos(i as f32 * 3.5, i as f32 * -2.25)));
+            fields.extend(encode_field(field::POS, &FieldValue::Pos(Some((i as f32 * 3.5, i as f32 * -2.25)))));
             fields.extend(encode_field(field::VIEW_KIND, &FieldValue::ViewCode(1 + (i % 4) as u64)));
             fields.extend(encode_field(field::GROUP, &FieldValue::Id(Some(groups[i % groups.len()]))));
             bodies.push(OpBody::create(node, Kind::Tab.type_str().unwrap(), fields));
@@ -1393,8 +1393,9 @@ fn save_path_costs() {
 
         // Grow the tail with single-op saves (a drag end each) to just
         // below the compaction threshold: the largest file `begin` reads.
-        let set_pos =
-            |node: NodeId, x: f32| OpBody::set(node, field::POS, encode_field(field::POS, &FieldValue::Pos(x, x)));
+        let set_pos = |node: NodeId, x: f32| {
+            OpBody::set(node, field::POS, encode_field(field::POS, &FieldValue::Pos(Some((x, x)))))
+        };
         let margin = 8 * 1024;
         let mut k = 0;
         while a.since_snapshot + margin < (2 * a.snapshot_len).max(COMPACT_MIN) {

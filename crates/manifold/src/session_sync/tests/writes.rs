@@ -289,8 +289,8 @@ fn a_node_is_created_at_its_placement_not_its_settled_position() {
     app.settle_current_level();
     assert_ne!(app.layout_pos(note), egui::vec2(10.0, 20.0));
     assert!(app.save_session());
-    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(10.0, 20.0));
-    assert_eq!(stored(&app, other, field::POS), FieldValue::Pos(11.0, 20.0));
+    assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((10.0, 20.0))));
+    assert_eq!(stored(&app, other, field::POS), FieldValue::Pos(Some((11.0, 20.0))));
 }
 
 #[test]
@@ -1168,13 +1168,13 @@ fn a_jar_is_a_card_that_round_trips_with_its_position_and_group() {
 #[test]
 fn a_stored_card_without_a_position_lands_jittered_around_the_world_center() {
     use crate::graph_layout::{spawn_jitter, GRAPH_WORLD_CENTER};
-    // What `fields_of` hands over for a node whose POS was never written: the absent value, (0, 0).
+    // What `fields_of` hands over for a node whose POS was never written: the absent value.
     let unplaced = fields_of(&Node::typed(Kind::Jar));
-    assert_eq!(unplaced.get(&field::POS), Some(&FieldValue::Pos(0.0, 0.0)));
+    assert_eq!(unplaced.get(&field::POS), Some(&FieldValue::Pos(None)));
     let (a, b) = (pos_of(node(1), &unplaced), pos_of(node(2), &unplaced));
     assert_eq!(a, GRAPH_WORLD_CENTER + spawn_jitter(node(1)));
     assert_ne!(a, b, "two old jars do not stack");
-    let placed = Fields::from([(field::POS, FieldValue::Pos(120.0, -40.0))]);
+    let placed = Fields::from([(field::POS, FieldValue::Pos(Some((120.0, -40.0))))]);
     assert_eq!(pos_of(node(1), &placed), egui::vec2(120.0, -40.0), "a stored pos is used as is");
 }
 
@@ -1189,7 +1189,7 @@ fn moving_an_unknown_card_writes_one_set_and_keeps_its_raw_fields() {
     app.edit_pos(key, Some(egui::vec2(50.0, 60.0)));
     assert!(app.save_session());
     assert_eq!(ops_of(&app), before + 1, "one Set");
-    assert_eq!(stored(&app, key, field::POS), FieldValue::Pos(50.0, 60.0));
+    assert_eq!(stored(&app, key, field::POS), FieldValue::Pos(Some((50.0, 60.0))));
     let doc = app.doc.journal.as_ref().unwrap().doc();
     assert_eq!(
         doc.nodes[&node].fields[&crate::store::model::RegKey::of(40)].enc,

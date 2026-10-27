@@ -161,19 +161,19 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     drag(&mut app, &[a, b], egui::vec2(0.0, 50.0));
     app.switch_group_level(Some(g));
     assert!(app.interaction.dragging.is_none() && app.interaction.drag_moved.is_empty());
-    remote_set(&mut other, a, field::POS, FieldValue::Pos(5.0, 6.0));
+    remote_set(&mut other, a, field::POS, FieldValue::Pos(Some((5.0, 6.0))));
     assert!(app.save_session());
     assert_eq!(app.layout_pos(a), egui::vec2(5.0, 6.0), "no longer dragged, so the remote pos snaps it");
     app.switch_group_level(None);
     app.release_drag();
     assert!(app.save_session());
-    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(5.0, 6.0));
-    assert_eq!(stored(&app, b, field::POS), FieldValue::Pos(300.0, 20.0), "the ended drag saved nothing");
+    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(Some((5.0, 6.0))));
+    assert_eq!(stored(&app, b, field::POS), FieldValue::Pos(Some((300.0, 20.0))), "the ended drag saved nothing");
 
     // Another replica moves the grabbed card into another group mid-drag, and gives it a new pos.
     drag(&mut app, &[a], egui::vec2(0.0, 50.0));
     let node = a;
-    let pos = FieldValue::Pos(7.0, 8.0);
+    let pos = FieldValue::Pos(Some((7.0, 8.0)));
     let set = OpBody::set(node, field::POS, encode_field(field::POS, &pos));
     other.begin().unwrap().commit(vec![OpBody::Move { node, group: Some(g) }, set]).unwrap();
     assert!(app.save_session());
@@ -185,7 +185,7 @@ fn a_stale_drag_does_not_overwrite_a_remote_pos() {
     );
     app.release_drag();
     assert!(app.save_session());
-    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(7.0, 8.0));
+    assert_eq!(stored(&app, a, field::POS), FieldValue::Pos(Some((7.0, 8.0))));
 
     // Leaving Graph view ends a drag too.
     drag(&mut app, &[b], egui::vec2(0.0, 50.0));
@@ -224,7 +224,7 @@ fn an_older_sessions_download_without_a_parent_loads_unchanged() {
         let mut old = Journal::open(&path, ActorId(2)).unwrap();
         let fields = [
             (field::GROUP, FieldValue::Id(None)),
-            (field::POS, FieldValue::Pos(1.0, 2.0)),
+            (field::POS, FieldValue::Pos(Some((1.0, 2.0)))),
             (field::COLOR, FieldValue::Color(None)),
             (field::URL, FieldValue::Str("https://x.test/f.bin".into())),
             (field::PATH, FieldValue::Str("f.bin".into())),

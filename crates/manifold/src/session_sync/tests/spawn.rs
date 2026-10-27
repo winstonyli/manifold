@@ -138,7 +138,7 @@ fn a_new_tab_lands_at_its_spawn_position_in_the_layout_and_the_document() {
         1.0,
     ));
     assert!(app.save_session(), "creates the spawning tab");
-    assert_eq!(stored(&app, t, field::POS), FieldValue::Pos(30.0, 40.0));
+    assert_eq!(stored(&app, t, field::POS), FieldValue::Pos(Some((30.0, 40.0))));
     fail_spawns(&mut app);
     assert_eq!(app.layout_pos(t), at);
     assert_eq!(app.doc.mirror.pos(t), Some(at));

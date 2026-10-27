@@ -183,7 +183,7 @@ impl App {
 
     /// `export_state`'s `mirror_*` keys. Every node's group as this replica shows it, at any level (a two-instance
     /// test compares them); likewise each group's name, each note's text and every node's document pos, null when
-    /// absent (empty, or Pos (0,0)), as EXPORTSESSION leaves them out.
+    /// absent (empty, or an unplaced pos), as EXPORTSESSION leaves them out.
     fn mirror_state(&self) -> Value {
         let mirror_groups: BTreeMap<NodeId, Option<NodeId>> =
             self.linked_ids().map(|id| (id, self.doc.mirror.group(id))).collect();

@@ -241,19 +241,14 @@ pub(crate) fn pos_in(fields: &Fields) -> Option<egui::Vec2> {
 }
 
 /// A stored node's document pos, or, for one that has none (an old jar from before jars were cards), a jittered
-/// spawn around the world center: the rule `App::placement` uses for a new node with no position. The exact origin
-/// reads as unplaced, as `Mirror::pos` reads it.
+/// spawn around the world center: the rule `App::placement` uses for a new node with no position.
 pub(crate) fn pos_of(id: NodeId, fields: &Fields) -> egui::Vec2 {
     pos_in(fields).unwrap_or_else(|| crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(id))
 }
 
-/// `pos` as the store keeps it: never non-finite (contract "Fields").
+/// `pos` as the store keeps it: never non-finite (contract "Fields"), so a non-finite one is unplaced.
 pub(crate) fn pos_value(pos: egui::Vec2) -> FieldValue {
-    if pos.x.is_finite() && pos.y.is_finite() {
-        FieldValue::Pos(pos.x, pos.y)
-    } else {
-        FieldValue::Pos(0.0, 0.0)
-    }
+    FieldValue::Pos((pos.x.is_finite() && pos.y.is_finite()).then_some((pos.x, pos.y)))
 }
 
 /// The tab `spawn` starts, as a `Snapshot`: what `save_session` writes for a
@@ -269,7 +264,7 @@ pub(crate) fn spawn_snapshot(
     jar: Option<NodeId>,
 ) -> Snapshot {
     let fields = Fields::from([
-        (field::POS, pos.map_or(FieldValue::Pos(0.0, 0.0), pos_value)),
+        (field::POS, pos.map_or(FieldValue::Pos(None), pos_value)),
         (field::URL, FieldValue::Str(url.to_owned())),
         (field::VIEW_KIND, FieldValue::ViewCode(view_kind)),
         (field::PINNED, FieldValue::Bool(spawn.carry.pinned)),
