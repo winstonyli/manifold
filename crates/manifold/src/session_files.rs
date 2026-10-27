@@ -346,13 +346,13 @@ impl App {
         // re-pointed at it (spec "The Default jar").
         let file_defaults: Vec<NodeId> = imported
             .iter()
-            .filter(|i| i.kind() == Kind::Jar && i.fields.get(&field::IS_DEFAULT) == Some(&FieldValue::Bool(true)))
+            .filter(|i| i.kind() == Kind::Jar && i.fields.get(&field::IS_DEFAULT).is_some_and(FieldValue::as_bool))
             .map(|i| i.id)
             .collect();
         imported.retain(|i| !file_defaults.contains(&i.id));
         let running = self.default_jar();
         for i in &mut imported {
-            if matches!(i.fields.get(&field::JAR), Some(FieldValue::Id(Some(j))) if file_defaults.contains(j)) {
+            if i.fields.get(&field::JAR).and_then(FieldValue::as_id).is_some_and(|j| file_defaults.contains(&j)) {
                 i.fields.insert(field::JAR, FieldValue::Id(running));
             }
         }
@@ -373,8 +373,8 @@ impl App {
                 continue;
             }
             let is_root = Some(node.id) == root_id;
-            let group = match node.fields.get(&field::GROUP) {
-                Some(FieldValue::Id(Some(g))) if !is_root && groups.contains(g) => Some(*g),
+            let group = match node.fields.get(&field::GROUP).and_then(FieldValue::as_id) {
+                Some(g) if !is_root && groups.contains(&g) => Some(g),
                 _ => dest,
             };
             let mut fields = imported_fields(node.kind(), &node.fields);

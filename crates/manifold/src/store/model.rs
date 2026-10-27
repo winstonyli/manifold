@@ -367,6 +367,43 @@ impl FieldValue {
             FieldType::Held => FieldValue::Held { dest: None, members: Vec::new() },
         }
     }
+
+    /// The text of a `Str`; `None` for any other variant.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            FieldValue::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// The node an `Id` names; `None` for no node or any other variant.
+    pub fn as_id(&self) -> Option<NodeId> {
+        match self {
+            FieldValue::Id(id) => *id,
+            _ => None,
+        }
+    }
+
+    /// Whether this is `Bool(true)`.
+    pub fn as_bool(&self) -> bool {
+        matches!(self, FieldValue::Bool(true))
+    }
+
+    /// A placed `Pos`: (0, 0) is what a missing position decodes to (`absent`), so it is no position.
+    pub fn as_pos(&self) -> Option<(f32, f32)> {
+        match self {
+            FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some((*x, *y)),
+            _ => None,
+        }
+    }
+
+    /// The stored view code of a `ViewCode`; 0 (none) for any other variant.
+    pub fn as_view_code(&self) -> u64 {
+        match self {
+            FieldValue::ViewCode(code) => *code,
+            _ => 0,
+        }
+    }
 }
 
 /// `value` as field `no` of a node message, key and value; empty when it

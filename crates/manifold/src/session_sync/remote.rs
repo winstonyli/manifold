@@ -114,7 +114,7 @@ impl App {
         // Only a jar has `ephemeral`. The mirror already holds the new flag (`mirror_remote`), so this applies its
         // effects without comparing (`after_jar_ephemeral_changed`).
         if changed(field::EPHEMERAL) {
-            let on = matches!(fields.get(&field::EPHEMERAL), Some(FieldValue::Bool(true)));
+            let on = fields.get(&field::EPHEMERAL).is_some_and(FieldValue::as_bool);
             self.after_jar_ephemeral_changed(id, on);
         }
         // A Json card whose BODY changed (or that another replica just made inline) takes the new document; an
@@ -138,7 +138,7 @@ impl App {
                 // A swap in flight here (`swap_in_flight`, parked for cookies too) wins: `mirror_remote` held the
                 // remote engine back while the swap's edit is unsaved; once saved, its target is written again
                 // (`reassert`), so the document ends on the engine this tab lands on.
-                let want = view_field(fields);
+                let want = view_kind_of(fields.get(&field::VIEW_KIND).map_or(0, FieldValue::as_view_code));
                 if changed(field::VIEW_KIND) {
                     match in_flight {
                         Some(target) if target != want => reassert = Some(target),
@@ -312,7 +312,7 @@ impl App {
                 self.insert_placeholder_node(id, pos, kind, Runtime::Jar);
                 // A jar first seen already ephemeral (made on another device, or restored) has no file of its own:
                 // a leftover one goes, as a toggle on would delete it (`update_live_node` does that for a change).
-                if let Some(FieldValue::Bool(true)) = fields.get(&field::EPHEMERAL) {
+                if fields.get(&field::EPHEMERAL).is_some_and(FieldValue::as_bool) {
                     self.after_jar_ephemeral_changed(id, true);
                 }
             }
@@ -617,7 +617,7 @@ impl App {
             }
         }
         if !self.doc.writes.field_queued(id, field::PARENT) {
-            self.doc.mirror.set_parent(id, id_of(fields, field::PARENT));
+            self.doc.mirror.set_parent(id, fields.get(&field::PARENT).and_then(FieldValue::as_id));
         }
         if !self.doc.writes.move_queued(id) {
             self.doc.mirror.set_group(id, group);

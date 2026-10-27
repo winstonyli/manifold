@@ -12,7 +12,7 @@ use crate::jar_defs::JarDef;
 use crate::json_view::JsonView;
 use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;
-use crate::session_sync::{color_of, pos_value, view_kind_of, Fields};
+use crate::session_sync::{color_of, pos_in, pos_value, view_kind_of, Fields};
 use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
 use crate::store::tree::{self, Leaf, Seg, Tree, TreePath, Trees, TREE_FIELDS};
 
@@ -276,8 +276,8 @@ impl Mirror {
         JarDef {
             name: self.str_field(id, field::NAME).to_owned(), // name rule: the stored name, as `JarDef` holds it
             color: self.color(id),
-            ephemeral: matches!(self.get(id, field::EPHEMERAL), FieldValue::Bool(true)),
-            is_default: matches!(self.get(id, field::IS_DEFAULT), FieldValue::Bool(true)),
+            ephemeral: self.get(id, field::EPHEMERAL).as_bool(),
+            is_default: self.get(id, field::IS_DEFAULT).as_bool(),
         }
     }
 
@@ -297,10 +297,7 @@ impl Mirror {
 
     /// A string field, borrowed from the stored value; "" when the mirror has none.
     fn str_field(&self, id: NodeId, no: u32) -> &str {
-        match self.nodes.get(&id).and_then(|fields| fields.get(&no)) {
-            Some(FieldValue::Str(text)) => text,
-            _ => "",
-        }
+        self.nodes.get(&id).and_then(|fields| fields.get(&no)).and_then(FieldValue::as_str).unwrap_or_default()
     }
 
     /// The node this one was opened from (`None` for a root).
@@ -399,10 +396,7 @@ impl Mirror {
 
     /// A tab's engine as the stored code, kept as is (0: none).
     pub(crate) fn view_code(&self, id: NodeId) -> u64 {
-        match self.get(id, field::VIEW_KIND) {
-            FieldValue::ViewCode(code) => code,
-            _ => 0,
-        }
+        self.get(id, field::VIEW_KIND).as_view_code()
     }
 
     /// Whether `id` has an entry: every node placed here, and a tab mid-respawn (its entry outlives the respawn). A
@@ -441,26 +435,16 @@ impl Mirror {
     }
 }
 
-fn pos_in(fields: &Fields) -> Option<egui::Vec2> {
-    match fields.get(&field::POS)? {
-        FieldValue::Pos(x, y) if (*x, *y) != (0.0, 0.0) => Some(egui::vec2(*x, *y)),
-        _ => None,
-    }
-}
-
 fn color_in(fields: &Fields) -> Option<egui::Color32> {
     color_of(fields.get(&field::COLOR)?)
 }
 
 fn pinned_in(fields: &Fields) -> bool {
-    matches!(fields.get(&field::PINNED), Some(FieldValue::Bool(true)))
+    fields.get(&field::PINNED).is_some_and(FieldValue::as_bool)
 }
 
 fn jar_in(fields: &Fields) -> Option<NodeId> {
-    match fields.get(&field::JAR) {
-        Some(FieldValue::Id(jar)) => *jar,
-        _ => None,
-    }
+    fields.get(&field::JAR).and_then(FieldValue::as_id)
 }
 
 /// What a tab carries across a respawn or lands with: the mirror's values for it, as a field map (no absent value

@@ -229,10 +229,7 @@ impl<T> Remote<T> {
 pub(crate) type RemoteChange = (NodeId, Remote<Snapshot>);
 
 fn str_of(fields: &Fields, no: u32) -> String {
-    match fields.get(&no) {
-        Some(FieldValue::Str(s)) => s.clone(),
-        _ => String::new(),
-    }
+    fields.get(&no).and_then(FieldValue::as_str).unwrap_or_default().to_owned()
 }
 
 /// The URL field as `Option<String>`: absent (empty string) is `None`.
@@ -240,28 +237,16 @@ fn url_of(fields: &Fields) -> Option<String> {
     Some(str_of(fields, field::URL)).filter(|u| !u.is_empty())
 }
 
+/// The document pos `fields` hold; `None` when unplaced (`FieldValue::as_pos`).
+pub(crate) fn pos_in(fields: &Fields) -> Option<egui::Vec2> {
+    fields.get(&field::POS)?.as_pos().map(|(x, y)| egui::vec2(x, y))
+}
+
 /// A stored node's document pos, or, for one that has none (an old jar from before jars were cards), a jittered
-/// spawn around the world center: the rule `App::placement` uses for a new node with no position. A missing `POS`
-/// decodes as (0, 0) (`FieldValue::absent`), so the exact origin reads as unplaced, as `Mirror::pos` reads it.
+/// spawn around the world center: the rule `App::placement` uses for a new node with no position. The exact origin
+/// reads as unplaced, as `Mirror::pos` reads it.
 pub(crate) fn pos_of(id: NodeId, fields: &Fields) -> egui::Vec2 {
-    match fields.get(&field::POS) {
-        Some(FieldValue::Pos(x, y)) if (*x, *y) != (0.0, 0.0) => egui::vec2(*x, *y),
-        _ => crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(id),
-    }
-}
-
-fn id_of(fields: &Fields, no: u32) -> Option<NodeId> {
-    match fields.get(&no) {
-        Some(FieldValue::Id(Some(id))) => Some(*id),
-        _ => None,
-    }
-}
-
-fn view_field(fields: &Fields) -> ViewKind {
-    view_kind_of(match fields.get(&field::VIEW_KIND) {
-        Some(FieldValue::ViewCode(code)) => *code,
-        _ => 0,
-    })
+    pos_in(fields).unwrap_or_else(|| crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(id))
 }
 
 /// `pos` as the store keeps it: never non-finite (contract "Fields").

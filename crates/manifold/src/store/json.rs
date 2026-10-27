@@ -132,7 +132,7 @@ fn doc_to_json_with(doc: &Doc, all_links: bool) -> JsonDoc {
 
 /// Whether `node` is a Link whose `from` and `to` both satisfy `ok`.
 fn link_ends_among(node: &Node, ok: impl Fn(NodeId) -> bool) -> bool {
-    [field::FROM, field::TO].iter().all(|&no| matches!(node.get(no), FieldValue::Id(Some(end)) if ok(end)))
+    [field::FROM, field::TO].iter().all(|&no| node.get(no).as_id().is_some_and(&ok))
 }
 
 /// Whether `id` is a shown node that a link can join (any card, a jar included; not a link).
@@ -349,7 +349,7 @@ pub fn import_with(
 /// Whether `node` is a Link with an end that is not a card (`is_card`), so it joins nothing and must not be
 /// created. `import` has already dropped ends naming a jar, a link or the link itself.
 pub fn is_half_made_link(node: &Imported, is_card: impl Fn(NodeId) -> bool) -> bool {
-    let end = |no| matches!(node.fields.get(&no), Some(FieldValue::Id(Some(n))) if is_card(*n));
+    let end = |no| node.fields.get(&no).and_then(FieldValue::as_id).is_some_and(&is_card);
     node.kind() == Kind::Link && !(end(field::FROM) && end(field::TO))
 }
 
