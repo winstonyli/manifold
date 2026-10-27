@@ -272,6 +272,8 @@ pub(crate) fn host_state(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Runt
 thread_local! {
     /// How many files this thread has hashed (`sha256_file`), for the test that the on-disk poll hashes none.
     static HASHED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Called by `unpack` at each entry after the cancel check, so a test can flip `cancel` at an exact entry.
+    static ON_ENTRY: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// A bring-your-own CEF directory's last validation: the configured path, when it was checked, the verdict.
@@ -615,18 +617,6 @@ fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, InstallError> {
     Ok((!skipped).then(|| rest.iter().fold(into.to_path_buf(), |p, n| p.join(n))))
 }
 
-/// Extract the runtime from the CEF `tar.bz2` at `archive` into `into`: the files under `<top>/Release/`
-/// and `<top>/Resources/` (`CefPlatform::runtime_dirs`), flattened into `into`, without the build leftovers
-/// (`CefPlatform::skip_*`; on Windows `*.lib`, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`,
-/// `debug.log`). Any entry that is a link, or whose path has a `..`,
-/// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
-/// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
-/// discards it.
-#[cfg(test)] // production goes through `install`, which calls `unpack_with` directly
-pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
-    unpack_with(archive, into, pin, cancel, &mut || {})
-}
-
 /// The permission bits an unpacked file gets: the archive's own, minus
 /// setuid/setgid/sticky and group/other write. `chrome-sandbox` needs setuid
 /// root only for the setuid sandbox, which manifold doesn't use (the CEF host
@@ -636,15 +626,14 @@ fn unpacked_mode(header_mode: u32) -> u32 {
     header_mode & 0o755
 }
 
-/// `unpack` that calls `on_entry` for each entry, after the cancel check (tests flip `cancel` from it at an
-/// exact point).
-fn unpack_with(
-    archive: &Path,
-    into: &Path,
-    pin: &Pin,
-    cancel: &AtomicBool,
-    on_entry: &mut dyn FnMut(),
-) -> Result<(), InstallError> {
+/// Extract the runtime from the CEF `tar.bz2` at `archive` into `into`: the files under `<top>/Release/`
+/// and `<top>/Resources/` (`CefPlatform::runtime_dirs`), flattened into `into`, without the build leftovers
+/// (`CefPlatform::skip_*`; on Windows `*.lib`, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`,
+/// `debug.log`). Any entry that is a link, or whose path has a `..`,
+/// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
+/// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
+/// discards it.
+pub(crate) fn unpack(archive: &Path, into: &Path, pin: &Pin, cancel: &AtomicBool) -> Result<(), InstallError> {
     // A bad archive (corrupt bz2, truncated tar) is `Unpack`; any other failure (disk full, access denied)
     // is `Io`, which `install` treats as retryable without downloading again.
     let bad = |e: std::io::Error| {
@@ -665,7 +654,8 @@ fn unpack_with(
         if cancel.load(Ordering::Relaxed) {
             return Err(InstallError::Cancelled);
         }
-        on_entry();
+        #[cfg(test)]
+        ON_ENTRY.with(|hook| hook.borrow_mut().as_mut().map(|f| f()));
         let mut entry = entry.map_err(corrupt)?;
         let path = entry.path().map_err(corrupt)?.into_owned();
         // Check every entry, even ones that will be skipped.
@@ -719,17 +709,6 @@ pub(crate) fn install(
     progress: &mut dyn FnMut(u64),
     cancel: &AtomicBool,
 ) -> Result<PathBuf, InstallError> {
-    install_with(pin, data_dir, progress, cancel, &mut || {})
-}
-
-/// `install` with `on_entry` passed to the unpack (see `unpack_with`).
-fn install_with(
-    pin: &Pin,
-    data_dir: &Path,
-    progress: &mut dyn FnMut(u64),
-    cancel: &AtomicBool,
-    on_entry: &mut dyn FnMut(),
-) -> Result<PathBuf, InstallError> {
     std::fs::create_dir_all(data_dir)?;
     let part = data_dir.join(format!("{CEF_RUNTIME_DIR}.part"));
     let tmp = data_dir.join(format!("{CEF_RUNTIME_DIR}.tmp"));
@@ -745,7 +724,7 @@ fn install_with(
     let cancelled = || cancel.load(Ordering::Relaxed);
     // A cancel that arrives after the download is seen by the first unpack entry, so no separate check here.
     remove_path(&tmp)?;
-    if let Err(e) = unpack_with(&part, &tmp, pin, cancel, on_entry) {
+    if let Err(e) = unpack(&part, &tmp, pin, cancel) {
         let _ = remove_path(&tmp);
         // The archive itself is bad: a retry must download afresh. Cancel and disk errors keep it.
         if matches!(e, InstallError::Unpack(_)) {

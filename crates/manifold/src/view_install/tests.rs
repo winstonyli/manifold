@@ -722,15 +722,20 @@ fn install_cancelled_at_entry(name: &str, n: usize) -> (Result<PathBuf, InstallE
     let data = dir.join("data");
     std::fs::create_dir_all(data.join("cef-runtime")).unwrap();
     std::fs::write(data.join("cef-runtime").join("old"), b"x").unwrap();
-    let cancel = AtomicBool::new(false);
-    let mut seen = 0;
-    let r = install_with(&pin, &data, &mut |_| {}, &cancel, &mut || {
-        seen += 1;
-        if seen == n {
-            cancel.store(true, Ordering::Relaxed);
-        }
+    let cancel = Arc::new(AtomicBool::new(false));
+    let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (hook_seen, flag) = (seen.clone(), cancel.clone());
+    ON_ENTRY.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            hook_seen.set(hook_seen.get() + 1);
+            if hook_seen.get() == n {
+                flag.store(true, Ordering::Relaxed);
+            }
+        }));
     });
-    (r, data, seen)
+    let r = install(&pin, &data, &mut |_| {}, &cancel);
+    ON_ENTRY.with(|h| *h.borrow_mut() = None);
+    (r, data, seen.get())
 }
 
 #[test]
