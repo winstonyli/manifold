@@ -446,12 +446,12 @@ impl App {
         ui.horizontal(|ui| {
             let bookmarks_response = ui.button(format!("Bookmarks ({})", self.bookmarks.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::Bookmarks, &bookmarks_response) {
-                self.history_ui.bookmarks_filter.clear();
+                self.list_popups.bookmarks_filter.clear();
             }
             req.bookmarks_button_rect = Some(bookmarks_response.rect);
             let history_response = ui.button(format!("History ({})", self.history.len()));
             if self.popup_opener_clicked(ui, AnchoredPopup::History, &history_response) {
-                self.history_ui.history_filter.clear();
+                self.list_popups.history_filter.clear();
             }
             req.history_button_rect = Some(history_response.rect);
             // Not `self.nodes.len()` (every graph node, not just

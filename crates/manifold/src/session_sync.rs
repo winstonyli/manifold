@@ -399,7 +399,7 @@ impl App {
         self.save_session();
         self.retry_read_local(true);
         self.maybe_write_local(true);
-        self.flush_history();
+        self.flush_histories();
         if let Some(journal) = self.doc.journal.as_mut() {
             if let Err(err) = journal.close() {
                 eprintln!("session: closing the store failed: {err}");

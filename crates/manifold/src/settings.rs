@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize as _;
 
+use crate::json_file::ProfileFile;
 use crate::process_manager::{view_kind_serde, ViewKind};
 
 /// Which search engine `resolve_navigation_url`/the autocomplete dropdown's
@@ -226,9 +227,7 @@ fn zoom<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     lenient(d, "zoom_factor", |v| v.as_f64().map(|z| z.clamp(*ZOOM_RANGE.start(), *ZOOM_RANGE.end())), || 1.0)
 }
 
-fn settings_path() -> Option<PathBuf> {
-    Some(crate::profile::dir()?.join("settings.json"))
-}
+const SETTINGS: ProfileFile = ProfileFile { file: "settings.json", what: "settings" };
 
 /// Cheap, process-local "did this file's bytes change" check -- not a
 /// cryptographic or cross-run-stable hash, just `DefaultHasher` (SipHash)
@@ -247,7 +246,7 @@ fn content_fingerprint(contents: &str) -> u64 {
 /// `manifold.exe` on this profile that changed the file meanwhile is
 /// noticed instead of silently clobbered.
 pub fn fingerprint() -> Option<u64> {
-    let contents = std::fs::read_to_string(settings_path()?).ok()?;
+    let contents = std::fs::read_to_string(SETTINGS.path()?).ok()?;
     Some(content_fingerprint(&contents))
 }
 
@@ -286,27 +285,18 @@ impl Settings {
     /// `Err` half (see `json_file::load_or_move_aside`) -- a broken settings
     /// file should never stop the browser from starting.
     pub fn load() -> (Self, Option<String>) {
-        let Some(path) = settings_path() else {
-            return (Self::default(), None);
-        };
-        match crate::json_file::load_or_move_aside(&path, "settings") {
-            Ok(settings) => (settings.unwrap_or_default(), None),
-            Err(err) => (Self::default(), Some(err)),
-        }
+        SETTINGS.load()
     }
 
     pub fn save(&self) {
-        let Some(path) = settings_path() else {
-            return;
-        };
-        self.save_to(&path);
+        SETTINGS.save(self);
     }
 
     /// Same write as `save`, just to an arbitrary path -- used by `App::
     /// save_settings` to redirect a fingerprint-conflicted save to `settings::
     /// conflict_path()` instead of overwriting the real `settings.json`.
     pub fn save_to(&self, path: &std::path::Path) {
-        crate::json_file::save(self, path, "settings");
+        crate::json_file::save(self, path, SETTINGS.what);
     }
 }
 

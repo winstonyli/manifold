@@ -3,7 +3,7 @@
 //! file just means empty, never fails to start" posture `settings.rs`/
 //! `bookmarks.rs` already have (a corrupt one is moved aside first).
 
-use std::path::PathBuf;
+use crate::json_file::ProfileFile;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
@@ -14,9 +14,9 @@ pub struct HistoryEntry {
 /// How many history entries to keep before dropping the oldest.
 pub const MAX_HISTORY_ENTRIES: usize = 200;
 
-/// The bookmarks and history popups' state (`App::history_ui`); the `history` and `bookmarks` lists stay on `App`.
+/// The bookmarks and history popups' state (`App::list_popups`); the `history` and `bookmarks` lists stay on `App`.
 #[derive(Default)]
-pub(crate) struct HistoryUi {
+pub(crate) struct ListPopupsUi {
     /// The bookmarks popup's own filter box text -- cleared each time the
     /// popup is opened, same "fresh state each open" reasoning
     /// `FindState::match_case` resetting on a new find session already has.
@@ -39,23 +39,14 @@ pub(crate) struct HistoryUi {
     pub(crate) history_matches_cache: Option<(String, usize, Vec<usize>)>,
 }
 
-fn history_path() -> Option<PathBuf> {
-    Some(crate::profile::dir()?.join("history.json"))
-}
+const FILE: ProfileFile = ProfileFile { file: "history.json", what: "history" };
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
-/// give an empty list — same fallback as `bookmarks::load`, including moving
-/// an unreadable file aside and reporting it as the error half.
+/// give an empty list (`ProfileFile::load`), capped.
 pub fn load() -> (Vec<HistoryEntry>, Option<String>) {
-    let Some(path) = history_path() else { return (Vec::new(), None) };
-    match crate::json_file::load_or_move_aside(&path, "history") {
-        Ok(history) => {
-            let mut entries: Vec<HistoryEntry> = history.unwrap_or_default();
-            cap(&mut entries);
-            (entries, None)
-        }
-        Err(err) => (Vec::new(), Some(err)),
-    }
+    let (mut entries, err) = FILE.load::<Vec<HistoryEntry>>();
+    cap(&mut entries);
+    (entries, err)
 }
 
 /// Drops the oldest entries past `MAX_HISTORY_ENTRIES`, in case the file
@@ -67,8 +58,7 @@ fn cap(entries: &mut Vec<HistoryEntry>) {
 }
 
 pub fn save(history: &[HistoryEntry]) {
-    let Some(path) = history_path() else { return };
-    crate::json_file::save(history, &path, "history");
+    FILE.save(history);
 }
 
 #[cfg(test)]

@@ -87,8 +87,8 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("toasts.undo", "lives one toast; its ids are checked on use (a member must still be where the dissolve left it)"),
     ("view_ui.cef_dir_draft", "a path draft, not a node id"),
     ("home_page_draft", "a url draft, not a node id"),
-    ("history_ui.renaming_bookmark_folder", "a bookmark folder, not a node id"),
-    ("history_ui.history_matches_cache", "a history query, not a node id"),
+    ("list_popups.renaming_bookmark_folder", "a bookmark folder, not a node id"),
+    ("list_popups.history_matches_cache", "a history query, not a node id"),
 ];
 
 /// C1: a new App table that can hold a node id must be decided: forgotten by `forget_id` (permanent removal)
@@ -109,7 +109,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
         ("menus", include_str!("../popups/menus.rs"), "pub(crate) struct MenuPopups {"),
         ("menus.node_menu", include_str!("../popups/menus.rs"), "pub(crate) struct NodeMenu {"),
-        ("history_ui", include_str!("../history.rs"), "pub(crate) struct HistoryUi {"),
+        ("list_popups", include_str!("../history.rs"), "pub(crate) struct ListPopupsUi {"),
         ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {

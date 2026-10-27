@@ -92,6 +92,35 @@ pub fn save<T: Serialize + ?Sized>(value: &T, path: &Path, what: &str) {
     }
 }
 
+/// A JSON file the app keeps in the profile folder: `file` is its name, `what` names its kind in errors.
+pub struct ProfileFile {
+    pub file: &'static str,
+    pub what: &'static str,
+}
+
+impl ProfileFile {
+    /// `None` without a profile folder (`profile::dir`, always under `cargo test`): nothing is read or saved.
+    pub fn path(&self) -> Option<std::path::PathBuf> {
+        Some(crate::profile::dir()?.join(self.file))
+    }
+
+    /// The value in the file, or the default when there is no profile folder or no file. An unreadable file also
+    /// gives the default, but is moved aside (`load_or_move_aside`) and reported as the error half.
+    pub fn load<T: DeserializeOwned + Default>(&self) -> (T, Option<String>) {
+        let Some(path) = self.path() else { return (T::default(), None) };
+        match load_or_move_aside(&path, self.what) {
+            Ok(value) => (value.unwrap_or_default(), None),
+            Err(err) => (T::default(), Some(err)),
+        }
+    }
+
+    pub fn save<T: Serialize + ?Sized>(&self, value: &T) {
+        if let Some(path) = self.path() {
+            save(value, &path, self.what);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

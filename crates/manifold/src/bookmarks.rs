@@ -7,7 +7,9 @@
 //! first, then each named folder), but a folder can't contain another
 //! folder.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+
+use crate::json_file::ProfileFile;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -20,34 +22,26 @@ pub struct Bookmark {
     pub folder: Option<String>,
 }
 
-fn bookmarks_path() -> Option<PathBuf> {
-    Some(crate::profile::dir()?.join("bookmarks.json"))
-}
+const FILE: ProfileFile = ProfileFile { file: "bookmarks.json", what: "bookmarks" };
 
 /// Missing file, unreadable/corrupt JSON, or no `%APPDATA%` at all all just
-/// give an empty list — same fallback as `Settings::load`, including moving
-/// an unreadable file aside and reporting it as the `Err` half.
+/// give an empty list (`ProfileFile::load`).
 pub fn load() -> (Vec<Bookmark>, Option<String>) {
-    let Some(path) = bookmarks_path() else { return (Vec::new(), None) };
-    match crate::json_file::load_or_move_aside(&path, "bookmarks") {
-        Ok(bookmarks) => (bookmarks.unwrap_or_default(), None),
-        Err(err) => (Vec::new(), Some(err)),
-    }
+    FILE.load()
 }
 
 /// Same read as `load`, just from an arbitrary path — the "Import
 /// Bookmarks..." settings-popup button reads back whatever "Export
 /// Bookmarks..." wrote.
 pub fn load_from(path: &Path) -> Result<Vec<Bookmark>, String> {
-    crate::json_file::load(path, "bookmarks")
+    crate::json_file::load(path, FILE.what)
 }
 
 pub fn save(bookmarks: &[Bookmark]) {
-    let Some(path) = bookmarks_path() else { return };
-    save_to(bookmarks, &path);
+    FILE.save(bookmarks);
 }
 
 /// Same write as `save`, just to an arbitrary path.
 pub fn save_to(bookmarks: &[Bookmark], path: &Path) {
-    crate::json_file::save(bookmarks, path, "bookmarks");
+    crate::json_file::save(bookmarks, path, FILE.what);
 }

@@ -539,8 +539,8 @@ const VERBS: &[Verb] = &[
         })
     }),
     row("GRAPHFILTERTEXT text", "Set the Graph omnibar's text (dims the cards it misses)", |rest| with_str(rest, |app, text| app.set_graph_filter(&text))),
-    row("HISTORYFILTERTEXT text", "Set the History popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.history_filter = text)),
-    row("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box", |rest| with_str(rest, |app, text| app.history_ui.bookmarks_filter = text)),
+    row("HISTORYFILTERTEXT text", "Set the History popup's own filter box", |rest| with_str(rest, |app, text| app.list_popups.history_filter = text)),
+    row("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box", |rest| with_str(rest, |app, text| app.list_popups.bookmarks_filter = text)),
     row("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view", |_| job(|app, _| app.toggle_view_mode_shortcut())),
     row("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page", |_| job(|app, _| app.toggle_settings_page())),
     // The file commands take an explicit path instead of a real file dialog: headless mode has no human to answer
@@ -604,7 +604,7 @@ const VERBS: &[Verb] = &[
     }),
     row("BOOKMARKFOLDERTEXT text", "Set the bookmarks popup's own folder-rename draft", |rest| {
         with_str(rest, |app, text| {
-            if let Some((_, draft)) = &mut app.history_ui.renaming_bookmark_folder {
+            if let Some((_, draft)) = &mut app.list_popups.renaming_bookmark_folder {
                 *draft = text;
             }
         })

@@ -302,7 +302,7 @@ impl App {
             |ui| {
                 toolbar_field(ui, |ui| {
                     ui.add(
-                        field_edit(&mut self.history_ui.bookmarks_filter)
+                        field_edit(&mut self.list_popups.bookmarks_filter)
                             .desired_width(f32::INFINITY)
                             .hint_text("Filter..."),
                     )
@@ -311,7 +311,7 @@ impl App {
                     .bookmarks
                     .iter()
                     .enumerate()
-                    .filter(|(_, b)| filter_matches(&self.history_ui.bookmarks_filter, &[&b.title, &b.url]))
+                    .filter(|(_, b)| filter_matches(&self.list_popups.bookmarks_filter, &[&b.title, &b.url]))
                     .collect();
                 let mut folders: Vec<&str> = matches.iter().filter_map(|(_, b)| b.folder.as_deref()).collect();
                 folders.sort_unstable();
@@ -363,12 +363,12 @@ impl App {
                                 }
                             });
                             let is_renaming = self
-                                .history_ui
+                                .list_popups
                                 .renaming_bookmark_folder
                                 .as_ref()
                                 .is_some_and(|(url, _)| url == &bookmark.url);
                             if is_renaming {
-                                if let Some((_, draft)) = &mut self.history_ui.renaming_bookmark_folder {
+                                if let Some((_, draft)) = &mut self.list_popups.renaming_bookmark_folder {
                                     let response = toolbar_field(ui, |ui| {
                                         ui.add(
                                             field_edit(draft)
@@ -414,14 +414,14 @@ impl App {
         self.request_favicons(wanted.iter().map(String::as_str));
 
         if let Some((url, draft)) = folder_rename_start {
-            self.history_ui.renaming_bookmark_folder = Some((url, draft));
+            self.list_popups.renaming_bookmark_folder = Some((url, draft));
             self.pending_focus = Some(FocusTarget::BookmarkFolder);
         }
         if folder_rename_cancel {
-            self.history_ui.renaming_bookmark_folder = None;
+            self.list_popups.renaming_bookmark_folder = None;
         }
         if let Some(draft) = folder_rename_commit {
-            if let Some((url, _)) = self.history_ui.renaming_bookmark_folder.take() {
+            if let Some((url, _)) = self.list_popups.renaming_bookmark_folder.take() {
                 if let Some(bookmark) = self.bookmarks.iter_mut().find(|b| b.url == url) {
                     bookmark.folder = folder_from_draft(&draft);
                     bookmarks::save(&self.bookmarks);
@@ -439,9 +439,9 @@ impl App {
             bookmarks::save(&self.bookmarks);
         }
         // An outside click while a folder is being renamed leaves the popup open.
-        let outside = clicked_outside && self.history_ui.renaming_bookmark_folder.is_none();
+        let outside = clicked_outside && self.list_popups.renaming_bookmark_folder.is_none();
         if settle_popup(&mut self.menus.open_popup, AnchoredPopup::Bookmarks, navigated, outside) {
-            self.history_ui.renaming_bookmark_folder = None;
+            self.list_popups.renaming_bookmark_folder = None;
         }
     }
 
@@ -457,7 +457,7 @@ impl App {
             list_popup(ui, self.menus.open_popup, AnchoredPopup::History, "history_popup", anchor_rect, fade, |ui| {
                 toolbar_field(ui, |ui| {
                     ui.add(
-                        field_edit(&mut self.history_ui.history_filter)
+                        field_edit(&mut self.list_popups.history_filter)
                             .desired_width(f32::INFINITY)
                             .hint_text("Filter..."),
                     )
@@ -465,14 +465,14 @@ impl App {
                 if self.history.is_empty() {
                     ui.label(egui::RichText::new("No history yet. Pages you visit appear here.").weak());
                 }
-                let key_ok = matches!(&self.history_ui.history_matches_cache,
-                    Some((f, n, _)) if *f == self.history_ui.history_filter && *n == self.history.len());
+                let key_ok = matches!(&self.list_popups.history_matches_cache,
+                    Some((f, n, _)) if *f == self.list_popups.history_filter && *n == self.history.len());
                 if !key_ok {
-                    let matches = history_matches(&self.history, &self.history_ui.history_filter);
-                    self.history_ui.history_matches_cache =
-                        Some((self.history_ui.history_filter.clone(), self.history.len(), matches));
+                    let matches = history_matches(&self.history, &self.list_popups.history_filter);
+                    self.list_popups.history_matches_cache =
+                        Some((self.list_popups.history_filter.clone(), self.history.len(), matches));
                 }
-                let matches = self.history_ui.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
+                let matches = self.list_popups.history_matches_cache.as_ref().map_or(&[][..], |(_, _, m)| m.as_slice());
                 let row = |ui: &mut egui::Ui, i: usize, navigate_url: &mut Option<String>| {
                     let entry = &self.history[i];
                     let label = if entry.title.is_empty() { &entry.url } else { &entry.title };
@@ -536,8 +536,8 @@ impl App {
         }
         if clear_requested {
             self.history.clear();
-            self.history_ui.history_dirty = true;
-            self.history_ui.history_matches_cache = None;
+            self.list_popups.history_dirty = true;
+            self.list_popups.history_matches_cache = None;
         }
         settle_popup(&mut self.menus.open_popup, AnchoredPopup::History, navigated || clear_requested, clicked_outside);
     }

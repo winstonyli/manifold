@@ -422,14 +422,13 @@ impl App {
         }
     }
 
-    /// Saves browsing history to disk if `history_dirty` is set, then clears
-    /// the flag. Called from `save_session` and `close_store` on every return
-    /// path. History doesn't depend on the store, so it's saved regardless of
-    /// store success or failure.
-    pub(super) fn flush_history(&mut self) {
-        if self.history_ui.history_dirty {
+    /// Saves browsing history to disk if `history_dirty` is set (then clears it) and the tabs' trails when any
+    /// changed. Called from `save_session` and `close_store` on every return path. Neither depends on the store, so
+    /// they are saved regardless of store success or failure.
+    pub(super) fn flush_histories(&mut self) {
+        if self.list_popups.history_dirty {
             crate::history::save(&self.history);
-            self.history_ui.history_dirty = false;
+            self.list_popups.history_dirty = false;
         }
         let (nodes, journal) = (&self.nodes, self.doc.journal.as_ref());
         crate::nav_history::save(&mut self.nav_history, |id| keep_trail(nodes, journal, id));
@@ -530,7 +529,7 @@ impl App {
         self.doc.writes.store_notices.clear();
         self.doc.writes.last_session_save = Some(std::time::Instant::now());
         self.doc.writes.save_retry_at = None;
-        self.flush_history();
+        self.flush_histories();
         // What this commit's flags and moves changed about visibility (a reopen, a nested root
         // re-stamped, a hidden Default moved out) is shown or hidden the way a remote change is.
         self.apply_visibility(flagged.into_iter().chain(moved).collect());
@@ -557,7 +556,7 @@ impl App {
             let candidates: BTreeMap<NodeId, Snapshot> =
                 self.doc.writes.creates().filter_map(|id| Some((id, self.snapshot(id)?))).collect();
             let Some(journal) = self.doc.journal.as_mut() else {
-                self.flush_history();
+                self.flush_histories();
                 return false;
             };
             let txn = match journal.begin() {
@@ -565,7 +564,7 @@ impl App {
                 Err(err) => {
                     self.store_error(err);
                     self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
-                    self.flush_history();
+                    self.flush_histories();
                     return false;
                 }
             };
@@ -580,7 +579,7 @@ impl App {
                 drop(txn);
                 self.notice("This session was written by a newer manifold; changes aren't saved".to_string());
                 self.take_store_recovery();
-                self.flush_history();
+                self.flush_histories();
                 return false;
             }
             let mut built = build_ops(txn.doc(), &self.doc.writes, candidates);
@@ -599,13 +598,13 @@ impl App {
                 Err(err) => {
                     self.store_error(err);
                     self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
-                    self.flush_history();
+                    self.flush_histories();
                     return false;
                 }
             }
         }
         self.doc.writes.save_retry_at = Some(std::time::Instant::now() + SAVE_RETRY);
-        self.flush_history();
+        self.flush_histories();
         false
     }
 

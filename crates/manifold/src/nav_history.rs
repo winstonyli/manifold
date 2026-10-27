@@ -11,10 +11,11 @@
 //! The trees are saved to `tab-history.json`, keyed by node id: machine-local, not part of the shared session store
 //! (a trail changes on every navigation; the store shares only user-started URL changes).
 
+use crate::json_file::ProfileFile;
 use crate::store::model::NodeId;
 use crate::url_parts::UrlParts;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 /// Most entries kept per tab, and most slots in the engine-list shadow.
@@ -702,18 +703,15 @@ fn page_labels(entries: &[Entry]) -> Vec<String> {
         .collect()
 }
 
-fn path() -> Option<PathBuf> {
-    Some(crate::profile::dir()?.join("tab-history.json"))
-}
+const FILE: ProfileFile = ProfileFile { file: "tab-history.json", what: "tab history" };
 
 /// The saved trees. A missing file gives none; one that does not parse (the old format included) is moved aside.
 pub(crate) fn load() -> HashMap<NodeId, NavHistory> {
-    path().map_or_else(HashMap::new, |path| load_from(&path))
+    FILE.path().map_or_else(HashMap::new, |path| load_from(&path))
 }
 
 pub(crate) fn load_from(path: &Path) -> HashMap<NodeId, NavHistory> {
-    let SavedTrees(saved) =
-        crate::json_file::load_or_move_aside(path, "tab history").ok().flatten().unwrap_or_default();
+    let SavedTrees(saved) = crate::json_file::load_or_move_aside(path, FILE.what).ok().flatten().unwrap_or_default();
     saved
         .into_iter()
         .filter(|(_, s)| s.valid())
@@ -729,7 +727,7 @@ pub(crate) fn load_from(path: &Path) -> HashMap<NodeId, NavHistory> {
 /// Drops the trees of tabs `keep` refuses, then writes the rest (one-page trees add nothing and are left out) when
 /// any changed or any was dropped.
 pub(crate) fn save(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(NodeId) -> bool) {
-    save_to(lists, keep, path().as_deref());
+    save_to(lists, keep, FILE.path().as_deref());
 }
 
 pub(crate) fn save_to(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(NodeId) -> bool, path: Option<&Path>) {
@@ -745,7 +743,7 @@ pub(crate) fn save_to(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(Nod
         .filter(|(_, h)| h.entries.len() > 1)
         .map(|(&id, h)| (id, Saved { entries: h.entries.clone(), at: h.at }))
         .collect();
-    crate::json_file::save(&saved, path, "tab history");
+    crate::json_file::save(&saved, path, FILE.what);
     lists.values_mut().for_each(|h| h.dirty = false);
 }
 

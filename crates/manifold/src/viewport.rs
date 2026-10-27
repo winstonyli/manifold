@@ -208,8 +208,8 @@ impl App {
                 if self.history.len() > history::MAX_HISTORY_ENTRIES {
                     self.history.remove(0);
                 }
-                self.history_ui.history_dirty = true;
-                self.history_ui.history_matches_cache = None;
+                self.list_popups.history_dirty = true;
+                self.list_popups.history_matches_cache = None;
             }
         }
         if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
