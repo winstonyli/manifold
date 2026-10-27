@@ -172,7 +172,7 @@ impl App {
 
     /// The pointer's position (window points) straight from the OS, for
     /// `WindowEvent::DroppedFile` -- winit 0.30 sends no `CursorMoved`
-    /// during an OLE drag (confirmed live: `self.cursor_pos` still holds
+    /// during an OLE drag (confirmed live: `self.page_input.cursor_pos` still holds
     /// wherever the pointer was *before* the drag started), so the drop
     /// point has to be read some other way. `None` off Windows, or if the
     /// window handle/OS call fails; `last_pointer_point` is the fallback.
@@ -196,12 +196,12 @@ impl App {
         None
     }
 
-    /// `self.cursor_pos` (physical pixels, last real `CursorMoved`) as
+    /// `self.page_input.cursor_pos` (physical pixels, last real `CursorMoved`) as
     /// window points -- the fallback `WindowEvent::DroppedFile` uses when
     /// `cursor_point` can't read the OS cursor position directly.
     pub(super) fn last_pointer_point(&self) -> egui::Pos2 {
         let ppp = self.ppp() as f32;
-        egui::pos2(self.cursor_pos.0 as f32 / ppp, self.cursor_pos.1 as f32 / ppp)
+        egui::pos2(self.page_input.cursor_pos.0 as f32 / ppp, self.page_input.cursor_pos.1 as f32 / ppp)
     }
 
     /// Window focus changed. A chord's key-up can be lost while the window is
@@ -213,7 +213,7 @@ impl App {
     /// again (or a pan going on) until the next real release, which would then drop it.
     pub(crate) fn on_window_focus(&mut self, focused: bool) {
         if !focused {
-            self.swallowed_keys.clear();
+            self.page_input.swallowed_keys.clear();
             self.cancel_connect();
             self.link.line_press = None;
             if self.interaction.dragging.is_some() {
@@ -393,8 +393,8 @@ mod tests {
     #[test]
     fn losing_focus_forgets_swallowed_keys() {
         let mut app = App::default();
-        app.swallowed_keys.insert(winit::keyboard::KeyCode::ArrowLeft);
+        app.page_input.swallowed_keys.insert(winit::keyboard::KeyCode::ArrowLeft);
         app.on_window_focus(false);
-        assert!(app.swallowed_keys.is_empty());
+        assert!(app.page_input.swallowed_keys.is_empty());
     }
 }

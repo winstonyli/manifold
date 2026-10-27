@@ -433,7 +433,7 @@ const VERBS: &[Verb] = &[
     row("KEYPAGE key", "Send a KeyDown+KeyUp of `key` to the focused tab's own page", |rest| {
         let key = parse_key_code(rest.split_whitespace().next()?)?;
         job(move |app, _| {
-            let modifiers = app.key_modifiers;
+            let modifiers = app.page_input.key_modifiers;
             on_focused_tab(app, |node| {
                 node.tab.send(&HostToView::Input(InputEvent::KeyDown { key, modifiers }));
                 node.tab.send(&HostToView::Input(InputEvent::KeyUp { key, modifiers }));

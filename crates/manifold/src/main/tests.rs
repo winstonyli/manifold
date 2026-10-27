@@ -73,7 +73,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("spawns.host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
     ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
-    ("native_drag_tab", "taken at the button-up"),
+    ("page_input.native_drag_tab", "taken at the button-up"),
     ("pacing.hidden_for_minimize", "drained at restore"),
     ("menus.node_menu.fade", "the closing menu's fade copy, set from `node_menu` each frame it is open"),
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
@@ -97,7 +97,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
 fn every_id_keyed_field_is_forgotten_or_excused() {
     /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
     /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 13] = [
+    const GROUPS: [(&str, &str, &str); 14] = [
         ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
         ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
         ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
@@ -111,6 +111,7 @@ fn every_id_keyed_field_is_forgotten_or_excused() {
         ("menus.node_menu", include_str!("../popups/menus.rs"), "pub(crate) struct NodeMenu {"),
         ("list_popups", include_str!("../history.rs"), "pub(crate) struct ListPopupsUi {"),
         ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
+        ("page_input", include_str!("../event_loop.rs"), "pub(crate) struct PageInput {"),
     ];
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()

@@ -326,33 +326,8 @@ struct App {
     /// `egui_commonmark`'s own recommended usage (glyph-layout/heading-id
     /// state, not per-note content), not a fresh cache per card per frame.
     commonmark_cache: egui_commonmark::CommonMarkCache,
-    cursor_pos: (f64, f64),
-    /// The tab a left `InputEvent::MouseDown` was actually forwarded to and
-    /// which hasn't been sent the matching `MouseUp` yet — i.e. "a native
-    /// drag is in progress on this tab".
-    ///
-    /// `MouseDown` forwarding is gated on the cursor being below chrome and
-    /// in the primary pane; applying that same gate to `MouseUp` means a
-    /// press inside the page followed by a release over the app's own
-    /// toolbar never delivers a button-up to the page at all. That was
-    /// harmless while input was JS-driven, but mouse input is real native
-    /// injection now (`SendMouseInput` on WebView2, `SendMouseClickEvent`
-    /// on CEF), so Chromium itself never learns the button came up and
-    /// keeps extending a text selection under every later hover. Tracking
-    /// the in-progress drag here lets the release be forwarded to the same
-    /// tab unconditionally, wherever it lands — the `manifold`-side mirror
-    /// of the engine-side `DragState` each native-input view-host keeps.
-    native_drag_tab: Option<NodeId>,
-    /// Bitflags (see `manifold_view_protocol::modifiers`), tracked from winit's
-    /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
-    /// carries the modifier state at the time of that key, not just the
-    /// currently-pressed key itself.
-    key_modifiers: u8,
-    /// Click counts for page presses (`InputEvent::MouseDown::click_count`).
-    click_counter: click_count::ClickCounter,
-    /// Physical keys of a shortcut chord pressed in Tab view, whose release (and typed text) must not
-    /// reach the page either (`shortcuts::claims_chord`).
-    swallowed_keys: std::collections::HashSet<WinitKeyCode>,
+    /// Pointer, modifier and key state forwarded to pages (see `event_loop::PageInput`).
+    page_input: event_loop::PageInput,
 
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
@@ -584,11 +559,7 @@ impl Default for App {
             view_mode: ViewMode::Item,
             doc: doc::Doc::default(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
-            cursor_pos: (0.0, 0.0),
-            native_drag_tab: None,
-            key_modifiers: 0,
-            click_counter: Default::default(),
-            swallowed_keys: Default::default(),
+            page_input: Default::default(),
             egui_ctx,
             egui_state: None,
             omni: OmniBar::new(settings.home_page.clone()),

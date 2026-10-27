@@ -16,6 +16,39 @@ mod view_message;
 
 pub(crate) use pacing::*;
 
+/// What the window events leave for forwarding input to pages (`App::page_input`).
+#[derive(Default)]
+pub(crate) struct PageInput {
+    /// The last real `CursorMoved` position, in physical pixels.
+    pub(crate) cursor_pos: (f64, f64),
+    /// The tab a left `InputEvent::MouseDown` was actually forwarded to and
+    /// which hasn't been sent the matching `MouseUp` yet — i.e. "a native
+    /// drag is in progress on this tab".
+    ///
+    /// `MouseDown` forwarding is gated on the cursor being below chrome and
+    /// in the primary pane; applying that same gate to `MouseUp` means a
+    /// press inside the page followed by a release over the app's own
+    /// toolbar never delivers a button-up to the page at all. That was
+    /// harmless while input was JS-driven, but mouse input is real native
+    /// injection now (`SendMouseInput` on WebView2, `SendMouseClickEvent`
+    /// on CEF), so Chromium itself never learns the button came up and
+    /// keeps extending a text selection under every later hover. Tracking
+    /// the in-progress drag here lets the release be forwarded to the same
+    /// tab unconditionally, wherever it lands — the `manifold`-side mirror
+    /// of the engine-side `DragState` each native-input view-host keeps.
+    pub(crate) native_drag_tab: Option<NodeId>,
+    /// Bitflags (see `manifold_view_protocol::modifiers`), tracked from winit's
+    /// `WindowEvent::ModifiersChanged` so every forwarded `KeyDown`/`KeyUp`
+    /// carries the modifier state at the time of that key, not just the
+    /// currently-pressed key itself.
+    pub(crate) key_modifiers: u8,
+    /// Click counts for page presses (`InputEvent::MouseDown::click_count`).
+    pub(crate) click_counter: click_count::ClickCounter,
+    /// Physical keys of a shortcut chord pressed in Tab view, whose release (and typed text) must not
+    /// reach the page either (`shortcuts::claims_chord`).
+    pub(crate) swallowed_keys: std::collections::HashSet<WinitKeyCode>,
+}
+
 impl ApplicationHandler<UserEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -261,10 +294,10 @@ impl ApplicationHandler<UserEvent> for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_pos = (position.x, position.y);
+                self.page_input.cursor_pos = (position.x, position.y);
                 if in_tab_view && !consumed_by_egui && self.pointer_in_content(position.x, position.y) {
                     let chrome_height = self.chrome_height_px() as f64;
-                    let modifiers = self.key_modifiers;
+                    let modifiers = self.page_input.key_modifiers;
                     if let Some(node) = self.focused_tab_mut() {
                         node.tab.send(&HostToView::Input(InputEvent::MouseMove {
                             x: position.x,
@@ -288,7 +321,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta, in_tab_view && !consumed_by_egui),
             WindowEvent::ModifiersChanged(new_modifiers) => {
-                self.key_modifiers = winit_modifiers_to_bits(new_modifiers.state());
+                self.page_input.key_modifiers = winit_modifiers_to_bits(new_modifiers.state());
             }
             WindowEvent::KeyboardInput { event, .. } => self.on_key(&event, in_tab_view && !consumed_by_egui),
             // No frame while minimized, and no `request_redraw`, so the loop
@@ -431,7 +464,7 @@ impl App {
         consumed_by_egui: bool,
     ) {
         let chrome_height = self.chrome_height_px() as f64;
-        let (x, y) = self.cursor_pos;
+        let (x, y) = self.page_input.cursor_pos;
         // `egui_winit` reports the right button as "consumed"
         // unconditionally (confirmed live via temporary logging:
         // `consumed_by_egui=true` even over this project's own raw
@@ -456,42 +489,47 @@ impl App {
         let target = match state {
             ElementState::Pressed if in_content => self.focused,
             ElementState::Released => {
-                if matches!(button, MouseButton::Left) { self.native_drag_tab.take() } else { None }
+                if matches!(button, MouseButton::Left) { self.page_input.native_drag_tab.take() } else { None }
                     .or_else(|| in_content.then_some(self.focused).flatten())
             }
             ElementState::Pressed => None,
         };
         if state == ElementState::Pressed && target.is_none() {
-            self.click_counter.reset();
+            self.page_input.click_counter.reset();
         }
         let Some(id) = target else { return };
-        let modifiers = self.key_modifiers;
+        let modifiers = self.page_input.key_modifiers;
         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
             let (x, y) = (x, y - chrome_height);
             let event = match state {
                 ElementState::Pressed => {
-                    let click_count = self.click_counter.press(id, button, (x, y), std::time::Instant::now());
+                    let click_count =
+                        self.page_input.click_counter.press(id, button, (x, y), std::time::Instant::now());
                     InputEvent::MouseDown { x, y, button, modifiers, click_count }
                 }
-                ElementState::Released => {
-                    InputEvent::MouseUp { x, y, button, modifiers, click_count: self.click_counter.current() }
-                }
+                ElementState::Released => InputEvent::MouseUp {
+                    x,
+                    y,
+                    button,
+                    modifiers,
+                    click_count: self.page_input.click_counter.current(),
+                },
             };
             node.tab.send(&HostToView::Input(event));
             if state == ElementState::Pressed && matches!(button, MouseButton::Left) {
-                self.native_drag_tab = Some(id);
+                self.page_input.native_drag_tab = Some(id);
             }
         }
     }
 
     /// `to_page`: the tab view is showing and egui didn't take the event.
     fn on_wheel(&mut self, delta: winit::event::MouseScrollDelta, to_page: bool) {
-        let (x, y) = self.cursor_pos;
+        let (x, y) = self.page_input.cursor_pos;
         if !(to_page && self.pointer_in_content(x, y)) {
             return;
         }
         let chrome_height = self.chrome_height_px() as f64;
-        let modifiers = self.key_modifiers;
+        let modifiers = self.page_input.key_modifiers;
         if let Some(node) = self.focused_tab_mut() {
             // `LineDelta` is a fixed synthetic unit
             // (`* 20.0`), not a measurement of anything;
@@ -518,18 +556,18 @@ impl App {
         // A key we take as a shortcut isn't also the page's: its press, text and release stay here.
         let swallowed = match (event.physical_key, event.state) {
             (PhysicalKey::Code(code), ElementState::Pressed)
-                if crate::shortcuts::claims_chord(code, self.key_modifiers) =>
+                if crate::shortcuts::claims_chord(code, self.page_input.key_modifiers) =>
             {
-                self.swallowed_keys.insert(code);
+                self.page_input.swallowed_keys.insert(code);
                 true
             }
-            (PhysicalKey::Code(code), ElementState::Released) => self.swallowed_keys.remove(&code),
+            (PhysicalKey::Code(code), ElementState::Released) => self.page_input.swallowed_keys.remove(&code),
             _ => false,
         };
         if !to_page || swallowed {
             return;
         }
-        let modifiers = self.key_modifiers;
+        let modifiers = self.page_input.key_modifiers;
         if let Some(node) = self.focused_tab_mut() {
             if let Some(key) = translate_key_code(event.physical_key) {
                 let input = match event.state {
