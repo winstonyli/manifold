@@ -47,22 +47,7 @@ impl App {
         }
         self.handle_card_digits(ui, &tab_order);
         self.handle_undo_keys(ui);
-        self.hints_revealed = {
-            let (held, other_key) = ui.input(|i| {
-                (
-                    i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift,
-                    i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })),
-                )
-            });
-            let now = ui.input(|i| i.time);
-            let state: CtrlReveal = ui.data(|d| d.get_temp(egui::Id::new("ctrl_reveal"))).unwrap_or_default();
-            let (state, shown) = ctrl_reveal_step(state, held, other_key, now);
-            ui.data_mut(|d| d.insert_temp(egui::Id::new("ctrl_reveal"), state));
-            if state.since.is_some() && !shown {
-                ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CTRL_REVEAL_AFTER));
-            }
-            shown
-        };
+        self.hints_revealed = ctrl_hints_revealed(ui);
         let members = self.group_members();
         // Pick-target mode: the cards a click would connect to, ringed.
         let pick_targets: Option<Vec<CardId>> =

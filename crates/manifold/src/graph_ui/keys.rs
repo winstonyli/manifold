@@ -29,25 +29,44 @@ pub(crate) fn card_tab_step(
 }
 
 /// Ctrl held alone this long reveals the key hints.
-pub(super) const CTRL_REVEAL_AFTER: f64 = 0.35;
+const CTRL_REVEAL_AFTER: f64 = 0.35;
 
 /// The hold-Ctrl-to-reveal state: when a solo Ctrl hold began, and whether another key was pressed
 /// during it (Ctrl+C and the like), which cancels the reveal until Ctrl is released.
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
-pub(super) struct CtrlReveal {
-    pub(super) since: Option<f64>,
-    pub(super) cancelled: bool,
+struct CtrlReveal {
+    since: Option<f64>,
+    cancelled: bool,
 }
 
 /// One frame of the reveal: `held` is Ctrl alone down, `other_key` a key press this frame. Returns the
 /// new state and whether the hints show.
-pub(super) fn ctrl_reveal_step(mut state: CtrlReveal, held: bool, other_key: bool, now: f64) -> (CtrlReveal, bool) {
+fn ctrl_reveal_step(mut state: CtrlReveal, held: bool, other_key: bool, now: f64) -> (CtrlReveal, bool) {
     if !held {
         return (CtrlReveal::default(), false);
     }
     let since = *state.since.get_or_insert(now);
     state.cancelled |= other_key;
     (state, !state.cancelled && now - since >= CTRL_REVEAL_AFTER)
+}
+
+/// Runs one frame of the reveal on this frame's input, keeping its state in `ui.data`, and returns whether the
+/// hints show. Asks for a repaint when a hold is under way, to show them once `CTRL_REVEAL_AFTER` passes.
+pub(super) fn ctrl_hints_revealed(ui: &egui::Ui) -> bool {
+    let (held, other_key) = ui.input(|i| {
+        (
+            i.modifiers.ctrl && !i.modifiers.alt && !i.modifiers.shift,
+            i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. })),
+        )
+    });
+    let now = ui.input(|i| i.time);
+    let state: CtrlReveal = ui.data(|d| d.get_temp(egui::Id::new("ctrl_reveal"))).unwrap_or_default();
+    let (state, shown) = ctrl_reveal_step(state, held, other_key, now);
+    ui.data_mut(|d| d.insert_temp(egui::Id::new("ctrl_reveal"), state));
+    if state.since.is_some() && !shown {
+        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(CTRL_REVEAL_AFTER));
+    }
+    shown
 }
 
 /// The undo chord pressed this frame, consumed: `Some(false)` for Ctrl+Z, `Some(true)` for Ctrl+Shift+Z or Ctrl+Y.

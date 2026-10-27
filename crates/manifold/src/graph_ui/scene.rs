@@ -219,6 +219,7 @@ impl App {
         self.handle_rect_select(ui, &overlay_painter, scene_outer_rect, transform);
 
         let minimap = self.draw_graph_minimap(ui, &overlay_painter, scene_outer_rect, &items);
+        let minimap_rect = minimap.map(|(rect, _, _)| rect);
         // Compared against after `Scene`'s own closure runs, below --
         // an actual pan drag or scroll-wheel zoom this frame changes this,
         // and dismisses `pending_new_node` the same as every other camera
@@ -240,7 +241,6 @@ impl App {
             // applied after the Scene, from the Scene's own response.
             // Rects read afresh (a drag or settle since `items` moved cards), the layer scan reused.
             let mut edges = self.level_edges_from(&self.level_items_from(&at_level));
-            let minimap_rect = minimap.map(|(rect, _, _)| rect);
             let line_hover = self.hovered_link_line(ui, &edges, inv_zoom, minimap_rect, typing);
             for edge in &mut edges {
                 edge.highlight |= edge.link.is_some() && edge.link == line_hover;
@@ -257,7 +257,7 @@ impl App {
                     ui.ctx(),
                     ui.input(|i| i.pointer.interact_pos()),
                     scene_outer_rect,
-                    minimap.map(|(rect, _, _)| rect),
+                    minimap_rect,
                     transform,
                 );
                 // For a dragged link end, what the release there would do: the band and ring show it.
@@ -314,7 +314,7 @@ impl App {
             scene_background.clicked(),
             line_hover.is_some(),
             ui.input(|i| i.pointer.interact_pos()),
-            minimap.map(|(rect, _, _)| rect),
+            minimap_rect,
             typing,
         );
         let line_click = self.line_click(ui, line_hover, scene_background.clicked());
@@ -337,7 +337,7 @@ impl App {
                     ui.ctx(),
                     ui.input(|i| i.pointer.interact_pos()),
                     scene_outer_rect,
-                    minimap.map(|(rect, _, _)| rect),
+                    minimap_rect,
                     transform,
                 )
             } else {
