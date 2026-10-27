@@ -35,11 +35,10 @@
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
 //! by number; this is for looking.
 //!
-//! `gate shots-diff A B` compares two runs' trees by decoded pixels (PNG bytes differ even where pixels match). Two runs
-//! on one commit match only where no graph canvas shows: the graph's layout differs between runs (cards elsewhere, zoom
-//! 144% vs 124%), and file cards show the work dir, which holds the pid. A/A on 2026-10-27 (674f714; runs
-//! `chrome-shots-aa`, `chrome-shots-aa-hover` in `docs/runs.md`): 25 of 67 default views matched (tab view, settings,
-//! popups, JSON level, engine states), the 42 with the graph did not, nor did any `hover-graph` shot. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! `gate shots-diff A B` compares two runs' trees by decoded pixels (PNG bytes differ even where pixels match). Files
+//! whose path shows in a shot live in a folder named by their contents (`content_dir`), not the pid-named work dir. A/A
+//! on 2026-10-27 (ad033e0d; run `chrome-shots-aa-3` in `docs/runs.md`): 45 of 67 default views matched; from
+//! `download-real` on the graph layout drifts (PARKED.md). Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
