@@ -756,10 +756,16 @@ impl App {
     /// A live tab on a jar engine (`Tag::Jars`) running on a jar other than the one it now resolves to, or on a
     /// jar the user cleared (`jar_reseed`): it switches when it next qualifies (chip "will switch").
     pub(crate) fn will_switch(&self, id: NodeId) -> bool {
-        let Some(tab) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return false };
-        let Some((had, _)) = self.cookies.jar_tabs.get(&id) else { return false };
-        let Some((now, _)) = self.effective_jar(id) else { return false };
-        tab.tab.kind.has(crate::caps::Tag::Jars) && (*had != now || self.cookies.jar_reseed.contains(&id))
+        self.pending_jar_switch(id).is_some()
+    }
+
+    /// `will_switch`'s jar the host runs on, the jar it now resolves to and whether it was cleared, when it will.
+    fn pending_jar_switch(&self, id: NodeId) -> Option<(NodeId, NodeId, bool)> {
+        let tab = self.nodes.get(&id).and_then(|n| n.as_tab())?;
+        let (had, _) = self.cookies.jar_tabs.get(&id)?;
+        let (now, _) = self.effective_jar(id)?;
+        let reseed = self.cookies.jar_reseed.contains(&id);
+        (tab.tab.kind.has(crate::caps::Tag::Jars) && (*had != now || reseed)).then_some((*had, now, reseed))
     }
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
@@ -769,18 +775,12 @@ impl App {
         let todo: Vec<NodeId> = self
             .tab_idle_views()
             .iter()
-            .filter(|v| self.will_switch(v.id))
-            .filter(|v| {
-                if self.nodes.get(&v.id).and_then(|n| n.as_tab()).is_none() {
-                    return false;
-                }
-                let had = self.cookies.jar_tabs.get(&v.id).map(|(k, _)| *k);
+            .filter_map(|v| {
+                let (had, now, reseed) = self.pending_jar_switch(v.id)?;
                 let focused = self.focused == Some(v.id);
-                let reseed = self.cookies.jar_reseed.contains(&v.id);
-                let Some((now, _)) = self.effective_jar(v.id) else { return false };
-                sleep_state::jar_switch(had, now, reseed, v.busy(), focused) == sleep_state::JarSwitch::SleepNow
+                let verdict = sleep_state::jar_switch(Some(had), now, reseed, v.busy(), focused);
+                (verdict == sleep_state::JarSwitch::SleepNow).then_some(v.id)
             })
-            .map(|v| v.id)
             .collect();
         for id in todo {
             self.request_sleep(id, SleepWhy::JarSwitch);

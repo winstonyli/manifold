@@ -131,7 +131,7 @@ impl App {
                 self.replay_label_delete(label, name, *color, carriers, redo)
             }
             UndoKind::Detach { node, stored, shown, url, body } => {
-                (usize::from(self.replay_detach(*node, stored, shown, url, body, redo)), 1)
+                self.replay_detach(*node, stored, shown, url, body, redo)
             }
         }
     }
@@ -165,8 +165,8 @@ impl App {
     }
 
     /// A detach undone (the card is inline and still holds `body`: the BODY tree is deleted, the path restored and
-    /// the file read again) or redone (the card is that file's again, and detaches once more). False when the card
-    /// has moved on.
+    /// the file read again) or redone (the card is that file's again, and detaches once more). One part, which is
+    /// skipped when the card has moved on.
     fn replay_detach(
         &mut self,
         node: NodeId,
@@ -175,24 +175,25 @@ impl App {
         url: &str,
         body: &mut tree::Tree,
         redo: bool,
-    ) -> bool {
-        let Some(json) = self.nodes.get(&node).and_then(|n| n.as_json()) else { return false };
+    ) -> (usize, usize) {
+        let Some(json) = self.nodes.get(&node).and_then(|n| n.as_json()) else { return (0, 1) };
         if redo {
             if json.is_inline() || json.path() != shown {
-                return false;
+                return (0, 1);
             }
             // The file may have changed since: the entry now holds what this detach wrote, for the next undo.
-            return self.detach_json_untracked(node).map(|written| *body = written).is_ok();
+            let detached = self.detach_json_untracked(node).map(|written| *body = written).is_ok();
+            return (usize::from(detached), 1);
         }
         if !json.is_inline() || self.doc.mirror.tree(node, field::BODY) != Some(&*body) {
-            return false;
+            return (0, 1);
         }
         // One tombstone at the root, so a leaf another replica wrote meanwhile is hidden too.
         self.edit_prop(node, field::BODY, crate::store::body::root(), None);
         self.edit_field(node, field::PATH, FieldValue::Str(stored.to_owned()));
         self.edit_field(node, field::URL, FieldValue::Str(url.to_owned()));
         self.rebuild_file_json(node, shown.to_owned());
-        true
+        (1, 1)
     }
 
     /// Puts each edit's leaves back (undo) or forward (redo), but only where the mirror still shows exactly what is
