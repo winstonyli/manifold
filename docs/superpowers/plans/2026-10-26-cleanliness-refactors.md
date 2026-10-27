@@ -23,7 +23,8 @@ Ids are stable: `UI` chrome, `GR` graph, `S` store and sync, `E` engines and eve
   (`favicon_fetcher`, `pdf_renderer`, `image_decoder`, `redirect_fetcher`, `favicon_resolved`); file loads move to
   a constructor.
 - Shapes: GR1 uses `emath::TSTransform`; UI1's body returns whether a row closed the popup, with a
-  `close_on_outside` flag; E1 a `Waiters` list with `release_when`; GT1 `Run::Work(fn(exe, work))`; S5 a
+  `close_on_outside` flag (built instead as `settle_popup(open, which, applied, clicked_outside)`, since the
+  builders draw under a shared borrow of `App` and apply the row afterwards); E1 a `Waiters` list with `release_when`; GT1 `Run::Work(fn(exe, work))`; S5 a
   `ProfileFile { name, what }` with `load` and `save`.
 
 ## Batches, in order
@@ -82,6 +83,7 @@ Done: 76efb88
 - **E1** `debug_control.rs:1022-1075`, `:1175-1177`, `event_loop/debug_input.rs:51-88`, `tabs.rs:51`,
   `tabs/spawn_result.rs:26-30`: a `Waiters` list with one "ready: release, else ask for a frame" step, used by
   WAITTABS, WAITIDLE and WAITINDEX. `idle_frames` stays idle's own debounce.
+  Done: 9667c78
 
 ### B5. Typed transforms and field reads
 
