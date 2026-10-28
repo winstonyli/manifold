@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use super::{observe, require, wait_until, Step, Two, Who, POSITIVE};
+use super::{observe, read_json, require, wait_until, Step, Two, Who, POSITIVE};
 use crate::session;
 
 /// One attempt at typing the url in scenario 7 (the script's 50 rounds of 0.2 s).
@@ -41,11 +41,14 @@ pub(super) fn s7(t: &mut Two) -> Step {
         t.send(Who::C, "TOGGLEVIEW")?;
         // Typed text is dropped if the view changes before the bar takes focus, and a new tab's first load can
         // overwrite it before ENTER; under load either loses the request, so type again once if the server never
-        // sees /js.
+        // sees /js. The export behind ENTER starts the clock only once C has run it: commands queue, and a retry sent
+        // while the first ENTER still waits in the queue loads /js twice, the second after js_before is read.
         let mut requested = false;
         for _ in 0..2 {
             t.send(Who::C, "WAITIDLE")?;
             t.navigate(Who::C, &format!("http://127.0.0.1:{port}/js"))?;
+            let ran = t.request(Who::C, "EXPORTSTATE", "c7")?;
+            read_json(&ran)?;
             requested = wait_until(ATTEMPT, || c.served("/js") > js_first);
             if requested {
                 break;
