@@ -521,18 +521,23 @@ pub enum ViewToHost {
     /// (its own `Drop` impl), the same "read the data, suppress the real
     /// menu" outcome the other three engines reach by different means.
     ContextMenuLink { x: f64, y: f64, href: String },
-    /// A download started -- `path` is where the engine will save it (this
-    /// project never prompts for a save location: WebView2 uses Edge's own
-    /// Downloads-folder default and naming; CEF and WebKit use
-    /// `crate::downloads` -- `~/Downloads`, the suggested name's last
-    /// component, numbered `name (n).ext` if taken). `total_bytes` is the
+    /// A download started -- `path` is where the host saves it (this project
+    /// never prompts for a save location). Every host names the file by one
+    /// rule, `crate::downloads::destination`: the suggested name's last
+    /// component, made safe and numbered `name (n).ext` if taken, in the
+    /// folder `HostSettings::download_dir` names, made if missing. The WebView2
+    /// host sets it with `SetResultFilePath` (a retry of a broken transfer
+    /// keeps the broken download's path); CEF and WebKit hand it to their
+    /// engines. A download the host can't place is reported started and then
+    /// failed (`crate::downloads::refused`). `total_bytes` is the
     /// expected final size if the server reported a real `Content-Length`;
     /// `None` for a chunked/unknown-length response, shown as a byte count
     /// with no percentage rather than a guessed bar. `path` is the stable
     /// key `DownloadProgress`/`DownloadCompleted` for this same download are
-    /// reported under -- final by contract at this point (the engine has
-    /// already decided the save location before this fires), so `manifold`
-    /// never needs to re-derive it. WebView2, CEF, and WebKit all have a
+    /// reported under, final at this point (the host names the file before it
+    /// reports it). A WebKit host under WSL reports a Linux path, which the app
+    /// maps to a Windows one as it arrives (`process_manager::in_app_terms`).
+    /// WebView2, CEF, and WebKit all have a
     /// real native download-progress API; Servo's embedding surface has no
     /// download hook of any kind, so it never sends any `Download*` message.
     /// `url` is what the engine is fetching, when it can say (shown as the card's source line).

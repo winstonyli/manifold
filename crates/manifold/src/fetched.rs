@@ -140,10 +140,9 @@ impl App {
     /// A download `tab_id` already has in flight for `path` restarts
     /// instead: the engine starts a download whose transfer broke again
     /// under the same path (two downloads in flight never share one, the
-    /// engine numbers the second's file), from 0 or from the bytes it kept,
-    /// which a `DownloadProgress` right after says. WebView2 keeps the path
-    /// only when it restarts from 0 (PARKED "A resumed WebView2 retry gets a
-    /// second card").
+    /// host numbers the second's file), from 0 or from the bytes it kept,
+    /// which a `DownloadProgress` right after says. The WebView2 host keeps
+    /// the path either way (`retry_path` in its `download.rs`).
     pub(crate) fn insert_download_node(
         &mut self,
         tab_id: NodeId,
