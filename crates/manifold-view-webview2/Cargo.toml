@@ -31,7 +31,6 @@ windows = { workspace = true, features = [
     "Win32_System_WinRT",
     "Win32_System_WinRT_Direct3D11",
     "Win32_System_WinRT_Graphics",
-    "Win32_System_WinRT_Graphics_Capture",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
@@ -50,13 +49,6 @@ windows = { workspace = true, features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 windows-numerics.workspace = true
-
-[dev-dependencies]
-# Only used by the Phase-2 capture spike (examples/capture_spike.rs) to
-# dump a captured frame to a PNG for visual verification -- not needed by
-# the real engine-host binary, which writes raw bytes into SharedFrameBuffer
-# instead.
-image.workspace = true
 
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that
 # publishes assets under the new names (spec 2026-10-12, Step 0).
