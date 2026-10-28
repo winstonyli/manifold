@@ -400,6 +400,12 @@ impl Shots {
         )
     }
 
+    /// `click` on the chrome control named `name` (`crate::state`), wherever the toolbar has put it.
+    fn click_named(&mut self, name: &str) -> io::Result<()> {
+        self.inst.click_control(name)?;
+        send!(self, "SLEEP 1")
+    }
+
     fn click(&mut self, x: i64, y: i64) -> io::Result<()> {
         send!(
             self,
@@ -548,7 +554,7 @@ impl Shots {
         // The same card zoomed far out: its rows keep a constant screen size (they once scaled with zoom and overflowed).
         self.view("newnode-zoom", |s| {
             for _ in 0..6 {
-                s.click(219, 19)?;
+                s.click_named(crate::state::ZOOM_OUT)?;
             }
             s.menu_at_empty()?;
             s.shot("newnode-zoom")?;
@@ -1465,18 +1471,18 @@ impl Shots {
     /// preview's header stays 40 points while its rows get more or less of the card: the toolbar's zoom-out button
     /// twice (fewer rows fit under the header), then back in (the graph zoom, not the page zoom `ZOOMIN` sets).
     fn json_zoom(&mut self) -> io::Result<()> {
-        self.click(219, 19)?;
-        self.click(219, 19)?;
+        self.click_named(crate::state::ZOOM_OUT)?;
+        self.click_named(crate::state::ZOOM_OUT)?;
         send!(self, "MOUSEMOVE 5 790", "SLEEP 2")?;
         self.shot("json-zoom-out")?;
         // Further out: the Note card under 80 points tall, so it falls back to the 18-point name strip.
         for _ in 0..3 {
-            self.click(219, 19)?;
+            self.click_named(crate::state::ZOOM_OUT)?;
         }
         send!(self, "MOUSEMOVE 5 790", "SLEEP 2")?;
         self.shot("note-short")?;
         for _ in 0..9 {
-            self.click(295, 19)?;
+            self.click_named(crate::state::ZOOM_IN)?;
         }
         // In to ~280%, then drag the empty canvas up so the Json card (below the tab) is on screen.
         send!(

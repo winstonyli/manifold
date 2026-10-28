@@ -12,6 +12,8 @@ pub const PDF: &str = "application/pdf";
 pub const JSON: &str = "application/json";
 /// The names (tooltips) of the chrome controls the gate clicks, as the state export's `controls` lists them.
 pub const FIT_VIEW: &str = "Reset View (fit all)";
+pub const ZOOM_OUT: &str = "Zoom out (Ctrl+-)";
+pub const ZOOM_IN: &str = "Zoom in (Ctrl+=)";
 pub const BACK: &str = "Back one level";
 pub const DOWNLOAD: &str = "application/octet-stream";
 
