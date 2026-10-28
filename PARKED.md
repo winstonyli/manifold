@@ -122,3 +122,8 @@ From `docs/superpowers/plans/2026-10-26-cleanliness-refactors.md` and its final 
 ## Tab visibility
 
 - **Hosts own the first frame.** *What:* each host's shared `FrameSink` keeps sending until a frame of the loaded page, instead of manifold's `App::tab_visible` rule keeping a new background tab visible until then. *Why:* four hosts to change against one rule in manifold, and manifold still needs the rule for focus, split, transitions and minimize. *Status:* decided against (2026-10-27).
+
+## Downloads (2026-10-28)
+
+- **A WebView2 download that stalls without breaking never reports.** The host holds each operation until it reports finished or failed (`crates/manifold-view-webview2/src/download.rs:58`); a server that keeps the connection open and sends nothing leaves it in progress, so the card never fails and the idle sweep keeps the tab awake (`idle_sleep.rs:29`). The first operation of a broken transfer is also held until the host exits (one per break). *Why parked:* not seen; the probes covered servers that die (refused, 503; runs 2026-10-27-dl-probe-*). *Trigger:* a card stuck at the same byte count with its server alive. *Fix:* a host watchdog: no `BytesReceivedChanged` for a set time reports the download failed. *Status:* parked.
+- **Retry for a failed download.** WebView2's retry ends `INTERRUPTED` with `CanResume` true (runs 2026-10-27-dl-probe-hold, -nopoll, -cancel-a, -503, -etag), so `ICoreWebView2DownloadOperation::Resume` could restart it from a Retry button on the card; CEF and WebKit would need their own. *Why parked:* by decision (2026-10-28, only failure reporting was asked for). *Trigger:* wanting to retry a failed download without opening its page again. *Status:* parked.

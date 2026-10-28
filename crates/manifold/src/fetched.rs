@@ -140,7 +140,8 @@ impl App {
     /// A download `tab_id` already has in flight for `path` restarts
     /// instead: the engine starts a download whose transfer broke again
     /// under the same path (two downloads in flight never share one, the
-    /// engine numbers the second's file).
+    /// engine numbers the second's file), from 0 or from the bytes it kept,
+    /// which a `DownloadProgress` right after says.
     pub(crate) fn insert_download_node(
         &mut self,
         tab_id: NodeId,

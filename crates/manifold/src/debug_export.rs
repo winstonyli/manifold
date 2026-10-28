@@ -172,6 +172,14 @@ impl App {
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
+                    // A download card's progress and outcome, as its body draws them.
+                    "download": node.as_download().map(|d| json!({
+                        "path": d.path,
+                        "bytes": d.bytes_received,
+                        "total": d.total_bytes,
+                        "completed": d.completed,
+                        "failed": d.failed,
+                    })),
                     // Where MOVENODE puts the card back after it was parked (gate layout).
                     "world": [world.x, world.y],
                     "screen": point_json(screen.center()),

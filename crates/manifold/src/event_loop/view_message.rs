@@ -291,8 +291,8 @@ mod tests {
         assert_eq!(downloads[1].bytes_received, 7);
     }
 
-    /// WebView2 starts a download whose transfer broke again as a new download of the same path (run
-    /// 2026-10-27-download-host-events): the tab's card restarts, no second card appears.
+    /// WebView2 starts a download whose transfer broke again as a new download of the same path (runs
+    /// 2026-10-27-dl-probe-*): the tab's card restarts, no second card appears.
     #[test]
     fn a_restarted_download_restarts_its_card() {
         let mut app = App::default();

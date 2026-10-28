@@ -1339,11 +1339,20 @@ impl Shots {
                 self.shot("download-progress")?;
             }
             if self.has("download-failed") {
-                // The server dies mid-transfer. WebView2 doesn't report the download failed: it starts it again under
-                // the same path (the card restarts at 0 B) and then reports nothing, whether that request is refused or
-                // answered 503 (runs 2026-10-27-download-host-events, -download-503-noprobe).
+                // The server dies mid-transfer. WebView2 retries the download as a second one under the same path,
+                // which fails once the retry is refused (runs 2026-10-27-dl-probe-*); the card shows it failed, and
+                // the shot waits for its toast to go.
                 server.kill();
-                send!(self, "SLEEP 5", "MOUSEMOVE 5 780", "SLEEP 1")?;
+                let failed = |s: &State| matches!(s.downloads()[..], [d] if d["failed"] == true) && s.toast().is_none();
+                let state = self.inst.export_until("download-failed", failed)?;
+                if !failed(&state) {
+                    return Err(io::Error::other(format!(
+                        "the one download card did not show the download failed (toast {:?}): {:?}",
+                        state.toast(),
+                        state.downloads()
+                    )));
+                }
+                send!(self, "MOUSEMOVE 5 780", "SLEEP 1")?;
                 self.shot("download-failed")?;
             }
         }

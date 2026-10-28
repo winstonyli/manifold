@@ -272,6 +272,11 @@ impl State {
         self.0["toast"].as_str()
     }
 
+    /// Each download card's `download` object (path, bytes, total, completed, failed), in draw order.
+    pub fn downloads(&self) -> Vec<&Value> {
+        self.all_cards().iter().filter_map(|c| c.get("download").filter(|d| !d.is_null())).collect()
+    }
+
     /// Whether the Tab view (one page full screen) is showing rather than the Graph.
     pub fn tab_view(&self) -> bool {
         self.0["tab_view"].as_bool().unwrap_or(false)
@@ -439,6 +444,18 @@ mod tests {
         assert_eq!(s.toast(), Some("Saved"));
         assert!(!s.tab_view());
         assert_eq!(s.current_group(), None);
+    }
+
+    /// `downloads` lists the download cards' objects and skips the other cards (`download` null or absent).
+    #[test]
+    fn downloads_skip_other_cards() {
+        let s = State(serde_json::json!({"cards": [
+            {"id": "t", "download": null},
+            {"id": "d1", "download": {"path": "C:\\dl\\slow.zip", "failed": true}},
+            {"id": "n"},
+        ]}));
+        let paths: Vec<_> = s.downloads().iter().map(|d| d["path"].as_str()).collect();
+        assert_eq!(paths, [Some("C:\\dl\\slow.zip")]);
     }
 
     #[test]
