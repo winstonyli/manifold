@@ -28,6 +28,7 @@ pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
             for _ in 0..6 {
                 inst.send("CLICK 300 200")?;
                 inst.send("WAITIDLE")?;
+                inst.barrier()?;
                 if inner.wait_for("frame saw mousedown", 1, Duration::from_secs(2)) {
                     break;
                 }

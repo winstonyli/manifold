@@ -239,6 +239,14 @@ impl Instance {
         path
     }
 
+    /// Returns once the app has run every command sent before it. `send` only queues a command, so a timer started
+    /// right after it also counts the time the app spends on earlier ones (a `WAITIDLE` under load), and a retry on
+    /// that timer can repeat a command that simply hadn't run yet.
+    pub fn barrier(&mut self) -> io::Result<()> {
+        // Named by pid: `gate two`'s instances share one work dir.
+        self.export_state(&format!("barrier-{}", self.child.id())).map(drop)
+    }
+
     /// `EXPORTSTATE`, then polls for the file and parses it.
     pub fn export_state(&mut self, name: &str) -> io::Result<State> {
         let path = self.fresh_path(format!("{name}.json"));

@@ -34,10 +34,12 @@ pub(crate) fn click_count(exe: &Path, work: &Path) -> ExitCode {
             inst.export_state(&format!("state-{view}"))?;
             let limit = Duration::from_secs(30);
             inst.send("DOUBLECLICK 300 200")?;
+            inst.barrier()?;
             let doubled = site.wait_for("click d=2", 1, limit);
             // Read before the triple click: its own second release reports a count of 2 too.
             let word = selection(site, 2);
             inst.send("TRIPLECLICK 300 200")?;
+            inst.barrier()?;
             let tripled = site.wait_for("click d=3", 1, limit);
             quit(inst, view);
             check(

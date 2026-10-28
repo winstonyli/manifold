@@ -59,6 +59,9 @@ pub(super) fn s3(t: &mut Two) -> Step {
         t.wait_agree("scenario 3: A and B agree before the window", "3")?;
         t.send(Who::A, "WAITIDLE")?;
         t.send(Who::B, "WAITIDLE")?;
+        // The window is timed here, so it starts once both have run their WAITIDLE, not when it was sent.
+        t.inst(Who::A)?.barrier()?;
+        t.inst(Who::B)?.barrier()?;
         // Negative window (plan "Negative windows"): past HOST_LOAD_GRACE (5 s, the app's own timer, so a real wait),
         // then a window as long again; a bounce is a round trip every second or two, so the count would keep climbing.
         sleep(Duration::from_secs(6));

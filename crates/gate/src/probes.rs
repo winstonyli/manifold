@@ -353,9 +353,11 @@ pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
             // A wheel event sent before Tab view is drawn goes nowhere.
             inst.export_until(&format!("tabview-{view}"), State::tab_view)?;
             inst.send("SCROLL 300 200 240 0")?;
+            inst.barrier()?;
             // Each scroll reports once it settles; the second must not start before the first has.
             site.wait_for("hscroll", 1, Duration::from_secs(20));
             inst.send("SCROLL 300 200 -120 0")?;
+            inst.barrier()?;
             site.wait_for("hscroll", 2, Duration::from_secs(20));
             quit(inst, view);
             // The settled positions, in order: after the positive dx, after the negative one.
