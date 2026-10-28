@@ -45,8 +45,10 @@ fn the_webkit_host_environment_is_the_same_under_every_runtime() {
     }
 }
 
-/// The host's reader of one engine connection; `feed` writes the engine's side of it, its version first.
+/// The host's reader of one engine connection, as a host of `runtime` feeds it; `feed` writes the engine's side of
+/// it, its version first.
 fn reader_fed(
+    runtime: HostRuntime,
     feed: impl FnOnce(std::net::TcpStream) + Send + 'static,
 ) -> (mpsc::Receiver<ViewToHost>, view_io::FrameSlot, Arc<AtomicUsize>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -59,14 +61,35 @@ fn reader_fed(
     let wake: view_io::Wake = Arc::new(move || {
         count.fetch_add(1, Ordering::SeqCst);
     });
-    (spawn_reader_thread(manifold_view_protocol::MessageChannel::new(stream), Arc::clone(&frame), wake), frame, wakes)
+    let reader =
+        spawn_reader_thread(manifold_view_protocol::MessageChannel::new(stream), Arc::clone(&frame), runtime, wake);
+    (reader, frame, wakes)
+}
+
+/// A WebKit host under WSL reports `/mnt/...` paths; the app receives Windows ones.
+#[test]
+fn a_wsl_hosts_download_paths_arrive_in_windows_terms() {
+    let (rx, ..) = reader_fed(HostRuntime::Wsl, |stream| {
+        let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
+        view_kind.send_version().unwrap();
+        let path = "/mnt/d/dl/a.zip".to_string();
+        view_kind.send(&ViewToHost::DownloadStarted { path: path.clone(), total_bytes: None, url: None }).unwrap();
+        view_kind.send(&ViewToHost::DownloadCompleted { path }).unwrap();
+    });
+    let paths: Vec<String> = (0..2)
+        .map(|_| match rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+            ViewToHost::DownloadStarted { path, .. } | ViewToHost::DownloadCompleted { path } => path,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(paths, [r"D:\dl\a.zip", r"D:\dl\a.zip"]);
 }
 
 /// The host's reader of one engine connection, fed `version` and then a
 /// well-formed message; returns the first event it delivers.
 fn first_event_after_version(version: u32) -> ViewToHost {
     use std::io::Write as _;
-    let (rx, ..) = reader_fed(move |mut stream| {
+    let (rx, ..) = reader_fed(HostRuntime::Native, move |mut stream| {
         stream.write_all(&version.to_le_bytes()).unwrap();
         // Best effort: on a mismatch the reader may already have hung up.
         let _ = manifold_view_protocol::MessageChannel::new(stream).send(&ViewToHost::Cookies("[]".into()));
@@ -81,7 +104,7 @@ fn frame(n: u32) -> ViewToHost {
 /// Frames never wait in the events channel (survey E3): a burst of them ahead of a message leaves the message first.
 #[test]
 fn frames_never_queue_on_the_events_channel() {
-    let (rx, frame, wakes) = reader_fed(|stream| {
+    let (rx, frame, wakes) = reader_fed(HostRuntime::Native, |stream| {
         let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
         view_kind.send_version().unwrap();
         for n in 0..100 {
@@ -111,7 +134,7 @@ fn frames_never_queue_on_the_events_channel() {
 #[test]
 fn a_frame_wakes_the_loop_only_when_the_slot_was_empty() {
     let (go, gate) = mpsc::channel::<()>();
-    let (_rx, slot, wakes) = reader_fed(move |stream| {
+    let (_rx, slot, wakes) = reader_fed(HostRuntime::Native, move |stream| {
         let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
         view_kind.send_version().unwrap();
         view_kind.send(&frame(1)).unwrap();
@@ -173,7 +196,7 @@ fn piled_up_frames_union_their_rows() {
             None,
         ),
     ] {
-        let (rx, frame_slot, _) = reader_fed(move |stream| {
+        let (rx, frame_slot, _) = reader_fed(HostRuntime::Native, move |stream| {
             let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
             view_kind.send_version().unwrap();
             for f in &frames {
@@ -210,7 +233,7 @@ fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
     const N: usize = 1000;
     let written = Arc::new(AtomicUsize::new(0));
     let progress = Arc::clone(&written);
-    let (rx, ..) = reader_fed(move |stream| {
+    let (rx, ..) = reader_fed(HostRuntime::Native, move |stream| {
         let mut view_kind = manifold_view_protocol::MessageChannel::new(stream);
         view_kind.send_version().unwrap();
         for i in 0..N {

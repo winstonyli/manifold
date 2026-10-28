@@ -1,22 +1,8 @@
 //! The WebKit host, a TCP-linked Linux program: started through WSL2 on Windows (translating the host path and
 //! building the `bash -c` command) or directly on Linux, where it gets a display from the session or Xvfb.
 
+use super::runtime::WSL_DISTRO;
 use super::*;
-
-/// Converts this repo's Windows path (wherever manifold.exe actually is)
-/// to the `/mnt/c/...` form WSL2 uses to see the same filesystem, so we can
-/// hand `wsl.exe` a path to the manifold-view-webkitgtk binary it built.
-fn windows_path_to_wsl(path: &Path) -> String {
-    let s = path.to_string_lossy().replace('\\', "/");
-    // "C:/Users/..." -> "/mnt/c/Users/..."
-    if let Some(drive) = s.chars().next() {
-        if s.as_bytes().get(1) == Some(&b':') {
-            let rest = &s[2..];
-            return format!("/mnt/{}{}", drive.to_ascii_lowercase(), rest);
-        }
-    }
-    s
-}
 
 /// POSIX single-quote escaping for the one path `webkit_shell_command` splices into its `bash -c`
 /// string: derived from the running exe's location, never from a page.
@@ -59,7 +45,7 @@ pub(super) fn webkit_env(
     Ok(env)
 }
 
-/// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d Ubuntu -- bash -c`. It crosses two
+/// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d <WSL_DISTRO> -- bash -c`. It crosses two
 /// shells there (the distro's login shell parses what `wsl.exe` re-joins, then bash), so text from a
 /// page must not appear in it as itself.
 pub(super) fn webkit_shell_command(
@@ -113,9 +99,12 @@ pub(super) fn spawn_webkit_tab(
             // via `.env()` here simply don't appear on the other side) -- WSL has its own opt-in `WSLENV`
             // passthrough, more trouble than it is worth. Pass values as inline shell assignments in the command
             // string instead, and run under `xvfb-run` for the virtual display GTK's offscreen rendering needs.
-            let shell = webkit_shell_command(initial_url, port, &token, &windows_path_to_wsl(&host), dark)?;
+            let binary = runtime
+                .host_path(&host)
+                .ok_or_else(|| std::io::Error::other("the WebKit host is not on a drive WSL can see"))?;
+            let shell = webkit_shell_command(initial_url, port, &token, &binary, dark)?;
             let mut command = Command::new("wsl.exe");
-            command.args(["-d", "Ubuntu", "--", "bash", "-c", &shell]);
+            command.args(["-d", WSL_DISTRO, "--", "bash", "-c", &shell]);
             command
         }
         HostRuntime::Native => {
@@ -162,7 +151,7 @@ pub(super) fn spawn_webkit_tab(
     let from_view = manifold_view_protocol::MessageChannel::new(read_stream);
 
     let frame = view_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), wake);
+    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), runtime, wake);
 
     Ok(ViewTab {
         kind: ViewKind::Webkit,

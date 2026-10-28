@@ -6,6 +6,10 @@
 //! `HostRuntime` and one more arm of `HostRuntime::between`.
 
 use super::ViewKind;
+use std::path::Path;
+
+/// The WSL distro the WebKit host runs in (`webkit.rs`), and whose share Explorer opens for its other paths.
+pub(crate) const WSL_DISTRO: &str = "Ubuntu";
 
 /// An operating system a host is built for, or manifold runs on. `Other` is any not named here (FreeBSD and the like):
 /// only the engines built for whichever OS manifold runs on (Servo, CEF) can run there.
@@ -88,6 +92,48 @@ impl HostRuntime {
             Some(host) => HostRuntime::between(host, here),
         }
     }
+
+    /// `path` (a Windows path in the app) as the host sees it: unchanged natively; through WSL a drive path as
+    /// `/mnt/<drive>/...` (drvfs), a `\\?\` prefix dropped. `None` when the host cannot see it: through WSL a path not
+    /// on a drive (a UNC share, a drive-relative `C:x`), and anywhere one that is not UTF-8.
+    pub(crate) fn host_path(self, path: &Path) -> Option<String> {
+        let text = path.to_str()?;
+        match self {
+            HostRuntime::Native => Some(text.to_string()),
+            HostRuntime::Wsl => {
+                let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+                let mut chars = text.chars();
+                let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+                let rest = chars.as_str().strip_prefix(':').filter(|rest| rest.starts_with(['\\', '/']))?;
+                Some(format!("/mnt/{}{}", drive.to_ascii_lowercase(), rest.replace('\\', "/")))
+            }
+        }
+    }
+
+    /// A path the host reported, in the app's terms (`host_path` the other way): unchanged natively; through WSL
+    /// `/mnt/<drive>/...` as `X:\...`, and any other absolute path as the `\\wsl.localhost\<distro>\...` share
+    /// Explorer opens.
+    pub(crate) fn app_path(self, path: String) -> String {
+        match self {
+            HostRuntime::Native => path,
+            HostRuntime::Wsl => {
+                if let Some(rest) = path.strip_prefix("/mnt/") {
+                    let mut chars = rest.chars();
+                    if let Some(drive) = chars.next().filter(char::is_ascii_alphabetic) {
+                        let tail = chars.as_str();
+                        if tail.is_empty() || tail.starts_with('/') {
+                            let tail = if tail.is_empty() { "/" } else { tail };
+                            return format!("{}:{}", drive.to_ascii_uppercase(), tail.replace('/', "\\"));
+                        }
+                    }
+                }
+                match path.strip_prefix('/') {
+                    Some(posix) => format!("\\\\wsl.localhost\\{WSL_DISTRO}\\{}", posix.replace('/', "\\")),
+                    None => path,
+                }
+            }
+        }
+    }
 }
 
 /// How a host reaches manifold.
@@ -114,6 +160,28 @@ pub(crate) fn unavailable_reason(kind: ViewKind, here: Os) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review Focus 2 (WSL): a folder with a space and a non-ASCII letter reaches the host as its drvfs path, and the
+    /// host's paths come back in the form Explorer opens.
+    #[test]
+    fn a_wsl_host_sees_a_windows_folder_as_mnt_and_its_paths_come_back_as_windows_ones() {
+        let wsl = HostRuntime::Wsl;
+        let host = |p: &str| wsl.host_path(Path::new(p));
+        assert_eq!(host(r"C:\Users\Zoë Q\Downloads").as_deref(), Some("/mnt/c/Users/Zoë Q/Downloads"));
+        assert_eq!(host(r"\\?\D:\dl").as_deref(), Some("/mnt/d/dl"));
+        assert_eq!(host(r"D:\").as_deref(), Some("/mnt/d/"));
+        assert_eq!(host(r"\\nas\dl"), None, "a share WSL can't see");
+        assert_eq!(host("C:dl"), None, "drive-relative");
+        let app = |p: &str| wsl.app_path(p.to_string());
+        assert_eq!(app("/mnt/c/Users/Zoë Q/Downloads/a.zip"), r"C:\Users\Zoë Q\Downloads\a.zip");
+        assert_eq!(app("/mnt/d/"), r"D:\");
+        assert_eq!(app("/mnt/d"), r"D:\");
+        assert_eq!(app("/home/u/a.zip"), r"\\wsl.localhost\Ubuntu\home\u\a.zip");
+        assert_eq!(app("/mnt/data/a.zip"), r"\\wsl.localhost\Ubuntu\mnt\data\a.zip", "not a drive letter");
+        assert_eq!(app("b.zip"), "b.zip");
+        assert_eq!(HostRuntime::Native.host_path(Path::new(r"C:\a b")).as_deref(), Some(r"C:\a b"));
+        assert_eq!(HostRuntime::Native.app_path("/home/u/a".into()), "/home/u/a");
+    }
 
     #[test]
     fn a_host_runs_natively_on_its_own_os_and_in_wsl_for_linux_on_windows() {

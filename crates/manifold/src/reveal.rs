@@ -35,15 +35,15 @@ impl App {
     /// The real file behind a Download/Image/Pdf/Json node, in the form
     /// Explorer and a pasted clipboard path understand -- what both
     /// "Open Containing Folder" (`reveal_node`) and "Copy Path" use. A
-    /// download's path may be a WSL-side POSIX path (WebKit downloads), so
-    /// it goes through `windows_path_for_download`; an image/PDF/JSON path
-    /// always came from a real Windows file picker, so it's used as-is.
+    /// download's path is already in Windows terms (a WSL host's are mapped as
+    /// they arrive, `process_manager::in_app_terms`), and an image/PDF/JSON path
+    /// came from a Windows file picker, so both are used as-is.
     /// `None` for kinds with no backing file (Tab, Group, Note, Jar), and for an
     /// empty path: "no file" (a Download from a `Trust::Foreign` import has
     /// its machine-local path dropped).
     pub(crate) fn node_file_path(&self, id: NodeId) -> Option<String> {
         let path = match &self.nodes.get(&id)?.runtime {
-            Runtime::Download(_) => self.windows_path_for_download(id),
+            Runtime::Download(download) => Some(download.path.clone()),
             Runtime::Image(image) => Some(image.path.clone()),
             Runtime::Pdf(pdf) => Some(pdf.path.clone()),
             Runtime::Json(json) => Some(json.path().to_owned()),

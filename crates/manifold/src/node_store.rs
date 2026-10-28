@@ -205,24 +205,4 @@ impl App {
             gpu.free_image(id);
         }
     }
-
-    /// A WebKit-sourced download path is a WSL2-side path (WebKit runs
-    /// inside WSL2 — see project docs), not reachable from this Windows
-    /// process as a plain path, so it's translated to the
-    /// `\\wsl.localhost\<distro>\...` UNC form both Explorer and a pasted
-    /// clipboard path understand, using the same "Ubuntu" distro name
-    /// `process_manager` already hardcodes for spawning the WebKit
-    /// view-host. Used by `node_file_path`.
-    pub(crate) fn windows_path_for_download(&self, id: NodeId) -> Option<String> {
-        let download = self.nodes.get(&id)?.as_download()?;
-        // Off Windows a download's path is already native (WebKit is not run through WSL there).
-        if cfg!(not(windows)) {
-            return Some(download.path.clone());
-        }
-        Some(if let Some(posix) = download.path.strip_prefix('/') {
-            format!("\\\\wsl.localhost\\Ubuntu\\{}", posix.replace('/', "\\"))
-        } else {
-            download.path.clone()
-        })
-    }
 }

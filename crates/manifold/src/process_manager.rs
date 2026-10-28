@@ -854,9 +854,13 @@ fn is_spawn_header(line: &str) -> bool {
 ///
 /// Frames go to `frame` (newest wins); everything else goes through a channel of `view_io::EVENTS_CAP`, whose
 /// `send` waits while the app is that far behind (survey E3).
+///
+/// A WSL host's download paths are put in the app's terms here (`in_app_terms`), before anything stores, shows or
+/// reveals them.
 fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
     mut from_view: manifold_view_protocol::MessageChannel<S>,
     frame: view_io::FrameSlot,
+    runtime: HostRuntime,
     wake: view_io::Wake,
 ) -> mpsc::Receiver<ViewToHost> {
     let (tx, rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
@@ -901,7 +905,7 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
                 }
                 // Fails once the tab is gone (its receiver dropped).
                 msg => {
-                    let sent = tx.send(msg);
+                    let sent = tx.send(in_app_terms(runtime, msg));
                     wake();
                     if sent.is_err() {
                         return;
@@ -913,6 +917,22 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
         wake();
     });
     rx
+}
+
+/// A host's message in the app's terms: a WSL host's download paths as Windows ones (`HostRuntime::app_path`), so the
+/// store, the toasts and Reveal see one form.
+fn in_app_terms(runtime: HostRuntime, msg: ViewToHost) -> ViewToHost {
+    match msg {
+        ViewToHost::DownloadStarted { path, total_bytes, url } => {
+            ViewToHost::DownloadStarted { path: runtime.app_path(path), total_bytes, url }
+        }
+        ViewToHost::DownloadProgress { path, bytes_received } => {
+            ViewToHost::DownloadProgress { path: runtime.app_path(path), bytes_received }
+        }
+        ViewToHost::DownloadCompleted { path } => ViewToHost::DownloadCompleted { path: runtime.app_path(path) },
+        ViewToHost::DownloadFailed { path } => ViewToHost::DownloadFailed { path: runtime.app_path(path) },
+        other => other,
+    }
 }
 
 /// Same-machine (CEF/Servo) equivalent of `WEBKIT_CONNECT_TIMEOUT`, much
@@ -1088,7 +1108,8 @@ pub fn spawn_tab(
             }
         };
     let frame = view_io::FrameSlot::default();
-    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), wake);
+    // A pipe-linked host runs natively (`runtime::tests::a_wsl_host_speaks_tcp`).
+    let events_rx = spawn_reader_thread(from_view, Arc::clone(&frame), HostRuntime::Native, wake);
 
     let writer = view_io::Writer::spawn(to_view, &format!("engine writer {socket_id}"));
     let frame_map = view_io::FrameMap::default();
