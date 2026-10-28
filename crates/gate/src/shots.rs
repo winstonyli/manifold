@@ -1353,7 +1353,10 @@ impl Shots {
             self.open_tab()?;
             send!(self, format!("ADDRESSBAR {}", server.url("/real.zip")), "SLEEP 1", "ENTER", "SLEEP 6")?;
             self.shot("download-real-tab")?;
-            send!(self, "TOGGLEVIEW", "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            // The card opens above the tab's, off the frame an earlier step's fit left.
+            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            self.inst.click_control(crate::state::FIT_VIEW)?;
+            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
             self.shot("download-real")?;
         }
         Ok(())
