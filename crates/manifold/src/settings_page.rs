@@ -40,6 +40,8 @@ pub(crate) struct SettingsState {
     pub(crate) return_view: ViewMode,
     /// The Home page field's text while it's being edited; Escape drops it (`build_settings_page`).
     pub(crate) home_page_draft: Option<String>,
+    /// The Download folder field's text while it's being edited (`settings_download_folder_row`).
+    pub(crate) download_dir_draft: Option<String>,
     /// The Settings row to scroll to and outline, for one frame (`settings_page::draw_setting_rows`).
     pub(crate) focus: Option<&'static str>,
 }
@@ -260,6 +262,45 @@ impl App {
         }
     }
 
+    /// Settings, General: the folder downloads are saved in, for every engine.
+    pub(crate) fn settings_download_folder_row(&mut self, ui: &mut egui::Ui) {
+        ui.label("Download folder");
+        let configured = self.settings.value.download_directory.clone().unwrap_or_default();
+        let hint =
+            profile::downloads_dir().map_or_else(|| "Your Downloads folder".to_string(), |d| d.display().to_string());
+        if let Some(text) = folder_field(ui, &mut self.settings.download_dir_draft, &configured, &hint) {
+            if crate::settings::typed_folder(&text) != configured {
+                self.set_download_directory(&text);
+            }
+            // The folder may have been made or fixed on disk since its verdict was read.
+            forget_disk_cache(ui.ctx());
+        }
+        let setting = self.settings.value.download_directory.clone().unwrap_or_default();
+        // Read like every other Settings disk read (`cached`, as the CEF row's `cef_newer_than_tested`): on the UI
+        // thread, at most every `DISK_CACHE_AGE`. A folder on an offline share can block it (S20, parked).
+        let verdict = download_folder_verdict(&setting, |dir| {
+            cached(ui.ctx(), ("download_folder_kind", dir), DISK_CACHE_AGE, || {
+                std::fs::metadata(dir).ok().map(|m| m.is_dir())
+            })
+        });
+        match verdict {
+            Some(Err(message)) => {
+                ui.add(egui::Label::new(egui::RichText::new(message).small().color(danger(ui.visuals()))).wrap());
+            }
+            Some(Ok(note)) => {
+                ui.add(egui::Label::new(egui::RichText::new(note).small().weak()).wrap());
+            }
+            None => {}
+        }
+    }
+
+    /// Set (or clear, for empty text) the Download folder, as `typed_folder` holds it, and save it.
+    pub(crate) fn set_download_directory(&mut self, path: &str) {
+        let path = crate::settings::typed_folder(path);
+        self.settings.value.download_directory = (!path.is_empty()).then(|| path.to_string());
+        self.save_settings();
+    }
+
     /// Settings, General: idle sleep for background tabs.
     pub(crate) fn settings_sleep_row(&mut self, ui: &mut egui::Ui) {
         let mut minutes = self.settings.value.idle_sleep_minutes;
@@ -420,42 +461,15 @@ impl App {
     fn settings_cef_directory_row(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(palette(ui.visuals()).text));
-        let mut commit = None;
         let configured = self.settings.value.cef_directory.clone().unwrap_or_default();
-        ui.horizontal(|ui| {
-            let draft = self.view_ui.cef_dir_draft.get_or_insert_with(|| configured.clone());
-            let response = toolbar_field(ui, |ui| {
-                ui.add(
-                    field_edit(draft)
-                        .desired_width(220.0)
-                        .hint_text(format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib)),
-                )
-            });
-            if response.lost_focus() {
-                // Escape gives up the edit instead of committing it.
-                commit = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    configured.clone()
-                } else {
-                    draft.clone()
-                });
-            }
-            if ui.button("Browse").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    commit = Some(dir.to_string_lossy().into_owned());
-                }
-            }
-            if !configured.is_empty() && ui.button("Clear").clicked() {
-                commit = Some(String::new());
-            }
-        });
-        if let Some(text) = commit {
-            if text.trim() != configured {
+        let hint = format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib);
+        if let Some(text) = folder_field(ui, &mut self.view_ui.cef_dir_draft, &configured, &hint) {
+            if crate::settings::typed_folder(&text) != configured {
                 self.set_cef_directory(&text);
             } else {
                 // Same folder (Browse again, or Enter): its contents may have been fixed on disk.
                 self.invalidate_cef_dir_check();
             }
-            self.view_ui.cef_dir_draft = None;
         }
         match self.cef_dir_verdict() {
             Some((_, Err(message))) => {
@@ -828,9 +842,88 @@ fn screenshot_default_path() -> std::path::PathBuf {
     dir.join(format!("manifold-{timestamp}.png"))
 }
 
+/// A folder setting's text field, Browse and Clear (`settings_cef_directory_row`, `settings_download_folder_row`).
+/// Returns the text to commit: the draft when the field loses focus (Escape gives `configured` back instead), the
+/// folder Browse picked, or "" from Clear. While the field isn't focused the draft follows `configured`, so an
+/// outside change (a settings reload) shows.
+fn folder_field(ui: &mut egui::Ui, draft: &mut Option<String>, configured: &str, hint: &str) -> Option<String> {
+    let mut commit = None;
+    ui.horizontal(|ui| {
+        let text = draft.get_or_insert_with(|| configured.to_string());
+        let response = toolbar_field(ui, |ui| ui.add(field_edit(text).desired_width(220.0).hint_text(hint)));
+        if response.lost_focus() {
+            // Escape gives up the edit instead of committing it.
+            commit = Some(if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                configured.to_string()
+            } else {
+                text.clone()
+            });
+        } else if !ui.memory(|m| m.has_focus(response.id)) {
+            // Not `response.has_focus()`: that is also false while the OS window is unfocused, yet the field still
+            // takes typed text (`settings_home_page_row`).
+            *draft = None;
+        }
+        if ui.button("Browse").clicked() {
+            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                commit = Some(dir.to_string_lossy().into_owned());
+            }
+        }
+        if !configured.is_empty() && ui.button("Clear").clicked() {
+            commit = Some(String::new());
+        }
+    });
+    if commit.is_some() {
+        *draft = None;
+    }
+    commit
+}
+
+/// What the Download folder row says of `setting` (`kind` reads whether the folder it names, `settings::full_folder`,
+/// is a folder: `Some(true)`, a file: `Some(false)`, or nothing: `None`). `None` when there is nothing to say.
+fn download_folder_verdict(
+    setting: &str,
+    kind: impl FnOnce(&std::path::Path) -> Option<bool>,
+) -> Option<Result<&'static str, &'static str>> {
+    if setting.is_empty() {
+        return None;
+    }
+    let Some(dir) = crate::settings::full_folder(setting) else {
+        return Some(Err("Not a full path (like C:\\Users\\you\\Downloads), so downloads go to your Downloads folder"));
+    };
+    match kind(&dir) {
+        Some(true) => None,
+        Some(false) => Some(Err("Not a folder: downloads fail until it is")),
+        None => Some(Ok("Doesn't exist yet: made at the first download")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_download_folder_verdict_names_what_is_wrong() {
+        let never = |path: &std::path::Path| -> Option<bool> { panic!("read {}", path.display()) };
+        assert_eq!(download_folder_verdict("", never), None, "empty: the default, nothing to say");
+        assert!(matches!(download_folder_verdict("Downloads2", never), Some(Err(m)) if m.contains("full path")));
+        let abs = crate::store::testutil::temp_dir("download-verdict").join("Zoë Q downloads");
+        let abs = abs.to_str().unwrap();
+        assert_eq!(download_folder_verdict(abs, |_| Some(true)), None, "a folder: nothing to say");
+        assert!(matches!(download_folder_verdict(abs, |_| Some(false)), Some(Err(m)) if m.contains("Not a folder")));
+        assert!(
+            matches!(download_folder_verdict(abs, |_| None), Some(Ok(m)) if m.contains("made at the first download"))
+        );
+    }
+
+    /// Review Focus 1, through the App: what the row commits is stored as the setting holds it.
+    #[test]
+    fn a_download_folder_is_stored_as_typed_without_quotes_and_cleared_by_empty_text() {
+        let mut app = App::default();
+        app.set_download_directory(" \"D:\\dl\" ");
+        assert_eq!(app.settings.value.download_directory.as_deref(), Some("D:\\dl"));
+        app.set_download_directory("  ");
+        assert_eq!(app.settings.value.download_directory, None);
+    }
 
     #[test]
     fn a_cached_disk_read_runs_once_until_forgotten() {

@@ -155,10 +155,29 @@ pub struct Settings {
     /// validate_custom`); used for launches only while it validates.
     #[serde(default)]
     pub cef_directory: Option<String>,
+    /// Where downloads are saved: an absolute folder, made at the first download if missing. `None` (or text that
+    /// is not a full path) means the user's Downloads folder (`profile::downloads_dir`).
+    #[serde(default)]
+    pub download_directory: Option<String>,
 }
 
 fn default_already_shown() -> bool {
     true
+}
+
+/// A typed or pasted folder as a setting holds it: trimmed, and one pair of surrounding quotes dropped (Explorer's
+/// "Copy as path" adds them), then trimmed again.
+pub(crate) fn typed_folder(text: &str) -> &str {
+    let text = text.trim();
+    text.strip_prefix('"').and_then(|t| t.strip_suffix('"')).map_or(text, str::trim)
+}
+
+/// The folder a folder setting names, in Windows' own form (`std::path::absolute`: `/` read as `\`, `.` and `..`
+/// resolved, no disk read), so every path built on it reads one separator; the setting keeps the text as typed.
+/// `None` when the text is not a full path, which a folder setting does not use.
+pub(crate) fn full_folder(text: &str) -> Option<PathBuf> {
+    let path = std::path::Path::new(text);
+    path.is_absolute().then(|| std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
 }
 
 impl Default for Settings {
@@ -178,6 +197,7 @@ impl Default for Settings {
             has_shown_first_launch_demo: false,
             idle_sleep_minutes: None,
             cef_directory: None,
+            download_directory: None,
         }
     }
 }
@@ -323,6 +343,44 @@ mod tests {
         let settings = Settings { cef_directory: Some("D:/cef".into()), ..Settings::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
         assert_eq!(back.cef_directory.as_deref(), Some("D:/cef"));
+    }
+
+    #[test]
+    fn download_directory_defaults_when_missing_and_round_trips() {
+        let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
+        assert_eq!(old.download_directory, None);
+        let settings = Settings { download_directory: Some("D:\\Zoë Q\\dl".into()), ..Settings::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(back.download_directory.as_deref(), Some("D:\\Zoë Q\\dl"));
+    }
+
+    /// Review Focus 1: Explorer's "Copy as path" quotes a folder; the setting holds it without them.
+    #[test]
+    fn a_pasted_folder_loses_its_quotes_and_padding() {
+        assert_eq!(typed_folder(" \"C:\\Users\\Zoë Q\\Downloads\" "), "C:\\Users\\Zoë Q\\Downloads");
+        assert_eq!(typed_folder("\" C:\\a \""), "C:\\a");
+        assert_eq!(typed_folder("C:\\a"), "C:\\a");
+        assert_eq!(typed_folder("  "), "");
+        assert_eq!(typed_folder("\"\""), "");
+        assert_eq!(typed_folder("\""), "\"", "a lone quote is not a pair");
+    }
+
+    /// Review Focus 1: a full path typed with `/` (from a shell or a config file) is the folder in Windows' own form,
+    /// so every download path built on it, and Explorer's `/select` on Reveal, read one separator. Compared as text:
+    /// `Path` equality ignores the separator.
+    #[cfg(windows)]
+    #[test]
+    fn a_full_folder_is_read_in_windows_form() {
+        let text = |t: &str| full_folder(t).map(|d| d.to_string_lossy().into_owned());
+        assert_eq!(text("D:/dl").as_deref(), Some(r"D:\dl"));
+        let file = full_folder("D:/dl/").map(|d| d.join("a.zip").to_string_lossy().into_owned());
+        assert_eq!(file.as_deref(), Some(r"D:\dl\a.zip"), "no doubled separator");
+        assert_eq!(text(r"D:\dl\..\x").as_deref(), Some(r"D:\x"));
+        assert_eq!(text("//nas/share/dl").as_deref(), Some(r"\\nas\share\dl"));
+        assert_eq!(text(r"C:\Users\Zoë Q\Downloads").as_deref(), Some(r"C:\Users\Zoë Q\Downloads"));
+        assert_eq!(full_folder("Downloads2"), None);
+        assert_eq!(full_folder("D:dl"), None, "drive-relative");
+        assert_eq!(full_folder(""), None);
     }
 
     /// A file without the field takes the platform default; a saved engine is kept even where it can't run.

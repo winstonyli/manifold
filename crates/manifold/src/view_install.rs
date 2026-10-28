@@ -1042,7 +1042,7 @@ impl crate::App {
     /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached
     /// verdict and states so the next read validates it.
     pub(crate) fn set_cef_directory(&mut self, path: &str) {
-        let path = path.trim();
+        let path = crate::settings::typed_folder(path);
         self.settings.value.cef_directory = (!path.is_empty()).then(|| path.to_string());
         self.invalidate_cef_dir_check();
         self.save_settings();

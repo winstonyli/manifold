@@ -86,6 +86,7 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("toasts.undo", "lives one toast; its ids are checked on use (a member must still be where the dissolve left it)"),
     ("view_ui.cef_dir_draft", "a path draft, not a node id"),
     ("settings.home_page_draft", "a url draft, not a node id"),
+    ("settings.download_dir_draft", "a path draft, not a node id"),
     ("list_popups.renaming_bookmark_folder", "a bookmark folder, not a node id"),
     ("list_popups.history_matches_cache", "a history query, not a node id"),
 ];

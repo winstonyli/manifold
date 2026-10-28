@@ -2,8 +2,8 @@
 //! `settings.json`, `replica` (`replica_id`), `bookmarks.json`, `history.json`, `tab-history.json`, the session store,
 //! the named sessions, fetched content (`content_dir`) and CEF's throwaway
 //! cache dirs, under `cef-cache`. Every path into it starts from `dir()`
-//! or, for engines, `view_data_dir()`. The one user folder outside it,
-//! the screenshot folder, comes from `pictures_dir()`.
+//! or, for engines, `view_data_dir()`. The user folders outside it come from Windows' Known Folders: Downloads
+//! (`downloads_dir()`, the default download folder) and Pictures (`pictures_dir()`, the screenshot folder).
 
 use std::path::{Path, PathBuf};
 
@@ -40,14 +40,64 @@ fn dir_from(args: &[String], appdata: Option<std::ffi::OsString>) -> Option<Path
     }
 }
 
-/// The user's Pictures folder, where the toolbar's Screenshot saves. `None`
-/// without a home folder, and always under `cargo test`, like `dir()`.
+/// The user's Downloads folder (Windows' Known Folder; `~/Downloads` elsewhere): where downloads go when the
+/// Download folder setting is empty or not a full path. Read once per run. `None` when the OS has none, and always
+/// under `cargo test`, like `dir()`.
+pub fn downloads_dir() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| user_folder(UserFolder::Downloads)).clone()
+}
+
+/// The user's Pictures folder (Windows' Known Folder; `~/Pictures` elsewhere), where the toolbar's Screenshot saves.
+/// `None` like `downloads_dir()`.
 pub fn pictures_dir() -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
-    Some(PathBuf::from(home).join("Pictures"))
+    user_folder(UserFolder::Pictures)
+}
+
+/// The user folders the app reads (`user_folder`).
+#[derive(Clone, Copy)]
+enum UserFolder {
+    Downloads,
+    Pictures,
+}
+
+#[cfg(windows)]
+fn user_folder(folder: UserFolder) -> Option<PathBuf> {
+    use windows::Win32::UI::Shell::{FOLDERID_Downloads, FOLDERID_Pictures};
+    known_folder(match folder {
+        UserFolder::Downloads => &FOLDERID_Downloads,
+        UserFolder::Pictures => &FOLDERID_Pictures,
+    })
+}
+
+/// A Known Folder's path, wherever the user moved it (`SHGetKnownFolderPath`); `None` when Windows has none. Not
+/// checked for existence (`KF_FLAG_DONT_VERIFY`): the check can wait on a network folder, on the UI thread, and fails
+/// for a deleted folder, which the first download (or screenshot) makes again.
+#[cfg(windows)]
+fn known_folder(id: &windows::core::GUID) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::{SHGetKnownFolderPath, KF_FLAG_DONT_VERIFY};
+    // Safety: on success the string is Windows' allocation, ours to free once, after it is copied.
+    let raw = unsafe { SHGetKnownFolderPath(id, KF_FLAG_DONT_VERIFY, None) }.ok()?;
+    let path = PathBuf::from(std::ffi::OsString::from_wide(unsafe { raw.as_wide() }));
+    unsafe { CoTaskMemFree(Some(raw.as_ptr() as *const _)) };
+    Some(path)
+}
+
+#[cfg(not(windows))]
+fn user_folder(folder: UserFolder) -> Option<PathBuf> {
+    let name = match folder {
+        UserFolder::Downloads => "Downloads",
+        UserFolder::Pictures => "Pictures",
+    };
+    Some(PathBuf::from(std::env::var_os("HOME")?).join(name))
 }
 
 /// Where CEF engine-hosts keep their browser data: one throwaway
@@ -152,6 +202,7 @@ mod tests {
         assert_eq!(super::content_dir(), None);
         assert_eq!(super::jars_dir(), None);
         assert_eq!(super::pictures_dir(), None);
+        assert_eq!(super::downloads_dir(), None);
     }
 
     #[test]

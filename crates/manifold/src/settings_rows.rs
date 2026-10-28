@@ -35,7 +35,7 @@ pub(crate) fn matching(query: &str) -> Vec<&'static SettingRow> {
         .collect()
 }
 
-static ROWS: [SettingRow; 13] = [
+static ROWS: [SettingRow; 14] = [
     SettingRow {
         id: "welcome_tour",
         section: "Help",
@@ -77,6 +77,13 @@ static ROWS: [SettingRow; 13] = [
         title: "Home page",
         keywords: "new tabs start url address",
         draw: |app, ui, _| app.settings_home_page_row(ui),
+    },
+    SettingRow {
+        id: "download_folder",
+        section: "General",
+        title: "Download folder",
+        keywords: "downloads save location directory path files",
+        draw: |app, ui, _| app.settings_download_folder_row(ui),
     },
     SettingRow {
         id: "sleep_tabs",
@@ -172,6 +179,7 @@ mod tests {
     fn keywords_match_but_unrelated_text_does_not() {
         assert_eq!(ids("dark"), ["theme"]);
         assert_eq!(ids("search engine"), ["search_engine"]);
+        assert!(ids("save location").contains(&"download_folder"));
         assert!(ids("mute").contains(&"current_tab"));
         assert!(ids("zzzz").is_empty());
         assert!(ids("   ").is_empty());
