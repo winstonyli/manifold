@@ -291,6 +291,21 @@ mod tests {
         assert_eq!(downloads[1].bytes_received, 7);
     }
 
+    /// WebView2 starts a download whose transfer broke again as a new download of the same path (run
+    /// 2026-10-27-download-host-events): the tab's card restarts, no second card appears.
+    #[test]
+    fn a_restarted_download_restarts_its_card() {
+        let mut app = App::default();
+        app.insert_note_at(N, None);
+        let started = || ViewToHost::DownloadStarted { path: "f.zip".into(), total_bytes: Some(10), url: None };
+        app.handle_view_message(N, started());
+        app.handle_view_message(N, ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
+        app.handle_view_message(N, started());
+        let downloads: Vec<_> = app.nodes.values().filter_map(|n| n.as_download()).collect();
+        assert_eq!(downloads.len(), 1);
+        assert_eq!(downloads[0].bytes_received, 0);
+    }
+
     #[test]
     fn same_named_downloads_from_two_tabs_stay_apart() {
         let mut app = App::default();

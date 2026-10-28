@@ -136,6 +136,11 @@ impl App {
     /// engine download, so headless runs had no way to get one). A no-op
     /// if `tab_id` is gone. The store keeps only completed downloads
     /// (`DownloadCompleted` saves), so no save.
+    ///
+    /// A download `tab_id` already has in flight for `path` restarts
+    /// instead: the engine starts a download whose transfer broke again
+    /// under the same path (two downloads in flight never share one, the
+    /// engine numbers the second's file).
     pub(crate) fn insert_download_node(
         &mut self,
         tab_id: NodeId,
@@ -143,6 +148,12 @@ impl App {
         total_bytes: Option<u64>,
         url: Option<String>,
     ) {
+        let restarted = self.tab_download(tab_id, &path).and_then(|id| self.nodes.get_mut(&id));
+        if let Some(dl) = restarted.and_then(|n| n.as_download_mut()) {
+            dl.bytes_received = 0;
+            dl.total_bytes = total_bytes;
+            return;
+        }
         let node_group = self.doc.mirror.group(tab_id);
         if !self.nodes.contains_key(&tab_id) {
             return;
@@ -163,20 +174,24 @@ impl App {
     }
 
     /// The in-flight download node an engine's progress, failure or
-    /// completion for `path` is about: one `tab_id` started if there is one,
-    /// else the newest. A finished node with the same path (a restored one,
-    /// or an earlier download of the same file) is never matched.
+    /// completion for `path` is about: the one `tab_id` started if there is
+    /// one, else the newest. A finished node with the same path (a restored
+    /// one, or an earlier download of the same file) is never matched.
     pub(crate) fn in_flight_download_id(&self, tab_id: NodeId, path: &str) -> Option<NodeId> {
-        let in_flight = |id: NodeId| {
-            self.nodes
-                .get(&id)
-                .and_then(|n| n.as_download())
-                .is_some_and(|d| d.path == path && !d.completed && !d.failed)
-        };
-        let from_tab = |id: &&NodeId| self.opened_from(**id) == Some(tab_id);
-        let mut newest_first = self.node_order.iter().rev().filter(|id| in_flight(**id));
-        let first = newest_first.clone().next();
-        newest_first.find(from_tab).or(first).copied()
+        self.tab_download(tab_id, path)
+            .or_else(|| self.node_order.iter().rev().copied().find(|&id| self.in_flight_download(id, path)))
+    }
+
+    /// The in-flight download node for `path` that `tab_id` started: at most one (`insert_download_node`).
+    fn tab_download(&self, tab_id: NodeId, path: &str) -> Option<NodeId> {
+        self.node_order
+            .iter()
+            .copied()
+            .find(|&id| self.opened_from(id) == Some(tab_id) && self.in_flight_download(id, path))
+    }
+
+    fn in_flight_download(&self, id: NodeId, path: &str) -> bool {
+        self.nodes.get(&id).and_then(|n| n.as_download()).is_some_and(|d| d.path == path && !d.completed && !d.failed)
     }
 
     /// Inserts a node of type `kind` showing `runtime` at `pos`, top level, no colour of its own (colour is the
