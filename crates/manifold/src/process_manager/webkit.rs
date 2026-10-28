@@ -177,5 +177,7 @@ pub(super) fn spawn_webkit_tab(
         child: Some(child),
         cache_dir: None,
         profile_slot: None,
+        shown: true,
+        framed: false,
     })
 }

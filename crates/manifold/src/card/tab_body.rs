@@ -274,14 +274,15 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((title, url, tab_view_kind, unresponsive, loading)) =
+        // Busy while the page loads, and until a frame of the loaded page is in (`App::tab_visible`).
+        let Some((title, url, tab_view_kind, unresponsive, busy)) =
             self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| {
                 (
                     t.title.clone(),
                     t.url.clone(),
                     t.tab.kind,
                     t.tab.is_unresponsive(std::time::Instant::now()),
-                    t.loading,
+                    t.loading || !t.tab.framed(),
                 )
             })
         else {
@@ -319,8 +320,7 @@ impl App {
             }
 
             let label = if title.is_empty() { url.as_str() } else { title.as_str() };
-            // Busy until the first frame is in, as well as while the page loads.
-            let identity = self.tab_identity(&url, loading || thumb_id.is_none(), tab_view_kind);
+            let identity = self.tab_identity(&url, busy, tab_view_kind);
             let show_text = label_fits(rect, zoom_scale);
             if header {
                 let card_header = CardHeader {

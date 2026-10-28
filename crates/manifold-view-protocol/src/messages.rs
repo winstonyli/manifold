@@ -229,11 +229,10 @@ pub enum HostToView {
     Resize { width: u32, height: u32, dpi_scale: f64 },
     Input(InputEvent),
     SetZoom { factor: f64 },
-    /// M5: background (non-focused) tabs stay alive but stop capturing and
-    /// sending frames — only the currently focused tab is ever `true`. The
-    /// engine's own event/message-loop pump keeps running regardless (the
-    /// page keeps executing, title/url keep updating), only the final
-    /// capture-and-send step is gated on this.
+    /// M5: tabs off screen stay alive but stop capturing and sending frames. A host starts `true`; manifold decides
+    /// each tab's value in one place (`App::tab_visible`: the tabs on screen, and any tab whose card still waits for
+    /// a frame of its loaded page). The engine's own event/message-loop pump keeps running regardless (the page keeps
+    /// executing, title/url keep updating), only the final capture-and-send step is gated on this.
     SetVisible(bool),
     GetState,
     /// Asks for the page's scroll position and dirty-form flag

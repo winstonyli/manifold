@@ -10,6 +10,7 @@ mod jar_pull;
 mod page_text;
 mod sleep;
 mod spawn_result;
+mod visibility;
 pub(crate) use jar_pull::Held;
 #[cfg(test)]
 pub(crate) use jar_pull::{pull_pending, start_pull, JAR_FLUSH_AFTER, JAR_PULL_TIMEOUT};
@@ -515,41 +516,29 @@ impl App {
         id
     }
 
-    /// Stops the focused tab rendering (and drops its find bar, context
-    /// menu, and split) -- what switching the maximized node away from it
-    /// needs, whether to another tab (`focus_tab`) or an Image
-    /// (`focus_item`). `focused` itself is left alone.
+    /// Drops the focused tab's find bar, context menu, split and full-size texture -- what switching the
+    /// maximized node away from it needs, whether to another tab (`focus_tab`) or an Image (`focus_item`).
+    /// `focused` itself is left alone; it stops rendering on the next `sync_tab_visibility`.
     pub(crate) fn hide_focused_tab(&mut self) {
         self.close_find_bar();
         self.menus.context_menu.open = None;
         self.close_split();
         if let Some(old_id) = self.focused {
-            if let Some(old) = self.nodes.get_mut(&old_id).and_then(|n| n.as_tab_mut()) {
-                old.tab.set_visible(false);
-            }
             if let Some(gpu) = &mut self.gpu {
                 gpu.free_tab_texture(old_id);
             }
         }
     }
 
-    /// Peek-click commits focus: the tab losing focus (if any, and if
-    /// different) is told to stop rendering, the newly focused one is told
-    /// to start, and the view switches to Tab. At most one tab is ever the
-    /// primary/focused one at a time -- a split's own secondary pane
-    /// (`split_tab`) is the one exception, also visible but never focused;
-    /// switching primary focus to a genuinely different tab always closes
-    /// whatever split was open, since a split is only ever meaningful
-    /// paired with the specific tab it was opened against. An unloaded tab
-    /// (`UnloadedTabPayload`) is woken.
+    /// Peek-click commits focus and switches the view to Tab; `sync_tab_visibility` then moves rendering from the
+    /// old tab to this one. A split's secondary pane (`split_tab`) is never focused; switching primary focus to a
+    /// different tab closes whatever split was open, since a split is only meaningful paired with the tab it was
+    /// opened against. An unloaded tab (`UnloadedTabPayload`) is woken.
     pub(crate) fn focus_tab(&mut self, id: NodeId) {
         self.spawns.pending_trail_focus = None;
         self.end_note_edits();
         if self.focused != Some(id) {
             self.hide_focused_tab();
-        }
-        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-            node.tab.set_visible(true);
         }
         self.focused = Some(id);
         self.viewed_image = None;
@@ -608,15 +597,11 @@ impl App {
         self.spawn_new_tab_with_kind(Some(focused_id), group, &url, kind, SpawnPurpose::Split, jar, None);
     }
 
-    /// Closes split view -- unpairs the secondary pane and stops its
-    /// rendering/GPU texture, but doesn't close the tab itself: it remains
-    /// a normal graph node, reachable and closable from Graph view like any
-    /// other tab. A no-op if no split is open.
+    /// Closes split view -- unpairs the secondary pane (it stops rendering on the next `sync_tab_visibility`) and
+    /// frees its GPU texture, but doesn't close the tab itself: it remains a normal graph node, reachable and
+    /// closable from Graph view like any other tab. A no-op if no split is open.
     pub(crate) fn close_split(&mut self) {
         let Some(id) = self.split_tab.take() else { return };
-        if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-            node.tab.set_visible(false);
-        }
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_texture(id);
         }
@@ -631,7 +616,7 @@ impl App {
     /// Leaves Item view for Graph view -- starts a shrink animation (see
     /// `Transition`) toward whichever node is shown, rather than switching
     /// instantly. For a Tab (`viewed_image` is `None`), the tab keeps
-    /// rendering (`set_visible(true)`, unchanged) for the animation's whole
+    /// rendering (`tab_visible` counts the transition) for the animation's whole
     /// duration, so the thumbnail it shrinks into shows real, current
     /// content instead of whatever frame happened to be on screen when the
     /// animation started, only actually suspended once the animation

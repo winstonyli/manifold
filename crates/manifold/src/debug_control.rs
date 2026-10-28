@@ -490,12 +490,6 @@ const VERBS: &[Verb] = &[
     row("FINDNEXT", "Find bar: next match", |_| job(|app, _| app.send_find_navigate(true))),
     row("FINDPREVIOUS", "Find bar: previous match", |_| job(|app, _| app.send_find_navigate(false))),
     row("CLOSEFINDBAR", "Close the find bar", |_| job(|app, _| app.close_find_bar())),
-    // Bypasses `focus_tab`/`leave_to_graph`'s own visibility changes, which always come bundled with a `Resize`: for
-    // testing the `SetVisible(false)` -> `true` repaint path in isolation.
-    row("SETVISIBLE true|false", "Send SetVisible directly to the focused tab (bypasses the usual resize-bundled visibility change)", |rest| {
-        let visible = true_false(rest.split_whitespace().next()?)?;
-        job(move |app, _| on_focused_tab(app, |node| node.tab.set_visible(visible)))
-    }),
     row("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)", |rest| {
         (!rest.is_empty()).then(|| Parsed::Reader(ReaderOp::Screenshot(rest.to_string())))
     }),
@@ -1384,7 +1378,6 @@ mod tests {
             "FINDNEXT",
             "FINDPREVIOUS",
             "CLOSEFINDBAR",
-            "SETVISIBLE false",
             r"SCREENSHOT C:\x.png",
             "RESIZE 800 600",
             "SURFACE lost",

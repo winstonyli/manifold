@@ -178,17 +178,10 @@ impl ApplicationHandler<UserEvent> for App {
         let minimized = self.is_minimized();
         if minimized {
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + MINIMIZED_TICK));
-            if !self.pacing.was_minimized {
-                self.hide_tabs_for_minimize();
-            }
             self.minimized_tick();
         } else if self.pacing.was_minimized {
+            // The next frame's `sync_tab_visibility` shows the tabs on screen again.
             event_loop.set_control_flow(ControlFlow::Poll);
-            for id in std::mem::take(&mut self.pacing.hidden_for_minimize) {
-                if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                    node.tab.set_visible(true);
-                }
-            }
             if let Some(window) = &self.window {
                 window.request_redraw();
             }

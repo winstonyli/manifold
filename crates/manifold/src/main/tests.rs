@@ -74,7 +74,6 @@ const NOT_FORGOTTEN: &[(&str, &str)] = &[
     ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
     ("link.line_press", "a link id, taken at release only if still hovered"),
     ("page_input.native_drag_tab", "taken at the button-up"),
-    ("pacing.hidden_for_minimize", "drained at restore"),
     ("menus.node_menu.fade", "the closing menu's fade copy, set from `node_menu` each frame it is open"),
     ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
     ("confirm", "a jar confirm is dropped by `confirm_text` once its jar is gone; the rest hold names and engines"),

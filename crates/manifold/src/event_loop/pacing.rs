@@ -42,9 +42,6 @@ pub(crate) struct FramePacing {
     /// The wait between idle frames: `IDLE_FRAME`, or less when egui asked
     /// for a repaint sooner (`request_repaint_after`).
     pub(crate) idle_interval: std::time::Duration,
-    /// Tabs `SetVisible(false)` was sent to on minimize, to be shown again
-    /// on restore (`hide_tabs_for_minimize`).
-    pub(crate) hidden_for_minimize: Vec<NodeId>,
     /// Set by a reader when it posts `UserEvent::ViewMessage`, cleared when the loop handles it, so a burst of
     /// messages posts one event (`view_wake`).
     pub(crate) view_wake: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -60,7 +57,6 @@ impl Default for FramePacing {
             frame_interval: (std::time::Instant::now(), std::time::Duration::from_micros(16_667)),
             next_idle_frame: std::time::Instant::now(),
             idle_interval: IDLE_FRAME,
-            hidden_for_minimize: Vec::new(),
             view_wake: std::sync::Arc::default(),
         }
     }
@@ -188,31 +184,15 @@ impl App {
         !self.headless && self.window.as_ref().is_some_and(|w| w.is_minimized() == Some(true))
     }
 
-    /// Tells the tabs on screen (the focused tab in Tab view or mid-
-    /// transition, and the split pane) to stop capturing while minimized;
-    /// `about_to_wait` resumes them on restore. Otherwise the
-    /// engine and WebView2 keep using ~15% of a core behind a minimized window.
-    pub(super) fn hide_tabs_for_minimize(&mut self) {
-        let mut ids = Vec::new();
-        if self.showing_tab_view() || self.transition.is_some() {
-            ids.extend(self.focused);
-        }
-        ids.extend(self.split_tab);
-        for id in ids {
-            if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                node.tab.set_visible(false);
-                self.pacing.hidden_for_minimize.push(id);
-            }
-        }
-    }
-
-    /// What a frame does before building its UI, minus the UI itself.
+    /// What a frame does before building its UI, minus the UI itself; and every tab stops capturing
+    /// (`tab_visible`), since otherwise the engine and WebView2 keep using ~15% of a core behind a minimized window.
     pub(super) fn minimized_tick(&mut self) {
         self.poll_store();
         self.poll_trail_focus();
         self.poll_view_installs();
         self.drain_tab_events();
         self.finish_transition_if_done();
+        self.sync_tab_visibility(true);
     }
 }
 

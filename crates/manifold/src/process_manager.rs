@@ -276,6 +276,10 @@ pub struct ViewTab {
     cache_dir: Option<PathBuf>,
     /// A WebView2 host's profile slot (`claim_webview2_slot`), freed once `cache_dir` is gone.
     profile_slot: Option<usize>,
+    /// The visibility last sent (`set_visible`); `true` at first, as every host starts.
+    shown: bool,
+    /// A frame of the loaded page has come in from this host (`App::note_tab_frame`).
+    framed: bool,
 }
 
 impl ViewTab {
@@ -286,10 +290,22 @@ impl ViewTab {
         self.writer.send(msg);
     }
 
-    /// M5: at most one tab is ever visible (actively capturing/sending
-    /// frames) at a time — see `HostToView::SetVisible`'s doc comment.
-    pub fn set_visible(&self, visible: bool) {
-        self.send(&HostToView::SetVisible(visible));
+    /// Tells the host whether to capture and send frames (`HostToView::SetVisible`), if that changed; only
+    /// `App::sync_tab_visibility` decides it.
+    pub fn set_visible(&mut self, visible: bool) {
+        if self.shown != visible {
+            self.shown = visible;
+            self.send(&HostToView::SetVisible(visible));
+        }
+    }
+
+    /// Whether a frame of the loaded page has come in from this host.
+    pub(crate) fn framed(&self) -> bool {
+        self.framed
+    }
+
+    pub(crate) fn mark_framed(&mut self) {
+        self.framed = true;
     }
 
     /// Queues `Shutdown` now. An app exit calls this on every tab before dropping them, so `Drop` then waits one
@@ -346,6 +362,8 @@ impl ViewTab {
             child: None,
             cache_dir: None,
             profile_slot: None,
+            shown: true,
+            framed: false,
         };
         let writer = tab.writer.clone();
         (tab, FakePeer { channel: manifold_view_protocol::MessageChannel::new(peer), writer }, feed)
@@ -1034,8 +1052,19 @@ pub fn spawn_tab(
 
     let writer = view_io::Writer::spawn(to_view, &format!("engine writer {socket_id}"));
     let frame_map = view_io::FrameMap::default();
-    let tab =
-        ViewTab { kind, socket_id, writer, events_rx, frame, frame_map, child: Some(child), cache_dir, profile_slot };
+    let tab = ViewTab {
+        kind,
+        socket_id,
+        writer,
+        events_rx,
+        frame,
+        frame_map,
+        child: Some(child),
+        cache_dir,
+        profile_slot,
+        shown: true,
+        framed: false,
+    };
     if desc.tags.has(Tag::Jars) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.
         tab.send(&HostToView::SetCookies(jar_json()));

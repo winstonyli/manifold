@@ -450,7 +450,9 @@ mod tests {
         assert_eq!(app.view_mode, ViewMode::Graph);
     }
 
-    fn hidden(peer: &mut crate::session_sync::tests::Peer) -> bool {
+    /// Whether the frame's `sync_tab_visibility` stops the tab rendering.
+    fn hidden(app: &mut App, peer: &mut crate::session_sync::tests::Peer) -> bool {
+        app.sync_tab_visibility(false);
         peer.sent().iter().any(|m| matches!(m, HostToView::SetVisible(false)))
     }
 
@@ -458,6 +460,7 @@ mod tests {
     fn an_other_row_chosen_in_the_item_view_hides_the_tab_and_shows_the_graph() {
         let mut app = App::default();
         let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        app.note_tab_frame(tab_id);
         let note = add_note(&mut app, "kept");
         app.focused = Some(tab_id);
         app.view_mode = ViewMode::Item;
@@ -465,7 +468,7 @@ mod tests {
         app.omni_activate(row, Host::Item);
         assert_eq!(app.view_mode, ViewMode::Graph);
         assert_eq!(app.camera.reveal, Some(note));
-        assert!(hidden(&mut peer), "the tab stopped rendering");
+        assert!(hidden(&mut app, &mut peer), "the tab stopped rendering");
     }
 
     /// The Settings page opened from a tab leaves that tab showing: leaving for the Graph must hide it too.
@@ -473,6 +476,7 @@ mod tests {
     fn an_other_row_chosen_in_settings_opened_from_a_tab_hides_the_tab() {
         let mut app = App::default();
         let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        app.note_tab_frame(tab_id);
         let note = add_note(&mut app, "kept");
         app.focused = Some(tab_id);
         app.view_mode = ViewMode::Item;
@@ -480,7 +484,7 @@ mod tests {
         let row = app.other_row_for_test(note);
         app.omni_activate(row, Host::Settings);
         assert_eq!(app.view_mode, ViewMode::Graph);
-        assert!(hidden(&mut peer), "the tab stopped rendering");
+        assert!(hidden(&mut app, &mut peer), "the tab stopped rendering");
     }
 
     #[test]

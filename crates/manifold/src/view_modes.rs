@@ -164,9 +164,9 @@ impl App {
     /// Checked once per frame, before rendering: once a `Transition`'s
     /// duration has elapsed, applies whatever `focus_tab`/`leave_to_graph`
     /// would have done instantly (the view-mode switch, and — for
-    /// `ToGraph` specifically — finally suspending the tab now that its
-    /// last real frame has been captured into the thumbnail it just
-    /// shrank into).
+    /// `ToGraph` specifically — the tab stops rendering on the next
+    /// `sync_tab_visibility`, now that its last real frame has been
+    /// captured into the thumbnail it just shrank into).
     pub(crate) fn finish_transition_if_done(&mut self) {
         let Some(transition) = &self.transition else {
             return;
@@ -174,16 +174,12 @@ impl App {
         if transition.start.elapsed() < TRANSITION_DURATION {
             return;
         }
-        let node_id = transition.node_id;
         let kind = transition.kind;
         self.transition = None;
         match kind {
             TransitionKind::ToGraph => {
                 self.view_mode = ViewMode::Graph;
                 self.viewed_image = None;
-                if let Some(node) = self.nodes.get_mut(&node_id).and_then(|n| n.as_tab_mut()) {
-                    node.tab.set_visible(false);
-                }
             }
             TransitionKind::ToItem => {
                 self.view_mode = ViewMode::Item;

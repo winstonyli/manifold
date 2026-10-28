@@ -69,18 +69,6 @@ pub(crate) fn image_fit_scale(image: egui::Vec2, body: egui::Vec2) -> f32 {
     (body.x / image.x).min(body.y / image.y).clamp(f32::MIN_POSITIVE, 1.0)
 }
 
-/// Whether a just-(re)spawned tab's engine view should be shown, used by
-/// `handle_tab_spawn_result`. The focused tab stays hidden while Image view
-/// is up front of it (relaunching straight into Image view, or a crash
-/// respawn of the tab hidden behind an open image) -- `focused` keeps
-/// pointing at it per the Item-view design (see the design doc's Plan-time
-/// corrections on `App::focused`), but nothing should render or receive
-/// input for it until the image is closed. A split's secondary pane is
-/// always visible regardless, same as before this fn existed.
-pub(crate) fn spawned_tab_visible(is_focused: bool, is_split: bool, image_view_showing: bool) -> bool {
-    (is_focused && !image_view_showing) || is_split
-}
-
 pub(crate) fn image_display_rect(body: egui::Rect, image: egui::Vec2, scale: f32, pan: egui::Vec2) -> egui::Rect {
     egui::Rect::from_center_size(body.center() + pan, image * scale)
 }
@@ -308,20 +296,6 @@ mod tests {
         assert!((fit - 700.0 / 8000.0).abs() < 1e-6, "{fit}");
         assert_eq!(zoom_about(0.05, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, 0.05, "never up on zoom-out");
         assert_eq!(zoom_about(0.11, egui::Vec2::ZERO, 0.5, egui::Vec2::ZERO).0, IMAGE_ZOOM_MIN);
-    }
-
-    #[test]
-    fn spawned_tab_visible_hides_focused_tab_behind_image_view() {
-        // Ordinary focused tab, no Image view up: visible, as before.
-        assert!(spawned_tab_visible(true, false, false));
-        // Focused tab, but Image view is showing in front of it: hidden.
-        assert!(!spawned_tab_visible(true, false, true));
-        // Split's secondary pane is always visible, even behind Image view.
-        assert!(spawned_tab_visible(false, true, true));
-        assert!(spawned_tab_visible(false, true, false));
-        // Unfocused, non-split tab: never visible.
-        assert!(!spawned_tab_visible(false, false, false));
-        assert!(!spawned_tab_visible(false, false, true));
     }
 
     #[test]

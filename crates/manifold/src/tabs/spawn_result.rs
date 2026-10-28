@@ -78,12 +78,9 @@ impl App {
                 // which arrives as an ordinary `Respawn`, not `Split` --
                 // see `SpawnPurpose::Split`'s own doc comment.
                 let is_split = matches!(purpose, SpawnPurpose::Split) || self.split_tab == Some(id);
-                // The focused tab stays hidden while Image view is showing
-                // in front of it -- e.g. relaunching straight into Image
-                // view, or a crash respawn of the tab Image view is
-                // currently covering (see `spawned_tab_visible`'s doc).
-                let visible = spawned_tab_visible(is_focused, is_split, self.showing_image_view());
-                tab.set_visible(visible);
+                // Image view covers the focused tab -- e.g. relaunching straight into Image view, or a crash respawn
+                // of the tab it is covering -- so it needs no resize. Visibility is `sync_tab_visibility`'s.
+                let focused_shown = is_focused && !self.showing_image_view();
                 if muted {
                     tab.send(&HostToView::SetMuted { muted: true });
                 }
@@ -153,21 +150,14 @@ impl App {
                         // reset the page's zoom while Settings kept
                         // showing the configured value.
                         self.send_zoom_to(id);
-                        if is_focused {
-                            // Resizing only matters for what's actually
-                            // shown -- skip it while Image view hides this
-                            // tab, same as `visible` above.
-                            if visible {
-                                self.send_resize_to(id);
-                            }
-                        } else if is_split {
+                        if focused_shown || is_split {
                             self.send_resize_to(id);
                         }
                     }
                     SpawnPurpose::Restore => {
                         self.note_host_load(id);
                         self.send_zoom_to(id);
-                        if is_focused && visible {
+                        if focused_shown {
                             self.send_resize_to(id);
                         }
                     }
