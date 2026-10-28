@@ -10,14 +10,19 @@
 //! - `sheet.png`: every view in one grid
 //!
 //! Each view starts from Graph view at the top level and leaves the app there, so `VIEWS` picks any subset and a run is
-//! about 40 s. `SIZE` (`"1280 800"`) is the window size; the clicks on fixed coordinates assume the default. The
-//! default views are `DEFAULT_VIEWS`; the rest are opt-in:
+//! about 40 s. `SIZE` (`"1280 800"`) is the window size; the clicks on fixed coordinates (card positions on the
+//! canvas, parking the pointer) assume the default. Chrome controls (toolbar buttons, the search field, the Tab actions
+//! popup's rows) are clicked or hovered by the name `EXPORTSTATE`'s `controls` lists (`crate::state`), wherever the
+//! toolbar puts them; a name that is not on screen fails the view, naming it. The default views are `DEFAULT_VIEWS`;
+//! the rest are opt-in:
 //!
 //! - hover scans (`hover-graph hover-json hover-json-sel hover-tabview hover-find hover-settings hover-menu-tab
 //!   hover-dropdown hover-quickswitch`) and Tab-key scans (`tab-graph tab-tabview tab-settings tab-find tab-quickswitch
 //!   tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo`) sweep the mouse or the Tab key
 //!   along a bar and print where anything other than the hovered widget moved (`shots_img::hover_report`);
-//!   `focus-graph` does the same for clicks
+//!   `focus-graph` does the same for a click into the Graph search field. `tab-graph` and the JSON bar's scan (in
+//!   `json-keys`) press Tab until no named control has focus (`tab_walk`), print each stop, and fail if a focusable
+//!   named control of the bar was never a stop, so no stop count goes stale and a walk that ends early cannot pass
 //! - keyboard views: `graph-enter-group graph-enter-json graph-menu-key graph-select-key graph-pinned-dense json-keys tabview-split-key`
 //! - assertion views, which print `PASS:`/`FAIL:`: `mouse-regress` (drag, middle-click close),
 //!   `note-key`, `digit-jump`, `json-tab-offscreen`, `tabview-actions-click`
@@ -57,7 +62,10 @@ use crate::instance::{seed_settings, Instance};
 use crate::probes::{finish, import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{resume_body, Downloads, Proxy};
-use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
+use crate::state::{
+    bar_stops, round_half_even, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH,
+    SPLIT_VIEW, TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
+};
 use crate::suggest;
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
@@ -71,9 +79,9 @@ const AWAY: &str = "CLICK 1100 300";
 /// The settings page's pickers, by the labels of their rows (`labelled_by`).
 const DEFAULT_ENGINE: &str = "Default starting engine (new tabs)";
 const SEARCH_ENGINE: &str = "Default search engine";
-/// The zoom chip's zoom-out button, by name.
-const ZOOM_OUT: &str = "Zoom out (Ctrl+-)";
 const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// The most Tab presses a `tab_walk` makes before it reports that it never ended.
+const TAB_WALK_CAP: u32 = 40;
 
 fn knob(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -492,23 +500,78 @@ impl Shots {
         Self::print_report(&dir, band, true, x0)
     }
 
-    /// Rest, then `n` Tab key presses (egui keyboard focus moving on), a shot after each.
+    /// One Tab key press (egui keyboard focus moving on) and the shot after it, `x<i>.png` in `dir`.
+    fn tab_press(&mut self, dir: &Path, i: u32) -> io::Result<()> {
+        send!(self, "TABKEY", "SLEEP 0.5")?;
+        self.inst.screenshot_to(&dir.join(format!("x{i:04}.png")))
+    }
+
+    /// Rest, then `n` Tab key presses, a shot after each.
     fn tab_scan(&mut self, name: &str, n: u32, band: u32) -> io::Result<()> {
         let dir = self.scan_dir(name)?;
         self.rest_shot(&dir, "1275 795")?;
         for i in 1..=n {
-            send!(self, "TABKEY", "SLEEP 0.5")?;
-            self.inst.screenshot_to(&dir.join(format!("x{i:04}.png")))?;
+            self.tab_press(&dir, i)?;
         }
         Self::print_report(&dir, band, false, 0)
     }
 
-    /// Rest, then a click at each point (focusing whatever is there), Escape between. Same report as `hover_scan`.
-    fn focus_scan(&mut self, name: &str, points: &[(i64, i64)]) -> io::Result<()> {
+    /// `tab_scan` with no stop count to go stale: presses Tab (a shot and an export after each) and ends at the first
+    /// press after which no control is selected except those selected at rest (compared by name and rect), or after
+    /// `TAB_WALK_CAP` presses, which is a failure. A press ends it by moving focus off the last Tab stop on screen
+    /// (egui drops focus there; the presses after that are the canvas's own walk over cards) or onto a control the
+    /// export does not name. Each stop prints its control's name; a glyph-only icon button's name is its glyph, a
+    /// private-use character that prints blank. Fails if no press lands on a named control, if the walk does not end,
+    /// if the bar at rest has no focusable named control (`state::bar_stops`; a disabled button is not one), or if one
+    /// of them was never a stop (`state::unvisited_bar_stops`): an unnamed stop in the middle of the bar ends the walk
+    /// there, and the controls after it show up as never reached.
+    fn tab_walk(&mut self, name: &str, band: u32) -> io::Result<()> {
+        let dir = self.scan_dir(name)?;
+        self.rest_shot(&dir, "1275 795")?;
+        let rest = self.state()?.controls();
+        // Selected at rest (a toggled button, a highlighted row) is not focus.
+        let selected_at_rest: Vec<&Control> = rest.iter().filter(|c| c.selected).collect();
+        let mut stops: Vec<Control> = Vec::new();
+        let mut presses = 0;
+        let mut ended = false;
+        for i in 1..=TAB_WALK_CAP {
+            self.tab_press(&dir, i)?;
+            let focus: Vec<Control> = self
+                .state()?
+                .selected_controls()
+                .into_iter()
+                .filter(|c| !selected_at_rest.iter().any(|r| r.is(c)))
+                .collect();
+            if focus.is_empty() {
+                ended = true;
+                break;
+            }
+            println!("{name}: Tab stop {i}: {}", focus.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
+            presses = i;
+            stops.extend(focus);
+        }
+        check(&format!("{name}: the first Tab lands on a named control"), presses > 0);
+        check(&format!("{name}: the Tab walk ends within {TAB_WALK_CAP} stops ({presses} named)"), ended);
+        // A bar with no focusable control at rest checks nothing, so that fails too. A glyph's name shows escaped.
+        let bar = bar_stops(&rest).len();
+        let missed = unvisited_bar_stops(&rest, &stops);
+        let mut label = format!("{name}: the Tab walk reached all {bar} focusable bar controls");
+        if !missed.is_empty() {
+            let list: Vec<String> = missed.iter().map(|c| format!("{:?} at {:?}", c.name, c.rect)).collect();
+            label = format!("{label}; never reached: {}", list.join("; "));
+        }
+        check(&label, bar > 0 && missed.is_empty());
+        Self::print_report(&dir, band, false, 0)
+    }
+
+    /// Rest, then a click on each of the controls named `controls` (focusing it), Escape between. Same report as
+    /// `hover_scan`. A name the toolbar no longer shows fails the view, naming it.
+    fn focus_scan(&mut self, name: &str, controls: &[&str]) -> io::Result<()> {
         let dir = self.scan_dir(name)?;
         self.rest_shot(&dir, "5 790")?;
-        for (i, (x, y)) in points.iter().enumerate() {
-            send!(self, format!("CLICK {x} {y}"), "SLEEP 0.5", "MOUSEMOVE 5 790", "SLEEP 0.5")?;
+        for (i, control) in controls.iter().enumerate() {
+            self.inst.click_control(control)?;
+            send!(self, "SLEEP 0.5", "MOUSEMOVE 5 790", "SLEEP 0.5")?;
             self.inst.screenshot_to(&dir.join(format!("x{:04}.png", i + 1)))?;
             send!(self, "ESCAPE", "SLEEP 0.5")?;
         }
@@ -528,7 +591,7 @@ impl Shots {
         self.graph_menus()?;
         self.link_views()?;
         self.view("hover-graph", |s| s.hover_scan("graph", knob("HOVER_Y", 16), knob("HOVER_BAND", 34)))?;
-        self.view("tab-graph", |s| s.tab_scan("graph", knob("TAB_STOPS", 10), knob("HOVER_BAND", 34)))?;
+        self.view("tab-graph", |s| s.tab_walk("graph", knob("HOVER_BAND", 34)))?;
         self.keyboard_views()?;
         self.view("mouse-regress", Self::mouse_regress)?;
         self.view("hover-menu-tab", |s| {
@@ -544,7 +607,7 @@ impl Shots {
             )?;
             s.reset()
         })?;
-        self.view("focus-graph", |s| s.focus_scan("graph", &[(385, 16), (235, 16)]))?;
+        self.view("focus-graph", |s| s.focus_scan("graph", &[SEARCH]))?;
         // Right-click on empty canvas: the New Tab/Note/Group card.
         self.view("graph-newnode-menu", |s| {
             s.menu_at_empty()?;
@@ -621,12 +684,12 @@ impl Shots {
             send!(s, "QUICKSWITCHESCAPE", "SLEEP 1")
         })?;
         // Closes the note (middle-click), so it must come before the settings block and after every view that shows it.
-        let closed_button = i64::from(knob("CLOSED_BUTTON_X", 515));
         self.view("graph-closed", |s| {
             let (x, y) = s.center(NOTE, "top", None)?;
             send!(s, format!("CLICK {x} {y} middle"), "SLEEP 1")?;
             s.settle()?;
-            send!(s, format!("CLICK {closed_button} 16"), "SLEEP 1")?;
+            let button = s.state()?.recently_closed_name();
+            s.click_named(&button)?;
             s.shot("graph-closed")?;
             s.reset()
         })?;
@@ -942,7 +1005,7 @@ impl Shots {
             s.tab_presses(1, "0.5")?;
             send!(s, "SPACEKEY", "SLEEP 0.5", "TOGGLEPIN", "SLEEP 1")?;
             for _ in 0..6 {
-                s.inst.click_control(ZOOM_OUT)?;
+                s.inst.click_control(crate::state::ZOOM_OUT)?;
                 send!(s, "SLEEP 0.5")?;
             }
             send!(s, "SLEEP 1")?;
@@ -1088,10 +1151,14 @@ impl Shots {
                 send!(s, "CLICK 280 380", "SLEEP 1")?;
                 s.hover_scan("json-sel", knob("HOVER_Y", 16), knob("HOVER_BAND", 34))?;
             }
+            // Copy value is disabled until a row is selected, and a disabled widget shows no tooltip: select the root
+            // (JSONSELECT with no pointer), hover the button by name, and Escape clears the selection after.
             if s.has("json-tooltip") {
-                send!(s, format!("MOUSEMOVE {} 16", knob("JSON_TIP_X", 120)), "SLEEP 2")?;
+                send!(s, "JSONSELECT", "SLEEP 1")?;
+                s.inst.hover_control(COPY_VALUE)?;
+                send!(s, "SLEEP 2")?;
                 s.shot("json-tooltip")?;
-                send!(s, "MOUSEMOVE 5 790")?;
+                send!(s, "MOUSEMOVE 5 790", "ESCAPE", "SLEEP 1")?;
             }
             // Keys: Down x3 selects the third outline row, Enter toggles it, Right opens it, Up+Left+Left closes then
             // selects the parent, Tab focuses a card.
@@ -1104,7 +1171,7 @@ impl Shots {
                 s.shot("json-keys-right")?;
                 send!(s, "ARROWUP", "ARROWLEFT", "ARROWLEFT", "SLEEP 1")?;
                 s.shot("json-keys-left")?;
-                s.tab_scan("json", knob("JSON_TAB_STOPS", 18), knob("HOVER_BAND", 34))?;
+                s.tab_walk("json", knob("HOVER_BAND", 34))?;
             }
             // Right-click the first card the level lays out (data.json at 1280x800).
             if s.has("json-menu") {
@@ -1137,7 +1204,6 @@ impl Shots {
         if !self.has_any(&names) {
             return Ok(());
         }
-        let w = i64::from(self.size.0);
         let band = knob("HOVER_BAND", 34);
         self.step("tab view", |s| {
             s.open_tab()?;
@@ -1170,24 +1236,8 @@ impl Shots {
                 s.shot("tabview-find")?;
                 send!(s, "CLOSEFINDBAR")?;
             }
-            // Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card, its Close Tab row
-            // removes one.
-            if s.has("tabview-actions-click") {
-                let pinned = |s: &mut Self| -> io::Result<usize> {
-                    Ok(s.state()?.cards().iter().filter(|c| c["pinned"].as_bool() == Some(true)).count())
-                };
-                let (pins0, cards0) = (pinned(s)?, s.card_count()?);
-                let ax = w - 95;
-                send!(s, format!("CLICK {ax} 16"), "SLEEP 1", format!("CLICK {ax} 49"), "SLEEP 1")?;
-                check("Tab actions > Pin pins the tab", pinned(s)? == pins0 + 1);
-                send!(s, format!("CLICK {ax} 16"), "SLEEP 1", format!("CLICK {ax} 76"), "SLEEP 2")?;
-                check("Tab actions > Duplicate adds a card", s.card_count()? == cards0 + 1);
-                send!(s, format!("CLICK {ax} 16"), "SLEEP 1", format!("CLICK {ax} 155"), "SLEEP 2")?;
-                let now = s.card_count()?;
-                check(&format!("Tab actions > Close Tab removes the tab ({now} vs {cards0})"), now == cards0);
-            }
             if s.has("tabview-actions") {
-                send!(s, format!("CLICK {} 16", w - 95), "SLEEP 1")?;
+                s.click_named(TAB_ACTIONS)?;
                 s.shot("tabview-actions")?;
                 send!(s, "ESCAPE")?;
             }
@@ -1203,14 +1253,14 @@ impl Shots {
             }
             // The Split button opens the engine picker.
             if s.has("tabview-engine") {
-                send!(s, format!("CLICK {} 16", w - 126), "SLEEP 1")?;
+                s.click_named(SPLIT_VIEW)?;
                 s.shot("tabview-engine")?;
                 send!(s, "ESCAPE", "SLEEP 1")?;
             }
             // Keyboard-only pick from the Split engine picker: it opens on the selected card, Down moves, Enter picks
             // and opens the Split pane.
             if s.has("tabview-split-key") {
-                send!(s, format!("CLICK {} 16", w - 126), "SLEEP 1")?;
+                s.click_named(SPLIT_VIEW)?;
                 s.shot("tabview-split-key-open")?;
                 send!(s, "ARROWDOWN", "SLEEP 1")?;
                 s.shot("tabview-split-key-down")?;
@@ -1222,6 +1272,26 @@ impl Shots {
                 send!(s, "SPLIT webview2", "SLEEP 3")?;
                 s.shot("tabview-split")?;
                 send!(s, "CLOSESPLIT", "SLEEP 1")?;
+            }
+            // Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card, its Close Tab row
+            // removes one. Last, because Close Tab ends the Tab view and a view after it would find no toolbar to click.
+            if s.has("tabview-actions-click") {
+                let pinned = |s: &mut Self| -> io::Result<usize> {
+                    Ok(s.state()?.cards().iter().filter(|c| c["pinned"].as_bool() == Some(true)).count())
+                };
+                let (pins0, cards0) = (pinned(s)?, s.card_count()?);
+                s.click_named(TAB_ACTIONS)?;
+                s.click_named(TAB_ACTIONS_PIN)?;
+                check("Tab actions > Pin pins the tab", pinned(s)? == pins0 + 1);
+                s.click_named(TAB_ACTIONS)?;
+                s.inst.click_control(TAB_ACTIONS_DUPLICATE)?;
+                send!(s, "SLEEP 2")?;
+                check("Tab actions > Duplicate adds a card", s.card_count()? == cards0 + 1);
+                s.click_named(TAB_ACTIONS)?;
+                s.inst.click_control(TAB_ACTIONS_CLOSE_TAB)?;
+                send!(s, "SLEEP 2")?;
+                let now = s.card_count()?;
+                check(&format!("Tab actions > Close Tab removes the tab ({now} vs {cards0})"), now == cards0);
             }
             s.reset()
         })

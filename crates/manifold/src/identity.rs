@@ -128,10 +128,14 @@ pub(crate) struct DrawnControl {
     pub(crate) label: String,
     pub(crate) rect: egui::Rect,
     pub(crate) selected: bool,
+    /// Whether Tab can land on it: egui's own rule, enabled and sensing focus. A disabled button is named but is not
+    /// a Tab stop.
+    pub(crate) focusable: bool,
 }
 
 /// The named controls of the pass `ctx` just finished, from its accesskit tree `update`: a widget's name is the text
-/// of what it is `labelled_by`, else its own label (a button's text, a `NamedTip`). A label is not a control (a list
+/// of what it is `labelled_by`, else its own label (a button's text, a `NamedTip`), else its placeholder (a text field's
+/// hint, which egui gives accesskit only as that). A label is not a control (a list
 /// row that is one says it is a button, `popups::list_row`), and a widget clipped away (scrolled out of its area) is
 /// left out. Frontmost layer first, in paint order within a layer.
 pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpdate) -> Vec<DrawnControl> {
@@ -141,7 +145,7 @@ pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpd
         let by: Vec<&str> =
             node.labelled_by().iter().filter_map(|id| nodes.get(id)).filter_map(|n| n.label().or(n.value())).collect();
         if by.is_empty() {
-            node.label().map(str::to_owned)
+            node.label().or_else(|| node.placeholder()).map(str::to_owned)
         } else {
             Some(by.join(" "))
         }
@@ -162,6 +166,7 @@ pub(crate) fn controls_in(ctx: &egui::Context, update: &egui::accesskit::TreeUpd
                 label,
                 rect: to_global(ctx, w.layer_id, w.interact_rect),
                 selected,
+                focusable: w.enabled && w.sense.is_focusable(),
             })
         })
         .collect()
@@ -459,6 +464,47 @@ mod tests {
         let controls = controls_in(&ctx, &update.expect("accesskit on"));
         let seen: Vec<_> = controls.iter().map(|c| (c.label.as_str(), c.selected)).collect();
         assert_eq!(seen, [("picked", true), ("other", false), ("history row", true)]);
+    }
+
+    /// A Tab stop is a control that is enabled and senses focus (egui's `interested_in_focus`): a disabled button is
+    /// named but not one.
+    #[test]
+    fn only_an_enabled_focusable_control_is_a_tab_stop() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut update = None;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.add(egui::Button::new("on"));
+                ui.add_enabled(false, egui::Button::new("off"));
+                crate::popups::list_row(ui, "row");
+            });
+            output.textures_delta.clear();
+            update = output.platform_output.accesskit_update;
+        }
+        let controls = controls_in(&ctx, &update.expect("accesskit on"));
+        let seen: Vec<_> = controls.iter().map(|c| (c.label.as_str(), c.focusable)).collect();
+        assert_eq!(seen, [("on", true), ("off", false), ("row", true)]);
+    }
+
+    /// A text field with only a hint (the Graph search field) is a control under its hint text: egui gives that text to
+    /// accesskit as the node's placeholder, not its label.
+    #[test]
+    fn a_text_field_with_only_a_hint_is_a_control_under_its_hint() {
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut text = String::new();
+        let mut update = None;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.add(egui::TextEdit::singleline(&mut text).hint_text("Search here"));
+            });
+            output.textures_delta.clear();
+            update = output.platform_output.accesskit_update;
+        }
+        let controls = controls_in(&ctx, &update.expect("accesskit on"));
+        let seen: Vec<_> = controls.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(seen, ["Search here"]);
     }
 
     #[test]

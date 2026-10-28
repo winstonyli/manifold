@@ -15,6 +15,18 @@ pub const FIT_VIEW: &str = "Reset View (fit all)";
 pub const ZOOM_OUT: &str = "Zoom out (Ctrl+-)";
 pub const ZOOM_IN: &str = "Zoom in (Ctrl+=)";
 pub const BACK: &str = "Back one level";
+/// The Graph search field, named by its hint (`identity::controls_in` falls back to a field's placeholder). The quick
+/// switcher's field (omnibar/ui.rs:~221) has the same hint, so with it open (Ctrl+K) `State::control` finds the
+/// popup's field, not the toolbar's: the export lists the frontmost layer first.
+pub const SEARCH: &str = "Search cards, history, settings...";
+/// The JSON bar's Copy value button (enabled only with a row selected) and the Tab-view toolbar's two right-hand
+/// buttons, with the Tab actions popup's rows (each row's name ends in its shortcut, `Button::shortcut_text`).
+pub const COPY_VALUE: &str = "Copy value";
+pub const TAB_ACTIONS: &str = "Tab actions";
+pub const SPLIT_VIEW: &str = "Split view: compare engines";
+pub const TAB_ACTIONS_PIN: &str = "Pin Ctrl+P";
+pub const TAB_ACTIONS_DUPLICATE: &str = "Duplicate Ctrl+D";
+pub const TAB_ACTIONS_CLOSE_TAB: &str = "Close Tab Ctrl+W";
 pub const DOWNLOAD: &str = "application/octet-stream";
 
 /// The headless window the smoke test sizes with RESIZE, and the graph toolbar's height rounded up:
@@ -41,6 +53,38 @@ pub fn fmt0(x: f64) -> String {
 /// `"%.0f %.0f"`.
 pub fn fmt_pair(x: f64, y: f64) -> String {
     format!("{} {}", fmt0(x), fmt0(y))
+}
+
+/// One entry of the export's `controls`: a widget with a name, as a screen reader hears it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Control {
+    pub name: String,
+    /// `[left, top, right, bottom]` on screen.
+    pub rect: [f64; 4],
+    /// Toggled on, highlighted, or holding keyboard focus.
+    pub selected: bool,
+    /// A Tab stop: enabled and sensing focus (egui's own rule). A disabled button is named but is not one.
+    pub focusable: bool,
+}
+
+impl Control {
+    /// Whether `other` is the same control. Name and rect together: the same name can sit in two places (two
+    /// glyph-only buttons with one glyph), and the same place can hold different names over time.
+    pub fn is(&self, other: &Control) -> bool {
+        self.name == other.name && self.rect == other.rect
+    }
+}
+
+/// The Tab stops of the top bar in `rest` (the export before a walk): the controls that are focusable and lie within
+/// `TOP` px of the window's top edge. A disabled button is named but is not one.
+pub fn bar_stops(rest: &[Control]) -> Vec<&Control> {
+    rest.iter().filter(|c| c.focusable && c.rect[3] <= TOP).collect()
+}
+
+/// The `bar_stops` of `rest` that no control of `stops` is (same control: `Control::is`). Count-free: a walk that ends
+/// early, or skips a stop, leaves the controls it did not reach in the result.
+pub fn unvisited_bar_stops<'a>(rest: &'a [Control], stops: &[Control]) -> Vec<&'a Control> {
+    bar_stops(rest).into_iter().filter(|c| !stops.iter().any(|s| s.is(c))).collect()
 }
 
 /// One EXPORTSTATE file, parsed.
@@ -168,6 +212,32 @@ impl State {
     /// of that name.
     pub fn control(&self, name: &str) -> Option<String> {
         Self::center(self.0["controls"].as_array()?.iter().find(|c| c["name"] == name)?)
+    }
+
+    /// The name of the Recently Closed button: it carries the count of the `closed` entries, which earlier views change.
+    pub fn recently_closed_name(&self) -> String {
+        format!("Recently Closed ({})", self.0["closed"].as_array().map_or(0, Vec::len))
+    }
+
+    /// Every entry of `controls` that has a name and a rect, frontmost first as the export lists them.
+    pub fn controls(&self) -> Vec<Control> {
+        let list = self.0["controls"].as_array().map_or(&[][..], Vec::as_slice);
+        list.iter()
+            .filter_map(|c| {
+                Some(Control {
+                    name: c["name"].as_str()?.to_owned(),
+                    rect: Self::floats::<4>(c, "rect")?,
+                    selected: c["selected"] == true,
+                    focusable: c["focusable"] == true,
+                })
+            })
+            .collect()
+    }
+
+    /// The `controls` marked `selected`, in order: a toggled button, a highlighted row, or the control with keyboard
+    /// focus (which is how a Tab walk finds where it is).
+    pub fn selected_controls(&self) -> Vec<Control> {
+        self.controls().into_iter().filter(|c| c.selected).collect()
     }
 
     /// The center of a `controls` entry, `"x y"`.
@@ -335,6 +405,62 @@ mod tests {
         let s = State::parse(r#"{"controls":[{"name":"Back one level","rect":[10.0,5.0,34.0,29.0]}]}"#).unwrap();
         assert_eq!(s.control("Back one level").as_deref(), Some("22 17"));
         assert_eq!(s.control("Reset View (fit all)"), None);
+    }
+
+    /// The selected controls are the ones marked `selected`, whatever else the entry holds; an entry with no name or
+    /// no rect is no control.
+    #[test]
+    fn selected_controls_are_the_marked_ones() {
+        let s = State::parse(
+            r#"{"controls":[{"name":"a","selected":false,"focusable":true,"rect":[0.0,0.0,1.0,1.0]},
+                            {"name":"b","selected":true,"rect":[2.0,3.0,4.0,5.0]},
+                            {"name":"c","rect":[0.0,0.0,1.0,1.0]},
+                            {"selected":true,"rect":[0.0,0.0,1.0,1.0]},
+                            {"name":"d","selected":true}]}"#,
+        )
+        .unwrap();
+        let names: Vec<_> = s.selected_controls().into_iter().map(|c| (c.name, c.rect, c.focusable)).collect();
+        assert_eq!(names, [("b".to_string(), [2.0, 3.0, 4.0, 5.0], false)]);
+        assert_eq!(
+            s.controls().iter().map(|c| (c.name.as_str(), c.focusable)).collect::<Vec<_>>(),
+            [("a", true), ("b", false), ("c", false)]
+        );
+        assert!(State::parse("{}").unwrap().selected_controls().is_empty());
+    }
+
+    fn control(name: &str, left: f64, bottom: f64, focusable: bool) -> Control {
+        Control { name: name.to_owned(), rect: [left, bottom - 24.0, left + 24.0, bottom], selected: false, focusable }
+    }
+
+    /// The bar's focusable controls a walk missed, by name and rect: a disabled button is no Tab stop, a control below
+    /// the bar is not the bar's, and two controls with one name are told apart by where they are.
+    #[test]
+    fn unvisited_bar_stops_are_the_focusable_bar_controls_no_stop_matches() {
+        let rest = [
+            control("New", 4.0, 30.0, true),
+            control("Same glyph", 40.0, 30.0, true),
+            control("Same glyph", 80.0, 30.0, true),
+            control("Copy value", 120.0, 30.0, false),
+            control("Card", 4.0, TOP + 30.0, true),
+            control("Settings", 200.0, 30.0, true),
+        ];
+        assert_eq!(bar_stops(&rest).len(), 4);
+        let stops = [control("New", 4.0, 30.0, true), control("Same glyph", 40.0, 30.0, true)];
+        let missed: Vec<_> = unvisited_bar_stops(&rest, &stops).iter().map(|c| (c.name.as_str(), c.rect[0])).collect();
+        assert_eq!(missed, [("Same glyph", 80.0), ("Settings", 200.0)]);
+        // A walk that reached them all misses none, whatever else it stopped on.
+        let all =
+            [rest[0].clone(), rest[1].clone(), rest[2].clone(), rest[5].clone(), control("Elsewhere", 9.0, 9.0, true)];
+        assert!(unvisited_bar_stops(&rest, &all).is_empty());
+        // A walk that never started misses every one of them.
+        assert_eq!(unvisited_bar_stops(&rest, &[]).len(), 4);
+    }
+
+    /// The Recently Closed button's name carries the number of closed entries.
+    #[test]
+    fn the_recently_closed_button_is_named_by_the_closed_count() {
+        let s = State::parse(r#"{"closed":["a","b"]}"#).unwrap();
+        assert_eq!(s.recently_closed_name(), "Recently Closed (2)");
     }
 
     /// A card can reach past the window's bottom edge with its center outside it (the smoke's empty group at
