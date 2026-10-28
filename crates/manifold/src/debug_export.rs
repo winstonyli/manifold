@@ -174,6 +174,7 @@ impl App {
                     "editing": node.as_note().is_some_and(|n| n.editing),
                     // A download card's progress and outcome, as its body draws them.
                     "download": node.as_download().map(|d| json!({
+                        "url": self.doc.mirror.url(id),
                         "path": d.path,
                         "bytes": d.bytes_received,
                         "total": d.total_bytes,

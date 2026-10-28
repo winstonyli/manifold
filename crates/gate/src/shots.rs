@@ -1342,14 +1342,16 @@ impl Shots {
                 // The server dies mid-transfer. WebView2 retries the download as a second one under the same path,
                 // which fails once the retry is refused (runs 2026-10-27-dl-probe-*); the card shows it failed, and
                 // the shot waits for its toast to go.
+                let url = server.url("/slow");
                 server.kill();
-                let failed = |s: &State| matches!(s.downloads()[..], [d] if d["failed"] == true) && s.toast().is_none();
+                let failed =
+                    |s: &State| matches!(s.downloads_from(&url)[..], [d] if d["failed"] == true) && s.toast().is_none();
                 let state = self.inst.export_until("download-failed", failed)?;
                 if !failed(&state) {
                     return Err(io::Error::other(format!(
-                        "the one download card did not show the download failed (toast {:?}): {:?}",
+                        "the one card downloading {url} did not show the download failed (toast {:?}): {:?}",
                         state.toast(),
-                        state.downloads()
+                        state.downloads_from(&url)
                     )));
                 }
                 send!(self, "MOUSEMOVE 5 780", "SLEEP 1")?;
