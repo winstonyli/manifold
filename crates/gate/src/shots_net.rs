@@ -11,7 +11,7 @@ use std::time::Duration;
 type Held = Mutex<Vec<TcpStream>>;
 
 /// A listener on 127.0.0.1 (or `SITE_HOST`) that hands each connection to `on_conn` on its own thread. A connection the handler
-/// pushes onto the held list stays open until `close_held` or drop.
+/// pushes onto the held list stays open until drop.
 struct Hold {
     addr: SocketAddr,
     stop: Arc<AtomicBool>,
@@ -50,19 +50,16 @@ impl Hold {
         });
         Ok(Hold { addr, stop, held, thread: Some(thread) })
     }
-
-    fn close_held(&self) {
-        for stream in self.held.lock().unwrap_or_else(PoisonError::into_inner).drain(..) {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
-    }
 }
 
+/// Stops listening (the accept thread exits and closes the listener) and breaks the held connections.
 impl Drop for Hold {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let _ = TcpStream::connect(self.addr);
-        self.close_held();
+        for stream in self.held.lock().unwrap_or_else(PoisonError::into_inner).drain(..) {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -83,11 +80,11 @@ fn request_line(stream: &mut TcpStream) -> String {
     String::from_utf8_lossy(&head).lines().next().unwrap_or("").to_string()
 }
 
-/// `/real.zip` answers a 4-byte attachment; `/slow` promises 1 MB, sends 300 KB and then holds the connection until
-/// `kill` (the server "dying" mid-transfer: the engine reports the download interrupted).
 /// The download server listens here: the download views show its url, so two runs' shots match only on the same port.
 const DOWNLOADS_PORT: u16 = 47_311;
 
+/// `/real.zip` answers a 4-byte attachment; `/slow` promises 1 MB, sends 300 KB and then holds the connection until
+/// `kill`: the server dying mid-transfer.
 pub struct Downloads(Hold);
 
 impl Downloads {
@@ -113,9 +110,9 @@ impl Downloads {
         format!("http://{}:{}{path}", crate::http::site_host(), self.0.addr.port())
     }
 
-    pub fn kill(&self) {
-        self.0.close_held();
-    }
+    /// The server dies: transfers in progress break and new connections are refused (the engine retries a broken
+    /// download at once, and a server that still answered would serve it again).
+    pub fn kill(self) {}
 }
 
 /// An HTTP proxy for the engine installer's download: `refuse` answers each CONNECT 502 (the install fails at once);
@@ -181,6 +178,15 @@ mod tests {
         let slow = get(port, "/slow", 300_000);
         assert!(slow.len() > 300_000 && slow.len() < 1_000_000, "{}", slow.len());
         server.kill();
+    }
+
+    /// `kill` is a dead server, not one that still answers the engine's retry of the broken download.
+    #[test]
+    fn a_killed_download_server_refuses_the_retry() {
+        let server = Downloads::start().unwrap();
+        let addr = server.0.addr;
+        server.kill();
+        assert!(TcpStream::connect(addr).is_err(), "the killed server still accepts connections");
     }
 
     #[test]
