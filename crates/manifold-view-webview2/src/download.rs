@@ -17,10 +17,15 @@
 //! download, rather than re-reading it from the operation each time.
 //!
 //! The host holds each download's operation until it reports finished or
-//! failed. A transfer that breaks is retried as a second `DownloadStarting`
-//! under the same path, from 0 or from the bytes the engine kept (seen with an
-//! HTTP/1.1 reply carrying an ETag and `Accept-Ranges`). The retry reports the
-//! outcome only while held: dropped, it never did (runs
+//! failed. A transfer that breaks is retried as a second `DownloadStarting`,
+//! whose operation starts with the first one's `InterruptReason` rather than
+//! none (runs 2026-10-28-dldir-result2, -result-etag2). Restarted from 0, the
+//! retry is proposed the same path. Resumed from the bytes the engine kept (an
+//! HTTP/1.1 reply carrying an ETag and `Accept-Ranges`), it is proposed a
+//! numbered one, `slow (1).zip`, because the first one's partial file still
+//! holds the name, so the app shows a second card while the first stays in
+//! progress (run 2026-10-28-dldir-profile-etag; PARKED "Downloads"). The retry
+//! reports the outcome only while held: dropped, it never did (runs
 //! 2026-10-27-download-host-events, 2026-10-28-dl-failed-red); held, it does
 //! (runs 2026-10-27-dl-probe-*). The first operation never reports again, so
 //! it stays held until the host exits.
