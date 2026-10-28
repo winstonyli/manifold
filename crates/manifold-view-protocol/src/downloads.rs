@@ -3,8 +3,23 @@
 //! in every message about it.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use crate::ViewToHost;
+
+/// The folder the app last set (`host_env::apply`), read for each new download.
+static FOLDER: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Sets `folder` (`host_env::apply`): a download already running keeps its path.
+pub(crate) fn set_folder(dir: Option<&str>) {
+    *FOLDER.lock().unwrap_or_else(PoisonError::into_inner) = dir.map(PathBuf::from);
+}
+
+/// The folder this host saves its next download in, as the app last set it (`host_env::apply`); `None` until then,
+/// and when the app has none to give.
+pub fn folder() -> Option<PathBuf> {
+    FOLDER.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
 
 /// `~/Downloads`: `USERPROFILE` on Windows, `HOME` elsewhere (CEF on Linux
 /// used `USERPROFILE` and so saved into its working directory).

@@ -12,6 +12,7 @@ interprocess.workspace = true
 memmap2.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 serde = { workspace = true, features = ["derive"] }
+manifold-pages.workspace = true
 
 [[bin]]
 name = "render_stub"

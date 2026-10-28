@@ -301,6 +301,14 @@ impl App {
         self.save_settings();
     }
 
+    /// The folder downloads go to: the Download folder setting when it is a full path, in Windows' own form
+    /// (`settings::full_folder`, the form the row's verdict reads too), else the user's Downloads folder
+    /// (`profile::downloads_dir`; `None` without one, and under `cargo test`).
+    pub(crate) fn download_folder(&self) -> Option<std::path::PathBuf> {
+        let setting = self.settings.value.download_directory.as_deref();
+        setting.and_then(crate::settings::full_folder).or_else(profile::downloads_dir)
+    }
+
     /// Settings, General: idle sleep for background tabs.
     pub(crate) fn settings_sleep_row(&mut self, ui: &mut egui::Ui) {
         let mut minutes = self.settings.value.idle_sleep_minutes;
@@ -827,9 +835,8 @@ pub(crate) fn forget_disk_cache(ctx: &egui::Context) {
     });
 }
 
-/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — same
-/// "pick the obvious default, no save-as dialog" posture `downloads_dir()`
-/// (in each view-host's own download-handling code) already takes, just
+/// `profile::pictures_dir()`\manifold-<unix-seconds>.png, or the temp folder without one — the same
+/// "pick the obvious default, no save-as dialog" posture downloads take (`App::download_folder`),
 /// on the manifold side for the toolbar's "Screenshot" button. The
 /// timestamp is the simplest collision-free name that needs no extra
 /// state; a real "Save As" dialog would be the alternative, but this
@@ -900,6 +907,27 @@ fn download_folder_verdict(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relative_or_missing_download_folder_falls_back_and_an_absolute_one_is_used() {
+        let mut app = App::default();
+        assert_eq!(app.download_folder(), None, "no setting, and no Downloads folder under test");
+        app.set_download_directory("Downloads2");
+        assert_eq!(app.download_folder(), None, "not a full path: the default");
+        let abs = crate::store::testutil::temp_dir("download-folder").join("Zoë Q downloads");
+        app.set_download_directory(abs.to_str().unwrap());
+        assert_eq!(app.download_folder(), Some(abs));
+        // Typed with `/`: every path built on it reads one separator, which `Path` equality would not show.
+        #[cfg(windows)]
+        {
+            app.set_download_directory("D:/dl");
+            let folder = app.download_folder().map(|d| d.to_string_lossy().into_owned());
+            assert_eq!(folder.as_deref(), Some(r"D:\dl"));
+            app.set_download_directory("D:/dl/");
+            let file = app.download_folder().map(|d| d.join("a.zip").to_string_lossy().into_owned());
+            assert_eq!(file.as_deref(), Some(r"D:\dl\a.zip"), "no doubled separator");
+        }
+    }
 
     #[test]
     fn the_download_folder_verdict_names_what_is_wrong() {

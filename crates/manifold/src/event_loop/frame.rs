@@ -1,6 +1,8 @@
 //! Each frame: the egui pass, the render, the OS cursor and window focus, screenshots and the headless end of frame.
 
 use super::*;
+use crate::process_manager::runtime::HostRuntime;
+use manifold_view_protocol::HostSettings;
 
 impl App {
     /// `RedrawRequested`: builds this frame's UI (`build_ui`), with the
@@ -321,56 +323,95 @@ impl App {
         }
     }
 
-    /// When the theme changes (the setting, or the system under `System`), tells every engine host the palette its
-    /// `manifold://` pages use, and reloads the open ones to take it.
-    pub(crate) fn sync_theme(&mut self) {
+    /// What a host that runs as `runtime` is told of the app's settings, at spawn (`spawn_tab_async`) and on a change
+    /// (`sync_host_settings`): the theme the app shows, and the download folder (`download_folder`).
+    pub(crate) fn host_settings(&self, runtime: HostRuntime) -> HostSettings {
+        let dark = self.egui_ctx.theme() == egui::Theme::Dark;
+        crate::process_manager::host_settings(runtime, dark, self.download_folder().as_deref())
+    }
+
+    /// Keeps every tab's host settings equal to the app's (`ViewTab::set_settings` sends only a difference: a change,
+    /// or a tab that spawned before one landed). After the first frame, a theme change also reloads the tabs showing
+    /// a `manifold://` page so they take the new palette.
+    pub(crate) fn sync_host_settings(&mut self) {
         let now = self.egui_ctx.theme();
         let first = self.last_theme.is_none();
-        if !theme_changed(&mut self.last_theme, now) {
-            return;
-        }
-        let dark = now == egui::Theme::Dark;
-        manifold_pages::set_dark(dark);
-        // The first frame only records the theme: `App::load` and the spawn environment already applied it.
-        if first {
-            return;
-        }
-        let tabs: Vec<(NodeId, String)> = self
-            .nodes
-            .iter()
-            .filter(|(_, node)| node.as_tab().is_some())
-            .map(|(&id, _)| (id, self.doc.mirror.url(id).to_string()))
-            .collect();
-        for (id, msg) in theme_updates(dark, tabs.iter().map(|(id, url)| (*id, url.as_str()))) {
-            if let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {
-                tab.tab.send(&msg);
+        // The first frame only records the theme: the spawn environment already carried it.
+        let reload_pages = theme_changed(&mut self.last_theme, now) && !first;
+        let native = self.host_settings(HostRuntime::Native);
+        let wsl = self.host_settings(HostRuntime::Wsl);
+        let scheme = format!("{}://", manifold_pages::SCHEME);
+        for node in self.nodes.values_mut() {
+            let Some(tab) = node.as_tab_mut() else { continue };
+            let wanted = if HostRuntime::of(tab.tab.kind) == Some(HostRuntime::Wsl) { &wsl } else { &native };
+            tab.tab.set_settings(wanted);
+            if reload_pages && tab.url.starts_with(&scheme) {
+                tab.tab.send(&HostToView::Reload);
             }
         }
     }
 }
 
-/// What a theme change sends: `SetTheme` to every tab (a later navigation uses the host's flag), then `Reload` to the
-/// ones showing a `manifold://` page, which picks up the new colors.
-fn theme_updates<'a>(dark: bool, tabs: impl Iterator<Item = (NodeId, &'a str)> + Clone) -> Vec<(NodeId, HostToView)> {
-    let scheme = format!("{}://", manifold_pages::SCHEME);
-    let set = tabs.clone().map(|(id, _)| (id, HostToView::SetTheme { dark }));
-    let reload = tabs.filter(|(_, url)| url.starts_with(&scheme)).map(|(id, _)| (id, HostToView::Reload));
-    set.chain(reload).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session_sync::tests::live_tab;
+
+    /// The settings in what a fake host was sent.
+    fn settings_sent(sent: Vec<HostToView>) -> Vec<HostSettings> {
+        sent.into_iter()
+            .filter_map(|msg| match msg {
+                HostToView::SetSettings(settings) => Some(settings),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What a fake host was sent, by kind.
+    fn kinds(sent: Vec<HostToView>) -> Vec<&'static str> {
+        sent.iter()
+            .map(|msg| match msg {
+                HostToView::SetSettings(_) => "settings",
+                HostToView::Reload => "reload",
+                _ => "other",
+            })
+            .collect()
+    }
+
+    /// Review Focus 5: a folder change reaches each open tab once, however many frames follow, and a tab whose
+    /// spawn lands after it.
+    #[test]
+    fn a_folder_change_reaches_each_tab_once_and_a_tab_landing_later() {
+        let mut app = App::default();
+        let (_, mut first) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        app.sync_host_settings();
+        let _ = first.sent();
+        let folder = crate::store::testutil::temp_dir("host-settings").join("Zoë Q downloads");
+        app.set_download_directory(folder.to_str().unwrap());
+        let wanted = app.host_settings(HostRuntime::Native);
+        assert_eq!(wanted.download_dir.as_deref(), folder.to_str());
+        app.sync_host_settings();
+        app.sync_host_settings();
+        assert_eq!(settings_sent(first.sent()), std::slice::from_ref(&wanted), "once, though synced twice");
+        let (_, mut later) = live_tab(&mut app, crate::ViewKind::Servo, "https://b.test/");
+        app.sync_host_settings();
+        assert_eq!(settings_sent(later.sent()), [wanted]);
+        assert!(first.sent().is_empty(), "nothing new for the first tab");
+    }
 
     #[test]
-    fn a_theme_change_tells_every_tab_then_reloads_only_the_manifold_pages() {
-        let actor = crate::store::model::ActorId::random();
-        let urls = [(1, "https://a.test/"), (2, "manifold://start"), (3, "manifold://tips/")];
-        let sent = theme_updates(false, urls.iter().map(|&(id, url)| (NodeId { actor, counter: id }, url)));
-        let theme = |id| (NodeId { actor, counter: id }, HostToView::SetTheme { dark: false });
-        let reload = |id| (NodeId { actor, counter: id }, HostToView::Reload);
-        let expected = vec![theme(1), theme(2), theme(3), reload(2), reload(3)];
-        assert_eq!(format!("{sent:?}"), format!("{expected:?}"));
+    fn a_theme_change_resends_the_settings_then_reloads_only_the_manifold_pages() {
+        let mut app = App::default();
+        let (_, mut web) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
+        let (_, mut page) = live_tab(&mut app, crate::ViewKind::Servo, "manifold://start");
+        app.choose_theme(ThemeChoice::Dark);
+        app.sync_host_settings();
+        assert!(!kinds(page.sent()).contains(&"reload"), "the first frame only records the theme");
+        let _ = web.sent();
+        app.choose_theme(ThemeChoice::Light);
+        app.sync_host_settings();
+        assert_eq!(kinds(web.sent()), ["settings"]);
+        assert_eq!(kinds(page.sent()), ["settings", "reload"]);
     }
 
     #[test]

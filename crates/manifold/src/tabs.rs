@@ -370,6 +370,9 @@ impl App {
         let proxy = self.event_proxy.clone().expect("event_proxy set in main before any tab spawn");
         let wake = crate::event_loop::view_wake(std::sync::Arc::clone(&self.pacing.view_wake), proxy.clone());
         let custom_cef = self.custom_cef_dir();
+        let runtime = process_manager::runtime::HostRuntime::of(spawn.kind)
+            .unwrap_or(process_manager::runtime::HostRuntime::Native);
+        let settings = self.host_settings(runtime);
         let snapshots = self.cookies.jar_snapshots.clone();
         std::thread::spawn(move || {
             // Read when the host has connected (the host starts seconds after the spawn): remember its keys, and the
@@ -386,8 +389,15 @@ impl App {
                 *seeded.borrow_mut() = (crate::jar::TabCookies::seeded(&cookies), clears);
                 serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
             };
-            let result =
-                process_manager::spawn_tab(spawn.kind, spawn.id, &spawn.url, custom_cef.as_deref(), &seed, wake);
+            let result = process_manager::spawn_tab(
+                spawn.kind,
+                spawn.id,
+                &spawn.url,
+                custom_cef.as_deref(),
+                &settings,
+                &seed,
+                wake,
+            );
             let (seeded, seed_clears) = seeded.into_inner();
             let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
                 spawn,

@@ -5058,6 +5058,7 @@ name = "manifold-view-protocol"
 version = "0.9.0"
 dependencies = [
  "interprocess",
+ "manifold-pages",
  "memmap2",
  "postcard",
  "serde",

@@ -10,8 +10,10 @@ use std::sync::Arc;
 #[test]
 fn page_controlled_text_never_reaches_the_wsl_command_line() {
     let token = [7u8; transport::TOKEN_LEN];
-    let build =
-        |url: &str| webkit_shell_command(url, 4000, &token, "/mnt/c/repo/target-linux/debug/host", false).unwrap();
+    let build = |url: &str| {
+        webkit_shell_command(url, 4000, &token, "/mnt/c/repo/target-linux/debug/host", &HostSettings::default())
+            .unwrap()
+    };
     let benign_url = "https://example.com/";
     let hostile_url = "https://x/'$(touch${IFS}/tmp/pwn)'\";`id`\n&|;<>\\ \u{e9}";
     let (benign, hostile) = (build(benign_url), build(hostile_url));
@@ -26,7 +28,7 @@ fn page_controlled_text_never_reaches_the_wsl_command_line() {
 #[test]
 fn a_url_too_long_for_a_command_line_is_refused_by_name() {
     let token = [7u8; transport::TOKEN_LEN];
-    let build = |len: usize| webkit_shell_command(&"a".repeat(len), 4000, &token, "/x", false);
+    let build = |len: usize| webkit_shell_command(&"a".repeat(len), 4000, &token, "/x", &HostSettings::default());
     assert!(build(8192).is_ok(), "the longest URL that fits");
     assert_eq!(build(8193).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
     assert_eq!(build(20_000).unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
@@ -36,10 +38,11 @@ fn a_url_too_long_for_a_command_line_is_refused_by_name() {
 #[test]
 fn the_webkit_host_environment_is_the_same_under_every_runtime() {
     let token = [7u8; transport::TOKEN_LEN];
-    let env = webkit_env("https://a", 4000, &token, true).unwrap();
+    let settings = HostSettings { dark: true, download_dir: Some("/mnt/c/dl".into()) };
+    let env = webkit_env("https://a", 4000, &token, &settings).unwrap();
     let names: Vec<_> = env.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["VIEW_DARK", "VIEW_INITIAL_URL_HEX", "VIEW_TCP_PORT", "VIEW_TOKEN"]);
-    let wsl = webkit_shell_command("https://a", 4000, &token, "/x", true).unwrap();
+    assert_eq!(names, ["VIEW_SETTINGS", "VIEW_INITIAL_URL_HEX", "VIEW_TCP_PORT", "VIEW_TOKEN"]);
+    let wsl = webkit_shell_command("https://a", 4000, &token, "/x", &settings).unwrap();
     for (name, value) in &env {
         assert!(wsl.contains(&format!("{name}={value} ")), "{name} in {wsl}");
     }
@@ -1050,12 +1053,34 @@ fn picker_order_is_every_engine_once_by_rank() {
     assert_eq!(order[0], ViewKind::Cef, "best-supported first");
 }
 
+/// Review Focus 2 (WSL): the settings reach `wsl.exe` only as hex, and settings too long for the command line are
+/// refused by name.
 #[test]
-fn the_webkit_command_carries_the_dark_flag_only_when_dark() {
+fn the_webkit_command_carries_the_settings_as_hex_only() {
     let token = [7u8; transport::TOKEN_LEN];
-    let build = |dark| webkit_shell_command("https://a", 4000, &token, "/x", dark).unwrap();
-    assert!(build(true).starts_with("VIEW_DARK=1 "));
-    assert!(!build(false).contains("VIEW_DARK"));
+    let settings = HostSettings { dark: true, download_dir: Some("/mnt/c/Users/Zoë Q/it's \"dl\" $(x)".into()) };
+    let shell = webkit_shell_command("https://a", 4000, &token, "/x", &settings).unwrap();
+    assert!(shell.starts_with(&format!("VIEW_SETTINGS={} ", settings.to_hex())), "{shell}");
+    assert!(!shell.contains("Zo") && !shell.contains("$(x)"), "{shell}");
+    let long = HostSettings { dark: false, download_dir: Some("d".repeat(5000)) };
+    let refused = webkit_shell_command("https://a", 4000, &token, "/x", &long).unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+}
+
+/// Each host is given the folder as it sees it; one WSL can't see means no folder (downloads refused).
+#[test]
+fn a_hosts_settings_carry_the_folder_in_its_own_terms() {
+    let folder = Path::new(r"C:\Users\Zoë Q\Downloads");
+    assert_eq!(
+        host_settings(HostRuntime::Native, true, Some(folder)),
+        HostSettings { dark: true, download_dir: Some(r"C:\Users\Zoë Q\Downloads".into()) }
+    );
+    assert_eq!(
+        host_settings(HostRuntime::Wsl, false, Some(folder)).download_dir.as_deref(),
+        Some("/mnt/c/Users/Zoë Q/Downloads")
+    );
+    assert_eq!(host_settings(HostRuntime::Wsl, false, Some(Path::new(r"\\nas\dl"))).download_dir, None);
+    assert_eq!(host_settings(HostRuntime::Native, false, None), HostSettings::default());
 }
 
 /// Every host names exactly one rendering-engine family, and the two Blink hosts share it.

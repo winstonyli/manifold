@@ -13,8 +13,8 @@ pub use frame_buffer::{frame_path, remove_frame_file, sweep_stale_frames_in, Sha
 pub use frame_sink::{copy_changed_rows, FrameSink};
 pub use host_env::{HostEnv, StartupMessages};
 pub use messages::{
-    clean_page_text, modifiers, page_text_reply, restore_scroll_script, HostToView, InputEvent, KeyCode, MouseButton,
-    PageKindReply, PageState, TabState, ViewToHost, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT, PAGE_TEXT_SCRIPT,
+    clean_page_text, modifiers, page_text_reply, restore_scroll_script, HostSettings, HostToView, InputEvent, KeyCode,
+    MouseButton, PageKindReply, PageState, TabState, ViewToHost, PAGE_KIND_SCRIPT, PAGE_STATE_SCRIPT, PAGE_TEXT_SCRIPT,
     TEXT_CAP_UNITS,
 };
 pub use transport::{LocalTransport, RemoteTransport};
@@ -29,7 +29,8 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// 4: `ViewToHost::FrameReady` carries `generation` (frame files are named by generation) and drops `frame_id`.
 /// 5: `HostToView::SetTheme`.
 /// 6: `HostToView::QueryPageText`, `ViewToHost::PageText`.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// 7: `HostToView::SetSettings` (the theme and the download folder) replaces `SetTheme`.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 /// Starts the `ViewToHost::Crashed` reason for a version mismatch, so the
 /// host shows a failed card instead of respawning the same stale binary.

@@ -19,7 +19,7 @@ use crate::view_install::{
 };
 use manifold_view_protocol::host_env;
 use manifold_view_protocol::transport::{self, LocalTransport};
-use manifold_view_protocol::{HostToView, ViewToHost};
+use manifold_view_protocol::{HostSettings, HostToView, ViewToHost};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ViewKind {
@@ -280,6 +280,8 @@ pub struct ViewTab {
     shown: bool,
     /// Whether the loaded page's frames have settled into the one its card keeps (`App::tab_visible`).
     pub(crate) first_frame: FirstFrame,
+    /// The settings this host was last given (at spawn, then `set_settings`).
+    settings: HostSettings,
 }
 
 /// No new frame for this long after the loaded page's last one: the page has settled. Hosts send only changed frames,
@@ -348,6 +350,15 @@ impl ViewTab {
         }
     }
 
+    /// Tells the host the app's settings (`HostToView::SetSettings`), if they differ from what it was last given; only
+    /// `App::sync_host_settings` decides them.
+    pub fn set_settings(&mut self, settings: &HostSettings) {
+        if self.settings != *settings {
+            self.settings = settings.clone();
+            self.send(&HostToView::SetSettings(settings.clone()));
+        }
+    }
+
     /// Queues `Shutdown` now. An app exit calls this on every tab before dropping them, so `Drop` then waits one
     /// `view_io::SHUTDOWN_FLUSH` for all of them together.
     pub(crate) fn begin_shutdown(&self) {
@@ -404,6 +415,7 @@ impl ViewTab {
             profile_slot: None,
             shown: true,
             first_frame: FirstFrame::Waiting,
+            settings: HostSettings::default(),
         };
         let writer = tab.writer.clone();
         (tab, FakePeer { channel: manifold_view_protocol::MessageChannel::new(peer), writer }, feed)
@@ -935,6 +947,12 @@ fn in_app_terms(runtime: HostRuntime, msg: ViewToHost) -> ViewToHost {
     }
 }
 
+/// The settings a host that runs as `runtime` acts on: `dark`, and `folder` as that host sees it
+/// (`HostRuntime::host_path`; `None` when it cannot see it, so its downloads are refused).
+pub(crate) fn host_settings(runtime: HostRuntime, dark: bool, folder: Option<&Path>) -> HostSettings {
+    HostSettings { dark, download_dir: folder.and_then(|folder| runtime.host_path(folder)) }
+}
+
 /// Same-machine (CEF/Servo) equivalent of `WEBKIT_CONNECT_TIMEOUT`, much
 /// shorter since there's no cold-VM-boot equivalent to wait out here — a
 /// same-machine child that hasn't connected within a few seconds of
@@ -1002,12 +1020,15 @@ fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, 
 /// `custom_cef` is a validated bring-your-own CEF directory: it satisfies the availability check, and the
 /// host runs from a copy inside it so Windows loads that directory's `libcef.dll` (`ensure_host_copy`).
 ///
+/// `settings` is what the host acts on from the start (`App::host_settings`).
+///
 /// `wake` is called by the tab's reader thread after each engine message (`event_loop::view_wake`).
 pub fn spawn_tab(
     kind: ViewKind,
     tab_id: NodeId,
     initial_url: &str,
     custom_cef: Option<&Path>,
+    settings: &HostSettings,
     jar_json: &dyn Fn() -> String,
     wake: view_io::Wake,
 ) -> Result<ViewTab, SpawnError> {
@@ -1030,7 +1051,7 @@ pub fn spawn_tab(
     }
     if desc.link == HostLink::Tcp {
         let runtime = HostRuntime::of(kind).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::Unsupported))?;
-        return Ok(spawn_webkit_tab(runtime, tab_id, initial_url, wake)?);
+        return Ok(spawn_webkit_tab(runtime, tab_id, initial_url, settings, wake)?);
     }
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
@@ -1062,9 +1083,7 @@ pub fn spawn_tab(
         .stdin(Stdio::null())
         .stdout(stdout_file)
         .stderr(stderr_file);
-    if manifold_pages::is_dark() {
-        command.env(host_env::ENV_DARK, "1");
-    }
+    command.env(host_env::ENV_SETTINGS, settings.to_hex());
     // Jar engines wait for the jar (`SetCookies`) before their first navigation.
     if desc.tags.has(Tag::Jars) {
         command.env(host_env::ENV_AWAIT_COOKIES, "1");
@@ -1125,6 +1144,7 @@ pub fn spawn_tab(
         profile_slot,
         shown: true,
         first_frame: FirstFrame::Waiting,
+        settings: settings.clone(),
     };
     if desc.tags.has(Tag::Jars) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.

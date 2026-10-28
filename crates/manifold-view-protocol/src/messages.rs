@@ -213,6 +213,17 @@ pub enum InputEvent {
     Char { codepoint: u32 },
 }
 
+/// The app's settings a host acts on, given at spawn (`host_env::ENV_SETTINGS`) and sent again on every change
+/// (`HostToView::SetSettings`); applied by `host_env::apply`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostSettings {
+    /// Serve `manifold://` pages in the dark palette (a page already open keeps its colors until `Reload`).
+    pub dark: bool,
+    /// The absolute folder downloads are saved in, as this host sees it (a `/mnt/...` path under WSL). `None`: every
+    /// download is refused (reported started and failed).
+    pub download_dir: Option<String>,
+}
+
 /// Messages sent from the manifold process manager to an view-host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[rustfmt::skip]
@@ -298,9 +309,9 @@ pub enum HostToView {
     /// silent no-op there only.
     SetMuted { muted: bool },
     Shutdown,
-    /// The app theme changed: serve `manifold://` pages in the dark or light palette from now on (a page already
-    /// open keeps its colors until `Reload`). Sent to every host, since a later navigation uses the flag.
-    SetTheme { dark: bool },
+    /// The app's settings changed (`HostSettings`): sent to every host whose settings differ, once per change. A
+    /// download already running keeps its path.
+    SetSettings(HostSettings),
     /// Asks for the page's visible text (`PAGE_TEXT_SCRIPT`) for the local search index; the engine answers
     /// `ViewToHost::PageText`, or stays silent when it cannot or the page has none. Sent a moment after a load ends
     /// and just before a tab sleeps.
@@ -711,9 +722,9 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 6;
+    const RECORDED_FOR_VERSION: u32 = 7;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0x956d_ba4d_e3c7_6183;
+    const RECORDED_FINGERPRINT: u64 = 0xe3d8_fc72_424d_ba86;
     const HOST_TO_VIEW_VARIANTS: usize = 22;
     const VIEW_TO_HOST_VARIANTS: usize = 17;
     const INPUT_EVENT_VARIANTS: usize = 7;
@@ -743,7 +754,7 @@ mod wire_shape_tests {
             HostToView::OpenDevTools => 17,
             HostToView::SetMuted { .. } => 18,
             HostToView::Shutdown => 19,
-            HostToView::SetTheme { .. } => 20,
+            HostToView::SetSettings(_) => 20,
             HostToView::QueryPageText => 21,
         }
     }
@@ -840,7 +851,10 @@ mod wire_shape_tests {
             HostToView::OpenDevTools,
             HostToView::SetMuted { muted: true },
             HostToView::Shutdown,
-            HostToView::SetTheme { dark: true },
+            HostToView::SetSettings(HostSettings {
+                dark: true,
+                download_dir: Some("C:\\Users\\Zoë Q\\Downloads".into()),
+            }),
             HostToView::QueryPageText,
         ]
     }

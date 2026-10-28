@@ -17,15 +17,17 @@ fn shell_quote(s: &str) -> String {
 const WEBKIT_CONNECT_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// What the host reads (`manifold-view-webkitgtk`'s `main`) besides `VIEW_HOST_IP`, the address it dials back, which
-/// differs by runtime. Page text (the URL) appears only as hex.
+/// differs by runtime. Page text (the URL) and the settings (a download folder's path) appear only as hex.
 pub(super) fn webkit_env(
     initial_url: &str,
     port: u16,
     token: &transport::Token,
-    dark: bool,
+    settings: &HostSettings,
 ) -> std::io::Result<Vec<(&'static str, String)>> {
     /// Windows' command line holds 32 767 characters; leave the rest of this one room.
     const MAX_URL_HEX: usize = 16_384;
+    /// The settings' share of it: a download folder's path of about 2 000 bytes.
+    const MAX_SETTINGS_HEX: usize = 4_096;
     let url_hex = transport::to_hex(initial_url.as_bytes());
     if url_hex.len() > MAX_URL_HEX {
         return Err(std::io::Error::new(
@@ -33,16 +35,19 @@ pub(super) fn webkit_env(
             "the URL is too long to start a WebKit tab with",
         ));
     }
-    let mut env = Vec::new();
-    if dark {
-        env.push((host_env::ENV_DARK, "1".to_string()));
+    let settings_hex = settings.to_hex();
+    if settings_hex.len() > MAX_SETTINGS_HEX {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the download folder's path is too long to start a WebKit tab with",
+        ));
     }
-    env.extend([
+    Ok(vec![
+        (host_env::ENV_SETTINGS, settings_hex),
         ("VIEW_INITIAL_URL_HEX", url_hex),
         ("VIEW_TCP_PORT", port.to_string()),
         ("VIEW_TOKEN", transport::to_hex(token)),
-    ]);
-    Ok(env)
+    ])
 }
 
 /// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d <WSL_DISTRO> -- bash -c`. It crosses two
@@ -53,10 +58,12 @@ pub(super) fn webkit_shell_command(
     port: u16,
     token: &transport::Token,
     binary_path: &str,
-    dark: bool,
+    settings: &HostSettings,
 ) -> std::io::Result<String> {
-    let assignments: String =
-        webkit_env(initial_url, port, token, dark)?.iter().map(|(name, value)| format!("{name}={value} ")).collect();
+    let assignments: String = webkit_env(initial_url, port, token, settings)?
+        .iter()
+        .map(|(name, value)| format!("{name}={value} "))
+        .collect();
     Ok(format!(
         "{assignments}VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
         shell_quote(binary_path),
@@ -69,6 +76,7 @@ pub(super) fn spawn_webkit_tab(
     runtime: HostRuntime,
     tab_id: NodeId,
     initial_url: &str,
+    settings: &HostSettings,
     wake: view_io::Wake,
 ) -> std::io::Result<ViewTab> {
     // Bind an ephemeral port (0 = "pick one for me") so concurrent tabs don't collide. WSL2's NAT-mode networking
@@ -92,7 +100,6 @@ pub(super) fn spawn_webkit_tab(
     // processes only.
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;
-    let dark = manifold_pages::is_dark();
     let mut command = match runtime {
         HostRuntime::Wsl => {
             // `wsl.exe` does NOT forward this Command's environment into the Linux process (verified: env vars set
@@ -102,7 +109,7 @@ pub(super) fn spawn_webkit_tab(
             let binary = runtime
                 .host_path(&host)
                 .ok_or_else(|| std::io::Error::other("the WebKit host is not on a drive WSL can see"))?;
-            let shell = webkit_shell_command(initial_url, port, &token, &binary, dark)?;
+            let shell = webkit_shell_command(initial_url, port, &token, &binary, settings)?;
             let mut command = Command::new("wsl.exe");
             command.args(["-d", WSL_DISTRO, "--", "bash", "-c", &shell]);
             command
@@ -110,7 +117,7 @@ pub(super) fn spawn_webkit_tab(
         HostRuntime::Native => {
             // manifold itself needs a display on Linux, so the host inherits it.
             let mut command = Command::new(&host);
-            command.envs(webkit_env(initial_url, port, &token, dark)?).env("VIEW_HOST_IP", "127.0.0.1");
+            command.envs(webkit_env(initial_url, port, &token, settings)?).env("VIEW_HOST_IP", "127.0.0.1");
             command
         }
     };
@@ -168,5 +175,6 @@ pub(super) fn spawn_webkit_tab(
         profile_slot: None,
         shown: true,
         first_frame: FirstFrame::Waiting,
+        settings: settings.clone(),
     })
 }

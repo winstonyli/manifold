@@ -336,7 +336,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.poll_store();
                 self.poll_trail_focus();
                 self.poll_view_installs();
-                self.sync_theme();
+                self.sync_host_settings();
                 let focused_tab = self
                     .focused
                     .and_then(|id| self.nodes.get(&id))

@@ -151,9 +151,9 @@ fn main() {
     rustls::crypto::aws_lc_rs::default_provider().install_default().expect("install rustls crypto provider");
 
     // Env vars, not argv, as for every view-host (`manifold_view_protocol::host_env`).
-    let manifold_view_protocol::HostEnv { socket_id, initial_url, dark, .. } =
+    let manifold_view_protocol::HostEnv { socket_id, initial_url, settings, .. } =
         manifold_view_protocol::HostEnv::from_env();
-    manifold_pages::set_dark(dark);
+    manifold_view_protocol::host_env::apply(&settings);
 
     // Two one-directional control sockets back to manifold (it already
     // created both listeners before spawning this process — see
@@ -328,7 +328,7 @@ fn main() {
                 | HostToView::FindStop
                 | HostToView::OpenDevTools
                 | HostToView::SetMuted { .. } => {}
-                HostToView::SetTheme { dark } => manifold_pages::set_dark(dark),
+                HostToView::SetSettings(settings) => manifold_view_protocol::host_env::apply(&settings),
                 HostToView::Shutdown => return,
             }
         }

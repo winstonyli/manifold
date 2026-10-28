@@ -98,8 +98,8 @@ pub fn is_dark() -> bool {
     DARK.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Which palette `serve` fills in: the app writes this when its theme changes (a page already open keeps the colors
-/// it was served with until reloaded).
+/// Which palette `serve` fills in: each host sets it from the app's settings
+/// (`manifold_view_protocol::host_env::apply`); a page already open keeps the colors it was served with until reloaded.
 pub fn set_dark(dark: bool) {
     DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
 }

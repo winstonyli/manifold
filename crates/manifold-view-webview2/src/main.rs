@@ -130,7 +130,7 @@ fn main() {
     let _job = setup_kill_on_exit_job();
 
     let host_env = manifold_view_protocol::HostEnv::from_env();
-    manifold_pages::set_dark(host_env.dark);
+    manifold_view_protocol::host_env::apply(&host_env.settings);
     let (socket_id, initial_url) = (host_env.socket_id.clone(), host_env.initial_url.clone());
 
     // A machine without the WebView2 runtime fails here, before connecting, with one `HOST_FATAL` line that
@@ -412,7 +412,7 @@ fn main() {
                         let _ = unsafe { webview8.SetIsMuted(muted) };
                     }
                 }
-                HostToView::SetTheme { dark } => manifold_pages::set_dark(dark),
+                HostToView::SetSettings(settings) => manifold_view_protocol::host_env::apply(&settings),
                 HostToView::Shutdown => {
                     unsafe {
                         let _ = controller.Close();

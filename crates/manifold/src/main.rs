@@ -186,7 +186,7 @@ struct App {
     /// once a frame regardless (this app's winit loop runs `ControlFlow::
     /// Poll`, redrawing continuously).
     last_window_title: String,
-    /// The theme `sync_theme` last applied to the title bar and pages (`None` before the first frame).
+    /// The theme `sync_host_settings` last saw (`None` before the first frame): a later change reloads the tabs showing a `manifold://` page.
     last_theme: Option<egui::Theme>,
     gpu: Option<GpuState>,
     /// Every graph node -- tabs, downloads, and groups alike (see
@@ -502,7 +502,6 @@ impl App {
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
         apply_theme_choice(&egui_ctx, settings.theme);
-        manifold_pages::set_dark(egui_ctx.theme() == egui::Theme::Dark);
         let jars: BTreeMap<store::model::NodeId, jar::Jar> = BTreeMap::new();
         let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
         let mut app = Self {
