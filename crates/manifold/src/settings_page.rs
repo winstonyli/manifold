@@ -279,9 +279,7 @@ impl App {
         // Read like every other Settings disk read (`cached`, as the CEF row's `cef_newer_than_tested`): on the UI
         // thread, at most every `DISK_CACHE_AGE`. A folder on an offline share can block it (S20, parked).
         let verdict = download_folder_verdict(&setting, |dir| {
-            cached(ui.ctx(), ("download_folder_kind", dir), DISK_CACHE_AGE, || {
-                std::fs::metadata(dir).ok().map(|m| m.is_dir())
-            })
+            cached(ui.ctx(), ("download_folder_kind", dir), DISK_CACHE_AGE, || path_kind(dir))
         });
         match verdict {
             Some(Err(message)) => {
@@ -885,11 +883,18 @@ fn folder_field(ui: &mut egui::Ui, draft: &mut Option<String>, configured: &str,
     commit
 }
 
-/// What the Download folder row says of `setting` (`kind` reads whether the folder it names, `settings::full_folder`,
-/// is a folder: `Some(true)`, a file: `Some(false)`, or nothing: `None`). `None` when there is nothing to say.
+/// Whether `path` is a folder (`Some(true)`), a file (`Some(false)`), or can't be read, as a path inside a file, on a
+/// drive that isn't there, or that doesn't exist (`None`).
+fn path_kind(path: &std::path::Path) -> Option<bool> {
+    std::fs::metadata(path).ok().map(|m| m.is_dir())
+}
+
+/// What the Download folder row says of `setting` (`kind` reads whether a path is a folder: `Some(true)`, a file:
+/// `Some(false)`, or nothing: `None`). `None` when there is nothing to say. A folder that doesn't exist is judged by
+/// the nearest part of its path that does: the first download makes it only inside a folder.
 fn download_folder_verdict(
     setting: &str,
-    kind: impl FnOnce(&std::path::Path) -> Option<bool>,
+    mut kind: impl FnMut(&std::path::Path) -> Option<bool>,
 ) -> Option<Result<&'static str, &'static str>> {
     if setting.is_empty() {
         return None;
@@ -897,10 +902,12 @@ fn download_folder_verdict(
     let Some(dir) = crate::settings::full_folder(setting) else {
         return Some(Err("Not a full path (like C:\\Users\\you\\Downloads), so downloads go to your Downloads folder"));
     };
-    match kind(&dir) {
-        Some(true) => None,
-        Some(false) => Some(Err("Not a folder: downloads fail until it is")),
-        None => Some(Ok("Doesn't exist yet: made at the first download")),
+    match dir.ancestors().enumerate().find_map(|(depth, path)| kind(path).map(|is_dir| (depth == 0, is_dir))) {
+        Some((true, true)) => None,
+        Some((true, false)) => Some(Err("Not a folder: downloads fail until it is")),
+        Some((false, true)) => Some(Ok("Doesn't exist yet: made at the first download")),
+        Some((false, false)) => Some(Err("Can't be made (part of the path is a file): downloads fail until it can")),
+        None => Some(Err("Can't be made (its drive or share isn't there): downloads fail until it can")),
     }
 }
 
@@ -938,9 +945,33 @@ mod tests {
         let abs = abs.to_str().unwrap();
         assert_eq!(download_folder_verdict(abs, |_| Some(true)), None, "a folder: nothing to say");
         assert!(matches!(download_folder_verdict(abs, |_| Some(false)), Some(Err(m)) if m.contains("Not a folder")));
+        // A missing folder is judged by the nearest part of its path that exists: only a folder there can hold it.
+        let parent = std::path::Path::new(abs).parent().unwrap();
+        assert!(matches!(
+            download_folder_verdict(abs, |p| (p == parent).then_some(true)),
+            Some(Ok(m)) if m.contains("made at the first download")
+        ));
+        assert!(matches!(
+            download_folder_verdict(abs, |p| (p == parent).then_some(false)),
+            Some(Err(m)) if m.contains("part of the path is a file")
+        ));
         assert!(
-            matches!(download_folder_verdict(abs, |_| None), Some(Ok(m)) if m.contains("made at the first download"))
+            matches!(download_folder_verdict(abs, |_| None), Some(Err(m)) if m.contains("drive or share")),
+            "nothing on the path exists: a typed drive letter that isn't there, or an offline share"
         );
+        // On disk, through the row's own reader: a path inside a file can't be read, and the file above it decides.
+        let base = crate::store::testutil::temp_dir("download-verdict-disk");
+        std::fs::write(base.join("notes.txt"), "").unwrap();
+        let under_file = base.join("notes.txt").join("dl");
+        assert!(matches!(
+            download_folder_verdict(under_file.to_str().unwrap(), path_kind),
+            Some(Err(m)) if m.contains("part of the path is a file")
+        ));
+        let fresh = base.join("dl");
+        assert!(matches!(
+            download_folder_verdict(fresh.to_str().unwrap(), path_kind),
+            Some(Ok(m)) if m.contains("made at the first download")
+        ));
     }
 
     /// Review Focus 1, through the App: what the row commits is stored as the setting holds it.
