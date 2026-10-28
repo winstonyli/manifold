@@ -537,6 +537,7 @@ const VERBS: &[Verb] = &[
     row("BOOKMARKSFILTERTEXT text", "Set the Bookmarks popup's own filter box", |rest| with_str(rest, |app, text| app.list_popups.bookmarks_filter = text)),
     row("TOGGLEVIEW", "Ctrl+G -- toggle Tab / Graph view", |_| job(|app, _| app.toggle_view_mode_shortcut())),
     row("TOGGLESETTINGSPAGE", "Settings gear -- enter/leave the Settings page", |_| job(|app, _| app.toggle_settings_page())),
+    row("CLEARTOASTS", "Drop every toast: shown, queued and held (a toast expires on the clock, so a shot can't wait one out)", |_| job(|app, _| app.toasts.clear())),
     // The file commands take an explicit path instead of a real file dialog: headless mode has no human to answer
     // one, so they call the same underlying save/load directly.
     row("EXPORTSESSION path", "Save the current session to `path`", |rest| {
@@ -1396,6 +1397,7 @@ mod tests {
             "BOOKMARKSFILTERTEXT abc",
             "TOGGLEVIEW",
             "TOGGLESETTINGSPAGE",
+            "CLEARTOASTS",
             r"EXPORTSESSION C:\x.json",
             r"EXPORTSTATE C:\x.json",
             r"IMPORTSESSION C:\x.json",

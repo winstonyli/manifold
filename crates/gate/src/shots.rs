@@ -354,8 +354,10 @@ impl Shots {
     }
 
     /// Back to Graph view at the top level, nothing open. Escape closes popups and leaves Tab view; the toolbar's
-    /// back button (top left) leaves a group or a JSON level.
+    /// back button (top left) leaves a group or a JSON level. A view's toast is dropped too: it expires on the clock,
+    /// so a later view's shot would show it or not depending on how long the steps between took.
     fn reset(&mut self) -> io::Result<()> {
+        send!(self, "CLEARTOASTS")?;
         for _ in 0..5 {
             send!(self, "ESCAPE")?;
             self.settle()?;
