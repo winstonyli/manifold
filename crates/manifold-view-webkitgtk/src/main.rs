@@ -69,18 +69,16 @@ fn main() {
     // the fetch" step, and CEF's never works under windowless rendering).
     let web_context = webkit2gtk::WebContext::default();
 
-    // Downloads: WebKitGTK has no default save location of its own (unlike
-    // WebView2) -- `decide-destination` fires with the server's suggested
-    // filename and MUST call `set_destination` or the download silently
-    // never starts, same requirement as CEF's `on_before_download`/
-    // `BeforeDownloadCallback::cont`. The folder and name come from
-    // `manifold_view_protocol::downloads`, the rule CEF uses too: `~/Downloads`, the
-    // suggested name's last component, numbered if taken (WebKit doesn't
-    // overwrite, so a second download of one name would otherwise fail).
-    // `reserved` holds names handed out and not yet finished, so concurrent
-    // same-name downloads get distinct names before either file exists. The
-    // destination is set as a properly escaped `file://` URI
-    // (`glib::filename_to_uri`), so a `#` or space in a name works.
+    // Downloads: WebKitGTK's own default would save into ~/Downloads, and `decide-destination` must call
+    // `set_destination` or the download silently never starts, the same requirement as CEF's
+    // `on_before_download`/`BeforeDownloadCallback::cont`. The path comes from the rule every host uses
+    // (`manifold_view_protocol::downloads::destination`): the folder the app set (`downloads::folder`, a
+    // `/mnt/<drive>/...` path under WSL), made if missing, and the suggested name's last component, numbered if
+    // taken (WebKit doesn't overwrite, so a second download of one name would otherwise fail). With no folder, or one
+    // that can't be made, the download is reported started and failed (`downloads::refused`) and cancelled. `reserved`
+    // holds names handed out and not yet finished, so concurrent same-name downloads get distinct names before either
+    // file exists. The destination is set as a properly escaped `file://` URI (`glib::filename_to_uri`), so a `#` or
+    // space in a name works.
     //
     // `decide-destination` also reads `total_bytes` (the response's
     // `Content-Length`, via `WebKitURIResponse::content_length` -- 0 means
@@ -106,20 +104,34 @@ fn main() {
             let dest_for_destination = dest_for_events.clone();
             let reserved_for_destination = reserved.clone();
             download.connect_decide_destination(move |download, suggested_filename| {
-                let dir = manifold_view_protocol::downloads::downloads_dir();
-                let _ = std::fs::create_dir_all(&dir);
-                let dest = manifold_view_protocol::downloads::unique_path(
-                    &dir,
-                    &manifold_view_protocol::downloads::safe_name(suggested_filename),
+                let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
+                let decided = manifold_view_protocol::downloads::destination(
+                    manifold_view_protocol::downloads::folder().as_deref(),
+                    suggested_filename,
                     |p| p.exists() || reserved_for_destination.borrow().contains(p),
-                );
-                let Ok(uri) = gtk::glib::filename_to_uri(&dest, None) else { return false };
+                )
+                .and_then(|dest| match gtk::glib::filename_to_uri(&dest, None) {
+                    Ok(uri) => Ok((dest, uri)),
+                    Err(_) => Err(dest),
+                });
+                let (dest, uri) = match decided {
+                    Ok(pair) => pair,
+                    Err(dest) => {
+                        // Refused: reported started and failed, then cancelled, since WebKit's own default would save
+                        // it into ~/Downloads. `dest_for_events` stays empty, so its later signals report nothing.
+                        pending_for_destination.borrow_mut().extend(manifold_view_protocol::downloads::refused(
+                            dest.to_string_lossy().into_owned(),
+                            url,
+                        ));
+                        download.cancel();
+                        return true;
+                    }
+                };
                 download.set_destination(&uri);
                 reserved_for_destination.borrow_mut().insert(dest.clone());
                 let path = dest.to_string_lossy().to_string();
                 *dest_for_destination.borrow_mut() = Some(path.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
-                let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
                 pending_for_destination.borrow_mut().push(ViewToHost::DownloadStarted { path, total_bytes, url });
                 true
             });

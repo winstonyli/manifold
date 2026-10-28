@@ -1,6 +1,6 @@
-//! Where engines put downloads and how they name them: one rule for every
-//! engine, so a download's `path` (the host's key for it) is the same string
-//! in every message about it.
+//! Where engines put downloads and how they name them: the folder the app set (`folder`), and one rule for every
+//! engine (`destination`), so a download's `path` (the host's key for it) is the same string in every message about
+//! it.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -19,13 +19,6 @@ pub(crate) fn set_folder(dir: Option<&str>) {
 /// and when the app has none to give.
 pub fn folder() -> Option<PathBuf> {
     FOLDER.lock().unwrap_or_else(PoisonError::into_inner).clone()
-}
-
-/// `~/Downloads`: `USERPROFILE` on Windows, `HOME` elsewhere (CEF on Linux
-/// used `USERPROFILE` and so saved into its working directory).
-pub fn downloads_dir() -> PathBuf {
-    let home = if cfg!(windows) { std::env::var_os("USERPROFILE") } else { std::env::var_os("HOME") };
-    home.map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_default()
 }
 
 /// A server-suggested file name made safe to create in the downloads folder,
@@ -153,6 +146,24 @@ pub fn same_download_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// Where a download the server suggested as `suggested` is saved in `dir`: `unique_path` of its `safe_name`, the
+/// folder made first if missing. `Err` is the path it would have had when there is no folder, it is not absolute, or
+/// it cannot be made: the host then refuses the download (`refused`) rather than saving it anywhere else.
+pub fn destination(dir: Option<&Path>, suggested: &str, taken: impl Fn(&Path) -> bool) -> Result<PathBuf, PathBuf> {
+    let name = safe_name(suggested);
+    let Some(dir) = dir.filter(|dir| dir.is_absolute()) else {
+        return Err(dir.map_or_else(|| PathBuf::from(&name), |dir| dir.join(&name)));
+    };
+    std::fs::create_dir_all(dir).map_err(|_| dir.join(&name))?;
+    Ok(unique_path(dir, &name, taken))
+}
+
+/// The messages for a download the host refused (`destination`'s `Err`): it starts and fails at once, so the app
+/// shows a failed card.
+pub fn refused(path: String, url: Option<String>) -> [ViewToHost; 2] {
+    [ViewToHost::DownloadStarted { path: path.clone(), total_bytes: None, url }, ViewToHost::DownloadFailed { path }]
+}
+
 /// Close to NTFS's case folding: it uppercases through a one-to-one table, so
 /// a character whose Unicode uppercase is several (`ß` -> `SS`) stays as it
 /// is, and `ß.txt` and `ss.txt` are different files.
@@ -194,6 +205,38 @@ pub fn coalesce_progress(msgs: Vec<ViewToHost>) -> Vec<ViewToHost> {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// Review Focus 3: a folder that can't be had refuses the download; nothing is saved anywhere else.
+    #[test]
+    fn a_destination_is_made_in_the_folder_or_refused() {
+        let root = std::env::temp_dir().join(format!("manifold-destination-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("Zoë Q dl");
+        let none = |_: &Path| false;
+        assert_eq!(destination(Some(dir.as_path()), "../a.zip", none), Ok(dir.join("a.zip")));
+        assert!(dir.is_dir(), "the folder is made at the first download");
+        std::fs::write(dir.join("a.zip"), b"x").unwrap();
+        assert_eq!(destination(Some(dir.as_path()), "a.zip", |p| p.exists()), Ok(dir.join("a (1).zip")));
+        assert_eq!(destination(None, "b.zip", none), Err(PathBuf::from("b.zip")), "no folder");
+        let rel = Path::new("manifold-relative-dl");
+        assert_eq!(destination(Some(rel), "b.zip", none), Err(rel.join("b.zip")), "not a full path");
+        assert!(!rel.exists(), "a relative folder is never made");
+        let file = root.join("a file");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(destination(Some(file.as_path()), "c.zip", none), Err(file.join("c.zip")), "a file in its place");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_refused_download_starts_and_fails_at_once() {
+        let [started, failed] = refused(r"D:\dl\a.zip".into(), Some("http://h/a".into()));
+        assert!(
+            matches!(&started, ViewToHost::DownloadStarted { path, total_bytes: None, url }
+                if path == r"D:\dl\a.zip" && url.as_deref() == Some("http://h/a")),
+            "{started:?}"
+        );
+        assert!(matches!(&failed, ViewToHost::DownloadFailed { path } if path == r"D:\dl\a.zip"), "{failed:?}");
+    }
 
     #[test]
     fn a_suggested_name_keeps_only_its_last_component() {

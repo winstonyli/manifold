@@ -60,10 +60,13 @@ wrap_download_handler! {
             true as _
         }
 
-        // Must call `callback.cont(...)` or the download never actually
-        // starts -- CEF has no default location of its own the way
-        // WebView2 does. `show_dialog: false` since there's no real
-        // window for a native save-as dialog to appear in anyway.
+        // CEF has no default save location of its own and must be told one (`callback.cont`), or the download never
+        // starts. The path comes from the rule every host uses (`downloads::destination`): the folder the app set,
+        // made if missing, and the suggested name's last component, numbered if a file or a download still in
+        // `assigned` has it. `show_dialog: false`: there is no window for a save-as dialog. A download that can't be
+        // placed is reported started and failed (`downloads::refused`) and handed back to CEF's default handling
+        // (return 0), which cancels it for a windowless browser (Alloy style); `on_download_updated` reports nothing
+        // of it, since its id was never assigned.
         fn on_before_download(
             &self,
             _browser: Option<&mut Browser>,
@@ -71,25 +74,34 @@ wrap_download_handler! {
             suggested_name: Option<&CefString>,
             callback: Option<&mut BeforeDownloadCallback>,
         ) -> ::std::os::raw::c_int {
-            if let (Some(item), Some(callback)) = (download_item, callback) {
-                // CEF (unlike WebView2) has no default save location or
-                // uniquifying of its own. The suggested name is
-                // server-controlled; `safe_name` keeps only its last
-                // component (it can't leave the downloads folder) and makes
-                // it a name Windows will create as given.
-                let dir = manifold_view_protocol::downloads::downloads_dir();
-                let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
-                let name = manifold_view_protocol::downloads::safe_name(&suggested);
-                let mut results = self.handler.result.borrow_mut();
-                let path = manifold_view_protocol::downloads::unique_path(&dir, &name, |p| {
+            let (Some(item), Some(callback)) = (download_item, callback) else { return true as _ };
+            let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
+            let mut results = self.handler.result.borrow_mut();
+            let decided = manifold_view_protocol::downloads::destination(
+                manifold_view_protocol::downloads::folder().as_deref(),
+                &suggested,
+                |p| {
                     p.exists()
-                        || results.assigned.values().any(|taken| manifold_view_protocol::downloads::same_download_path(taken, p))
-                });
-                results.assigned.insert(item.id(), path.clone());
-                drop(results);
-                callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
+                        || results
+                            .assigned
+                            .values()
+                            .any(|taken| manifold_view_protocol::downloads::same_download_path(taken, p))
+                },
+            );
+            match decided {
+                Ok(path) => {
+                    results.assigned.insert(item.id(), path.clone());
+                    drop(results);
+                    callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
+                    true as _
+                }
+                Err(path) => {
+                    let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
+                    let messages = manifold_view_protocol::downloads::refused(path.to_string_lossy().into_owned(), url);
+                    results.queue.extend(messages);
+                    0
+                }
             }
-            true as _
         }
 
         fn on_download_updated(
