@@ -347,6 +347,17 @@ impl Shots {
         self.inst.send("WAITIDLE")
     }
 
+    /// Double-clicks the first top-level loaded tab card, looked up now (a fit or a new card moves it), and waits for
+    /// its Tab view.
+    fn open_tab(&mut self) -> io::Result<()> {
+        let (x, y) = self.center(TAB, "top", Some(true))?;
+        send!(self, format!("DOUBLECLICK {x} {y}"))?;
+        if !self.inst.export_until("tab-view", State::tab_view)?.tab_view() {
+            return Err(io::Error::other(format!("a double-click at {x} {y} did not open Tab view")));
+        }
+        self.settle()
+    }
+
     fn shot(&mut self, name: &str) -> io::Result<()> {
         self.settle()?;
         let path = self.out.join(format!("{name}.png"));
@@ -1119,8 +1130,7 @@ impl Shots {
         let w = i64::from(self.size.0);
         let band = knob("HOVER_BAND", 34);
         self.step("tab view", |s| {
-            let (x, y) = s.center(TAB, "top", Some(true))?;
-            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 5")?;
+            s.open_tab()?;
             if s.has("tabview") {
                 s.shot("tabview")?;
             }
@@ -1317,10 +1327,9 @@ impl Shots {
     /// small attachment and /slow as a 1 MB one it stalls after 300 KB, and the live tab navigates to it, so the
     /// engine starts the download (the card keeps the URL as its source line). Before json-zoom, which must run last.
     fn download_views(&mut self) -> io::Result<()> {
-        let (x, y) = self.center(TAB, "top", Some(true))?;
-        send!(self, format!("DOUBLECLICK {x} {y}"), "SLEEP 5")?;
         if self.has_any(&["download-progress", "download-failed"]) {
             let server = Downloads::start()?;
+            self.open_tab()?;
             // Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
             send!(self, format!("ADDRESSBAR {}", server.url("/slow")), "SLEEP 1", "ENTER", "SLEEP 6")?;
             send!(self, "TOGGLEVIEW", "SLEEP 2")?;
@@ -1330,18 +1339,18 @@ impl Shots {
                 self.shot("download-progress")?;
             }
             if self.has("download-failed") {
-                // The server dies mid-transfer. WebView2 doesn't report the download failed: it resets it to 0 B and
-                // starts it again as a second download (a second card), which then reports nothing, whether its
-                // request is refused or answered 503 (runs 2026-10-27-download-host-events, -download-503-noprobe).
+                // The server dies mid-transfer. WebView2 doesn't report the download failed: it starts it again under
+                // the same path (the card restarts at 0 B) and then reports nothing, whether that request is refused or
+                // answered 503 (runs 2026-10-27-download-host-events, -download-503-noprobe).
                 server.kill();
                 send!(self, "SLEEP 5", "MOUSEMOVE 5 780", "SLEEP 1")?;
                 self.shot("download-failed")?;
             }
-            send!(self, format!("DOUBLECLICK {x} {y}"), "SLEEP 2")?;
         }
         if self.has("download-real") {
             // A server of its own: `download-failed` killed the first.
             let server = Downloads::start()?;
+            self.open_tab()?;
             send!(self, format!("ADDRESSBAR {}", server.url("/real.zip")), "SLEEP 1", "ENTER", "SLEEP 6")?;
             self.shot("download-real-tab")?;
             send!(self, "TOGGLEVIEW", "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
