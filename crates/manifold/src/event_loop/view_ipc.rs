@@ -210,7 +210,7 @@ mod tests {
             zoom_factor: 1.0,
             swap_target: None,
         };
-        app.test_node(node(1), crate::store::model::Kind::Tab, Runtime::Tab(payload));
+        app.test_node(node(1), crate::store::model::Kind::Tab, Runtime::Tab(Box::new(payload)));
         for i in 0..VIEW_MESSAGES_PER_DRAIN + 10 {
             feed.send(ViewToHost::AudioPlayingChanged { playing: i.is_multiple_of(2) }).unwrap();
         }

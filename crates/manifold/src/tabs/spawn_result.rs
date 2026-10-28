@@ -87,7 +87,7 @@ impl App {
                 self.nodes.insert(
                     id,
                     GraphNode {
-                        runtime: Runtime::Tab(TabPayload {
+                        runtime: Runtime::Tab(Box::new(TabPayload {
                             tab,
                             url: url.clone(),
                             title,
@@ -98,7 +98,7 @@ impl App {
                             muted,
                             zoom_factor,
                             swap_target: None,
-                        }),
+                        })),
                     },
                 );
                 let view_kind = session_sync::view_code(kind);

@@ -10,7 +10,8 @@ use crate::store::model::NodeId;
 /// type's card needs, and `None` for a kind with none (a group: its name
 /// and jar are all the mirror's). See each variant's own `*Payload` doc comment.
 pub(crate) enum Runtime {
-    Tab(TabPayload),
+    /// Boxed: a live tab's payload (its `ViewTab`) is several times any other variant's.
+    Tab(Box<TabPayload>),
     Unloaded(UnloadedTabPayload),
     Download(DownloadPayload),
     Note(NotePayload),
@@ -595,7 +596,7 @@ second"
         let live = place(
             &mut app,
             Kind::Tab,
-            Runtime::Tab(TabPayload {
+            Runtime::Tab(Box::new(TabPayload {
                 tab,
                 url: "https://a/".into(),
                 title: String::new(),
@@ -606,7 +607,7 @@ second"
                 muted: false,
                 zoom_factor: 1.0,
                 swap_target: None,
-            }),
+            })),
         );
         let sleeping = place(
             &mut app,

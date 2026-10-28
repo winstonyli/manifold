@@ -377,7 +377,7 @@ pub(crate) type Peer = crate::process_manager::FakePeer;
 /// A live tab on `kind` (a fake host, `ViewTab::fake`), as a landing inserts it. The peer reads what it is sent.
 pub(crate) fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (NodeId, Peer) {
     let (tab, peer) = crate::process_manager::ViewTab::fake(kind);
-    let payload = Runtime::Tab(crate::node::TabPayload {
+    let payload = Runtime::Tab(Box::new(crate::node::TabPayload {
         tab,
         url: url.into(),
         title: String::new(),
@@ -388,7 +388,7 @@ pub(crate) fn live_tab(app: &mut App, kind: ViewKind, url: &str) -> (NodeId, Pee
         muted: false,
         zoom_factor: 1.0,
         swap_target: None,
-    });
+    }));
     (add(app, Kind::Tab, payload), peer)
 }
 

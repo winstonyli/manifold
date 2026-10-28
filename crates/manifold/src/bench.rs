@@ -91,7 +91,7 @@ pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
                     zoom_factor: 1.0,
                     swap_target: None,
                 };
-                (Kind::Tab, Runtime::Tab(live))
+                (Kind::Tab, Runtime::Tab(Box::new(live)))
             }
             0 => {
                 let sleeping = UnloadedTabPayload {

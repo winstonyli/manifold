@@ -507,7 +507,7 @@ mod tests {
         std::fs::write(&path, r#"{"a": {"b": 1}}"#).unwrap();
         let mut app = App::default();
         let (tab, _peer) = ViewTab::fake(ViewKind::Servo);
-        let live = Runtime::Tab(TabPayload {
+        let live = Runtime::Tab(Box::new(TabPayload {
             tab,
             url: "https://a/".into(),
             title: String::new(),
@@ -518,7 +518,7 @@ mod tests {
             muted: false,
             zoom_factor: 1.0,
             swap_target: None,
-        });
+        }));
         let asleep = Runtime::Unloaded(UnloadedTabPayload {
             url: "https://s/".into(),
             title: String::new(),
