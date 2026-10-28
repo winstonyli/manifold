@@ -17,12 +17,13 @@
 //! download, rather than re-reading it from the operation each time.
 //!
 //! The host holds each download's operation until it reports finished or
-//! failed: one the host stops referencing never raises `StateChanged`
-//! (runs 2026-10-27-dl-probe-*). A transfer that breaks is retried as a
-//! second `DownloadStarting` under the same path, from 0 or, when the server
-//! sent an ETag, from the bytes the engine kept; the retry reports the
-//! outcome, and the first operation never reports again, so it stays held
-//! until the host exits.
+//! failed. A transfer that breaks is retried as a second `DownloadStarting`
+//! under the same path, from 0 or from the bytes the engine kept (seen with an
+//! HTTP/1.1 reply carrying an ETag and `Accept-Ranges`). The retry reports the
+//! outcome only while held: dropped, it never did (runs
+//! 2026-10-27-download-host-events, 2026-10-28-dl-failed-red); held, it does
+//! (runs 2026-10-27-dl-probe-*). The first operation never reports again, so
+//! it stays held until the host exits.
 
 use std::cell::RefCell;
 use std::rc::Rc;
