@@ -278,8 +278,57 @@ pub struct ViewTab {
     profile_slot: Option<usize>,
     /// The visibility last sent (`set_visible`); `true` at first, as every host starts.
     shown: bool,
-    /// A frame of the loaded page has come in from this host (`App::note_tab_frame`).
-    framed: bool,
+    /// Whether the loaded page's frames have settled into the one its card keeps (`App::tab_visible`).
+    pub(crate) first_frame: FirstFrame,
+}
+
+/// No new frame for this long after the loaded page's last one: the page has settled. Hosts send only changed frames,
+/// so a static page goes quiet; its first frame after load can still be an unsettled first paint (2026-10-27, run
+/// `2026-10-27-shots-frame-probe`).
+const FRAME_QUIET: std::time::Duration = std::time::Duration::from_millis(300);
+/// A page that keeps changing settles this long after its first loaded frame anyway.
+const FRAME_CAP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A tab's way to its settled first frame: waiting for a frame of its loaded page, settling while frames still come,
+/// then framed for good.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum FirstFrame {
+    #[default]
+    Waiting,
+    Settling {
+        first: std::time::Instant,
+        last: std::time::Instant,
+    },
+    Framed,
+}
+
+impl FirstFrame {
+    /// A frame of the loaded page came in at `now`.
+    pub(crate) fn note(&mut self, now: std::time::Instant) {
+        *self = match *self {
+            FirstFrame::Waiting => FirstFrame::Settling { first: now, last: now },
+            FirstFrame::Settling { first, .. } => FirstFrame::Settling { first, last: now },
+            FirstFrame::Framed => FirstFrame::Framed,
+        };
+    }
+
+    /// Framed once quiet for `FRAME_QUIET` or `FRAME_CAP` after the first frame. `paused` (the host is hidden, so its
+    /// frames stopped for another reason) starts over.
+    pub(crate) fn settle(&mut self, now: std::time::Instant, paused: bool) {
+        if let FirstFrame::Settling { first, last } = *self {
+            if paused {
+                *self = FirstFrame::Waiting;
+            } else if now.saturating_duration_since(last) >= FRAME_QUIET
+                || now.saturating_duration_since(first) >= FRAME_CAP
+            {
+                *self = FirstFrame::Framed;
+            }
+        }
+    }
+
+    pub(crate) fn framed(self) -> bool {
+        self == FirstFrame::Framed
+    }
 }
 
 impl ViewTab {
@@ -297,15 +346,6 @@ impl ViewTab {
             self.shown = visible;
             self.send(&HostToView::SetVisible(visible));
         }
-    }
-
-    /// Whether a frame of the loaded page has come in from this host.
-    pub(crate) fn framed(&self) -> bool {
-        self.framed
-    }
-
-    pub(crate) fn mark_framed(&mut self) {
-        self.framed = true;
     }
 
     /// Queues `Shutdown` now. An app exit calls this on every tab before dropping them, so `Drop` then waits one
@@ -363,7 +403,7 @@ impl ViewTab {
             cache_dir: None,
             profile_slot: None,
             shown: true,
-            framed: false,
+            first_frame: FirstFrame::Waiting,
         };
         let writer = tab.writer.clone();
         (tab, FakePeer { channel: manifold_view_protocol::MessageChannel::new(peer), writer }, feed)
@@ -1063,7 +1103,7 @@ pub fn spawn_tab(
         cache_dir,
         profile_slot,
         shown: true,
-        framed: false,
+        first_frame: FirstFrame::Waiting,
     };
     if desc.tags.has(Tag::Jars) {
         // Serialised now that the host is connected, so cookies merged while it started are in the seed.

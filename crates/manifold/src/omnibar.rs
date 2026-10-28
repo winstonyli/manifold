@@ -450,9 +450,16 @@ mod tests {
         assert_eq!(app.view_mode, ViewMode::Graph);
     }
 
+    /// The tab's loaded page has settled into its card's frame, so only being shown keeps it rendering.
+    fn settle(app: &mut App, id: NodeId) {
+        let t0 = std::time::Instant::now();
+        app.note_tab_frame(id, t0);
+        app.sync_tab_visibility(false, t0 + std::time::Duration::from_secs(5));
+    }
+
     /// Whether the frame's `sync_tab_visibility` stops the tab rendering.
     fn hidden(app: &mut App, peer: &mut crate::session_sync::tests::Peer) -> bool {
-        app.sync_tab_visibility(false);
+        app.sync_tab_visibility(false, std::time::Instant::now());
         peer.sent().iter().any(|m| matches!(m, HostToView::SetVisible(false)))
     }
 
@@ -460,7 +467,7 @@ mod tests {
     fn an_other_row_chosen_in_the_item_view_hides_the_tab_and_shows_the_graph() {
         let mut app = App::default();
         let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
-        app.note_tab_frame(tab_id);
+        settle(&mut app, tab_id);
         let note = add_note(&mut app, "kept");
         app.focused = Some(tab_id);
         app.view_mode = ViewMode::Item;
@@ -476,7 +483,7 @@ mod tests {
     fn an_other_row_chosen_in_settings_opened_from_a_tab_hides_the_tab() {
         let mut app = App::default();
         let (tab_id, mut peer) = live_tab(&mut app, crate::ViewKind::Servo, "https://a.test/");
-        app.note_tab_frame(tab_id);
+        settle(&mut app, tab_id);
         let note = add_note(&mut app, "kept");
         app.focused = Some(tab_id);
         app.view_mode = ViewMode::Item;

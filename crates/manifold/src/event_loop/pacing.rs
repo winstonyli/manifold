@@ -192,7 +192,7 @@ impl App {
         self.poll_view_installs();
         self.drain_tab_events();
         self.finish_transition_if_done();
-        self.sync_tab_visibility(true);
+        self.sync_tab_visibility(true, std::time::Instant::now());
     }
 }
 

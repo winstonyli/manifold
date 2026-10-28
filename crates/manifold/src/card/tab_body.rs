@@ -274,7 +274,7 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let mut body = CardBody { interact_rect: rect, tooltip: None };
-        // Busy while the page loads, and until a frame of the loaded page is in (`App::tab_visible`).
+        // Busy while the page loads, and until the loaded page has settled into a frame (`App::tab_visible`).
         let Some((title, url, tab_view_kind, unresponsive, busy)) =
             self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| {
                 (
@@ -282,7 +282,7 @@ impl App {
                     t.url.clone(),
                     t.tab.kind,
                     t.tab.is_unresponsive(std::time::Instant::now()),
-                    t.loading || !t.tab.framed(),
+                    t.loading || !t.tab.first_frame.framed(),
                 )
             })
         else {

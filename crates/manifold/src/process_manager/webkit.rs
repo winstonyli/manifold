@@ -178,6 +178,6 @@ pub(super) fn spawn_webkit_tab(
         cache_dir: None,
         profile_slot: None,
         shown: true,
-        framed: false,
+        first_frame: FirstFrame::Waiting,
     })
 }

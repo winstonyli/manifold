@@ -135,7 +135,7 @@ impl App {
             if !self.nodes.contains_key(&update.tab_id) {
                 continue;
             }
-            self.note_tab_frame(update.tab_id);
+            self.note_tab_frame(update.tab_id, std::time::Instant::now());
             let format = if update.kind.has(crate::caps::Tag::Bgra) {
                 wgpu::TextureFormat::Bgra8UnormSrgb
             } else {
