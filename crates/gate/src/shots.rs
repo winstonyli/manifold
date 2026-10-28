@@ -250,7 +250,7 @@ impl Shots {
         image::RgbImage::from_pixel(240, 160, image::Rgb([70, 110, 160]))
             .write_to(&mut png, image::ImageFormat::Png)
             .map_err(io::Error::other)?;
-        let data = json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string();
+        let data = seed_data();
         let seed = content_dir(&std::env::temp_dir(), &[("pic.png", png.get_ref()), ("data.json", data.as_bytes())])?;
         let suggestions = suggest::Server::start()?;
         let (appdata, suggest_url) = (root.display().to_string(), suggestions.url());
@@ -1582,9 +1582,21 @@ fn pin_version(src: &str) -> Option<String> {
     between(src, "version: \"", "\"").map(str::to_string)
 }
 
+/// The seed's `data.json`, keys in the order written: the JSON views show them, and the bytes name the seed's folder.
+fn seed_data() -> String {
+    json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same bytes whether gate is built alone or with manifold (whose `preserve_order` used to reach gate's
+    /// serde_json only then, so the two builds seeded different folders with differently ordered files).
+    #[test]
+    fn the_seed_json_keeps_its_key_order() {
+        assert_eq!(seed_data(), r#"{"name":"demo","items":[1,2,3],"nested":{"a":true,"b":null}}"#);
+    }
 
     #[test]
     fn the_fixture_host_and_the_repos_cef_pin_parse() {
