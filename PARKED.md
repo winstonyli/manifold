@@ -118,3 +118,7 @@ Three read-only surveys (document and sync, UI, engines and tooling). Evidence i
 From `docs/superpowers/plans/2026-10-26-cleanliness-refactors.md` and its final review; verified 2026-10-27.
 
 - **Final-review minor.** M2 removed `suggest::Server`'s request log with its assertion; the path was dead. *Trigger:* a touch of the code. *Status:* parked.
+
+## Background tabs never get a first frame (2026-10-27)
+
+- **What:** a tab spawned without focus gets `SetVisible(false)` at spawn (`tabs/spawn_result.rs` via `image_view::spawned_tab_visible`), before its page paints, and every host captures only while visible (M5, `HostToView::SetVisible`), so it never sends a frame. Its card spins "until the first frame is in" (`card/tab_body.rs`, since `85b6fa84`) until the user opens it, and since `49de5457` `WAITIDLE` waits on that spinner, so smoke hangs at `after_kinds` (the dropped `page.html`). Whatever fixes it, no card may spin waiting on a frame that M5 never lets a hidden tab send. *Why parked:* by decision: either manifold keeps a new tab visible until its first frame after load and derives every `set_visible` from one rule, or the hosts' shared `FrameSink` owns visibility and sends until that frame. *Trigger:* the user picks one. *Evidence:* probe runs `2026-10-27-smoke-*-probe` in `docs/runs.md`; host gates at `manifold-view-webview2/src/main.rs:492`, `manifold-view-cef/src/main.rs:506`, `manifold-view-servo/src/main.rs:372`, `manifold-view-webkitgtk/src/main.rs:543`, read 2026-10-27. *Status:* held for the user's choice.
