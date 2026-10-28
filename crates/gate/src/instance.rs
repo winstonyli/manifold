@@ -95,17 +95,25 @@ fn timed_out(what: String) -> io::Error {
     io::Error::new(io::ErrorKind::TimedOut, what)
 }
 
-/// scripts/lib.sh `seed_settings`: `PROFILE/settings.json` that skips the first-launch demo and starts tabs on
-/// `view_kind`. (`--profile-dir DIR` names the manifold folder itself, so there is no `manifold/` level as under
-/// `%APPDATA%`.) `more` is extra JSON members, starting with `", "`. The theme is pinned (default `dark`, or
-/// `GATE_THEME=light`) so a run does not depend on the machine's own theme.
+/// The download folder of an instance seeded with `seed_settings(profile, ..)`: `<profile>\downloads`, absolute, so
+/// the app uses it (it ignores a relative one) and a shot can name each file exactly.
+pub fn download_dir(profile: &Path) -> io::Result<PathBuf> {
+    std::path::absolute(profile.join("downloads"))
+}
+
+/// `PROFILE/settings.json` that skips the first-launch demo and starts tabs on `view_kind`. (`--profile-dir DIR`
+/// names the manifold folder itself, so there is no `manifold/` level as under `%APPDATA%`.) `more` is extra JSON
+/// members, starting with `", "`. The theme is pinned (default `dark`, or `GATE_THEME=light`) so a run does not
+/// depend on the machine's own theme, and every instance downloads into its own profile (`download_dir`), never the
+/// user's Downloads folder; the app makes that folder at the first download.
 pub fn seed_settings(profile: &Path, view_kind: &str, more: &str) -> io::Result<()> {
     fs::create_dir_all(profile)?;
     let theme = if std::env::var("GATE_THEME").is_ok_and(|t| t == "light") { "light" } else { "dark" };
+    let downloads = serde_json::Value::from(download_dir(profile)?.to_string_lossy().into_owned());
     fs::write(
         profile.join("settings.json"),
         format!(
-            "{{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"{view_kind}\", \"theme\": \"{theme}\"{more}}}"
+            "{{\"has_shown_first_launch_demo\": true, \"default_starting_view_kind\": \"{view_kind}\", \"theme\": \"{theme}\", \"download_directory\": {downloads}{more}}}"
         ),
     )
 }
@@ -402,6 +410,15 @@ mod tests {
         assert_eq!(v["has_shown_first_launch_demo"], true);
         assert_eq!(v["default_starting_view_kind"], "webview2");
         assert_eq!(v["x"], 1);
+        assert_eq!(v["download_directory"], download_dir(&dir).unwrap().to_str().unwrap());
+        assert!(Path::new(v["download_directory"].as_str().unwrap()).is_absolute());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_instance_downloads_into_its_own_profile_by_full_path() {
+        let dir = download_dir(Path::new("rel-profile")).unwrap();
+        assert!(dir.is_absolute(), "{}", dir.display());
+        assert!(dir.ends_with(Path::new("rel-profile").join("downloads")), "{}", dir.display());
     }
 }
