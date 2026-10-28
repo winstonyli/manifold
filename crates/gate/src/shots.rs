@@ -56,11 +56,11 @@ use crate::check::{check, check_eq, note_failure, Section};
 use crate::instance::{seed_settings, Instance};
 use crate::probes::{finish, import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
-use crate::shots_net::{Downloads, Proxy};
+use crate::shots_net::{resume_body, Downloads, Proxy};
 use crate::state::{round_half_even, State, GROUP, IMAGE, JSON, NOTE, TAB};
 use crate::suggest;
 
-const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
+const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
 const FAKE_CEF_HOST: (&str, u64, &str) =
@@ -193,6 +193,8 @@ fn run(exe: &Path, work: &Path, cfg: Config) {
 
 struct Shots {
     work: PathBuf,
+    /// The instance's download folder (`instance::download_dir`), emptied before the download views.
+    downloads: PathBuf,
     /// `pic.png` and `data.json`, the files ADDFILE adds (`content_dir`).
     seed: PathBuf,
     inst: Instance,
@@ -261,8 +263,10 @@ impl Shots {
             "log",
             &[("APPDATA", &appdata), ("MANIFOLD_SUGGESTIONS_URL", &suggest_url)],
         )?;
+        let downloads = crate::instance::download_dir(&profile)?;
         Ok(Shots {
             work: work.to_path_buf(),
+            downloads,
             seed,
             inst,
             out: cfg.out,
@@ -657,7 +661,7 @@ impl Shots {
             )?;
             s.shot("missing-file")
         })?;
-        if self.has_any(&["download-real", "download-progress", "download-failed"]) {
+        if self.has_any(&["download-real", "download-progress", "download-failed", "download-resume"]) {
             self.step("downloads", Self::download_views)?;
         }
         self.view("json-zoom", Self::json_zoom)?;
@@ -1323,15 +1327,32 @@ impl Shots {
         })
     }
 
-    /// Real downloads (`download-failed` kills the server mid-transfer): a local HTTP server answers /real.zip as a
-    /// small attachment and /slow as a 1 MB one it stalls after 300 KB, and the live tab navigates to it, so the
-    /// engine starts the download (the card keeps the URL as its source line). Before json-zoom, which must run last.
+    /// Real downloads into the instance's own folder (`instance::download_dir`), each checked by its exact path: a
+    /// local HTTP server answers /real.zip as a small attachment, /slow as a 1 MB one it stalls after 300 KB
+    /// (`download-failed` kills the server mid-transfer), and /resume as one an engine can resume after its transfer
+    /// breaks; the live tab navigates to it, so the engine starts the download (the card keeps the URL as its source
+    /// line). Before json-zoom, which must run last.
     fn download_views(&mut self) -> io::Result<()> {
+        let folder = self.downloads.clone();
+        // A rerun in the same work folder starts from an empty one, so every name below is exact.
+        if folder.exists() {
+            fs::remove_dir_all(&folder)?;
+        }
+        let at = |name: &str| folder.join(name).to_string_lossy().into_owned();
         if self.has_any(&["download-progress", "download-failed"]) {
             let server = Downloads::start()?;
             self.open_tab()?;
+            let (url, slow) = (server.url("/slow"), at("slow.zip"));
             // Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
-            send!(self, format!("ADDRESSBAR {}", server.url("/slow")), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            let named = |s: &State| matches!(s.downloads_from(&url)[..], [d] if d["path"] == slow.as_str());
+            let state = self.inst.export_until("download-progress", named)?;
+            if !named(&state) {
+                return Err(io::Error::other(format!(
+                    "the download of {url} is not one card saving to {slow}: {:?}",
+                    state.downloads_from(&url)
+                )));
+            }
             send!(self, "TOGGLEVIEW", "SLEEP 2")?;
             self.inst.click_control(crate::state::FIT_VIEW)?;
             send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
@@ -1339,17 +1360,18 @@ impl Shots {
                 self.shot("download-progress")?;
             }
             if self.has("download-failed") {
-                // The server dies mid-transfer. WebView2 retries the download as a second one under the same path,
-                // which fails once the retry is refused (runs 2026-10-27-dl-probe-*); the card shows it failed, and
-                // the shot waits for its toast to go.
-                let url = server.url("/slow");
+                // The server dies mid-transfer. WebView2 retries the download as a second one, which its host gives
+                // the first one's path (`retry_path`) and which fails once the retry is refused (runs
+                // 2026-10-27-dl-probe-*); the card shows it failed, and the shot waits for its toast to go.
                 server.kill();
-                let failed =
-                    |s: &State| matches!(s.downloads_from(&url)[..], [d] if d["failed"] == true) && s.toast().is_none();
+                let failed = |s: &State| {
+                    matches!(s.downloads_from(&url)[..], [d] if d["failed"] == true && d["path"] == slow.as_str())
+                        && s.toast().is_none()
+                };
                 let state = self.inst.export_until("download-failed", failed)?;
                 if !failed(&state) {
                     return Err(io::Error::other(format!(
-                        "the one card downloading {url} did not show the download failed (toast {:?}): {:?}",
+                        "the one card downloading {url} to {slow} did not show the download failed (toast {:?}): {:?}",
                         state.toast(),
                         state.downloads_from(&url)
                     )));
@@ -1362,13 +1384,79 @@ impl Shots {
             // A server of its own: `download-failed` killed the first.
             let server = Downloads::start()?;
             self.open_tab()?;
-            send!(self, format!("ADDRESSBAR {}", server.url("/real.zip")), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            let (url, real) = (server.url("/real.zip"), at("real.zip"));
+            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            // Framed as before (S16): the tab six seconds after the download started.
             self.shot("download-real-tab")?;
+            let saved = |s: &State| {
+                matches!(s.downloads_from(&url)[..], [d] if d["completed"] == true && d["path"] == real.as_str())
+                    && s.toast().is_none()
+            };
+            let state = self.inst.export_until("download-real", saved)?;
+            if !saved(&state) {
+                return Err(io::Error::other(format!(
+                    "the download of {url} is not one completed card saving to {real}: {:?}",
+                    state.downloads_from(&url)
+                )));
+            }
+            let bytes = fs::read(folder.join("real.zip")).unwrap_or_default();
+            if bytes != b"data" {
+                return Err(io::Error::other(format!("{real} holds {} bytes, not the server's 4", bytes.len())));
+            }
             // The card opens above the tab's, off the frame an earlier step's fit left.
             send!(self, "TOGGLEVIEW", "SLEEP 2")?;
             self.inst.click_control(crate::state::FIT_VIEW)?;
             send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
             self.shot("download-real")?;
+        }
+        if self.has("download-resume") {
+            // A file the engine can resume: its transfer breaks, the engine asks for the rest with a `Range` request,
+            // and the WebView2 host gives that retry the first one's path (`retry_path`), so one card completes one
+            // whole file.
+            let server = Downloads::start()?;
+            self.open_tab()?;
+            let (url, resume) = (server.url("/resume"), at("resume.zip"));
+            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER")?;
+            let arriving = |s: &State| s.downloads_from(&url).iter().any(|d| d["bytes"].as_u64() > Some(0));
+            let state = self.inst.export_until("download-resume-arriving", arriving)?;
+            if !arriving(&state) {
+                return Err(io::Error::other(format!("no bytes of {url} arrived: {:?}", state.downloads_from(&url))));
+            }
+            // The connection drops while the engine still expects the rest; the server keeps answering.
+            server.break_transfers();
+            let settled = |s: &State| {
+                let cards = s.downloads_from(&url);
+                cards.len() > 1
+                    || (cards.iter().any(|d| d["completed"] == true || d["failed"] == true) && s.toast().is_none())
+            };
+            let state = self.inst.export_until("download-resume", settled)?;
+            let cards = state.downloads_from(&url);
+            if !matches!(cards[..], [d] if d["completed"] == true && d["path"] == resume.as_str()) {
+                return Err(io::Error::other(format!(
+                    "the resumed download of {url} is not one completed card saving to {resume} ({} ranges answered): \
+                     {cards:?}",
+                    server.ranges_answered()
+                )));
+            }
+            let saved = fs::read(folder.join("resume.zip")).unwrap_or_default();
+            let sent = resume_body();
+            if saved != sent {
+                return Err(io::Error::other(format!(
+                    "{resume} is not the file the server sent ({} of {} bytes)",
+                    saved.len(),
+                    sent.len()
+                )));
+            }
+            if server.ranges_answered() == 0 {
+                return Err(io::Error::other(format!(
+                    "the engine never asked for the rest of {url} with an open-ended Range (`bytes=N-`, the only form \
+                     shots_net answers with a 206)"
+                )));
+            }
+            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            self.inst.click_control(crate::state::FIT_VIEW)?;
+            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            self.shot("download-resume")?;
         }
         Ok(())
     }
