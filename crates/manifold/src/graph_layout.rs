@@ -110,7 +110,7 @@ pub fn step_sized(
     let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
     // Each card's size, indexed like `pos`: looked up once per step, not twice per pair.
     let size: Vec<Option<egui::Vec2>> = ids.iter().map(|id| sizes.get(id).copied()).collect();
-    let mut forces = vec![egui::Vec2::ZERO; ids.len()];
+    let mut forces = vec![ExactSum::default(); ids.len()];
 
     // Pairwise repulsion: O(n^2) over plain vectors.
     for i in 0..pos.len() {
@@ -120,7 +120,8 @@ pub fn step_sized(
             // Two nodes on one point have no direction between them: pick a
             // fixed one from their ids so they still push apart, gently (see
             // `REPULSION_SOFT_DISTANCE`).
-            let dir = if length > f32::EPSILON { delta / length } else { pair_direction(ids[i], ids[j]) };
+            let tie = || pair_direction(ids[i], ids[j]);
+            let dir = if length > f32::EPSILON { delta / length } else { tie() };
             let dist = length.max(REPULSION_SOFT_DISTANCE);
             let force = dir * (REPULSION_STRENGTH / (dist * dist));
             forces[i] += force;
@@ -132,11 +133,13 @@ pub fn step_sized(
             let overlap = egui::vec2(reach.x - delta.x.abs(), reach.y - delta.y.abs());
             if overlap.x > 0.0 && overlap.y > 0.0 {
                 // Capped like the soft repulsion: a card dropped deep inside
-                // another must ease out, not coast across the canvas.
+                // another must ease out, not coast across the canvas. Cards level on that axis part along the pair's
+                // fixed direction.
+                let away = |d: f32, axis: usize| if d != 0.0 { d.signum() } else { tie()[axis].signum() };
                 let push = if overlap.x < overlap.y {
-                    egui::vec2(if delta.x < 0.0 { -1.0 } else { 1.0 } * overlap.x.min(OVERLAP_MAX), 0.0)
+                    egui::vec2(away(delta.x, 0) * overlap.x.min(OVERLAP_MAX), 0.0)
                 } else {
-                    egui::vec2(0.0, if delta.y < 0.0 { -1.0 } else { 1.0 } * overlap.y.min(OVERLAP_MAX))
+                    egui::vec2(0.0, away(delta.y, 1) * overlap.y.min(OVERLAP_MAX))
                 } * OVERLAP_STRENGTH;
                 forces[i] += push;
                 forces[j] -= push;
@@ -167,7 +170,7 @@ pub fn step_sized(
         }
         // Gentle pull toward the canvas center, so a disconnected node
         // doesn't drift away.
-        let force = forces[i] + (center - pos[i]) * CENTERING_STRENGTH;
+        let force = forces[i].get() + (center - pos[i]) * CENTERING_STRENGTH;
         let mut vel = velocities.get(id).copied().unwrap_or(egui::Vec2::ZERO);
         vel = (vel + force * dt) * DAMPING;
         if vel.length() > MAX_SPEED {
@@ -208,9 +211,55 @@ pub fn named_jitter(name: &str) -> egui::Vec2 {
     jitter_from_text(name)
 }
 
-/// The fixed direction two cards on one point push apart along, from their counters (see `spawn_jitter`).
+/// The fixed direction `a` is pushed from `b` when nothing else picks one, from their counters (see `spawn_jitter`).
+/// `pair_direction(b, a)` is its opposite, so it doesn't matter which card of the pair sorts first. Only two cards
+/// with one counter, from two launches, are told apart by their random actors.
 fn pair_direction(a: NodeId, b: NodeId) -> egui::Vec2 {
-    jitter_from_text(&format!("{}\u{0}{}", a.counter, b.counter)).normalized()
+    let flip = (a.counter, a.actor) > (b.counter, b.actor);
+    let (first, second) = if flip { (b, a) } else { (a, b) };
+    let dir = jitter_from_text(&format!("{}\u{0}{}", first.counter, second.counter)).normalized();
+    if flip {
+        -dir
+    } else {
+        dir
+    }
+}
+
+/// A force summed exactly, so the total doesn't depend on the order its terms come in: ids sort by their launch's
+/// random actor first, and float addition rounds differently in another order. Each term is cut to a multiple of
+/// `2^-FRACTION_BITS` on its own, then added as an integer.
+#[derive(Clone, Copy, Default)]
+struct ExactSum {
+    x: i128,
+    y: i128,
+}
+
+/// 2^-60 is far below an f32's precision at any force the layout makes, and leaves 2^67 of headroom.
+const FRACTION_BITS: i32 = 60;
+
+impl ExactSum {
+    fn fixed(v: f32) -> i128 {
+        // Exact: f32 to f64 and a power-of-two scale both are; the cast truncates and saturates.
+        (f64::from(v) * 2f64.powi(FRACTION_BITS)) as i128
+    }
+
+    fn get(self) -> egui::Vec2 {
+        let scale = 2f64.powi(-FRACTION_BITS);
+        egui::vec2((self.x as f64 * scale) as f32, (self.y as f64 * scale) as f32)
+    }
+}
+
+impl std::ops::AddAssign<egui::Vec2> for ExactSum {
+    fn add_assign(&mut self, v: egui::Vec2) {
+        self.x = self.x.saturating_add(Self::fixed(v.x));
+        self.y = self.y.saturating_add(Self::fixed(v.y));
+    }
+}
+
+impl std::ops::SubAssign<egui::Vec2> for ExactSum {
+    fn sub_assign(&mut self, v: egui::Vec2) {
+        *self += -v;
+    }
 }
 
 fn jitter_from_text(seed_str: &str) -> egui::Vec2 {
@@ -243,131 +292,45 @@ mod tests {
         Edge { from, to, weight: 1.0 }
     }
 
-    /// Today's `step_sized`, kept as the golden test's reference (wave 2, H3).
-    fn step_sized_reference(
-        positions: &mut HashMap<NodeId, egui::Vec2>,
-        velocities: &mut HashMap<NodeId, egui::Vec2>,
-        edges: &[Edge],
-        pinned: &HashSet<NodeId>,
-        sizes: &HashMap<NodeId, egui::Vec2>,
-        center: egui::Vec2,
-        dt: f32,
-    ) {
-        if dt <= 0.0 {
-            return;
-        }
-        // Owned ids: `positions` is mutated below.
-        let mut ids: Vec<NodeId> = positions.keys().copied().collect();
-        ids.sort_unstable();
-        let index: HashMap<NodeId, usize> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
-        let pos: Vec<egui::Vec2> = ids.iter().map(|id| positions[id]).collect();
-        let mut forces = vec![egui::Vec2::ZERO; ids.len()];
-
-        // Pairwise repulsion: O(n^2) over plain vectors.
-        for i in 0..pos.len() {
-            for j in (i + 1)..pos.len() {
-                let delta = pos[i] - pos[j];
-                let length = delta.length();
-                let dir = if length > f32::EPSILON { delta / length } else { pair_direction(ids[i], ids[j]) };
-                let dist = length.max(REPULSION_SOFT_DISTANCE);
-                let force = dir * (REPULSION_STRENGTH / (dist * dist));
-                forces[i] += force;
-                forces[j] -= force;
-
-                // Card extents: push apart along the axis that overlaps least.
-                let (Some(a), Some(b)) = (sizes.get(&ids[i]), sizes.get(&ids[j])) else { continue };
-                let reach = (*a + *b) / 2.0 + egui::Vec2::splat(CARD_GAP);
-                let overlap = egui::vec2(reach.x - delta.x.abs(), reach.y - delta.y.abs());
-                if overlap.x > 0.0 && overlap.y > 0.0 {
-                    let push = if overlap.x < overlap.y {
-                        egui::vec2(if delta.x < 0.0 { -1.0 } else { 1.0 } * overlap.x.min(OVERLAP_MAX), 0.0)
-                    } else {
-                        egui::vec2(0.0, if delta.y < 0.0 { -1.0 } else { 1.0 } * overlap.y.min(OVERLAP_MAX))
-                    } * OVERLAP_STRENGTH;
-                    forces[i] += push;
-                    forces[j] -= push;
-                }
-            }
-        }
-
-        let mut springs: Vec<(usize, usize)> =
-            edges.iter().filter_map(|e| Some((*index.get(&e.from)?, *index.get(&e.to)?))).collect();
-        springs.sort_unstable();
-        for (p, c) in springs {
-            let delta = pos[c] - pos[p];
-            let dist = delta.length().max(MIN_DISTANCE);
-            let force = delta / dist * (SPRING_STRENGTH * (dist - REST_LENGTH));
-            forces[p] += force;
-            forces[c] -= force;
-        }
-
-        for (i, id) in ids.iter().enumerate() {
-            if pinned.contains(id) {
-                velocities.insert(*id, egui::Vec2::ZERO);
-                continue;
-            }
-            let force = forces[i] + (center - pos[i]) * CENTERING_STRENGTH;
-            let mut vel = velocities.get(id).copied().unwrap_or(egui::Vec2::ZERO);
-            vel = (vel + force * dt) * DAMPING;
-            if vel.length() > MAX_SPEED {
-                vel *= MAX_SPEED / vel.length();
-            }
-            if vel.length() < SETTLE_SPEED {
-                vel = egui::Vec2::ZERO;
-            }
-            if let Some(p) = positions.get_mut(id) {
-                *p += vel * dt;
-            }
-            match velocities.get_mut(id) {
-                Some(v) => *v = vel,
-                None => {
-                    velocities.insert(*id, vel);
-                }
-            }
-        }
-    }
-
-    /// Wave 2 (H3): `step_sized` over 40 cards for 90 settle steps matches today's copy bit for bit: sized and unsized
-    /// cards, two on one point (the `spawn_jitter` direction), springs, and one pinned card.
+    /// Ids come from two launches (a session imported, a jar made at startup), and each launch's actor is random, so
+    /// which group sorts first changes from run to run. The settled layout must not: two runs of `gate shots-aa`
+    /// differed by one colour level where a force sum took the other order (run `shots-aa-drift-state-2`).
     #[test]
-    fn step_sized_matches_reference_bit_for_bit() {
-        let ids: Vec<NodeId> = (0..40).map(|i| node(i + 1)).collect();
-        let mut positions: HashMap<NodeId, egui::Vec2> = ids
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (*id, egui::vec2((i % 8) as f32 * 150.0, (i / 8) as f32 * 90.0)))
-            .collect();
-        let c00 = positions[&ids[0]];
-        positions.insert(ids[1], c00);
-        let mut velocities: HashMap<NodeId, egui::Vec2> = ids.iter().map(|id| (*id, egui::Vec2::ZERO)).collect();
-        let sizes: HashMap<NodeId, egui::Vec2> = (0..40)
-            .filter(|i: &usize| !i.is_multiple_of(5))
-            .map(|i| (ids[i], egui::vec2(160.0 + i as f32, 100.0)))
-            .collect();
-        let edges: Vec<Edge> = (1..13).map(|i| edge(ids[0], ids[3 * i])).collect();
-        let pinned = HashSet::from([ids[7]]);
-        let (mut ref_positions, mut ref_velocities) = (positions.clone(), velocities.clone());
-        for _ in 0..90 {
-            step_sized(&mut positions, &mut velocities, &edges, &pinned, &sizes, egui::Vec2::ZERO, 1.0 / 60.0);
-            step_sized_reference(
-                &mut ref_positions,
-                &mut ref_velocities,
-                &edges,
-                &pinned,
-                &sizes,
-                egui::Vec2::ZERO,
-                1.0 / 60.0,
-            );
-        }
-        let bits = |map: &HashMap<NodeId, egui::Vec2>| {
-            let mut all: Vec<(NodeId, u32, u32)> =
-                map.iter().map(|(id, v)| (*id, v.x.to_bits(), v.y.to_bits())).collect();
-            all.sort();
-            all
+    fn the_layout_does_not_depend_on_which_launch_sorts_first() {
+        use crate::store::model::ActorId;
+        let (low, high) = (ActorId(0x1111), ActorId(0xffff_0000));
+        // Six cards from each launch, counters 0..6 in both, spread out and some overlapping, two springs.
+        let settle = |first: ActorId, second: ActorId| {
+            let cards: Vec<(NodeId, egui::Vec2)> = (0..12u64)
+                .map(|i| {
+                    let actor = if i < 6 { first } else { second };
+                    let at = egui::vec2((i % 4) as f32 * 97.3 - 120.0, (i / 4) as f32 * 61.7 + (i as f32).sin() * 13.0);
+                    (NodeId { actor, counter: i % 6 }, at)
+                })
+                .collect();
+            let mut positions: HashMap<NodeId, egui::Vec2> = cards.iter().copied().collect();
+            // Ties, where the pair's order picks a direction: one card on another, and one beside another in a row.
+            positions.insert(cards[1].0, cards[8].1);
+            positions.insert(cards[2].0, cards[9].1 + egui::vec2(30.0, 0.0));
+            let mut velocities = HashMap::new();
+            let sizes: HashMap<NodeId, egui::Vec2> =
+                cards.iter().map(|(id, _)| (*id, egui::vec2(160.0, 100.0))).collect();
+            let edges = [edge(cards[0].0, cards[7].0), edge(cards[3].0, cards[10].0)];
+            for _ in 0..90 {
+                step_sized(
+                    &mut positions,
+                    &mut velocities,
+                    &edges,
+                    &HashSet::new(),
+                    &sizes,
+                    egui::Vec2::ZERO,
+                    1.0 / 60.0,
+                );
+            }
+            // By card: the first launch's then the second's, each by counter.
+            cards.iter().map(|(id, _)| (positions[id].x.to_bits(), positions[id].y.to_bits())).collect::<Vec<_>>()
         };
-        assert_eq!(bits(&positions), bits(&ref_positions));
-        assert_eq!(bits(&velocities), bits(&ref_velocities));
-        assert_ne!(positions[&ids[0]], positions[&ids[1]], "the pair on one point pushed apart");
+        assert_eq!(settle(low, high), settle(high, low));
     }
 
     #[test]
