@@ -3228,7 +3228,7 @@ Rejected: none.
 Minor deferred:
 - Task 3's app-side tests are never run RED: a RED run needs stubs across several files, not a one-line fix.
 - The REDs of Tasks 1, 2 and 4 fail only at compile time: a behavioral RED needs stub bodies per function, not a one-line fix.
-- The verdict reports every metadata failure as "Doesn't exist yet": telling causes apart needs an ancestor walk, which is a design change.
+- The verdict reports every metadata failure as "Doesn't exist yet": telling causes apart needs an ancestor walk, which is a design change. (Done in the final review's fix pass, b64deb11: the nearest existing part of the path decides.)
 - A failed or moved Known Folder lookup refuses every download, and the `OnceLock` cache goes stale: needs a decision on refresh and on the fallback.
 - `host_path` is not the inverse of `app_path`, and `/mnt` is hardcoded: needs a decision on reading `wsl.conf`'s automount root.
 - With no folder, a refused download shows a bare relative name as its path: the card text needs a design decision, not a one-line fix.
