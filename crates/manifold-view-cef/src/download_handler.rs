@@ -132,7 +132,9 @@ wrap_download_handler! {
                     let event = if complete {
                         ViewToHost::DownloadCompleted { path }
                     } else {
-                        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(FailureKind::Other, "") }
+                        // CEF's code says why; it has no words of its own to add.
+                        let kind = failure_kind(item.is_canceled() != 0, item.interrupt_reason());
+                        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(kind, "") }
                     };
                     results.queue.push(event);
                 } else {
@@ -146,8 +148,91 @@ wrap_download_handler! {
     }
 }
 
+/// What the user can do about a download CEF ended without completing: `canceled` (`is_canceled`) is the engine's own
+/// cancel, nothing the user asked for (the app has no cancel); otherwise `reason` (`interrupt_reason`), Chromium's
+/// codes, mapped as the WebView2 host maps Edge's (`SERVER_UNREACHABLE` is Chromium's "unexpected server response").
+fn failure_kind(canceled: bool, reason: DownloadInterruptReason) -> FailureKind {
+    if canceled {
+        return FailureKind::Other;
+    }
+    match reason {
+        DownloadInterruptReason::FILE_FAILED
+        | DownloadInterruptReason::FILE_ACCESS_DENIED
+        | DownloadInterruptReason::FILE_NAME_TOO_LONG
+        | DownloadInterruptReason::FILE_TOO_LARGE => FailureKind::FolderUnusable,
+        DownloadInterruptReason::FILE_NO_SPACE => FailureKind::DiskFull,
+        DownloadInterruptReason::FILE_VIRUS_INFECTED
+        | DownloadInterruptReason::FILE_BLOCKED
+        | DownloadInterruptReason::FILE_SECURITY_CHECK_FAILED => FailureKind::Blocked,
+        DownloadInterruptReason::NETWORK_FAILED
+        | DownloadInterruptReason::NETWORK_TIMEOUT
+        | DownloadInterruptReason::NETWORK_DISCONNECTED
+        | DownloadInterruptReason::NETWORK_SERVER_DOWN
+        | DownloadInterruptReason::NETWORK_INVALID_REQUEST => FailureKind::Network,
+        DownloadInterruptReason::SERVER_FAILED
+        | DownloadInterruptReason::SERVER_NO_RANGE
+        | DownloadInterruptReason::SERVER_BAD_CONTENT
+        | DownloadInterruptReason::SERVER_UNAUTHORIZED
+        | DownloadInterruptReason::SERVER_CERT_PROBLEM
+        | DownloadInterruptReason::SERVER_FORBIDDEN
+        | DownloadInterruptReason::SERVER_UNREACHABLE
+        | DownloadInterruptReason::SERVER_CONTENT_LENGTH_MISMATCH
+        | DownloadInterruptReason::SERVER_CROSS_ORIGIN_REDIRECT => FailureKind::Server,
+        _ => FailureKind::Other,
+    }
+}
+
 impl DownloadHandlerBuilder {
     pub fn build(handler: ViewDownloadHandler) -> DownloadHandler {
         Self::new(handler)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every reason CEF 152 names has its kind, as the WebView2 host maps the same Chromium codes; an engine cancel is
+    /// `Other` whatever its reason.
+    #[test]
+    fn every_interrupt_reason_has_its_kind() {
+        use DownloadInterruptReason as R;
+        use FailureKind as K;
+        let table = [
+            (R::NONE, K::Other),
+            (R::FILE_FAILED, K::FolderUnusable),
+            (R::FILE_ACCESS_DENIED, K::FolderUnusable),
+            (R::FILE_NO_SPACE, K::DiskFull),
+            (R::FILE_NAME_TOO_LONG, K::FolderUnusable),
+            (R::FILE_TOO_LARGE, K::FolderUnusable),
+            (R::FILE_VIRUS_INFECTED, K::Blocked),
+            (R::FILE_TRANSIENT_ERROR, K::Other),
+            (R::FILE_BLOCKED, K::Blocked),
+            (R::FILE_SECURITY_CHECK_FAILED, K::Blocked),
+            (R::FILE_TOO_SHORT, K::Other),
+            (R::FILE_HASH_MISMATCH, K::Other),
+            (R::FILE_SAME_AS_SOURCE, K::Other),
+            (R::NETWORK_FAILED, K::Network),
+            (R::NETWORK_TIMEOUT, K::Network),
+            (R::NETWORK_DISCONNECTED, K::Network),
+            (R::NETWORK_SERVER_DOWN, K::Network),
+            (R::NETWORK_INVALID_REQUEST, K::Network),
+            (R::SERVER_FAILED, K::Server),
+            (R::SERVER_NO_RANGE, K::Server),
+            (R::SERVER_BAD_CONTENT, K::Server),
+            (R::SERVER_UNAUTHORIZED, K::Server),
+            (R::SERVER_CERT_PROBLEM, K::Server),
+            (R::SERVER_FORBIDDEN, K::Server),
+            (R::SERVER_UNREACHABLE, K::Server),
+            (R::SERVER_CONTENT_LENGTH_MISMATCH, K::Server),
+            (R::SERVER_CROSS_ORIGIN_REDIRECT, K::Server),
+            (R::USER_CANCELED, K::Other),
+            (R::USER_SHUTDOWN, K::Other),
+            (R::CRASH, K::Other),
+        ];
+        for (reason, kind) in table {
+            assert_eq!(failure_kind(false, reason), kind, "{reason:?}");
+        }
+        assert_eq!(failure_kind(true, R::NETWORK_FAILED), K::Other, "an engine cancel");
     }
 }
