@@ -18,7 +18,7 @@ impl App {
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
-        let body = CardBody { interact_rect: rect, tooltip: None };
+        let mut body = CardBody { interact_rect: rect, tooltip: None };
         let Some((download_path, state, total_bytes, bytes_received)) = self
             .nodes
             .get(&id)
@@ -27,6 +27,8 @@ impl App {
         else {
             return body;
         };
+        // Why it failed, on hover and after the card's name for a screen reader (`card_label`).
+        body.tooltip = self.download_tooltip(id);
         let download_url = self.copyable_url(id).map(str::to_owned);
         let filename = download_filename(&download_path);
         // LOD: the header text is skipped once simplified -- see `paint_tab_body`'s own LOD comment.
@@ -44,7 +46,7 @@ impl App {
             // The size (or how much has arrived) in the middle of the body below the header.
             if tall {
                 let size = match (&state, total_bytes) {
-                    (DownloadState::Failed(_), _) => "Download failed".to_owned(),
+                    (DownloadState::Failed(failure), _) => crate::download_failure::card_face(failure.kind).to_owned(),
                     (DownloadState::Completed, total) => crate::human_bytes(total.unwrap_or(bytes_received)),
                     (DownloadState::InFlight, Some(total)) => {
                         format!("{} of {}", crate::human_bytes(bytes_received), crate::human_bytes(total))

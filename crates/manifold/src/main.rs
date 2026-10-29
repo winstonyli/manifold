@@ -20,6 +20,7 @@ mod deleted_names;
 mod deselect;
 mod disambiguate;
 mod doc;
+mod download_failure;
 mod duplicate;
 mod embedded_host;
 mod event_loop;

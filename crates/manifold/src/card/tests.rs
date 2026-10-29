@@ -890,3 +890,18 @@ fn long_label_chips_stay_on_a_narrow_card() {
         assert!(r.left() >= 24.0 && r.right() <= rect.right(), "{r:?}");
     }
 }
+
+/// Screen readers can't hover: a card's tooltip lines follow its name, a sentence each; no tooltip, no change.
+#[test]
+fn a_cards_label_carries_its_tooltip() {
+    assert_eq!(card_label("Note: Hi".into(), None), "Note: Hi");
+    assert_eq!(card_label("Note: Hi.".into(), Some(" \n")), "Note: Hi.", "a blank tooltip adds nothing");
+    assert_eq!(
+        card_label("Download: a.zip".into(), Some("The disk the download folder is on is full\nFolder: D:\\dl\n")),
+        "Download: a.zip. The disk the download folder is on is full. Folder: D:\\dl"
+    );
+    assert_eq!(
+        card_label("Tab: x".into(), Some("Not responding. Right-click for Restart View or End View.")),
+        "Tab: x. Not responding. Right-click for Restart View or End View"
+    );
+}

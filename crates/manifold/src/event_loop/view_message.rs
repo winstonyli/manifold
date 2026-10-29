@@ -232,7 +232,7 @@ impl App {
                 }
             }
             ViewToHost::DownloadFailed { path, failure } => {
-                self.queue_toast(format!("Download failed: {path}"));
+                self.queue_toast(crate::download_failure::toast(&path, failure.kind));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
                         dl.state = crate::node::DownloadState::Failed(failure);
@@ -277,6 +277,20 @@ mod tests {
         assert_eq!(download.failure(), Some(&failure));
         assert!(!download.is_completed());
         assert!(!in_flight(&app));
+    }
+
+    /// The toast keeps the path and adds the short reason (`download_failure::toast`).
+    #[test]
+    fn a_failed_downloads_toast_says_why() {
+        let mut app = App::default();
+        app.insert_note_at(N, None);
+        app.insert_download_node(N, "f.zip".into(), Some(10), None);
+        let failure = DownloadFailure::new(FailureKind::Network, "");
+        app.handle_view_message(N, ViewToHost::DownloadFailed { path: "f.zip".into(), failure });
+        assert_eq!(
+            app.toasts.save_toast_queue.back().map(String::as_str),
+            Some("Download failed: f.zip (Network error)")
+        );
     }
 
     /// Review Focus 4: the same file started again after its card failed gets a card of its own; the failed one stays

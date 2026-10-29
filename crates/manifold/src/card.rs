@@ -180,6 +180,22 @@ fn chain_tooltip(tooltip: Option<String>, more: Option<String>) -> Option<String
     }
 }
 
+/// What a screen reader hears for a card: its `name` (`App::accessible_name`), then each line of its hover `tooltip`,
+/// which it can't hover to read, a sentence each: "Download: a.zip. The disk the download folder is on is full.
+/// Folder: D:\dl". Every kind's tooltip counts: a failure's reason, an engine's error, a jar chip, hidden characters.
+pub(crate) fn card_label(name: String, tooltip: Option<&str>) -> String {
+    let lines: Vec<&str> = tooltip
+        .into_iter()
+        .flat_map(str::lines)
+        .map(|line| line.trim().trim_end_matches('.'))
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return name;
+    }
+    format!("{}. {}", name.trim_end_matches('.'), lines.join(". "))
+}
+
 /// The part of a `src`-sized texture (as a uv rect) that fills a `dst`-shaped rect without
 /// stretching: the full width or height, cropped on the other axis around the top-center, so a
 /// page's header stays in view.
@@ -1225,16 +1241,17 @@ impl App {
         let response = ui.interact(body.interact_rect, card_id, sense);
         // Not while a card's menu is open: the pointer is usually still on
         // the card it right-clicked, and the tooltip would cover the menu.
-        let response = match body.tooltip {
+        let response = match &body.tooltip {
             Some(tooltip) if self.menus.node_menu.open.is_none() && self.menus.trail_menu.is_none() => {
-                response.on_hover_text(tooltip)
+                response.on_hover_text(tooltip.as_str())
             }
             _ => response,
         };
-        // Screen readers: the card is a button named by its kind and title (egui announces it on focus).
+        // Screen readers: the card is a button named by its kind and title (egui announces it on focus), then its
+        // tooltip, which they can't hover to read (`card_label`).
         if let Some(id) = card.node().filter(|id| self.nodes.contains_key(id)) {
             response.widget_info(|| {
-                let name = self.accessible_name(id).unwrap_or_default();
+                let name = card_label(self.accessible_name(id).unwrap_or_default(), body.tooltip.as_deref());
                 egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name)
             });
         }
