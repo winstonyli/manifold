@@ -34,7 +34,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use manifold_view_protocol::{downloads, ViewToHost};
+use manifold_view_protocol::{downloads, DownloadFailure, FailureKind, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2DownloadOperation, ICoreWebView2_13, ICoreWebView2_4,
     COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
@@ -225,7 +225,10 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                     let message = if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
                         Some(ViewToHost::DownloadCompleted { path: path_text.clone() })
                     } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
-                        Some(ViewToHost::DownloadFailed { path: path_text.clone() })
+                        Some(ViewToHost::DownloadFailed {
+                            path: path_text.clone(),
+                            failure: DownloadFailure::new(FailureKind::Other, ""),
+                        })
                     } else {
                         None
                     };

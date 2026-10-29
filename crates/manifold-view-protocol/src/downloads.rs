@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use crate::ViewToHost;
+use crate::{DownloadFailure, FailureKind, ViewToHost};
 
 /// The folder the app last set (`host_env::apply`), read for each new download.
 static FOLDER: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -161,7 +161,10 @@ pub fn destination(dir: Option<&Path>, suggested: &str, taken: impl Fn(&Path) ->
 /// The messages for a download the host refused (`destination`'s `Err`): it starts and fails at once, so the app
 /// shows a failed card.
 pub fn refused(path: String, url: Option<String>) -> [ViewToHost; 2] {
-    [ViewToHost::DownloadStarted { path: path.clone(), total_bytes: None, url }, ViewToHost::DownloadFailed { path }]
+    [
+        ViewToHost::DownloadStarted { path: path.clone(), total_bytes: None, url },
+        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(FailureKind::Other, "") },
+    ]
 }
 
 /// Close to NTFS's case folding: it uppercases through a one-to-one table, so
@@ -235,7 +238,7 @@ mod tests {
                 if path == r"D:\dl\a.zip" && url.as_deref() == Some("http://h/a")),
             "{started:?}"
         );
-        assert!(matches!(&failed, ViewToHost::DownloadFailed { path } if path == r"D:\dl\a.zip"), "{failed:?}");
+        assert!(matches!(&failed, ViewToHost::DownloadFailed { path, .. } if path == r"D:\dl\a.zip"), "{failed:?}");
     }
 
     #[test]

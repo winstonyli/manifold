@@ -88,6 +88,22 @@ fn a_wsl_hosts_download_paths_arrive_in_windows_terms() {
     assert_eq!(paths, [r"D:\dl\a.zip", r"D:\dl\a.zip"]);
 }
 
+/// A WSL host's failed download arrives with its path in Windows terms and its failure as sent (`detail` holds no
+/// path to map); a bare file name, a refusal for want of a folder, stays as it is.
+#[test]
+fn a_wsl_hosts_failed_download_keeps_its_failure() {
+    use manifold_view_protocol::{DownloadFailure, FailureKind};
+    let failure = DownloadFailure::new(FailureKind::FolderUnreachable, "");
+    for (sent, arrives) in [("/mnt/d/dl/a.zip", r"D:\dl\a.zip"), ("a.zip", "a.zip")] {
+        let msg =
+            in_app_terms(HostRuntime::Wsl, ViewToHost::DownloadFailed { path: sent.into(), failure: failure.clone() });
+        assert!(
+            matches!(&msg, ViewToHost::DownloadFailed { path, failure: f } if path == arrives && *f == failure),
+            "{msg:?}"
+        );
+    }
+}
+
 /// The host's reader of one engine connection, fed `version` and then a
 /// well-formed message; returns the first event it delivers.
 fn first_event_after_version(version: u32) -> ViewToHost {

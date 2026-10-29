@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
-use manifold_view_protocol::ViewToHost;
+use manifold_view_protocol::{DownloadFailure, FailureKind, ViewToHost};
 
 /// Download messages for the host, queued rather than a single slot -- two downloads
 /// progressing within the same tick would otherwise silently clobber each
@@ -132,7 +132,7 @@ wrap_download_handler! {
                     let event = if complete {
                         ViewToHost::DownloadCompleted { path }
                     } else {
-                        ViewToHost::DownloadFailed { path }
+                        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(FailureKind::Other, "") }
                     };
                     results.queue.push(event);
                 } else {

@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
-use manifold_view_protocol::{transport, HostToView, MessageChannel, TabState, ViewToHost};
+use manifold_view_protocol::{
+    transport, DownloadFailure, FailureKind, HostToView, MessageChannel, TabState, ViewToHost,
+};
 use webkit2gtk::{
     BackForwardListExt, BackForwardListItemExt, DownloadExt, FindControllerExt, FindOptions, URIRequestExt,
     URIResponseExt, WebContextExt, WebView, WebViewExt,
@@ -153,7 +155,10 @@ fn main() {
             download.connect_failed(move |_download, _error| {
                 failed_for_handler.set(true);
                 if let Some(path) = dest_for_failed.borrow().clone() {
-                    pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed { path });
+                    pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed {
+                        path,
+                        failure: DownloadFailure::new(FailureKind::Other, ""),
+                    });
                 }
             });
 

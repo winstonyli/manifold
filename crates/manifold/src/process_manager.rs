@@ -942,7 +942,9 @@ fn in_app_terms(runtime: HostRuntime, msg: ViewToHost) -> ViewToHost {
             ViewToHost::DownloadProgress { path: runtime.app_path(path), bytes_received }
         }
         ViewToHost::DownloadCompleted { path } => ViewToHost::DownloadCompleted { path: runtime.app_path(path) },
-        ViewToHost::DownloadFailed { path } => ViewToHost::DownloadFailed { path: runtime.app_path(path) },
+        ViewToHost::DownloadFailed { path, failure } => {
+            ViewToHost::DownloadFailed { path: runtime.app_path(path), failure }
+        }
         other => other,
     }
 }

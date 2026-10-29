@@ -231,7 +231,7 @@ impl App {
                     }
                 }
             }
-            ViewToHost::DownloadFailed { path } => {
+            ViewToHost::DownloadFailed { path, .. } => {
                 self.queue_toast(format!("Download failed: {path}"));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
@@ -258,6 +258,7 @@ mod tests {
     use super::*;
 
     use crate::store::model::{ActorId, NodeId};
+    use manifold_view_protocol::{DownloadFailure, FailureKind};
 
     const N: NodeId = NodeId { actor: ActorId(1), counter: 1 };
     const A: NodeId = NodeId { actor: ActorId(1), counter: 2 };
@@ -271,7 +272,13 @@ mod tests {
         let in_flight =
             |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
         assert!(in_flight(&app));
-        app.handle_view_message(N, ViewToHost::DownloadFailed { path: "f.zip".into() });
+        app.handle_view_message(
+            N,
+            ViewToHost::DownloadFailed {
+                path: "f.zip".into(),
+                failure: DownloadFailure::new(FailureKind::Network, ""),
+            },
+        );
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
         assert!(download.failed && !download.completed);
         assert!(!in_flight(&app));
@@ -313,7 +320,13 @@ mod tests {
         app.insert_note_at(B, None);
         app.insert_download_node(A, "f.zip".into(), None, None);
         app.insert_download_node(B, "f.zip".into(), None, None);
-        app.handle_view_message(A, ViewToHost::DownloadFailed { path: "f.zip".into() });
+        app.handle_view_message(
+            A,
+            ViewToHost::DownloadFailed {
+                path: "f.zip".into(),
+                failure: DownloadFailure::new(FailureKind::Network, ""),
+            },
+        );
         let by_parent = |p: NodeId| {
             app.nodes
                 .iter()

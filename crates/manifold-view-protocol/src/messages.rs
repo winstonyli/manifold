@@ -550,9 +550,11 @@ pub enum ViewToHost {
     /// marks that download's own graph node/popup row as no longer in
     /// progress.
     DownloadCompleted { path: String },
-    /// A download ended without finishing (cancelled, interrupted, network error) -- `path` is the one its
-    /// `DownloadStarted` reported. `manifold` marks the card failed and stops treating it as in flight.
-    DownloadFailed { path: String },
+    /// A download ended without finishing -- `path` is the one its `DownloadStarted` reported, and `failure` says
+    /// why: a refusal the host classified itself (`crate::downloads::destination`), or its engine's own failure code,
+    /// mapped by the host's `failure_kind`. `manifold` marks the card failed, words the reason on it
+    /// (`download_failure.rs`), and stops treating it as in flight.
+    DownloadFailed { path: String, failure: DownloadFailure },
     /// The page that just finished loading is a raw JSON response --
     /// `body` is its full text, so `manifold` can parse and show a real
     /// tree view instead of whatever a given engine's own default
@@ -594,6 +596,56 @@ pub enum ViewToHost {
     RedirectableContent { content_type: String },
     /// The answer to `HostToView::QueryPageText`: the page's visible text, already through `clean_page_text`.
     PageText { text: String },
+}
+
+/// Why a download failed, by what the user can do about it (`DownloadFailure::kind`). Closed and payload-free: each
+/// host maps its engine's own codes onto these in one function ending `_ => Other` (`failure_kind` in each host).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailureKind {
+    /// The host can't see the app's download folder: a WSL host given a folder it can't map, or a host started by
+    /// hand with no folder or a relative one. The failed path is then the bare file name.
+    FolderUnreachable,
+    /// The folder can't be made, isn't a folder, can't be written to, or can't hold this file (a name too long, a
+    /// file too large for its file system).
+    FolderUnusable,
+    /// The disk the folder is on is full.
+    DiskFull,
+    /// Security software, a policy, or a malware verdict blocked it.
+    Blocked,
+    /// The connection failed, timed out or dropped.
+    Network,
+    /// The server refused it or answered with an error.
+    Server,
+    /// Anything else, an engine's own cancel included: nothing the user can act on.
+    Other,
+}
+
+impl FailureKind {
+    /// Every kind, in declaration (wire) order.
+    pub const ALL: [FailureKind; 7] = [
+        FailureKind::FolderUnreachable,
+        FailureKind::FolderUnusable,
+        FailureKind::DiskFull,
+        FailureKind::Blocked,
+        FailureKind::Network,
+        FailureKind::Server,
+        FailureKind::Other,
+    ];
+}
+
+/// Why `ViewToHost::DownloadFailed`'s download failed: the `kind` the app words, and `detail`, the engine's or OS's
+/// own words for the tooltip, empty when there is nothing to add. `detail` never holds a path: only
+/// `DownloadFailed::path` is mapped between a WSL host's terms and the app's (`process_manager::in_app_terms`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownloadFailure {
+    pub kind: FailureKind,
+    pub detail: String,
+}
+
+impl DownloadFailure {
+    pub fn new(kind: FailureKind, detail: impl Into<String>) -> Self {
+        Self { kind, detail: detail.into() }
+    }
 }
 
 #[cfg(test)]
@@ -718,7 +770,7 @@ mod page_state_tests {
 
 /// Fails when the wire shape of `HostToView` or `ViewToHost` changes without `PROTOCOL_VERSION` changing.
 /// The fingerprint is FNV-1a over the frames `MessageChannel::send` writes for one representative value per variant,
-/// including every `InputEvent`, `MouseButton` and `KeyCode`.
+/// including every `InputEvent`, `MouseButton`, `KeyCode` and `FailureKind`.
 #[cfg(test)]
 mod wire_shape_tests {
     use super::*;
@@ -727,13 +779,14 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 7;
+    const RECORDED_FOR_VERSION: u32 = 8;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0xe3d8_fc72_424d_ba86;
+    const RECORDED_FINGERPRINT: u64 = 0x2570_6fd6_8e8a_4e19;
     const HOST_TO_VIEW_VARIANTS: usize = 22;
     const VIEW_TO_HOST_VARIANTS: usize = 17;
     const INPUT_EVENT_VARIANTS: usize = 7;
     const MOUSE_BUTTON_VARIANTS: usize = 3;
+    const FAILURE_KIND_VARIANTS: usize = 7;
 
     /// The index of each variant's representative in `host_samples`. Exhaustive on purpose: a new variant does not
     /// compile until it has an index here, and then `host_samples` needs a value at that index.
@@ -806,6 +859,19 @@ mod wire_shape_tests {
             MouseButton::Left => 0,
             MouseButton::Right => 1,
             MouseButton::Middle => 2,
+        }
+    }
+
+    /// As `host_slot`, for `FailureKind`, which `ViewToHost::DownloadFailed` carries.
+    fn failure_kind_slot(k: &FailureKind) -> usize {
+        match k {
+            FailureKind::FolderUnreachable => 0,
+            FailureKind::FolderUnusable => 1,
+            FailureKind::DiskFull => 2,
+            FailureKind::Blocked => 3,
+            FailureKind::Network => 4,
+            FailureKind::Server => 5,
+            FailureKind::Other => 6,
         }
     }
 
@@ -896,7 +962,10 @@ mod wire_shape_tests {
             },
             ViewToHost::DownloadProgress { path: "a.bin".into(), bytes_received: 1 << 40 },
             ViewToHost::DownloadCompleted { path: "a.bin".into() },
-            ViewToHost::DownloadFailed { path: "a.bin".into() },
+            ViewToHost::DownloadFailed {
+                path: "a.bin".into(),
+                failure: DownloadFailure::new(FailureKind::Network, "connection reset"),
+            },
             ViewToHost::JsonBody { body: "{}".into() },
             ViewToHost::RedirectableContent { content_type: "image/png".into() },
             ViewToHost::PageText { text: "hello".into() },
@@ -940,6 +1009,14 @@ mod wire_shape_tests {
         for (i, b) in buttons.iter().enumerate() {
             assert_eq!(button_slot(b), i, "buttons is out of step with button_slot");
         }
+        assert_eq!(
+            FailureKind::ALL.len(),
+            FAILURE_KIND_VARIANTS,
+            "FailureKind has a new variant: add it to ALL and its index"
+        );
+        for (i, k) in FailureKind::ALL.iter().enumerate() {
+            assert_eq!(failure_kind_slot(k), i, "FailureKind::ALL is out of step with failure_kind_slot");
+        }
         // Every `MouseButton`, and every `KeyCode` (its wire form is its position in the table).
         let press = |button| InputEvent::MouseDown { x: 0.0, y: 0.0, button, modifiers: 0, click_count: 1 };
         let mut bytes = frames(&inputs);
@@ -947,6 +1024,9 @@ mod wire_shape_tests {
         bytes.extend(frames(
             &KeyCode::ALL.iter().map(|&key| InputEvent::KeyDown { key, modifiers: 0 }).collect::<Vec<_>>(),
         ));
+        // Every `FailureKind`, as `DownloadFailed` carries it.
+        let failed = |kind| ViewToHost::DownloadFailed { path: String::new(), failure: DownloadFailure::new(kind, "") };
+        bytes.extend(frames(&FailureKind::ALL.map(failed)));
         bytes.extend(frames(&host));
         bytes.extend(frames(&view_kind));
         let actual = fnv1a(&bytes);
