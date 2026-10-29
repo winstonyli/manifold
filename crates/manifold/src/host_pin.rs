@@ -5,8 +5,9 @@
 //! the hash compiled into the exe is the trust anchor, the URL is not trusted. A host's URL is its own release's:
 //! `releases/download/v<this exe's version>/<file>-<platform>`. A build with no manifest (a dev build, the gate)
 //! pins nothing, so its engines read Unavailable unless a host built in place (`run_in_place`: its dev build folder,
-//! or beside `manifold.exe`) speaks this build's protocol. A debug build also reads the file named by
-//! `MANIFOLD_HOST_PINS_FILE`, which is how the gate shows the download states.
+//! or beside `manifold.exe`) speaks this build's protocol; a build with one never looks in a dev build folder
+//! (`walks_dev_folders`). A debug build also reads the file named by `MANIFOLD_HOST_PINS_FILE`, which is how the gate
+//! shows the download states.
 //!
 //! The manifest is `{"cef": {"windows-x64": [{"file": "manifold-view-cef.exe", "size": 123, "sha256": "..."}]}}`
 //! with the engine's store name (`ViewKind::desc().name`) as the first key.
@@ -40,6 +41,12 @@ const RELEASES: &str = "https://github.com/winstonyli/manifold/releases/download
 
 /// The manifest `build.rs` embedded; empty when `MANIFOLD_HOST_PINS` was not set.
 const EMBEDDED: &str = include_str!(concat!(env!("OUT_DIR"), "/host-pins.json"));
+
+/// Whether this exe was built with a manifest (a release). `MANIFOLD_HOST_PINS_FILE` does not count: a dev build that
+/// reads one is still a dev build.
+pub fn embedded() -> bool {
+    !EMBEDDED.trim().is_empty()
+}
 
 /// The components `kind` needs on `platform`, or an empty slice when this build pins none.
 pub fn components_for(kind: ViewKind, platform: &str) -> &'static [Component] {
@@ -125,7 +132,7 @@ mod tests {
     #[test]
     fn the_embedded_manifest_is_well_formed() {
         let entries = parse(EMBEDDED, "0.0.0").unwrap();
-        assert_eq!(entries.is_empty(), EMBEDDED.trim().is_empty());
+        assert_eq!(entries.is_empty(), !embedded());
     }
 
     #[test]

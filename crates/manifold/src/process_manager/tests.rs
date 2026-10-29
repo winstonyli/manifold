@@ -557,40 +557,40 @@ fn each_host_is_found_in_its_dev_folder_then_beside_the_exe() {
     let exe_dir = repo.join("target").join("debug");
     std::fs::create_dir_all(&exe_dir).unwrap();
     for kind in ViewKind::ALL {
-        assert_eq!(run_in_place_from(kind, &exe_dir), None, "{kind:?}: nothing built");
+        assert_eq!(run_in_place_from(kind, &exe_dir, true), None, "{kind:?}: nothing built");
     }
     let hosts = root.join("engine-hosts");
-    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts)), Some(hosts.join("manifold-view-webkitgtk")));
-    assert_eq!(pick_webkit_host(&exe_dir, None), None);
+    assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts), true), Some(hosts.join("manifold-view-webkitgtk")));
+    assert_eq!(pick_webkit_host(&exe_dir, None, true), None);
     for (kind, dev) in [(ViewKind::Servo, "target-servo"), (ViewKind::Webkit, "target-linux")] {
         assert_eq!(kind.desc().dev_dir, Some(dev));
         let dev_dir = repo.join(dev).join("debug");
         std::fs::create_dir_all(&dev_dir).unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir), None, "{kind:?}: the folder alone is not a host");
+        assert_eq!(run_in_place_from(kind, &exe_dir, true), None, "{kind:?}: the folder alone is not a host");
         let flat = exe_dir.join(host_file_name(kind));
         std::fs::write(&flat, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir), Some(flat), "{kind:?}: a packaged host beside the exe");
+        assert_eq!(run_in_place_from(kind, &exe_dir, true), Some(flat), "{kind:?}: a packaged host beside the exe");
         let built = dev_dir.join(host_file_name(kind));
         std::fs::write(&built, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir), Some(built), "{kind:?}: the dev build wins");
+        assert_eq!(run_in_place_from(kind, &exe_dir, true), Some(built), "{kind:?}: the dev build wins");
     }
     assert_eq!(
-        pick_webkit_host(&exe_dir, Some(&hosts)),
+        pick_webkit_host(&exe_dir, Some(&hosts), true),
         Some(repo.join("target-linux").join("debug").join("manifold-view-webkitgtk"))
     );
     // CEF runs only from its runtime folder: a flat exe alone is not in place, so its stamp is never read for a copy
     // the tab would not run.
     assert_eq!(ViewKind::Cef.desc().dev_dir, None);
     std::fs::write(exe_dir.join(host_file_name(ViewKind::Cef)), b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir), None, "a flat CEF exe alone");
+    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir, true), None, "a flat CEF exe alone");
     let copy = exe_dir.join(CEF_RUNTIME_DIR).join(host_file_name(ViewKind::Cef));
     std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
     std::fs::write(&copy, b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir), Some(copy));
+    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir, true), Some(copy));
     assert_eq!(ViewKind::Webview2.desc().dev_dir, None);
     let webview2 = exe_dir.join(host_file_name(ViewKind::Webview2));
     std::fs::write(&webview2, b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Webview2, &exe_dir), Some(webview2));
+    assert_eq!(run_in_place_from(ViewKind::Webview2, &exe_dir, true), Some(webview2));
 }
 
 /// The dev folder is looked for in the exe's folder and its four parents (as WebKit's lookup walked): a host in
@@ -607,9 +607,32 @@ fn the_dev_folder_is_searched_four_parents_up_and_no_further() {
         built
     };
     put(&root.join("p5"));
-    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir), None, "five parents up is out of reach");
+    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir, true), None, "five parents up is out of reach");
     let reached = put(&root.join("p5").join("p4"));
-    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir), Some(reached), "four parents up is reached");
+    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir, true), Some(reached), "four parents up is reached");
+}
+
+/// A build that pins its hosts (a release) never runs a host from a dev build folder: any user can create a folder in a
+/// drive root, so a walk up from a release's folder could reach a host nobody pinned, and a host in place skips the hash
+/// check. A host beside `manifold.exe` still runs in place.
+#[test]
+fn a_pinned_build_runs_no_host_from_a_dev_folder() {
+    let root = crate::store::testutil::temp_dir("host-pinned");
+    let exe_dir = root.join("repo").join("target").join("debug");
+    for (kind, dev) in [(ViewKind::Servo, "target-servo"), (ViewKind::Webkit, "target-linux")] {
+        let built = root.join("repo").join(dev).join("debug").join(host_file_name(kind));
+        std::fs::create_dir_all(built.parent().unwrap()).unwrap();
+        std::fs::write(&built, b"host").unwrap();
+        assert_eq!(run_in_place_from(kind, &exe_dir, false), None, "{kind:?}: a dev build is not run");
+        let hosts = root.join("engine-hosts");
+        if kind == ViewKind::Webkit {
+            assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts), false), Some(hosts.join(host_file_name(kind))));
+        }
+        std::fs::create_dir_all(&exe_dir).unwrap();
+        let flat = exe_dir.join(host_file_name(kind));
+        std::fs::write(&flat, b"host").unwrap();
+        assert_eq!(run_in_place_from(kind, &exe_dir, false), Some(flat), "{kind:?}: a host beside the exe runs");
+    }
 }
 
 /// Servo follows its host files on every OS: Installed when they are there (a host in place counts, whatever the pin

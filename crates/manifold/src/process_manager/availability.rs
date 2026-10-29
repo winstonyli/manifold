@@ -36,12 +36,12 @@ fn beside_exe(kind: ViewKind, exe_dir: &Path) -> PathBuf {
 }
 
 /// Every place `kind`'s host can run in place from, given `manifold.exe`'s folder `exe_dir`, in the order they are
-/// tried: its dev build folder (`ViewDesc::dev_dir`, then `debug/`) in `exe_dir` or any of its four parents, nearest
-/// first, then beside `manifold.exe` (`beside_exe`). The dev folder comes first: it is where a dev tree builds the
-/// host, and a stray copy left beside the exe must not shadow a fresh build.
-fn in_place_paths(kind: ViewKind, exe_dir: &Path) -> Vec<PathBuf> {
+/// tried: with `dev_folders`, its dev build folder (`ViewDesc::dev_dir`, then `debug/`) in `exe_dir` or any of its four
+/// parents, nearest first; then beside `manifold.exe` (`beside_exe`). The dev folder comes first: it is where a dev tree
+/// builds the host, and a stray copy left beside the exe must not shadow a fresh build.
+fn in_place_paths(kind: ViewKind, exe_dir: &Path, dev_folders: bool) -> Vec<PathBuf> {
     let file = host_file_name(kind);
-    let mut paths: Vec<PathBuf> = match kind.desc().dev_dir {
+    let mut paths: Vec<PathBuf> = match kind.desc().dev_dir.filter(|_| dev_folders) {
         Some(dev) => exe_dir.ancestors().take(5).map(|dir| dir.join(dev).join("debug").join(&file)).collect(),
         None => Vec::new(),
     };
@@ -57,12 +57,20 @@ fn run_in_place(kind: ViewKind) -> Option<PathBuf> {
     if cfg!(test) {
         return None;
     }
-    run_in_place_from(kind, &current_exe_dir())
+    run_in_place_from(kind, &current_exe_dir(), walks_dev_folders())
 }
 
-/// `run_in_place` for a `manifold.exe` in `exe_dir`.
-pub(super) fn run_in_place_from(kind: ViewKind, exe_dir: &Path) -> Option<PathBuf> {
-    in_place_paths(kind, exe_dir).into_iter().find(|path| path.is_file())
+/// `run_in_place` for a `manifold.exe` in `exe_dir`; `dev_folders`: whether to look in dev build folders.
+pub(super) fn run_in_place_from(kind: ViewKind, exe_dir: &Path, dev_folders: bool) -> Option<PathBuf> {
+    in_place_paths(kind, exe_dir, dev_folders).into_iter().find(|path| path.is_file())
+}
+
+/// Whether the in-place lookup looks in dev build folders: only in a build that pins no hosts (a dev build). A release
+/// (`host_pin::embedded`) runs a host from beside `manifold.exe` or from its hash-pinned download, never from a folder
+/// found by walking up: any user can create a folder in a drive root, so the walk could reach a host nobody pinned, and
+/// a host in place skips the hash check.
+fn walks_dev_folders() -> bool {
+    !crate::host_pin::embedded()
 }
 
 /// Where to find each view-host's executable: the host that runs in place (`run_in_place`), else the copy
@@ -120,14 +128,14 @@ fn current_exe_dir() -> PathBuf {
 
 /// Where WebKit's host is: the one that runs in place (`run_in_place_from`), else the copy `view_install` puts in
 /// `hosts_dir` (`engine-hosts/`), whether or not it is there yet. `None` without a data directory.
-pub(super) fn pick_webkit_host(exe_dir: &Path, hosts_dir: Option<&Path>) -> Option<PathBuf> {
-    run_in_place_from(ViewKind::Webkit, exe_dir)
+pub(super) fn pick_webkit_host(exe_dir: &Path, hosts_dir: Option<&Path>, dev_folders: bool) -> Option<PathBuf> {
+    run_in_place_from(ViewKind::Webkit, exe_dir, dev_folders)
         .or_else(|| hosts_dir.map(|dir| dir.join(host_file_name(ViewKind::Webkit))))
 }
 
 /// `pick_webkit_host` for the running exe.
 pub(super) fn webkit_host_path() -> Option<PathBuf> {
-    pick_webkit_host(&current_exe_dir(), view_hosts_dir().as_deref())
+    pick_webkit_host(&current_exe_dir(), view_hosts_dir().as_deref(), walks_dev_folders())
 }
 
 /// The directory a downloaded runtime unpacks into (and whose `ready` marker
