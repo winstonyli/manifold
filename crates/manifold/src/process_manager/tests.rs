@@ -494,11 +494,12 @@ fn cef_plan() -> Result<Plan, String> {
 
 /// CEF with its host and runtime in the given states.
 fn cef_disk(host: RuntimeOnDisk, runtime: RuntimeOnDisk) -> OnDisk {
-    OnDisk { host, runtime }
+    OnDisk { host, runtime, skew: None }
 }
 
+/// Unless its host speaks another protocol (`a_host_speaking_another_protocol_is_unavailable_with_its_reason`).
 #[test]
-fn view_kinds_that_are_not_downloaded_are_always_installed_where_the_os_can_run_them() {
+fn view_kinds_that_are_not_downloaded_are_installed_where_the_os_can_run_them() {
     let none = Err("unused".to_string());
     let a = |os, kind, disk, installing, failed| availability_with(os, &none, kind, disk, installing, failed, None);
     let kind = ViewKind::Webview2;
@@ -671,8 +672,33 @@ fn a_missing_servo_host_is_refused_with_the_reason() {
     assert!(check_spawnable(ViewKind::Servo, &none, missing, Some(Path::new("D:/cef"))).is_err());
 }
 
-/// The lists' answer for a downloaded engine's host matches the disk the spawn reads: a sibling host (the test exe has
-/// none beside it unless one was copied there) is Ready, anything else Missing (the data dir is `None` under test).
+/// A host that would start speaking another protocol (older, newer, or carrying no number) is Unavailable with the
+/// `Skew`'s reason whatever else holds, except on a platform that can't run the engine at all; the spawn is refused
+/// with the same reason.
+#[test]
+fn a_host_speaking_another_protocol_is_unavailable_with_its_reason() {
+    use manifold_view_protocol::{Skew, PROTOCOL_VERSION as V};
+    let none = Err("unused".to_string());
+    for host in [Some(V - 1), Some(V + 1), None] {
+        let skew = Skew::between(host, V).unwrap();
+        let disk = OnDisk { skew: Some(skew), ..OnDisk::both(RuntimeOnDisk::Ready) };
+        for os in Os::ALL {
+            for kind in ViewKind::picker_order() {
+                let reason = platform_unavailable_reason(os, kind).unwrap_or_else(|| skew.to_string());
+                let got = availability_with(os, &none, kind, disk, Some((1, 2)), Some("x"), Some(Path::new("D:/cef")));
+                assert_eq!(got, ViewStatus::Unavailable(reason), "{os:?} {kind:?} {host:?}");
+            }
+        }
+    }
+    let unstamped = Skew::between(None, V).unwrap();
+    let disk = OnDisk { skew: Some(unstamped), ..OnDisk::both(RuntimeOnDisk::Ready) };
+    let err = check_spawnable(ViewKind::Servo, &servo_plan(), disk, None).unwrap_err();
+    assert_eq!(err.to_string(), format!("Servo is unavailable: {unstamped}"));
+}
+
+/// The lists' answer for a downloaded engine's host matches the disk the spawn reads: a host in place is Ready,
+/// anything else Missing. Under test no host runs in place (`run_in_place`), the data dir is `None`, and only CEF's
+/// flat or `cef-runtime/` copy beside the test exe could count, so no skew is read either.
 #[test]
 fn the_lists_read_the_same_host_the_spawn_looks_for() {
     for kind in [ViewKind::Servo, ViewKind::Cef, ViewKind::Webkit] {
@@ -704,6 +730,56 @@ fn on_disk_answers_are_reused_until_the_ttl_or_forgotten() {
     cache.lock().unwrap().clear(); // what `forget_on_disk` does
     assert_eq!(get(ViewKind::Servo, later, RuntimeOnDisk::Missing), missing, "forgotten");
     assert_eq!(reads.get(), 4);
+}
+
+/// A host's stamp is read again when it is rebuilt in place (its length or modified time changes), and not before;
+/// a path that can't be stat'ed is never remembered.
+#[test]
+fn a_rebuilt_host_is_read_again() {
+    let dir = crate::store::testutil::temp_dir("stamp-cache");
+    let exe = dir.join("host.exe");
+    std::fs::write(&exe, b"one").unwrap();
+    let cache = StampCache::default();
+    let reads = std::cell::Cell::new(0);
+    let read = |_: &Path| {
+        reads.set(reads.get() + 1);
+        Some(reads.get())
+    };
+    assert_eq!(stamp_cached(&cache, &exe, read), Some(1));
+    assert_eq!(stamp_cached(&cache, &exe, read), Some(1), "unchanged: remembered");
+    std::fs::write(&exe, b"three").unwrap();
+    assert_eq!(stamp_cached(&cache, &exe, read), Some(2), "a new length");
+    std::fs::File::options()
+        .write(true)
+        .open(&exe)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_000_000))
+        .unwrap();
+    assert_eq!(stamp_cached(&cache, &exe, read), Some(3), "a new modified time, same length");
+    assert_eq!(stamp_cached(&cache, &exe, read), Some(3));
+    let gone = dir.join("gone.exe");
+    assert_eq!(stamp_cached(&cache, &gone, read), Some(4));
+    assert_eq!(stamp_cached(&cache, &gone, read), Some(5), "never remembered");
+}
+
+/// The disk check fills `skew` from the host that would run in place (`run_in_place`, which is `None` under test, so
+/// the test passes it in), judged by the number it carries (`host_protocol`), which side is which fixed by
+/// `Skew::between`: the test exe links `send_version`, so it speaks this build's protocol; a file with no stamp differs
+/// as unstamped, and its reason says to rebuild the host; with no host in place there is no skew. WebView2 is not
+/// downloaded, so nothing else on disk is read. The test exe is the one real file a stamp is read from here; no host's
+/// is read (every skew the availability tests use is an `OnDisk` they build).
+#[test]
+fn the_disk_check_judges_the_host_in_place_by_the_number_it_carries() {
+    let cache = StampCache::default();
+    let check = |in_place: Option<&Path>| read_on_disk_at(ViewKind::Webview2, in_place, &cache);
+    let me = std::env::current_exe().unwrap();
+    assert_eq!(check(Some(me.as_path())), OnDisk::both(RuntimeOnDisk::Ready), "the test exe speaks this protocol");
+    let garbage = crate::store::testutil::temp_dir("disk-skew").join("host.exe");
+    std::fs::write(&garbage, b"MZ not a program").unwrap();
+    let skew = check(Some(garbage.as_path())).skew.expect("an unstamped file differs");
+    assert_eq!((skew.host(), skew.app()), (None, manifold_view_protocol::PROTOCOL_VERSION));
+    assert!(skew.to_string().ends_with("; rebuild the engine host"), "{skew}");
+    assert_eq!(check(None), OnDisk::both(RuntimeOnDisk::Ready), "no host in place: no skew");
 }
 
 /// Every OS case, from any host: the reason text is also what the spawn refusal and the lists show. (The OS-by-engine
@@ -935,13 +1011,6 @@ fn only_cef_has_a_downloaded_runtime_dir() {
     // `view_data_dir()` is None under cfg(test), so no real profile is touched.
     assert_eq!(view_runtime_dir(ViewKind::Cef), None);
     assert_eq!(view_runtime_dir(ViewKind::Servo), None);
-}
-
-/// Engines that need nothing on disk read as Ready without touching it, cached or fresh; spawn and the engine lists
-/// share one reader per engine (`on_disk_reader`).
-#[test]
-fn bundled_view_kinds_read_ready_without_a_disk_check() {
-    assert_eq!(view_on_disk(ViewKind::Webview2), OnDisk::both(RuntimeOnDisk::Ready));
 }
 
 /// A dir whose files a live CEF holds (opened without share-delete, as

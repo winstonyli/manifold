@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn the_disk_text_names_the_parts_the_view_has() {
         use crate::view_install::{OnDisk, RuntimeOnDisk};
-        let disk = OnDisk { host: RuntimeOnDisk::Ready, runtime: RuntimeOnDisk::Stale };
+        let disk = OnDisk { host: RuntimeOnDisk::Ready, runtime: RuntimeOnDisk::Stale, skew: None };
         assert_eq!(on_disk_text(ViewKind::Servo, disk), "host ready");
         assert_eq!(on_disk_text(ViewKind::Cef, disk), "host ready, runtime stale");
         assert_eq!(on_disk_text(ViewKind::Cef, OnDisk::both(RuntimeOnDisk::Missing)), "host missing, runtime missing");

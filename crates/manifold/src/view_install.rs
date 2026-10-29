@@ -44,8 +44,10 @@ pub(crate) enum ViewStatus {
     },
     Failed(String),
     Custom(PathBuf),
-    /// Nothing to download and nothing there: this platform has no CEF build (`NO_PIN_REASON`), or this build
-    /// pins no host for the engine (`no_download_reason`). No offer made. Holds the reason to show.
+    /// It can't run here: this OS can't run it (`platform_unavailable_reason`), the host that would run speaks another
+    /// protocol than this build (`OnDisk::skew`), or there is nothing to download and nothing there (no CEF build for
+    /// this platform, `NO_PIN_REASON`; no host pinned for the engine, `no_download_reason`). No offer made. Holds the
+    /// reason to show.
     Unavailable(String),
 }
 
@@ -66,18 +68,22 @@ pub(crate) enum RuntimeOnDisk {
     Stale,
 }
 
-/// What the disk holds of an engine's two downloadable parts, each judged by a marker (never by hashing).
+/// What the disk holds of an engine's two downloadable parts, each judged by a marker (never by hashing), and whether
+/// the host that would run speaks this build's protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OnDisk {
     /// The host exe and the files that travel with it: `host_state`, or Ready when a sibling host is there.
     pub(crate) host: RuntimeOnDisk,
     /// CEF's runtime archive (`runtime_state`); Ready for an engine with none.
     pub(crate) runtime: RuntimeOnDisk,
+    /// The host that would run in place speaks another protocol than this build (`availability::read_on_disk_at`);
+    /// `None` when it speaks this one or none runs in place.
+    pub(crate) skew: Option<manifold_view_protocol::Skew>,
 }
 
 impl OnDisk {
     pub(crate) const fn both(state: RuntimeOnDisk) -> Self {
-        Self { host: state, runtime: state }
+        Self { host: state, runtime: state, skew: None }
     }
 
     /// The one answer for the parts that matter: Ready when all are, Missing when any is missing, else Stale.

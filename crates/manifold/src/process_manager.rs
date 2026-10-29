@@ -658,8 +658,8 @@ fn host_home(custom: Option<&Path>, dev_runtime_has_host: bool, downloaded: Opti
 }
 
 /// Refuses to launch an engine whose state (from disk alone) isn't Installed or Custom: by its reason when
-/// Unavailable (no host and nothing pinned to download), as needing an update when Update needed, else as not
-/// installed.
+/// Unavailable (no host and nothing pinned to download, or a host speaking another protocol), as needing an update
+/// when Update needed, else as not installed.
 fn check_spawnable(
     kind: ViewKind,
     plan: &Result<Plan, String>,
@@ -1177,8 +1177,8 @@ mod webkit;
 use crate::view_install::host_platform;
 #[cfg(test)]
 use availability::{
-    availability_with, host_file_name, on_disk_cached, pick_webkit_host, run_in_place_from, OnDiskCache,
-    ON_DISK_CHECK_TTL,
+    availability_with, host_file_name, on_disk_cached, pick_webkit_host, read_on_disk_at, run_in_place_from,
+    stamp_cached, OnDiskCache, StampCache, ON_DISK_CHECK_TTL,
 };
 use availability::{
     cef_sibling_exe, platform_unavailable_reason, sibling_binary, sibling_host, view_binary_path, view_on_disk_fresh,

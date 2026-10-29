@@ -193,23 +193,52 @@ pub(crate) fn forget_on_disk() {
     ON_DISK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clear();
 }
 
-/// The disk check `kind` needs before it can run, read now: a downloaded engine's host (a sibling, or the marker
-/// of the pinned files) and CEF's runtime. Only markers and file sizes are read, never file contents. Nothing to
-/// check for the rest (an embedded host; WebKit's is found in WSL only when a tab spawns), which read Ready.
+/// The stamp last read per host path, keyed by the file's length and modified time, so a host rebuilt in place is
+/// read again.
+pub(super) type StampCache = std::sync::Mutex<Vec<(PathBuf, u64, Option<std::time::SystemTime>, Option<u32>)>>;
+static STAMPS: StampCache = std::sync::Mutex::new(Vec::new());
+
+/// The protocol number `read` finds in `path`, remembered in `cache` until the file's length or modified time changes.
+/// A path that can't be stat'ed is read every time and never remembered.
+pub(super) fn stamp_cached(cache: &StampCache, path: &Path, read: impl FnOnce(&Path) -> Option<u32>) -> Option<u32> {
+    let Ok(meta) = std::fs::metadata(path) else { return read(path) };
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let mut entries = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&(_, _, _, stamp)) = entries.iter().find(|e| e.0 == path && e.1 == len && e.2 == modified) {
+        return stamp;
+    }
+    let stamp = read(path);
+    entries.retain(|e| e.0 != path);
+    entries.push((path.to_path_buf(), len, modified, stamp));
+    stamp
+}
+
+/// The disk check `kind` needs before it can run, read now, for every engine: `read_on_disk_at` with the host that
+/// would run in place (`run_in_place`, never a host under `view_hosts_dir()`) and this process's stamp cache.
 fn read_on_disk(kind: ViewKind) -> OnDisk {
-    if downloads(kind) {
-        OnDisk { host: host_on_disk(kind), runtime: runtime_on_disk(kind) }
+    read_on_disk_at(kind, run_in_place(kind).as_deref(), &STAMPS)
+}
+
+/// `read_on_disk` given the host `in_place` that would run in place, its number read through `cache`
+/// (`host_protocol`): the skew when it speaks another protocol than this build or carries none (built before hosts
+/// were stamped, or not a host at all), none when it speaks this one or no host runs in place; and for a downloaded
+/// engine its host (in place, or the marker of the pinned files) and CEF's runtime. Only markers, file sizes and a
+/// host's section table are read (the table cached by the file's length and time), never whole files. An engine that
+/// is not downloaded (an embedded host) has no parts to check, which read Ready.
+pub(super) fn read_on_disk_at(kind: ViewKind, in_place: Option<&Path>, cache: &StampCache) -> OnDisk {
+    use manifold_view_protocol::{host_protocol, Skew, PROTOCOL_VERSION};
+    let parts = if downloads(kind) {
+        OnDisk { host: host_on_disk(kind), runtime: runtime_on_disk(kind), skew: None }
     } else {
         OnDisk::both(RuntimeOnDisk::Ready)
-    }
+    };
+    let skew = in_place.and_then(|exe| Skew::between(stamp_cached(cache, exe, host_protocol), PROTOCOL_VERSION));
+    OnDisk { skew, ..parts }
 }
 
 /// The `on_disk` that `view_availability` takes for `kind`, for the engine lists: `read_on_disk`'s answer, reread
-/// at most every `ON_DISK_CHECK_TTL`; Ready when there is nothing to check.
+/// at most every `ON_DISK_CHECK_TTL`.
 pub(crate) fn view_on_disk(kind: ViewKind) -> OnDisk {
-    if !downloads(kind) {
-        return OnDisk::both(RuntimeOnDisk::Ready);
-    }
     on_disk_cached(&ON_DISK, kind, std::time::Instant::now(), || read_on_disk(kind))
 }
 
@@ -220,8 +249,9 @@ pub(super) fn view_on_disk_fresh(kind: ViewKind) -> OnDisk {
 }
 
 /// How `kind` is available, in one place. `plan` is what installing it would fetch in this build (`plan_for`), and
-/// `on_disk` what the engine has on disk (`view_on_disk`). An engine that is not downloaded (embedded, or a sibling
-/// only) is Installed. A downloaded one follows its host and, for CEF, its runtime: a custom path (and a running
+/// `on_disk` what the engine has on disk (`view_on_disk`). A host that would run speaking another protocol is
+/// Unavailable, naming which side to rebuild. Otherwise an engine that is not downloaded (embedded, or in place only)
+/// is Installed, and a downloaded one follows its host and, for CEF, its runtime: a custom path (and a running
 /// install) override; a failed install overrides Missing and Stale but not parts that are current; with nothing to
 /// download and nothing there it is Unavailable with the plan's reason.
 pub(crate) fn view_availability(
@@ -251,9 +281,10 @@ pub(crate) fn platform_default_view_kind(os: Os) -> ViewKind {
         .unwrap_or(ViewKind::Servo)
 }
 
-/// `view_availability` for a given OS. A plan that is an `Err` means there is nothing to download: `Unavailable`
-/// with its reason, unless the parts are already there (a dev tree's siblings) or, for CEF, a custom runtime is
-/// set and the host is there.
+/// `view_availability` for a given OS. After the platform's reason, a host speaking another protocol (`OnDisk::skew`)
+/// is `Unavailable` with the `Skew`'s reason. A plan that is an `Err` means there is nothing to download:
+/// `Unavailable` with its reason, unless the parts are already there (a dev tree's hosts) or, for CEF, a custom
+/// runtime is set and the host is there.
 pub(super) fn availability_with(
     os: Os,
     plan: &Result<Plan, String>,
@@ -265,6 +296,12 @@ pub(super) fn availability_with(
 ) -> ViewStatus {
     if let Some(reason) = platform_unavailable_reason(os, kind) {
         return ViewStatus::Unavailable(reason);
+    }
+    // A host that would start speaking another protocol can't run whatever else holds: a custom runtime, a running
+    // install or a recorded failure doesn't change which exe starts. (CEF with a custom runtime starts a copy of
+    // `shipped_cef_host()`, which can differ from the `cef-runtime/` copy read here: PARKED "Host protocol stamp".)
+    if let Some(skew) = on_disk.skew {
+        return ViewStatus::Unavailable(skew.to_string());
     }
     if !downloads(kind) {
         return ViewStatus::Installed;

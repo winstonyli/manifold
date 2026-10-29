@@ -25,7 +25,7 @@ fn cef_plan() -> Result<Plan, String> {
 
 /// The disk of an engine whose host is there and whose runtime is `runtime`.
 fn disk(runtime: RuntimeOnDisk) -> OnDisk {
-    OnDisk { host: RuntimeOnDisk::Ready, runtime }
+    OnDisk { host: RuntimeOnDisk::Ready, runtime, skew: None }
 }
 
 #[test]
@@ -1346,10 +1346,10 @@ fn a_cef_install_fetches_the_host_then_the_runtime_in_one_progress() {
     assert_eq!(last, plan.size());
     let app = App::default();
     let runtime = runtime_state(&data.join("cef-runtime"), &pin);
-    let both = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime };
+    let both = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime, skew: None };
     assert_eq!(app.view_status_at(ViewKind::Cef, both, &Ok(plan.clone())), ViewStatus::Installed);
     std::fs::remove_file(data.join("cef.host")).unwrap();
-    let no_host = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime };
+    let no_host = OnDisk { host: host_state(&data, ViewKind::Cef, f), runtime, skew: None };
     assert_eq!(
         app.view_status_at(ViewKind::Cef, no_host, &Ok(plan.clone())),
         ViewStatus::NotInstalled { size: f[0].size }
