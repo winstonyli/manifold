@@ -51,8 +51,9 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
         return Ok(());
     }
     let dir = exe.parent().unwrap_or(Path::new("."));
-    // CEF runs from an isolated copy that only `gate sync-runtime-deps` refreshes; a stale one speaks an old message
-    // numbering and its host crashes.
+    // CEF runs from an isolated copy that only `gate sync-runtime-deps` refreshes. The app itself refuses a copy whose
+    // protocol number differs from its own (Unavailable, naming which side to rebuild); this catches a copy that is
+    // older but speaks the same protocol, which would run old code silently.
     let cef = dir.join("manifold-view-cef.exe");
     let cef_copy = dir.join("cef-runtime").join("manifold-view-cef.exe");
     if let (Some(built), Some(copy)) = (mtime(&cef), mtime(&cef_copy)) {

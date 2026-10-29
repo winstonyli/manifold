@@ -6,7 +6,7 @@
 //! - `hscroll` (was hscroll-probe.sh): a horizontal wheel scroll moves a 6000 px wide page right, then back
 //! - `key` (was key-probe.sh): the keys `KEYPAGE` sends arrive at the page with the code/key/keyCode `key_codes!` says
 //! - `bad-url` (was bad-url-probe.sh): a view host given an initial URL it cannot open shows about:blank, no panic
-//! - `failed-spawn` (was failed-spawn-probe.sh): a failed spawn leaves one failed tab card, kept by New and Retry
+//! - `failed-spawn` (was failed-spawn-probe.sh): a spawn the OS refuses leaves one failed tab card, kept by New and Retry
 //!
 //! `VIEWS="webview2 cef"` picks the view kinds (default `webview2`; CEF needs its host built). The local site is served
 //! in process (was scripts/probe_server.py).
@@ -544,16 +544,22 @@ pub(crate) fn bad_url(exe: &Path, work: &Path) -> ExitCode {
 pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
     let _t = Section::start("failed-spawn");
     guarded("failed-spawn", || {
-        // The failure is forced by running a copy of the exe with a view host beside it that is not a program: a
-        // sibling host is used as it stands (`view_binary_path`), so the spawn fails. With none beside it the app
-        // falls back to the host it extracted into `engine-hosts/`, which `--profile-dir` does not redirect (it is the
-        // user's real data dir, `profile::view_data_dir`) and which exists on any machine that has run the app, so the
-        // spawn succeeded and the stage proved nothing.
+        // The failure is forced by running a copy of the exe with a view host beside it that Windows refuses to
+        // start: a host beside the exe runs as it stands (`view_binary_path`), so the spawn reaches the OS and fails
+        // there. The host is the real one with its PE magic zeroed (`unloadable_copy`), so it still carries this
+        // build's protocol number; a file that is not a host at all carries none, and the app would refuse it before
+        // spawning (Unavailable), which is another path. With no host beside the exe the app falls back to the host it
+        // extracted into `engine-hosts/`, which `--profile-dir` does not redirect (it is the user's real data dir,
+        // `profile::view_data_dir`) and which exists on any machine that has run the app, so the spawn succeeded and
+        // the stage proved nothing.
         let bin = work.join("bin");
         fs::create_dir_all(&bin)?;
         let lone = bin.join("manifold.exe");
         fs::copy(exe, &lone)?;
-        fs::write(bin.join("manifold-view-webview2.exe"), "not a program")?;
+        fs::write(
+            bin.join("manifold-view-webview2.exe"),
+            unloadable_copy(&exe.with_file_name("manifold-view-webview2.exe"))?,
+        )?;
         let profile = work.join("appdata");
         seed(&lone, &profile, "webview2", &[])?;
         let mut inst = Instance::launch(&lone, &profile, work, "log")?;
@@ -579,6 +585,11 @@ pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
         }
         let (n3, id3, _) = snap(&mut inst, "s3")?;
         quit(&mut inst, "failed-spawn");
+        let log = fs::read_to_string(&inst.log).unwrap_or_default();
+        check(
+            "the spawn reached the OS and failed there, not refused before it",
+            log.contains("spawn tab failed for") && log.contains("(os error ") && !log.contains("is unavailable"),
+        );
         check_eq("a failed startup Root spawn leaves one card", 1, n1);
         check_eq("it is a tab that is not loaded", TAB.to_string(), label1);
         check_eq("a New spawn failing for the same intent stays one card", 1, n2);
@@ -588,4 +599,50 @@ pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
         Ok(())
     });
     finish(work)
+}
+
+/// `host`'s bytes with its PE optional header's magic zeroed (`unloadable`), or an error naming a host that is not a
+/// PE image.
+fn unloadable_copy(host: &Path) -> io::Result<Vec<u8>> {
+    unloadable(fs::read(host)?).ok_or_else(|| io::Error::other(format!("{} is not a PE image", host.display())))
+}
+
+/// `image` with its PE optional header's magic zeroed, or `None` when it is not a PE image. Windows refuses to start
+/// it ("%1 is not a valid Win32 application", os error 193; checked 2026-10-28), while the app still reads its
+/// protocol number: `host_protocol` finds the section table by the optional header's size, never by its magic.
+fn unloadable(mut image: Vec<u8>) -> Option<Vec<u8>> {
+    let pe = usize::try_from(u32::from_le_bytes(image.get(0x3C..0x40)?.try_into().ok()?)).ok()?;
+    if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0".as_slice() {
+        return None;
+    }
+    image.get_mut(pe + 24..pe + 26)?.fill(0);
+    Some(image)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The copy differs from the image only in the PE optional header's magic, and a file that is not a PE image is
+    /// refused, so the stage fails loudly instead of running a host that still starts.
+    #[test]
+    fn an_unloadable_copy_zeroes_only_the_pe_magic() {
+        let mut image = vec![0u8; 0x40];
+        image[..2].copy_from_slice(b"MZ");
+        image[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+        image.extend_from_slice(b"PE\0\0");
+        image.extend_from_slice(&[0x11; 20]); // the COFF header
+        image.extend_from_slice(&0x20Bu16.to_le_bytes()); // the optional header's magic (PE32+)
+        image.extend_from_slice(&[0x22; 30]);
+        let copy = unloadable(image.clone()).expect("a PE image");
+        assert_eq!(copy.len(), image.len());
+        let changed: Vec<usize> = (0..image.len()).filter(|&at| copy[at] != image[at]).collect();
+        assert_eq!(changed, [0x40 + 24, 0x40 + 25]);
+        assert_eq!(copy[0x58..0x5A], [0, 0]);
+        assert_eq!(unloadable(b"not a program".to_vec()), None);
+        let mut no_signature = image.clone();
+        no_signature[0x40] = b'X';
+        assert_eq!(unloadable(no_signature), None, "no PE signature");
+        assert_eq!(unloadable(image[..0x40 + 25].to_vec()), None, "cut inside the magic");
+    }
 }
