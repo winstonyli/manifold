@@ -1441,16 +1441,25 @@ impl Shots {
                 // 2026-10-27-dl-probe-*); the card shows it failed for the network (`NETWORK_FAILED`, run
                 // 2026-10-27-dl-probe-hold), and the shot waits for its toast to go.
                 server.kill();
+                // The download cards' names as a screen reader hears them (`controls`): kind, title, then the tooltip.
+                let card_names = |s: &State| -> Vec<String> {
+                    s.controls().into_iter().map(|c| c.name).filter(|n| n.starts_with("Download:")).collect()
+                };
                 let failed = |s: &State| {
                     matches!(s.downloads_from(&url)[..], [d]
                         if d["failed"] == true && d["path"] == slow.as_str() && d["failure"] == "Network")
                         && s.toast().is_none()
+                        && card_names(s).iter().any(|n| {
+                            n.starts_with("Download: slow.zip. ") && n.contains("The connection failed or timed out")
+                        })
                 };
                 let state = self.inst.export_until("download-failed", failed)?;
                 if !failed(&state) {
                     return Err(io::Error::other(format!(
-                        "the one card downloading {url} to {slow} did not show the download failed (toast {:?}): {:?}",
+                        "the one card downloading {url} to {slow} did not show why the download failed (toast {:?}, \
+                         card names {:?}): {:?}",
                         state.toast(),
+                        card_names(&state),
                         state.downloads_from(&url)
                     )));
                 }
