@@ -176,7 +176,7 @@ impl ViewKind {
                 label: "WebKit",
                 tags: TagSet::of(&[Tag::WebKit, Tag::Find]),
                 source: HostSource::Download,
-                // A Linux program: native on Linux, through WSL on Windows (not in the release; README "Engines by OS").
+                // A Linux program: native on Linux, through WSL on Windows (pinned under linux-x64; README "Engines by OS").
                 // TCP because nothing else crosses the WSL boundary.
                 host_os: Some(Os::Linux),
                 link: HostLink::Tcp,
