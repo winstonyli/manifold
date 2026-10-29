@@ -11,10 +11,11 @@
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
 //! `WITH_ENGINES="servo webkit"` adds an engine's steps to any mode, after `sleep-history`. `servo` adds `trail-servo`
-//! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built and placed beside `manifold.exe`
-//! (README "Building Servo on its own"). `webkit` adds `trail-webkit` and `sleep-webkit`, needs the WebKit host built in
-//! WSL, and takes `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default
-//! route's `via`; README "WebKit under the gate"), for those two steps only; without it they fail.
+//! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built in `target-servo` with its DLLs
+//! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `trail-webkit` and
+//! `sleep-webkit`, needs the WebKit host built in WSL, and takes `SITE_HOST=<ip>`, the WSL gateway as Windows sees it
+//! (`wsl.exe -d Ubuntu -- ip route`, the default route's `via`; README "WebKit under the gate"), for those two steps
+//! only; without it they fail.
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.

@@ -55,7 +55,7 @@ pub(crate) enum ViewStatus {
 pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// Why `kind` cannot be installed in a build whose `host_pin` table has no entry for it (the repo's table is empty;
-/// a release writes it): there is nothing to fetch and no sibling host.
+/// a release writes it): there is nothing to fetch and no host in place.
 pub(crate) fn no_download_reason(kind: ViewKind) -> String {
     format!("this build has no {} download", kind.desc().label)
 }
@@ -72,7 +72,7 @@ pub(crate) enum RuntimeOnDisk {
 /// the host that would run speaks this build's protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OnDisk {
-    /// The host exe and the files that travel with it: `host_state`, or Ready when a sibling host is there.
+    /// The host exe and the files that travel with it: `host_state`, or Ready when a host is in place.
     pub(crate) host: RuntimeOnDisk,
     /// CEF's runtime archive (`runtime_state`); Ready for an engine with none.
     pub(crate) runtime: RuntimeOnDisk,

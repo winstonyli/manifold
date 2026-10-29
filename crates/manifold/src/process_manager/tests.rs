@@ -612,7 +612,7 @@ fn the_dev_folder_is_searched_four_parents_up_and_no_further() {
     assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir), Some(reached), "four parents up is reached");
 }
 
-/// Servo follows its host files on every OS: Installed when they are there (a sibling host counts, whatever the pin
+/// Servo follows its host files on every OS: Installed when they are there (a host in place counts, whatever the pin
 /// table says), else offered for download when this build pins them, else Unavailable with the reason the lists show.
 #[test]
 fn servo_is_installed_with_its_host_else_offered_or_unavailable() {
@@ -628,7 +628,7 @@ fn servo_is_installed_with_its_host_else_offered_or_unavailable() {
             assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, None), ViewStatus::Installed, "{os:?}");
             assert_eq!(a(os, plan, RuntimeOnDisk::Ready, None, Some("x")), ViewStatus::Installed, "{os:?}");
         }
-        // Nothing pinned and no sibling: Unavailable, an install or failure changing nothing (it cannot exist).
+        // Nothing pinned and no host in place: Unavailable, an install or failure changing nothing (it cannot exist).
         assert_eq!(a(os, &no_pin, RuntimeOnDisk::Missing, None, None), missing, "{os:?}");
         assert_eq!(a(os, &no_pin, RuntimeOnDisk::Stale, None, Some("x")), missing, "{os:?}");
         // Pinned: the same disk is a download.

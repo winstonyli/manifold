@@ -4,8 +4,9 @@
 //! `MANIFOLD_HOST_PINS` naming a manifest of their names, sizes and SHA-256 hashes. `build.rs` embeds that manifest;
 //! the hash compiled into the exe is the trust anchor, the URL is not trusted. A host's URL is its own release's:
 //! `releases/download/v<this exe's version>/<file>-<platform>`. A build with no manifest (a dev build, the gate)
-//! pins nothing, so its engines read Unavailable unless a sibling host exists. A debug build also reads the file named
-//! by `MANIFOLD_HOST_PINS_FILE`, which is how the gate shows the download states.
+//! pins nothing, so its engines read Unavailable unless a host built in place (`run_in_place`: its dev build folder,
+//! or beside `manifold.exe`) speaks this build's protocol. A debug build also reads the file named by
+//! `MANIFOLD_HOST_PINS_FILE`, which is how the gate shows the download states.
 //!
 //! The manifest is `{"cef": {"windows-x64": [{"file": "manifold-view-cef.exe", "size": 123, "sha256": "..."}]}}`
 //! with the engine's store name (`ViewKind::desc().name`) as the first key.

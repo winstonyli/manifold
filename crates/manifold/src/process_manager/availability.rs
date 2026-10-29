@@ -1,4 +1,4 @@
-//! Where each engine host and runtime lives on disk, and whether an engine can run here: the sibling-binary
+//! Where each engine host and runtime lives on disk, and whether an engine can run here: the in-place host
 //! lookup, the cached on-disk check, and the availability shown in the engine lists.
 
 use super::*;
@@ -138,8 +138,8 @@ pub(crate) fn view_runtime_dir(kind: ViewKind) -> Option<PathBuf> {
     view_hosts_dir().map(|dir| dir.join(name))
 }
 
-/// The host part of `kind` on disk: Ready when a sibling host is there, else what the `<kind>.host` marker says
-/// about this build's pinned files (`host_state`; Missing when it pins none).
+/// The host part of `kind` on disk: Ready when a host is in place (`sibling_host`), else what the `<kind>.host`
+/// marker says about this build's pinned files (`host_state`; Missing when it pins none).
 fn host_on_disk(kind: ViewKind) -> RuntimeOnDisk {
     if sibling_host(kind).is_some() {
         return RuntimeOnDisk::Ready;

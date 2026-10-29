@@ -6,7 +6,7 @@
 //! - it runs headless with APPDATA redirected into the work folder (never the real one);
 //! - `VIEWSTATE cef` reads "Not installed · N MB" when the release's pin manifest (`<exe stem>.host-pins.json`, beside
 //!   the exe) pins a CEF windows-x64 host, else "Unavailable", and likewise for Servo;
-//! - a WebView2 tab loads a local page, so the host was extracted from the embed (no sibling host exists);
+//! - a WebView2 tab loads a local page, so the host was extracted from the embed (no host is in place);
 //! - a PDF node renders the fixture (1000x500, 1 page) through the embedded PDF view, extracted beside the WebView2
 //!   host (the first run downloads PDFium, so it needs the network once and waits up to 180 s);
 //! - the folder still holds only manifold.exe, and the hosts were extracted under the redirected APPDATA.

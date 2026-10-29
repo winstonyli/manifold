@@ -36,7 +36,7 @@ status: done
 6. **A pin table entry exists only for hosts the release built.** A kind with no entry reads `Unavailable("this build has no <engine> download")` (the `NO_PIN_REASON` idiom), never a silent absence. Dev builds and Linux CI have an empty table and keep sibling lookup.
 7. **Host pins refer to uploaded artifacts, not to a rebuild.** PE output is not bit-reproducible (PDB path, timestamps). The release script builds each host once, hashes that file, uploads that file, and compiles the hash into `manifold.exe`. A later rebuild of a host is a different artifact.
 8. **WebKit is spike-gated** (Task 6): its ELF must run from the Windows data dir through WSL; if DrvFs will not exec it, it is parked, not worked around.
-9. **Out of scope, parked:** Authenticode signing (SmartScreen/Defender prevalence risk stays, see Risks), Roaming vs Local AppData for the data dir (CEF's 423 MB runtime is already in Roaming), BLAKE3 (roadmap Parked 3), mismatch toast wording (`after_crash` shows "keeps crashing" for a protocol mismatch; with exact-pin hosts a mismatch cannot occur from a download, so it stays).
+9. **Out of scope, parked:** Authenticode signing (SmartScreen/Defender prevalence risk stays, see Risks), Roaming vs Local AppData for the data dir (CEF's 423 MB runtime is already in Roaming), BLAKE3 (roadmap Parked 3), mismatch toast wording (`after_crash` shows "keeps crashing" for a protocol mismatch; with exact-pin hosts a mismatch cannot occur from a download, so it stays). (Closed 2026-10-29, plan `2026-10-29-host-protocol-stamp`: a mismatch is now a "can't start" that names which side to rebuild, and the app refuses such a host before spawning it.)
 
 ## File structure
 

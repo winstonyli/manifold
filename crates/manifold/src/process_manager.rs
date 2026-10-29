@@ -37,10 +37,11 @@ pub enum ViewKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HostSource {
     /// Carried inside `manifold.exe` when the build embeds it (`MANIFOLD_WEBVIEW2_HOST`, see `embedded_host`) and
-    /// extracted at spawn when no sibling host is there. A build that embeds nothing finds it like a sibling.
+    /// extracted at spawn when no host is in place (`run_in_place`). A build that embeds nothing finds it there like
+    /// any other.
     Embedded(embedded_host::Embedded),
-    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`view_install`), unless a sibling
-    /// host (a dev tree's, or a Linux package's) is already there.
+    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`view_install`), unless a host is already in
+    /// place (a dev tree's build, or a Linux package's).
     Download,
 }
 
