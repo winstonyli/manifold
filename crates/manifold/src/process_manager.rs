@@ -71,6 +71,10 @@ pub(crate) struct ViewDesc {
     /// bring-your-own runtime directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather
     /// than single pinned files.
     pub(crate) runtime_dir: Option<&'static str>,
+    /// The folder a dev tree builds this host in, beside `target/` (`<dev_dir>/debug/<host>`), when that is not
+    /// `target/` itself: Servo's `target-servo` (README "Building Servo on its own") and WebKit's `target-linux` (built
+    /// inside WSL). manifold runs a host found there in place (`availability::run_in_place`).
+    pub(crate) dev_dir: Option<&'static str>,
     /// May be a fresh profile's starting engine (`platform_default_view_kind`): not an opt-in download, nor one
     /// that needs setup first.
     pub(crate) starting_default: bool,
@@ -123,6 +127,7 @@ impl ViewKind {
                 host_os: None,
                 link: HostLink::PipesShm,
                 runtime_dir: None,
+                dev_dir: Some("target-servo"),
                 starting_default: true,
                 missing_system_libs: crate::view_install::missing_vc_runtime,
                 download_note: "",
@@ -149,6 +154,7 @@ impl ViewKind {
                 host_os: None,
                 link: HostLink::PipesShm,
                 runtime_dir: Some(CEF_RUNTIME_DIR),
+                dev_dir: None,
                 starting_default: false,
                 missing_system_libs: || crate::cef_platform::PLATFORM.missing_system_libs(),
                 download_note: "",
@@ -174,6 +180,7 @@ impl ViewKind {
                 host_os: Some(Os::Linux),
                 link: HostLink::Tcp,
                 runtime_dir: None,
+                dev_dir: Some("target-linux"),
                 starting_default: false,
                 missing_system_libs: Vec::new,
                 download_note: "
@@ -203,6 +210,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 host_os: Some(Os::Windows),
                 link: HostLink::PipesShm,
                 runtime_dir: None,
+                dev_dir: None,
                 starting_default: true,
                 missing_system_libs: Vec::new,
                 download_note: "",
@@ -1169,7 +1177,8 @@ mod webkit;
 use crate::view_install::host_platform;
 #[cfg(test)]
 use availability::{
-    availability_with, built_webkit_host, on_disk_cached, pick_webkit_host, OnDiskCache, ON_DISK_CHECK_TTL,
+    availability_with, host_file_name, on_disk_cached, pick_webkit_host, run_in_place_from, OnDiskCache,
+    ON_DISK_CHECK_TTL,
 };
 use availability::{
     cef_sibling_exe, platform_unavailable_reason, sibling_binary, sibling_host, view_binary_path, view_on_disk_fresh,

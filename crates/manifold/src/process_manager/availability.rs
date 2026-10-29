@@ -3,53 +3,88 @@
 
 use super::*;
 
-/// The view-host binaries are sibling executables in the same
-/// target/{debug,release} directory as manifold itself — standard
-/// Cargo workspace layout, no separate install/discovery step needed.
+/// A file beside `manifold.exe` named as this platform names an exe: the PDF renderer (`pdf_view_exe`), and CEF's
+/// flat host (`sibling_host`).
 pub(super) fn sibling_binary(name: &str) -> PathBuf {
     let mut path = std::env::current_exe().expect("current_exe");
     path.set_file_name(crate::cef_platform::PLATFORM.host_exe(name));
     path
 }
 
-/// Where to find each view-host's executable.
+/// The file name of `kind`'s host: as this platform names an exe (`PLATFORM.host_exe`), except a host built for another
+/// OS than this one, which keeps its bare name (WebKit's ELF, run in WSL from Windows).
+pub(super) fn host_file_name(kind: ViewKind) -> String {
+    let desc = kind.desc();
+    if desc.host_os.is_some_and(|os| os != Os::here()) {
+        desc.binary.to_owned()
+    } else {
+        crate::cef_platform::PLATFORM.host_exe(desc.binary)
+    }
+}
+
+/// Where `kind`'s host goes beside `manifold.exe` in `exe_dir`, whether or not it is there: flat, except CEF's, which
+/// lives in its runtime folder (`cef-runtime/`). CEF ships its own `libEGL.dll`/`libGLESv2.dll` (ANGLE), and Windows
+/// resolves an exe's implicit DLL dependencies from the exe's own folder first, so a CEF host in one folder with
+/// another ANGLE user would load whichever copy was put there last. The other hosts are a lone exe beside their own
+/// files (WebView2's loader is statically linked by the `webview2-com` crate), so they need no folder of their own.
+fn beside_exe(kind: ViewKind, exe_dir: &Path) -> PathBuf {
+    let file = host_file_name(kind);
+    match kind.desc().runtime_dir {
+        Some(runtime) => exe_dir.join(runtime).join(file),
+        None => exe_dir.join(file),
+    }
+}
+
+/// Every place `kind`'s host can run in place from, given `manifold.exe`'s folder `exe_dir`, in the order they are
+/// tried: its dev build folder (`ViewDesc::dev_dir`, then `debug/`), found by walking up at most as far as the repo
+/// root of a worktree under `.claude/`, then beside `manifold.exe` (`beside_exe`). The dev folder comes first: it is
+/// where a dev tree builds the host, and a stray copy left beside the exe must not shadow a fresh build.
+fn in_place_paths(kind: ViewKind, exe_dir: &Path) -> Vec<PathBuf> {
+    let file = host_file_name(kind);
+    let mut paths: Vec<PathBuf> = match kind.desc().dev_dir {
+        Some(dev) => exe_dir.ancestors().take(5).map(|dir| dir.join(dev).join("debug").join(&file)).collect(),
+        None => Vec::new(),
+    };
+    paths.push(beside_exe(kind, exe_dir));
+    paths
+}
+
+/// The host of `kind` that a spawn runs as it stands, when one is there (`in_place_paths`). It is never anything under
+/// `view_hosts_dir()` (a download, hash-checked by its install, or the embedded WebView2 host), and for CEF only its
+/// `cef-runtime/` copy, the one a tab runs. This is the exe whose protocol number `read_on_disk` checks. `None` under
+/// `cfg(test)`, so no unit test reads a real host from disk (a dev tree's hosts are reachable from the test exe).
+fn run_in_place(kind: ViewKind) -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    run_in_place_from(kind, &current_exe_dir())
+}
+
+/// `run_in_place` for a `manifold.exe` in `exe_dir`.
+pub(super) fn run_in_place_from(kind: ViewKind, exe_dir: &Path) -> Option<PathBuf> {
+    in_place_paths(kind, exe_dir).into_iter().find(|path| path.is_file())
+}
+
+/// Where to find each view-host's executable: the host that runs in place (`run_in_place`), else the copy
+/// `view_install` puts in `view_hosts_dir()` (under `profile::view_data_dir()`), whether or not it is there yet: flat
+/// for a downloaded host, in a folder of its own for the embedded one. (A downloaded CEF host is never run from there:
+/// `prepare_cef` copies it beside the runtime's `libcef.dll`.) Without a data directory, the place beside
+/// `manifold.exe` (`beside_exe`).
 ///
-/// CEF is the one exception to the plain-sibling rule: it ships its own
-/// `libEGL.dll`/`libGLESv2.dll` (ANGLE), which collide with Servo's
-/// differently-built copies of the same-named DLLs if both engine-hosts
-/// live in the same directory — Windows resolves an implicit DLL
-/// dependency from the loading EXE's own directory first, so whichever
-/// engine's ANGLE build was copied there last wins for *both* engines.
-/// manifold-view-cef.exe and its full CEF runtime (libcef.dll, resources,
-/// locales, its own ANGLE DLLs, ...) are isolated in `cef-runtime/` next to
-/// the other binaries.
-///
-/// TODO: this isolation + the runtime file copying itself is currently a
-/// manual post-build step (see project memory), not automated — a real
-/// install/packaging step should do this, not a person running `cp`.
-///
-/// Falls back to the host file `view_install::install_host` puts flat in
-/// `view_hosts_dir()` (under `profile::view_data_dir()`) when the sibling
-/// binary isn't there — for an engine fetched on demand after install rather
-/// than bundled next to `manifold.exe`. (A downloaded CEF host is never run
-/// from there: `spawn_tab` copies it beside the runtime's `libcef.dll`.)
+/// TODO: a dev tree's runtime files are put beside its hosts by `gate sync-runtime-deps` (README "Runtime-file
+/// placement"), not by cargo; a real install or packaging step should do that.
 pub(super) fn view_binary_path(kind: ViewKind) -> PathBuf {
     let desc = kind.desc();
     assert!(desc.link == HostLink::PipesShm, "{} is reached over TCP, not by a local path", desc.label);
-    let file_name = crate::cef_platform::PLATFORM.host_exe(desc.binary);
-    // An engine with a runtime keeps its host in that runtime's `cef-runtime/`. The others are a lone exe (WebView2's
-    // loader is statically linked by the `webview2-com` crate, or a lone DLL at worst): no ANGLE-style filename
-    // collision with a runtime's files, so no isolation directory.
-    let sibling = if desc.runtime_dir.is_some() { cef_sibling_exe() } else { sibling_binary(desc.binary) };
-    if sibling.exists() {
-        return sibling;
+    if let Some(exe) = run_in_place(kind) {
+        return exe;
     }
-    let Some(mut fallback) = view_hosts_dir() else { return sibling };
+    let Some(mut fallback) = view_hosts_dir() else { return beside_exe(kind, &current_exe_dir()) };
     if let HostSource::Embedded(host) = desc.source {
         // Where `spawn_tab` extracts the embedded host (`Embedded::ensure`), in a folder of its own.
         return host.host_path(&fallback);
     }
-    fallback.push(file_name);
+    fallback.push(host_file_name(kind));
     fallback
 }
 
@@ -62,28 +97,19 @@ pub(crate) fn view_hosts_dir() -> Option<PathBuf> {
 
 /// `cef-runtime/<exe>` next to `manifold.exe`: where `gate sync-runtime-deps` puts it for dev builds.
 pub(super) fn cef_sibling_exe() -> PathBuf {
-    let mut path = sibling_binary(ViewKind::Cef.desc().binary);
-    let file_name = path.file_name().map(|n| n.to_owned()).unwrap_or_default();
-    path.pop();
-    path.push(CEF_RUNTIME_DIR);
-    path.push(file_name);
-    path
+    beside_exe(ViewKind::Cef, &current_exe_dir())
 }
 
-/// The host exe of `kind` that ships beside `manifold.exe` (a dev tree's, or a packaged one's), when it is there.
-/// CEF also has the `cef-runtime/` copy a dev build keeps. A sibling host makes the host part Ready whatever the
-/// pin table says.
+/// The host exe of `kind` that ships in place (a dev tree's, or a packaged one's), when it is there: the one that runs
+/// in place (`run_in_place`), except CEF's, which is its flat exe beside `manifold.exe` first, then its `cef-runtime/`
+/// copy (`shipped_cef_host` copies the flat one into a runtime that has no host). A host in place makes the host part
+/// Ready whatever the pin table says.
 pub(super) fn sibling_host(kind: ViewKind) -> Option<PathBuf> {
-    let desc = kind.desc();
-    if desc.host_os == Some(Os::Linux) {
-        return built_webkit_host(&current_exe_dir());
+    if kind.desc().runtime_dir.is_none() {
+        return run_in_place(kind);
     }
-    let flat = Some(sibling_binary(desc.binary)).filter(|path| path.exists());
-    if desc.runtime_dir.is_some() {
-        flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists()))
-    } else {
-        flat
-    }
+    let flat = Some(sibling_binary(kind.desc().binary)).filter(|path| path.exists());
+    flat.or_else(|| Some(cef_sibling_exe()).filter(|path| path.exists()))
 }
 
 fn current_exe_dir() -> PathBuf {
@@ -92,20 +118,11 @@ fn current_exe_dir() -> PathBuf {
     dir
 }
 
-/// The WebKit host ELF that is already built where `exe_dir` (the folder of `manifold.exe`) can see it: beside it
-/// (a Linux package), else a dev tree's `target-linux/debug/` (WebKit is built inside WSL into its own target dir,
-/// README "Building"), found by walking up at most as far as the repo root of a worktree under `.claude/`.
-pub(super) fn built_webkit_host(exe_dir: &Path) -> Option<PathBuf> {
-    const NAME: &str = "manifold-view-webkitgtk";
-    let flat = exe_dir.join(NAME);
-    let dev = |dir: &Path| dir.join("target-linux").join("debug").join(NAME);
-    std::iter::once(flat).chain(exe_dir.ancestors().take(5).map(dev)).find(|path| path.is_file())
-}
-
-/// Where WebKit's host is: a built one (`built_webkit_host`), else the copy `view_install` puts in `hosts_dir`
-/// (`engine-hosts/`), whether or not it is there yet. `None` without a data directory.
+/// Where WebKit's host is: the one that runs in place (`run_in_place_from`), else the copy `view_install` puts in
+/// `hosts_dir` (`engine-hosts/`), whether or not it is there yet. `None` without a data directory.
 pub(super) fn pick_webkit_host(exe_dir: &Path, hosts_dir: Option<&Path>) -> Option<PathBuf> {
-    built_webkit_host(exe_dir).or_else(|| hosts_dir.map(|dir| dir.join(ViewKind::Webkit.desc().binary)))
+    run_in_place_from(ViewKind::Webkit, exe_dir)
+        .or_else(|| hosts_dir.map(|dir| dir.join(host_file_name(ViewKind::Webkit))))
 }
 
 /// `pick_webkit_host` for the running exe.
