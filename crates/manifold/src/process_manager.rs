@@ -1054,7 +1054,7 @@ pub fn spawn_tab(
     let custom_cef = custom_cef.filter(|_| desc.runtime_dir.is_some());
     let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
-    // A host that came from a download, not from beside manifold.exe, is hashed again here: the folder it sits in is
+    // A host that came from a download, not a host in place, is hashed again here: the folder it sits in is
     // writable, and the on-disk poll that said Ready only read a marker.
     if downloads(kind) && sibling_host(kind).is_none() {
         if let Some(dir) = view_hosts_dir() {

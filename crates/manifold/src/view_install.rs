@@ -129,8 +129,8 @@ impl Plan {
     }
 }
 
-/// Whether `kind` is installed by downloading (`HostSource::Download`), rather than found beside `manifold.exe`
-/// or carried inside it.
+/// Whether `kind` is installed by downloading (`HostSource::Download`), rather than run in place (from its dev folder
+/// or beside `manifold.exe`) or carried inside it.
 pub(crate) fn downloads(kind: ViewKind) -> bool {
     kind.desc().source == HostSource::Download
 }
