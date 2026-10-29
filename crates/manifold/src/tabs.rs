@@ -660,9 +660,9 @@ impl App {
         self.save_session();
     }
 
-    /// A tab whose engine keeps crashing (`crashes_too_often`), or whose host
-    /// cannot start (it speaks another protocol, say), becomes a failed card: the reason is its
-    /// tooltip, and opening it tries again. Respawning would only loop.
+    /// A tab whose engine keeps crashing (`crashes_too_often`), or whose host cannot start (it speaks another
+    /// protocol, say), becomes a failed card: the reason is its tooltip, and opening it tries again. Respawning
+    /// would only loop.
     /// `why` picks the toast: `CannotStart` says why the host could not start.
     pub(crate) fn leave_failed_card(&mut self, id: NodeId, reason: &str, why: LeftClosed) {
         let Some(node) = self.nodes.get_mut(&id) else { return };

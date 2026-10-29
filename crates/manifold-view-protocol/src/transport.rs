@@ -44,7 +44,8 @@ fn skew_with_app(app: u32) -> Option<crate::Skew> {
 /// its usual path instead of running orphaned. Before this was shared, only
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
-/// Reads manifold's `PROTOCOL_VERSION` first; a mismatch is logged naming which side to rebuild (`Skew`) and is a `Shutdown`.
+/// Reads manifold's `PROTOCOL_VERSION` first; a mismatch is logged naming which side to rebuild (`Skew`)
+/// and is a `Shutdown`.
 /// The channel holds `VIEW_INBOX` messages; past that the reader waits for the engine to take one.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
