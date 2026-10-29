@@ -231,11 +231,11 @@ impl App {
                     }
                 }
             }
-            ViewToHost::DownloadFailed { path, .. } => {
+            ViewToHost::DownloadFailed { path, failure } => {
                 self.queue_toast(format!("Download failed: {path}"));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
-                        dl.failed = true;
+                        dl.state = crate::node::DownloadState::Failed(failure);
                     }
                 }
             }
@@ -243,7 +243,7 @@ impl App {
                 self.queue_toast(format!("Saved {path}"));
                 if let Some(id) = self.in_flight_download_id(tab_id, &path) {
                     if let Some(dl) = self.nodes.get_mut(&id).and_then(|n| n.as_download_mut()) {
-                        dl.completed = true;
+                        dl.state = crate::node::DownloadState::Completed;
                         return true;
                     }
                 }
@@ -269,19 +269,32 @@ mod tests {
         let mut app = App::default();
         app.insert_note_at(N, None);
         app.insert_download_node(N, "f.zip".into(), Some(10), None);
-        let in_flight =
-            |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| !d.completed && !d.failed));
+        let in_flight = |app: &App| app.nodes.values().any(|n| n.as_download().is_some_and(|d| d.in_flight()));
         assert!(in_flight(&app));
-        app.handle_view_message(
-            N,
-            ViewToHost::DownloadFailed {
-                path: "f.zip".into(),
-                failure: DownloadFailure::new(FailureKind::Network, ""),
-            },
-        );
+        let failure = DownloadFailure::new(FailureKind::Network, "");
+        app.handle_view_message(N, ViewToHost::DownloadFailed { path: "f.zip".into(), failure: failure.clone() });
         let download = app.nodes.values().find_map(|n| n.as_download()).unwrap();
-        assert!(download.failed && !download.completed);
+        assert_eq!(download.failure(), Some(&failure));
+        assert!(!download.is_completed());
         assert!(!in_flight(&app));
+    }
+
+    /// Review Focus 4: the same file started again after its card failed gets a card of its own; the failed one stays
+    /// failed.
+    #[test]
+    fn a_redownload_after_a_failure_gets_its_own_card() {
+        let mut app = App::default();
+        app.insert_note_at(N, None);
+        let started = || ViewToHost::DownloadStarted { path: "f.zip".into(), total_bytes: Some(10), url: None };
+        app.handle_view_message(N, started());
+        let failure = DownloadFailure::new(FailureKind::Server, "");
+        app.handle_view_message(N, ViewToHost::DownloadFailed { path: "f.zip".into(), failure: failure.clone() });
+        app.handle_view_message(N, started());
+        app.handle_view_message(N, ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 4 });
+        let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(downloads[0].failure(), Some(&failure), "the failed card stays failed");
+        assert!(downloads[1].in_flight() && downloads[1].bytes_received == 4);
     }
 
     #[test]
@@ -294,7 +307,7 @@ mod tests {
         app.handle_view_message(N, ViewToHost::DownloadProgress { path: "f.zip".into(), bytes_received: 7 });
         let downloads: Vec<_> = app.node_order.iter().filter_map(|id| app.nodes[id].as_download()).collect();
         assert_eq!(downloads.len(), 2);
-        assert!(downloads[0].completed && downloads[0].bytes_received == 0, "the old node is untouched");
+        assert!(downloads[0].is_completed() && downloads[0].bytes_received == 0, "the old node is untouched");
         assert_eq!(downloads[1].bytes_received, 7);
     }
 
@@ -333,7 +346,8 @@ mod tests {
                 .find(|(id, _)| app.opened_from(**id) == Some(p))
                 .and_then(|(_, n)| n.as_download())
                 .unwrap()
-                .failed
+                .failure()
+                .is_some()
         };
         assert!(by_parent(A) && !by_parent(B));
     }

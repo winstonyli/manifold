@@ -163,13 +163,7 @@ impl App {
         let node_pos = self.layout_pos(tab_id);
         let id = self.alloc_node_id();
         let pos = node_pos + graph_layout::spawn_jitter(id);
-        let payload = Runtime::Download(DownloadPayload {
-            path,
-            bytes_received: 0,
-            total_bytes,
-            completed: false,
-            failed: false,
-        });
+        let payload = Runtime::Download(DownloadPayload::started(path, total_bytes));
         self.place_node(Some(id), Kind::Download, payload, Placement { group: node_group, pos });
         self.seed_source_url(id, url);
         self.edit_parent(id, Some(tab_id)); // the edge from the tab it came from
@@ -193,7 +187,7 @@ impl App {
     }
 
     fn in_flight_download(&self, id: NodeId, path: &str) -> bool {
-        self.nodes.get(&id).and_then(|n| n.as_download()).is_some_and(|d| d.path == path && !d.completed && !d.failed)
+        self.nodes.get(&id).and_then(|n| n.as_download()).is_some_and(|d| d.path == path && d.in_flight())
     }
 
     /// Inserts a node of type `kind` showing `runtime` at `pos`, top level, no colour of its own (colour is the
@@ -523,13 +517,7 @@ impl App {
                     }
                     K::Other => {
                         let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-                        let payload = DownloadPayload {
-                            path: path_str,
-                            bytes_received: bytes,
-                            total_bytes: Some(bytes),
-                            completed: true,
-                            failed: false,
-                        };
+                        let payload = DownloadPayload::finished(path_str, bytes);
                         self.insert_placeholder_node(id, pos, Kind::Download, Runtime::Download(payload));
                         if self.nodes.contains_key(&id) {
                             self.edit_group(id, group);

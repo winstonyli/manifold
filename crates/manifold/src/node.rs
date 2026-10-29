@@ -399,15 +399,49 @@ pub(crate) struct DownloadPayload {
     /// response -- chunked transfer -- means `None`). Shown as a byte count
     /// with no percentage/bar in that case, rather than a misleading guess.
     pub(crate) total_bytes: Option<u64>,
-    /// Set once `DownloadCompleted` arrives for this node's own `path`.
-    /// Distinguishes an in-progress node (still shows a progress bar) from
-    /// a finished one (plain filename, same as before this feature) without
-    /// needing a separate enum -- nothing about a completed download's
-    /// other fields becomes invalid or needs clearing.
-    pub(crate) completed: bool,
-    /// Set by `DownloadFailed` (cancelled or interrupted). Never both this and `completed`. Not stored: the store
-    /// keeps only completed downloads, so a failed one is gone after a restart.
-    pub(crate) failed: bool,
+    /// Where the download stands: one state, so it is never both completed and failed, and a failure carries why
+    /// (`DownloadFailure`).
+    pub(crate) state: DownloadState,
+}
+
+/// Where a download stands (`DownloadPayload::state`). Not stored: the store keeps only completed downloads, so a
+/// failed one is gone after a restart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DownloadState {
+    /// Started and still arriving: its card shows a progress bar while the server gave a size.
+    InFlight,
+    /// `DownloadCompleted` arrived for this node's own `path`, or the file was already on disk.
+    Completed,
+    /// `DownloadFailed` arrived: why, as the host said (`crate::download_failure` words it).
+    Failed(manifold_view_protocol::DownloadFailure),
+}
+
+impl DownloadPayload {
+    /// A download its engine just started: nothing received yet, `total_bytes` as the server said.
+    pub(crate) fn started(path: String, total_bytes: Option<u64>) -> Self {
+        Self { path, bytes_received: 0, total_bytes, state: DownloadState::InFlight }
+    }
+
+    /// A file already on disk, `bytes` long: a restored download, or a dropped file.
+    pub(crate) fn finished(path: String, bytes: u64) -> Self {
+        Self { path, bytes_received: bytes, total_bytes: Some(bytes), state: DownloadState::Completed }
+    }
+
+    pub(crate) fn in_flight(&self) -> bool {
+        self.state == DownloadState::InFlight
+    }
+
+    pub(crate) fn is_completed(&self) -> bool {
+        self.state == DownloadState::Completed
+    }
+
+    /// Why it failed, `None` unless it did.
+    pub(crate) fn failure(&self) -> Option<&manifold_view_protocol::DownloadFailure> {
+        match &self.state {
+            DownloadState::Failed(failure) => Some(failure),
+            _ => None,
+        }
+    }
 }
 
 /// `App::nodes`'s own map type -- `std::collections::HashMap` (same type,
@@ -620,17 +654,8 @@ second"
                 state: UnloadedState::Sleeping,
             }),
         );
-        let download = place(
-            &mut app,
-            Kind::Download,
-            Runtime::Download(DownloadPayload {
-                path: "dir/f.bin".into(),
-                bytes_received: 0,
-                total_bytes: None,
-                completed: false,
-                failed: false,
-            }),
-        );
+        let download =
+            place(&mut app, Kind::Download, Runtime::Download(DownloadPayload::started("dir/f.bin".into(), None)));
         let jar = place(&mut app, Kind::Jar, Runtime::Jar);
         let name = |app: &crate::App, id| app.accessible_name(id).unwrap();
         assert_eq!(name(&app, live), "Tab: https://a/");

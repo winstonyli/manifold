@@ -296,13 +296,7 @@ impl App {
             Kind::Download => {
                 let path = str_of(fields, field::PATH);
                 let bytes = std::fs::metadata(&path).map_or(0, |m| m.len());
-                let payload = DownloadPayload {
-                    path,
-                    bytes_received: bytes,
-                    total_bytes: Some(bytes),
-                    completed: true,
-                    failed: false,
-                };
+                let payload = DownloadPayload::finished(path, bytes);
                 self.insert_placeholder_node(id, pos, kind, Runtime::Download(payload));
             }
             Kind::Jar => {

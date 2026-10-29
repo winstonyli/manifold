@@ -116,13 +116,11 @@ fn valid_targets_are_the_cards_connect_would_accept() {
 fn a_running_download_is_no_link_or_opener_end_until_it_completes() {
     let mut app = app_on(&temp_dir("connect-running-download").join("session.mnf"), 1);
     let tab = succeed_spawn(&mut app, "https://a/");
-    let download = |completed| {
-        Runtime::Download(DownloadPayload {
-            path: "f.bin".into(),
-            bytes_received: 1,
-            total_bytes: Some(2),
-            completed,
-            failed: false,
+    let download = |completed: bool| {
+        Runtime::Download(if completed {
+            DownloadPayload::finished("f.bin".into(), 2)
+        } else {
+            DownloadPayload::started("f.bin".into(), Some(2))
         })
     };
     let dl = add(&mut app, Kind::Download, download(false));

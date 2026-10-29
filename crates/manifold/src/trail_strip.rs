@@ -869,13 +869,8 @@ mod tests {
                 }
                 1 => {
                     let (id, title) = (rig.app.alloc_node_id(), format!("FILE{n}"));
-                    let download = crate::Runtime::Download(crate::node::DownloadPayload {
-                        path: format!("{title}.bin"),
-                        bytes_received: 0,
-                        total_bytes: None,
-                        completed: true,
-                        failed: false,
-                    });
+                    let download =
+                        crate::Runtime::Download(crate::node::DownloadPayload::finished(format!("{title}.bin"), 0));
                     rig.app.insert_placeholder_node(id, at, crate::store::model::Kind::Download, download);
                     (title, id)
                 }

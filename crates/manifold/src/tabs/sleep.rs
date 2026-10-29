@@ -118,11 +118,11 @@ impl App {
     /// What the idle and jar-switch sweeps need to know about each live tab.
     pub(super) fn tab_idle_views(&self) -> Vec<crate::idle_sleep::TabIdleView> {
         let on_screen = self.showing_tab_view().then_some(self.focused).flatten();
-        // A download card's parent is the tab it came from; `completed` flips when the engine finishes it.
+        // A download card's parent is the tab it came from; it is in flight until the engine finishes or fails it.
         let downloading: std::collections::HashSet<NodeId> = self
             .nodes
             .iter()
-            .filter(|(_, n)| n.as_download().is_some_and(|d| !d.completed && !d.failed))
+            .filter(|(_, n)| n.as_download().is_some_and(|d| d.in_flight()))
             .filter_map(|(id, _)| self.opened_from(*id))
             .collect();
         self.nodes

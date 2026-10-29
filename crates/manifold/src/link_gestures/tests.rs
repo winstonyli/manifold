@@ -558,13 +558,7 @@ fn a_release_off_the_scene_keeps_the_link() {
 fn drop_b_end_at(link_a_c: bool, at: impl Fn(&App, [NodeId; 4]) -> egui::Pos2) -> (App, [NodeId; 4], NodeId) {
     let (h, mut app, [a, b, c]) = three_notes();
     let d = app.alloc_node_id();
-    let download = Runtime::Download(crate::node::DownloadPayload {
-        path: "f.bin".into(),
-        bytes_received: 0,
-        total_bytes: None,
-        completed: false,
-        failed: false,
-    });
+    let download = Runtime::Download(crate::node::DownloadPayload::started("f.bin".into(), None));
     app.insert_placeholder_node(d, egui::vec2(1200.0, 0.0), Kind::Download, download);
     for _ in 0..3 {
         h.frame(&mut app, vec![]);

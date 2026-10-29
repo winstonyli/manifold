@@ -505,13 +505,11 @@ mod tests {
                 g
             })
             .collect();
-        let download = |completed| {
-            Runtime::Download(DownloadPayload {
-                path: "f.bin".into(),
-                bytes_received: 1,
-                total_bytes: Some(2),
-                completed,
-                failed: false,
+        let download = |completed: bool| {
+            Runtime::Download(if completed {
+                DownloadPayload::finished("f.bin".into(), 2)
+            } else {
+                DownloadPayload::started("f.bin".into(), Some(2))
             })
         };
         for i in 0..60usize {

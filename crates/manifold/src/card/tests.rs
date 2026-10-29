@@ -624,13 +624,7 @@ fn drop_action_matches_the_drop_table() {
 
 #[test]
 fn node_card_size_matches_each_kinds_card() {
-    let download = Runtime::Download(DownloadPayload {
-        path: "f.bin".into(),
-        bytes_received: 0,
-        total_bytes: None,
-        completed: false,
-        failed: false,
-    });
+    let download = Runtime::Download(DownloadPayload::started("f.bin".into(), None));
     assert_eq!(node_card_size(&download), DOWNLOAD_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::Note(NotePayload { text: String::new(), editing: false })), NOTE_NODE_SIZE);
     assert_eq!(node_card_size(&Runtime::None), GROUP_NODE_SIZE, "a group has no runtime");
@@ -680,13 +674,7 @@ fn card_filter_text_matches_each_kinds_filter_input() {
     fn filter(runtime: &Runtime) -> Vec<&str> {
         card_filter_text(runtime, "buy milk")
     }
-    let download = Runtime::Download(DownloadPayload {
-        path: "C:/dl/f.bin".into(),
-        bytes_received: 0,
-        total_bytes: None,
-        completed: true,
-        failed: false,
-    });
+    let download = Runtime::Download(DownloadPayload::finished("C:/dl/f.bin".into(), 0));
     // Download filters on its full path; the file kinds on the filename only.
     assert_eq!(filter(&download), ["C:/dl/f.bin"]);
     assert_eq!(filter(&Runtime::Note(NotePayload { text: String::new(), editing: false })), ["buy milk"]);

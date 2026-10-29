@@ -395,7 +395,7 @@ impl App {
     /// Whether card `key` is a download still in progress (or failed): placed, but not stored until it completes
     /// (`snapshot`), so nothing stored may name it yet (`check_connect`).
     pub(crate) fn is_running_download(&self, key: NodeId) -> bool {
-        self.nodes.get(&key).and_then(|n| n.as_download()).is_some_and(|dl| !dl.completed)
+        self.nodes.get(&key).and_then(|n| n.as_download()).is_some_and(|dl| !dl.is_completed())
     }
 
     /// Queues `id`, a node that just entered the live graph (`place_node`, `spawn_tab_async`, a jar's `add_jar`),
@@ -621,7 +621,7 @@ impl App {
         let doc = journal.doc();
         let live = |id: &NodeId| doc.nodes.get(id).is_some_and(Node::is_live);
         for (&id, node) in &self.nodes {
-            if node.as_download().is_some_and(|dl| !dl.completed) || self.spawns.spawning.contains_key(&id) {
+            if node.as_download().is_some_and(|dl| !dl.is_completed()) || self.spawns.spawning.contains_key(&id) {
                 continue;
             }
             assert!(live(&id), "node {id} is shown but not live in the document: a create funnel was missed");

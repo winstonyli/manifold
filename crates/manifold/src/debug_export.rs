@@ -178,8 +178,10 @@ impl App {
                         "path": d.path,
                         "bytes": d.bytes_received,
                         "total": d.total_bytes,
-                        "completed": d.completed,
-                        "failed": d.failed,
+                        "completed": d.is_completed(),
+                        "failed": d.failure().is_some(),
+                        // Why it failed: the kind's name, as the gate checks it.
+                        "failure": d.failure().map(|f| format!("{:?}", f.kind)),
                     })),
                     // Where MOVENODE puts the card back after it was parked (gate layout).
                     "world": [world.x, world.y],

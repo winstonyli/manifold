@@ -104,13 +104,7 @@ pub(crate) fn level_fixture(live_tabs: bool) -> Fixture {
                 (Kind::Tab, Runtime::Unloaded(sleeping))
             }
             1 => {
-                let download = DownloadPayload {
-                    path: "f.bin".into(),
-                    bytes_received: 0,
-                    total_bytes: None,
-                    completed: true,
-                    failed: false,
-                };
+                let download = DownloadPayload::finished("f.bin".into(), 0);
                 (Kind::Download, Runtime::Download(download))
             }
             2 => (Kind::Note, Runtime::Note(NotePayload { text: "t".into(), editing: false })),

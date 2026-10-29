@@ -164,13 +164,7 @@ mod tests {
             zoom_factor: 1.0,
             state: UnloadedState::Sleeping,
         });
-        let download = Runtime::Download(DownloadPayload {
-            path: "f.bin".into(),
-            bytes_received: 0,
-            total_bytes: None,
-            completed: false,
-            failed: false,
-        });
+        let download = Runtime::Download(DownloadPayload::started("f.bin".into(), None));
         let json = Runtime::Json(JsonPayload::file("a.json".into(), std::sync::Arc::new(1.into()), None));
         let image = Runtime::Image(ImagePayload { path: "i.png".into(), width: 1, height: 1, error: None });
         vec![

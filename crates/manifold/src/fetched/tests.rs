@@ -28,7 +28,7 @@ fn insert_content_dispatches_local_files_by_content() {
             Runtime::Pdf(_) => "pdf".into(),
             Runtime::Json(p) => format!("json {}", p.value),
             Runtime::Note(p) => format!("note {}", p.text),
-            Runtime::Download(p) => format!("download {} done={}", p.bytes_received, p.completed),
+            Runtime::Download(p) => format!("download {} done={}", p.bytes_received, p.is_completed()),
             _ => "other".into(),
         });
         assert_eq!(app.source_url(id), None);

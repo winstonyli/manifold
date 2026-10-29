@@ -332,13 +332,7 @@ mod tests {
     const OTHER: NodeId = node(10);
 
     fn download(path: &str) -> Runtime {
-        Runtime::Download(DownloadPayload {
-            path: path.to_string(),
-            bytes_received: 0,
-            total_bytes: None,
-            completed: true,
-            failed: false,
-        })
+        Runtime::Download(DownloadPayload::finished(path.to_string(), 0))
     }
 
     /// A stored card that changes size (an image decoding) changes the key, so the level re-lays-out; drawing order

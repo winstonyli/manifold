@@ -571,9 +571,9 @@ impl App {
                         // In-progress downloads get a live progress row below
                         // the filename; a completed one is left exactly as
                         // before this feature -- just the filename row above.
-                        if node.failed {
+                        if node.failure().is_some() {
                             ui.colored_label(danger(ui.visuals()), "Failed");
-                        } else if !node.completed {
+                        } else if !node.is_completed() {
                             match node.total_bytes {
                                 Some(total) if total > 0 => {
                                     let fraction = (node.bytes_received as f32 / total as f32).clamp(0.0, 1.0);

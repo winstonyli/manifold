@@ -220,24 +220,12 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
 #[test]
 fn a_download_is_created_once_it_completes() {
     let mut app = app_on(&temp_dir("download-create-on-complete").join("session.mnf"), 1);
-    let payload = DownloadPayload {
-        path: "f.bin".into(),
-        bytes_received: 1,
-        total_bytes: Some(2),
-        completed: false,
-        failed: false,
-    };
+    let payload = DownloadPayload::started("f.bin".into(), Some(2));
     let dl = add(&mut app, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
     assert!(!app.doc.journal.as_ref().unwrap().doc().nodes.contains_key(&dl), "not yet");
     assert_eq!(app.doc.writes.life(dl), Some(Life::Create), "still queued");
-    app.nodes.get_mut(&dl).unwrap().runtime = Runtime::Download(DownloadPayload {
-        path: "f.bin".into(),
-        bytes_received: 2,
-        total_bytes: Some(2),
-        completed: true,
-        failed: false,
-    });
+    app.nodes.get_mut(&dl).unwrap().runtime = Runtime::Download(DownloadPayload::finished("f.bin".into(), 2));
     assert!(app.save_session());
     assert!(live_in_doc(&app, dl), "created");
 }
@@ -359,8 +347,7 @@ fn a_completed_download_keeps_its_url() {
     let path = crate::store::testutil::temp_dir("download-url").join("session.mnf");
     let mut app = app_on(&path, 1);
     let id = app.alloc_node_id();
-    let payload =
-        DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
+    let payload = DownloadPayload::finished("f.bin".into(), 0);
     app.insert_placeholder_node(id, egui::Vec2::ZERO, Kind::Download, Runtime::Download(payload));
     app.doc.mirror.set(id, field::URL, FieldValue::Str("https://x.test/f.bin".into()));
     assert!(app.save_session());
@@ -378,8 +365,7 @@ fn a_download_without_a_url_restores_without_one() {
     let path = crate::store::testutil::temp_dir("download-no-url").join("session.mnf");
     let mut app = app_on(&path, 1);
     let id = app.alloc_node_id();
-    let payload =
-        DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
+    let payload = DownloadPayload::finished("f.bin".into(), 0);
     app.insert_placeholder_node(id, egui::Vec2::ZERO, Kind::Download, Runtime::Download(payload));
     assert!(app.save_session());
     app.close_store();
@@ -396,8 +382,7 @@ fn an_opened_from_link_survives_a_restart_on_every_kind_that_has_one() {
     let path = temp_dir("parent-kinds").join("session.mnf");
     let mut app = app_on(&path, 1);
     let opener = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/", "Opener"));
-    let download =
-        DownloadPayload { path: "f.bin".into(), bytes_received: 0, total_bytes: None, completed: true, failed: false };
+    let download = DownloadPayload::finished("f.bin".into(), 0);
     let download = add(&mut app, Kind::Download, Runtime::Download(download));
     let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "hi".into(), editing: false }));
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://x.test/child", "Child"));
@@ -1113,13 +1098,7 @@ fn connect_opened_from_survives_a_restart_and_a_remote_edit_on_every_allowed_sou
                 id
             }
             Kind::Download => {
-                let dl = DownloadPayload {
-                    path: "f.bin".into(),
-                    bytes_received: 0,
-                    total_bytes: None,
-                    completed: true,
-                    failed: false,
-                };
+                let dl = DownloadPayload::finished("f.bin".into(), 0);
                 add(&mut app, kind, Runtime::Download(dl))
             }
             _ => panic!("{ty} ({kind:?}) is an opened-from source: add it to this test"),

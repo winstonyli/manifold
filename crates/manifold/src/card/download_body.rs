@@ -1,6 +1,7 @@
 //! A download card's body.
 
 use super::*;
+use crate::node::DownloadState;
 use crate::store::model::NodeId;
 
 impl App {
@@ -18,11 +19,11 @@ impl App {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
         let deferred_overlays = &mut *pass.deferred_overlays;
         let body = CardBody { interact_rect: rect, tooltip: None };
-        let Some((download_path, completed, failed, total_bytes, bytes_received)) = self
+        let Some((download_path, state, total_bytes, bytes_received)) = self
             .nodes
             .get(&id)
             .and_then(|n| n.as_download())
-            .map(|d| (d.path.clone(), d.completed, d.failed, d.total_bytes, d.bytes_received))
+            .map(|d| (d.path.clone(), d.state.clone(), d.total_bytes, d.bytes_received))
         else {
             return body;
         };
@@ -42,15 +43,16 @@ impl App {
             let tall = self.paint_card_header(ui, deferred_overlays, id, rect, inv_zoom, zoom_scale, header);
             // The size (or how much has arrived) in the middle of the body below the header.
             if tall {
-                let size = match (completed, total_bytes) {
-                    _ if failed => "Download failed".to_owned(),
-                    (true, total) => crate::human_bytes(total.unwrap_or(bytes_received)),
-                    (false, Some(total)) => {
+                let size = match (&state, total_bytes) {
+                    (DownloadState::Failed(_), _) => "Download failed".to_owned(),
+                    (DownloadState::Completed, total) => crate::human_bytes(total.unwrap_or(bytes_received)),
+                    (DownloadState::InFlight, Some(total)) => {
                         format!("{} of {}", crate::human_bytes(bytes_received), crate::human_bytes(total))
                     }
-                    (false, None) => crate::human_bytes(bytes_received),
+                    (DownloadState::InFlight, None) => crate::human_bytes(bytes_received),
                 };
                 let middle = card_body_rect(rect, true, inv_zoom).center();
+                let failed = matches!(state, DownloadState::Failed(_));
                 let color = if failed { danger(ui.visuals()) } else { ui.visuals().weak_text_color() };
                 push_centered_text(deferred_overlays, middle, size, 13.0, color);
             }
@@ -70,7 +72,7 @@ impl App {
         // MARGIN` isn't: this is card-layout geometry
         // already inside the zoom-scaled Scene transform,
         // not chrome that needs a constant on-screen size.
-        if !completed && !failed {
+        if state == DownloadState::InFlight {
             if let Some(total) = total_bytes.filter(|t| *t > 0) {
                 let fraction = (bytes_received as f32 / total as f32).clamp(0.0, 1.0);
                 let track_rect = egui::Rect::from_min_max(
