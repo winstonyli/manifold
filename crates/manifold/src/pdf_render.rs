@@ -16,7 +16,8 @@ use std::time::Duration;
 use manifold_view_protocol::render::Cancel;
 
 const WORKERS: usize = 2;
-/// Covers the one-time PDFium download as well as a render; a hung PDF costs a worker this long at most.
+/// Covers the one-time PDFium download as well as a render; a PDF that hangs before its frame costs a worker this long
+/// at most (one that hangs after a bad frame: PARKED "Host protocol stamp").
 const RENDER_TIMEOUT: Duration = Duration::from_secs(120);
 const LABEL: &str = "PDF renderer";
 
