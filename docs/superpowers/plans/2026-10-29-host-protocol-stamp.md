@@ -27,6 +27,7 @@ status: active
 **Spec:** `C:\Users\WINSTO~1\AppData\Local\Temp\claude\C--Users-Winston-Li-Documents-GitHub-manifold\a2c355a1-5493-43d2-a2ce-bd6f49ba9245\scratchpad\item6-design.md` (owner-approved 2026-10-28), with its evidence file `item6-verify.txt` beside it. The scratchpad is temporary, so the approved decisions are restated below; they are binding. The choices this plan makes on its own are listed under "Decisions for review" (P1-P44).
 
 **Base commit:** bfacedc2 ("docs: PARKED: one list under Chrome shots"). The tree was clean there when this plan was drafted (2026-10-29), and every line number below was read at bfacedc2. Lines drift as tasks land, and another session may commit in this tree, so find each edit by the code quoted with it, not by its line number. Task 1 Step 1 records the commit the work actually starts from, as B.
+Started at 8f3f0727 (2026-10-29).
 
 **Dates.** Dates in new text are the day of the edit. The plan was drafted on 2026-10-29, and its examples use that date. The one older fact kept with its own date is "os error 193 ... checked 2026-10-28".
 
