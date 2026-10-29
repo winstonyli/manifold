@@ -102,8 +102,8 @@ fn interrupted(operation: &ICoreWebView2DownloadOperation) -> bool {
 }
 
 /// What the user can do about a download Edge ended `INTERRUPTED` for `reason` (webview2-com-sys 0.39.1 names 0-29;
-/// any other is `Other`). The `FILE_*` codes for a file Windows won't write are an unusable folder;
-/// `FILE_TRANSIENT_ERROR`, `FILE_TOO_SHORT`, `FILE_HASH_MISMATCH` (a resumed file that doesn't match), the `USER_*`
+/// any other is `Other`). Most `FILE_*` codes are an unusable folder, except `FILE_NO_SPACE` (a full disk) and the
+/// malware and policy codes (blocked); `FILE_TRANSIENT_ERROR`, `FILE_TOO_SHORT`, `FILE_HASH_MISMATCH` (a resumed file that doesn't match), the `USER_*`
 /// codes and a crash say nothing the user can act on. A server that dies mid-transfer ends the retry
 /// `NETWORK_FAILED` (run 2026-10-27-dl-probe-hold).
 /// A download into `C:\`, where a normal user can't create files, ends `FILE_ACCESS_DENIED` (2, run
@@ -194,13 +194,11 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
             save_path(&seen, &uri, broken_at_start, &proposed, downloads::folder().as_deref())
         };
         let url = Some(uri.clone()).filter(|u| !u.is_empty());
-        // A path Edge won't take (`SetResultFilePath` fails) is an unusable folder. Its message goes to the log, not
-        // the card.
+        // A path Edge won't take (`SetResultFilePath` fails) is an unusable folder. Its message could name the path,
+        // which a detail never holds, so it goes to this host's log, not the card (unverified: no run has seen it).
         let placed = decided.and_then(|path| match unsafe { args.SetResultFilePath(&HSTRING::from(path.as_path())) } {
             Ok(()) => Ok(path),
             Err(e) => {
-                // Its words could name the path, which a detail never holds: to this host's log, not the card (run
-                // 2026-10-28-dl-fail-croot).
                 eprintln!("download: SetResultFilePath refused: {}", e.message());
                 Err(downloads::Refusal { path, failure: DownloadFailure::new(FailureKind::FolderUnusable, "") })
             }
