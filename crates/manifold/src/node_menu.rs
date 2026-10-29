@@ -566,12 +566,10 @@ pub(crate) fn node_menu_config(view: &NodeMenuView, headless: bool) -> NodeMenuC
             finish(150.0, items, delete("Close"), jar_page)
         }
         TYPE_TAB => {
-            // Retrying a tab whose engine isn't installed asks to install it (`retry_missing_file`).
-            let first = match (view.failed, view.view_missing) {
-                (true, true) => Button("Download Engine", A::RetryMissingFile),
-                (true, false) => Button("Retry", A::RetryMissingFile),
-                (false, _) => Button("Open", A::Open),
-            };
+            // A failed tab's first row says what retrying does for its engine (`retry_missing_file`): Retry, a
+            // download, or why the engine can't run.
+            let first =
+                if view.failed { Button(view.retry_label, A::RetryMissingFile) } else { Button("Open", A::Open) };
             let mut items = vec![first];
             if view.failed && view.other_default_view_kind {
                 items.push(Button("Open in Default Engine", A::OpenInDefaultViewKind));
@@ -634,8 +632,9 @@ pub(crate) struct NodeMenuView {
     other_default_view_kind: bool,
     /// Unloaded only: its engine failed, so the menu offers a retry.
     failed: bool,
-    /// Unloaded only: it failed because its engine isn't installed, so the menu offers the download.
-    view_missing: bool,
+    /// Unloaded only, when it failed: its first row, naming what a click does for its engine's state
+    /// (`PickOutcome::retry_label`).
+    retry_label: &'static str,
     /// Sibling groups (same level, not this node) it can move into, as `(id, name)`.
     /// `pub(crate)` for headless `MOVETOGROUP`, which moves only where the menu would offer.
     pub(crate) move_targets: Vec<(NodeId, String)>,
@@ -795,9 +794,11 @@ impl App {
             other_default_view_kind: node.runtime.as_unloaded().is_some()
                 && self.doc.mirror.view_kind(id) != self.settings.value.default_starting_view_kind,
             failed: node.tab_failed(),
-            view_missing: node.tab_failed() && {
+            retry_label: if node.tab_failed() {
                 let kind = self.doc.mirror.view_kind(id);
-                !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_))
+                pick_outcome(kind, &self.view_status(kind)).retry_label()
+            } else {
+                "Retry"
             },
             move_targets: self
                 .node_order

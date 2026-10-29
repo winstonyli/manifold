@@ -55,7 +55,7 @@ fn view_of(kind: CardKind) -> NodeMenuView {
         unresponsive: false,
         other_default_view_kind: false,
         failed: false,
-        view_missing: false,
+        retry_label: "Retry",
         move_targets: Vec::new(),
         renaming: None,
         jars: None,
@@ -176,8 +176,10 @@ fn node_menu_config_matches_each_kinds_menu() {
         menu_of(&failed, false).2,
         "Retry | Open in Default Engine | Copy URL | --- | Rename | Pin | --- | Close"
     );
-    let missing = NodeMenuView { failed: true, view_missing: true, ..view_of(sleeping_tab()) };
+    let missing = NodeMenuView { failed: true, retry_label: "Download Engine", ..view_of(sleeping_tab()) };
     assert_eq!(menu_of(&missing, false).2, "Download Engine | Copy URL | --- | Rename | Pin | --- | Close");
+    let unavailable = NodeMenuView { failed: true, retry_label: "Why Unavailable", ..view_of(sleeping_tab()) };
+    assert_eq!(menu_of(&unavailable, false).2, "Why Unavailable | Copy URL | --- | Rename | Pin | --- | Close");
     // Export Group's file dialog can't run headless.
     assert_eq!(
         menu(plain(TYPE_GROUP), false, false, true).2,
@@ -312,6 +314,32 @@ fn duplicate_from_an_unloaded_tabs_menu_spawns_a_copy() {
     let spawn = &app.test_spawns[0].0;
     assert_ne!(spawn.id, t);
     assert_eq!((spawn.url.as_str(), spawn.kind), ("https://a/", ViewKind::Servo));
+}
+
+/// A failed tab's first row follows its engine's state: Retry when it can run, the download when it is missing, and
+/// why when it can't run at all, where a download could not help.
+#[test]
+fn a_failed_tabs_first_row_follows_its_engines_state() {
+    use crate::view_install::ViewStatus;
+    let mut app = App::default();
+    let failed = crate::node::Runtime::Unloaded(crate::node::UnloadedTabPayload {
+        url: "https://x.test/".into(),
+        title: "X".into(),
+        muted: false,
+        zoom_factor: 1.0,
+        state: crate::node::UnloadedState::Failed("x".into()),
+    });
+    let tab = crate::session_sync::tests::add(&mut app, crate::store::model::Kind::Tab, failed);
+    let kind = app.doc.mirror.view_kind(tab);
+    let unstamped = manifold_view_protocol::Skew::between(None, manifold_view_protocol::PROTOCOL_VERSION).unwrap();
+    for (state, row) in [
+        (ViewStatus::Installed, "Retry"),
+        (ViewStatus::NotInstalled { size: 1 }, "Download Engine"),
+        (ViewStatus::Unavailable(unstamped.to_string()), "Why Unavailable"),
+    ] {
+        app.view_ui.view_status_cache.borrow_mut().insert(kind, state);
+        assert_eq!(app.node_menu_view(tab).unwrap().retry_label, row);
+    }
 }
 
 #[test]

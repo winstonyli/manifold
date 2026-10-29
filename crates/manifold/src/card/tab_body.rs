@@ -47,7 +47,7 @@ impl App {
         };
         let (url, title, state) = (tab.url.clone(), tab.title.clone(), tab.state.clone());
         let kind = self.doc.mirror.view_kind(id);
-        // A failed card whose engine isn't installed offers its Download, not a retry that can't work.
+        // A failed card whose engine can't run offers what a click on it does: its Download, or why it is unavailable.
         let missing_view_kind = matches!(state, UnloadedState::Failed(_))
             && !matches!(pick_outcome(kind, &self.view_status(kind)), PickOutcome::Switch(_));
         body.tooltip = Some(match &state {
@@ -107,8 +107,7 @@ impl App {
                     24.0,
                     danger(ui.visuals()),
                 );
-                let phrase = missing_view_phrases(&self.view_status(kind)).1;
-                let text = format!("{} {phrase} (click to download)", view_label(kind));
+                let text = missing_view_text(kind, &self.view_status(kind));
                 push_centered_text(deferred_overlays, middle + up * 2.5, text, 11.0, danger(ui.visuals()));
             }
             UnloadedState::Failed(_) => {

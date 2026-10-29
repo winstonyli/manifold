@@ -717,13 +717,36 @@ fn card_filter_text_matches_each_kinds_filter_input() {
     );
 }
 
-/// A CEF runtime with an older marker (Update needed) is named as needing an update, not as missing.
+/// A failed card whose engine can't run names why and what a click on it does: a download for one that is missing or
+/// out of date, the reason for one that is unavailable (a download could not help).
 #[test]
-fn a_failed_card_names_an_outdated_view_as_needing_an_update() {
+fn a_failed_card_says_what_a_click_on_it_does() {
     use crate::view_install::ViewStatus;
-    assert_eq!(missing_view_phrases(&ViewStatus::UpdateNeeded { size: 1 }), ("needs an update", "needs an update"));
-    assert_eq!(missing_view_phrases(&ViewStatus::NotInstalled { size: 1 }), ("is not installed", "not installed"));
-    assert_eq!(missing_view_phrases(&ViewStatus::Failed("x".into())), ("is not installed", "not installed"));
+    assert_eq!(
+        missing_view_phrases(&ViewStatus::UpdateNeeded { size: 1 }),
+        ("needs an update", "needs an update (click to download)")
+    );
+    assert_eq!(
+        missing_view_phrases(&ViewStatus::NotInstalled { size: 1 }),
+        ("is not installed", "not installed (click to download)")
+    );
+    assert_eq!(
+        missing_view_phrases(&ViewStatus::Failed("x".into())),
+        ("is not installed", "not installed (click to download)")
+    );
+    assert_eq!(
+        missing_view_phrases(&ViewStatus::Unavailable("x".into())),
+        ("is unavailable", "unavailable (click for why)")
+    );
+    // The card body is the engine's label and that phrase, so the click hint is said once.
+    assert_eq!(
+        missing_view_text(ViewKind::Servo, &ViewStatus::Unavailable("x".into())),
+        "Servo unavailable (click for why)"
+    );
+    assert_eq!(
+        missing_view_text(ViewKind::Cef, &ViewStatus::NotInstalled { size: 1 }),
+        "Blink (CEF) not installed (click to download)"
+    );
 }
 
 #[test]

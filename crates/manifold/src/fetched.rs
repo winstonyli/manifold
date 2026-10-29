@@ -293,8 +293,9 @@ impl App {
     pub(crate) fn retry_missing_file(&mut self, id: NodeId) {
         if self.nodes.get(&id).and_then(|n| n.as_unloaded()).is_some() {
             let kind = self.doc.mirror.view_kind(id);
-            // A tab that failed for want of its engine's runtime can't succeed by retrying: ask to
-            // install the engine instead (the card's Download).
+            // A tab that failed for want of its engine can't succeed by retrying. A click does what the card and the
+            // menu's first row say (`PickOutcome::retry_label`): offer the engine's download, say it is already
+            // installing, say why it can't run here, or wake the tab when the engine is fine.
             match pick_outcome(kind, &self.view_status(kind)) {
                 PickOutcome::AskInstall(kind) => {
                     self.offer_confirm(Confirm::View(ViewConfirm::Download(kind)));

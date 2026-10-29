@@ -212,7 +212,8 @@ impl App {
             .view_opener_button(ui, AnchoredPopup::DefaultViewKind, self.settings.value.default_starting_view_kind)
             .labelled_by(label.id);
         req.default_view_button_rect = Some(default_view_response.rect);
-        // A saved default this platform cannot run is kept, not replaced; say why new tabs will fail.
+        // A saved default that can't run (wrong platform, nothing pinned, or a host speaking another protocol) is kept,
+        // not replaced; say why new tabs will fail.
         let default_state = self.view_status(self.settings.value.default_starting_view_kind);
         if matches!(default_state, crate::view_install::ViewStatus::Unavailable(_)) {
             view_status_line(ui, &default_state);

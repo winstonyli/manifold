@@ -990,13 +990,23 @@ pub(crate) fn sleeping_or_waking_tooltip(state: &UnloadedState) -> &'static str 
     }
 }
 
-/// How a failed card whose engine can't run names why: (tooltip phrase, card-body phrase), after the
-/// engine's label. A runtime that is there but out of date needs an update; anything else is not installed.
+/// How a failed card whose engine can't run names why: (tooltip phrase, card-body phrase), after the engine's label.
+/// The body phrase ends with what a click on the card does (`App::retry_missing_file`): a download for a runtime that
+/// is missing or out of date, the reason for an engine that is unavailable, where a download could not help. (The
+/// tooltip of an unavailable engine is its toast, so its tooltip phrase only keeps the match whole.)
 fn missing_view_phrases(state: &crate::view_install::ViewStatus) -> (&'static str, &'static str) {
+    use crate::view_install::ViewStatus;
     match state {
-        crate::view_install::ViewStatus::UpdateNeeded { .. } => ("needs an update", "needs an update"),
-        _ => ("is not installed", "not installed"),
+        ViewStatus::Unavailable(_) => ("is unavailable", "unavailable (click for why)"),
+        ViewStatus::UpdateNeeded { .. } => ("needs an update", "needs an update (click to download)"),
+        _ => ("is not installed", "not installed (click to download)"),
     }
+}
+
+/// The body text of a failed card whose engine can't run: the engine's label, then its body phrase
+/// (`missing_view_phrases`), which already says what a click does.
+fn missing_view_text(kind: ViewKind, state: &crate::view_install::ViewStatus) -> String {
+    format!("{} {}", view_label(kind), missing_view_phrases(state).1)
 }
 
 impl App {

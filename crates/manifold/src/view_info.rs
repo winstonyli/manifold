@@ -22,7 +22,8 @@ pub(crate) fn engine_line(kind: ViewKind) -> String {
 }
 
 /// What the disk holds of `kind`'s downloadable parts, for the headless `VIEWSTATE` and `EXPORTSTATE`:
-/// "host ready", and for CEF also "runtime missing" (Ready, Missing or Stale each).
+/// "host ready", and for CEF also "runtime missing" (Ready, Missing or Stale each). A host speaking another protocol
+/// is named by that instead of "host ready": "host protocol 7, manifold 8", or "host unstamped".
 pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::OnDisk) -> String {
     use crate::view_install::RuntimeOnDisk;
     let word = |part: RuntimeOnDisk| match part {
@@ -30,7 +31,13 @@ pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::OnDisk) ->
         RuntimeOnDisk::Missing => "missing",
         RuntimeOnDisk::Stale => "stale",
     };
-    let mut text = format!("host {}", word(disk.host));
+    let mut text = match disk.skew {
+        Some(skew) => match skew.host() {
+            Some(host) => format!("host protocol {host}, manifold {}", skew.app()),
+            None => "host unstamped".to_string(),
+        },
+        None => format!("host {}", word(disk.host)),
+    };
     if crate::view_install::has_runtime(kind) {
         text.push_str(&format!(", runtime {}", word(disk.runtime)));
     }
@@ -85,7 +92,7 @@ pub(crate) enum PickOutcome {
     AskInstall(ViewKind),
     /// Its install is already running; nothing to switch to yet.
     AlreadyInstalling(ViewKind),
-    /// This platform cannot run it (no pin, wrong OS): the click only explains, with the reason.
+    /// It can't run here (no pin, wrong OS, or a host speaking another protocol): the click only explains why.
     Unavailable(ViewKind, String),
 }
 
@@ -93,6 +100,16 @@ impl PickOutcome {
     /// The toast an `Unavailable` pick shows: the engine and the same reason its state line gives.
     pub(crate) fn unavailable_toast(kind: ViewKind, reason: &str) -> String {
         format!("{} is unavailable: {reason}", view_label(kind))
+    }
+
+    /// The first row of a failed tab's menu, naming what a click on it does (`App::retry_missing_file` acts on the same
+    /// outcome): try again, offer the download, or say why the engine can't run.
+    pub(crate) fn retry_label(&self) -> &'static str {
+        match self {
+            PickOutcome::Switch(_) => "Retry",
+            PickOutcome::AskInstall(_) | PickOutcome::AlreadyInstalling(_) => "Download Engine",
+            PickOutcome::Unavailable(..) => "Why Unavailable",
+        }
     }
 }
 
@@ -194,7 +211,8 @@ pub(crate) fn draw_view_card(
     is_selected: bool,
     state: &ViewStatus,
 ) -> egui::Response {
-    // An engine this platform cannot run is dimmed to weak text and only explains itself when clicked.
+    // An engine that can't run here (this platform, or a host speaking another protocol) is dimmed to weak text and
+    // only explains itself when clicked.
     let dim = matches!(state, ViewStatus::Unavailable(_));
     let frame_response = egui::Frame::default()
         .fill(if is_selected { ui.visuals().widgets.hovered.bg_fill } else { ui.visuals().widgets.inactive.bg_fill })
@@ -409,6 +427,26 @@ mod tests {
         assert_eq!(on_disk_text(ViewKind::Servo, disk), "host ready");
         assert_eq!(on_disk_text(ViewKind::Cef, disk), "host ready, runtime stale");
         assert_eq!(on_disk_text(ViewKind::Cef, OnDisk::both(RuntimeOnDisk::Missing)), "host missing, runtime missing");
+        let older = manifold_view_protocol::Skew::between(Some(7), 8);
+        assert_eq!(on_disk_text(ViewKind::Servo, OnDisk { skew: older, ..disk }), "host protocol 7, manifold 8");
+        let unstamped = manifold_view_protocol::Skew::between(None, 8);
+        assert_eq!(
+            on_disk_text(ViewKind::Cef, OnDisk { skew: unstamped, ..OnDisk::both(RuntimeOnDisk::Ready) }),
+            "host unstamped, runtime ready"
+        );
+    }
+
+    /// A failed tab's first menu row names what a click on it does, for every engine state.
+    #[test]
+    fn a_failed_tabs_retry_is_named_for_what_it_does() {
+        let label = |state: ViewStatus| pick_outcome(ViewKind::Servo, &state).retry_label();
+        assert_eq!(label(ViewStatus::Installed), "Retry");
+        assert_eq!(label(ViewStatus::Custom("D:/cef".into())), "Retry");
+        assert_eq!(label(ViewStatus::NotInstalled { size: 1 }), "Download Engine");
+        assert_eq!(label(ViewStatus::UpdateNeeded { size: 1 }), "Download Engine");
+        assert_eq!(label(ViewStatus::Failed("x".into())), "Download Engine");
+        assert_eq!(label(ViewStatus::Installing { received: 1, total: 2 }), "Download Engine");
+        assert_eq!(label(ViewStatus::Unavailable("x".into())), "Why Unavailable");
     }
 
     /// An engine that isn't usable asks to install; it never switches silently.
