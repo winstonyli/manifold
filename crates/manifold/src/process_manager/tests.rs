@@ -551,7 +551,8 @@ fn webkit_is_installed_with_its_host_else_offered_or_unavailable() {
 #[test]
 fn each_host_is_found_in_its_dev_folder_then_beside_the_exe() {
     let root = crate::store::testutil::temp_dir("host-lookup");
-    let repo = root.join("repo");
+    // Deep enough that the walk up from the exe (its folder and four parents) stays inside `root`.
+    let repo = root.join("work").join("repo");
     let exe_dir = repo.join("target").join("debug");
     std::fs::create_dir_all(&exe_dir).unwrap();
     for kind in ViewKind::ALL {

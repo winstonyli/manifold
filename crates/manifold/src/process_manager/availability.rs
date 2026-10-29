@@ -36,9 +36,9 @@ fn beside_exe(kind: ViewKind, exe_dir: &Path) -> PathBuf {
 }
 
 /// Every place `kind`'s host can run in place from, given `manifold.exe`'s folder `exe_dir`, in the order they are
-/// tried: its dev build folder (`ViewDesc::dev_dir`, then `debug/`), found by walking up at most as far as the repo
-/// root of a worktree under `.claude/`, then beside `manifold.exe` (`beside_exe`). The dev folder comes first: it is
-/// where a dev tree builds the host, and a stray copy left beside the exe must not shadow a fresh build.
+/// tried: its dev build folder (`ViewDesc::dev_dir`, then `debug/`) in `exe_dir` or any of its four parents, nearest
+/// first, then beside `manifold.exe` (`beside_exe`). The dev folder comes first: it is where a dev tree builds the
+/// host, and a stray copy left beside the exe must not shadow a fresh build.
 fn in_place_paths(kind: ViewKind, exe_dir: &Path) -> Vec<PathBuf> {
     let file = host_file_name(kind);
     let mut paths: Vec<PathBuf> = match kind.desc().dev_dir {
