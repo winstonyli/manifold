@@ -344,8 +344,8 @@ impl State {
         self.0["toast"].as_str()
     }
 
-    /// The `download` object (url, path, bytes, total, completed, failed) of each download card fetched from `url`, in
-    /// draw order.
+    /// The `download` object (url, path, bytes, total, completed, failed, failure) of each download card fetched from
+    /// `url`, in draw order.
     pub fn downloads_from(&self, url: &str) -> Vec<&Value> {
         self.all_cards().iter().filter_map(|c| c.get("download").filter(|d| d["url"] == url)).collect()
     }

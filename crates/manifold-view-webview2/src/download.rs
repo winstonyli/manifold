@@ -40,8 +40,8 @@ use std::rc::Rc;
 use manifold_view_protocol::{downloads, DownloadFailure, FailureKind, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2DownloadOperation, ICoreWebView2_13, ICoreWebView2_4,
-    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE, COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED,
-    COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
+    COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON, COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE,
+    COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED, COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED,
 };
 use webview2_com::{
     take_pwstr, BytesReceivedChangedEventHandler, DownloadStartingEventHandler, StateChangedEventHandler,
@@ -87,10 +87,41 @@ fn set_naming_folder(webview: &ICoreWebView2) -> Result<(), String> {
     set().map_err(|e| e.to_string())
 }
 
+/// Why `operation`'s transfer broke, `NONE` while it hasn't (or when Edge can't say).
+fn interrupt_reason(operation: &ICoreWebView2DownloadOperation) -> COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON {
+    let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
+    match unsafe { operation.InterruptReason(&mut reason) } {
+        Ok(()) => reason,
+        Err(_) => COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE,
+    }
+}
+
 /// Whether `operation`'s transfer broke: a retry starts with the broken one's reason (see the module doc).
 fn interrupted(operation: &ICoreWebView2DownloadOperation) -> bool {
-    let mut reason = COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE;
-    unsafe { operation.InterruptReason(&mut reason) }.is_ok() && reason != COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE
+    interrupt_reason(operation) != COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE
+}
+
+/// What the user can do about a download Edge ended `INTERRUPTED` for `reason` (webview2-com-sys 0.39.1 names 0-29;
+/// any other is `Other`). The `FILE_*` codes for a file Windows won't write are an unusable folder;
+/// `FILE_TRANSIENT_ERROR`, `FILE_TOO_SHORT`, `FILE_HASH_MISMATCH` (a resumed file that doesn't match), the `USER_*`
+/// codes and a crash say nothing the user can act on. A server that dies mid-transfer ends the retry
+/// `NETWORK_FAILED` (run 2026-10-27-dl-probe-hold).
+/// A download into `C:\`, where a normal user can't create files, ends `FILE_ACCESS_DENIED` (2, run
+/// 2026-10-28-dl-fail-croot).
+fn failure_kind(reason: COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON) -> FailureKind {
+    match reason.0 {
+        // FILE_FAILED, FILE_ACCESS_DENIED, FILE_NAME_TOO_LONG, FILE_TOO_LARGE
+        1 | 2 | 4 | 5 => FailureKind::FolderUnusable,
+        // FILE_NO_SPACE
+        3 => FailureKind::DiskFull,
+        // FILE_MALICIOUS, FILE_BLOCKED_BY_POLICY, FILE_SECURITY_CHECK_FAILED
+        6 | 8 | 9 => FailureKind::Blocked,
+        // NETWORK_FAILED, _TIMEOUT, _DISCONNECTED, _SERVER_DOWN, _INVALID_REQUEST
+        12..=16 => FailureKind::Network,
+        // SERVER_FAILED through SERVER_CROSS_ORIGIN_REDIRECT
+        17..=25 => FailureKind::Server,
+        _ => FailureKind::Other,
+    }
 }
 
 /// The path of the download a retry of `uri` retries: the latest held one of that URL whose transfer broke.
@@ -234,10 +265,9 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                     let message = if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED {
                         Some(ViewToHost::DownloadCompleted { path: path_text.clone() })
                     } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED {
-                        Some(ViewToHost::DownloadFailed {
-                            path: path_text.clone(),
-                            failure: DownloadFailure::new(FailureKind::Other, ""),
-                        })
+                        // Edge's code says why; it has no words of its own to add.
+                        let failure = DownloadFailure::new(failure_kind(interrupt_reason(sender)), "");
+                        Some(ViewToHost::DownloadFailed { path: path_text.clone(), failure })
                     } else {
                         None
                     };
@@ -381,5 +411,52 @@ mod tests {
             "the failed retry's file is gone, so the name is free again"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every reason webview2-com-sys 0.39.1 names (0-29) has its kind; one it doesn't name is `Other`.
+    #[test]
+    fn every_interrupt_reason_has_its_kind() {
+        use webview2_com::Microsoft::Web::WebView2::Win32::*;
+        use FailureKind as K;
+        let table = [
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NONE, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_FAILED, K::FolderUnusable),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_ACCESS_DENIED, K::FolderUnusable),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NO_SPACE, K::DiskFull),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_NAME_TOO_LONG, K::FolderUnusable),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_LARGE, K::FolderUnusable),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_MALICIOUS, K::Blocked),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TRANSIENT_ERROR, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED_BY_POLICY, K::Blocked),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_SECURITY_CHECK_FAILED, K::Blocked),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_TOO_SHORT, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_FILE_HASH_MISMATCH, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_FAILED, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_BAD_CONTENT, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_UNAUTHORIZED, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CERTIFICATE_PROBLEM, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FORBIDDEN, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_UNEXPECTED_RESPONSE, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CONTENT_LENGTH_MISMATCH, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_CROSS_ORIGIN_REDIRECT, K::Server),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_CANCELED, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_SHUTDOWN, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_USER_PAUSED, K::Other),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_DOWNLOAD_PROCESS_CRASHED, K::Other),
+        ];
+        for (reason, kind) in table {
+            assert_eq!(failure_kind(reason), kind, "{reason:?}");
+        }
+        assert_eq!(
+            failure_kind(COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON(30)),
+            K::Other,
+            "a reason this build doesn't name"
+        );
     }
 }

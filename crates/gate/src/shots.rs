@@ -1438,10 +1438,12 @@ impl Shots {
             if self.has("download-failed") {
                 // The server dies mid-transfer. WebView2 retries the download as a second one, which its host gives
                 // the first one's path (`retry_path`) and which fails once the retry is refused (runs
-                // 2026-10-27-dl-probe-*); the card shows it failed, and the shot waits for its toast to go.
+                // 2026-10-27-dl-probe-*); the card shows it failed for the network (`NETWORK_FAILED`, run
+                // 2026-10-27-dl-probe-hold), and the shot waits for its toast to go.
                 server.kill();
                 let failed = |s: &State| {
-                    matches!(s.downloads_from(&url)[..], [d] if d["failed"] == true && d["path"] == slow.as_str())
+                    matches!(s.downloads_from(&url)[..], [d]
+                        if d["failed"] == true && d["path"] == slow.as_str() && d["failure"] == "Network")
                         && s.toast().is_none()
                 };
                 let state = self.inst.export_until("download-failed", failed)?;
