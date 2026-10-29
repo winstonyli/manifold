@@ -116,8 +116,9 @@ fn failure_kind(reason: COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON) -> FailureKind {
         3 => FailureKind::DiskFull,
         // FILE_MALICIOUS, FILE_BLOCKED_BY_POLICY, FILE_SECURITY_CHECK_FAILED
         6 | 8 | 9 => FailureKind::Blocked,
-        // NETWORK_FAILED, _TIMEOUT, _DISCONNECTED, _SERVER_DOWN, _INVALID_REQUEST
-        12..=16 => FailureKind::Network,
+        // NETWORK_FAILED, _TIMEOUT, _DISCONNECTED, _SERVER_DOWN. NETWORK_INVALID_REQUEST (16) is Other: Chromium
+        // uses it for an unsupported scheme, a bad URL or one blocked by policy, not a connection that failed.
+        12..=15 => FailureKind::Network,
         // SERVER_FAILED through SERVER_CROSS_ORIGIN_REDIRECT
         17..=25 => FailureKind::Server,
         _ => FailureKind::Other,
@@ -433,7 +434,7 @@ mod tests {
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_TIMEOUT, K::Network),
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_DISCONNECTED, K::Network),
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_SERVER_DOWN, K::Network),
-            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST, K::Network),
+            (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_NETWORK_INVALID_REQUEST, K::Other),
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_FAILED, K::Server),
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_NO_RANGE, K::Server),
             (COREWEBVIEW2_DOWNLOAD_INTERRUPT_REASON_SERVER_BAD_CONTENT, K::Server),

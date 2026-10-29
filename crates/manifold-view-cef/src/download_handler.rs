@@ -167,8 +167,7 @@ fn failure_kind(canceled: bool, reason: DownloadInterruptReason) -> FailureKind 
         DownloadInterruptReason::NETWORK_FAILED
         | DownloadInterruptReason::NETWORK_TIMEOUT
         | DownloadInterruptReason::NETWORK_DISCONNECTED
-        | DownloadInterruptReason::NETWORK_SERVER_DOWN
-        | DownloadInterruptReason::NETWORK_INVALID_REQUEST => FailureKind::Network,
+        | DownloadInterruptReason::NETWORK_SERVER_DOWN => FailureKind::Network,
         DownloadInterruptReason::SERVER_FAILED
         | DownloadInterruptReason::SERVER_NO_RANGE
         | DownloadInterruptReason::SERVER_BAD_CONTENT
@@ -216,7 +215,7 @@ mod tests {
             (R::NETWORK_TIMEOUT, K::Network),
             (R::NETWORK_DISCONNECTED, K::Network),
             (R::NETWORK_SERVER_DOWN, K::Network),
-            (R::NETWORK_INVALID_REQUEST, K::Network),
+            (R::NETWORK_INVALID_REQUEST, K::Other),
             (R::SERVER_FAILED, K::Server),
             (R::SERVER_NO_RANGE, K::Server),
             (R::SERVER_BAD_CONTENT, K::Server),
