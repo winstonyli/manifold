@@ -39,6 +39,36 @@ fn garbage_and_short_output_are_a_bad_frame() {
     }
 }
 
+/// A renderer of another render protocol is named with what to rebuild, even though it exits 1 on the broken pipe
+/// once the app stops reading.
+#[test]
+fn a_render_protocol_mismatch_is_named_with_what_to_rebuild() {
+    let v = manifold_view_protocol::render::RENDER_PROTOCOL_VERSION;
+    assert_eq!(
+        run("mismatch", LONG).unwrap_err(),
+        format!(
+            "render protocol mismatch: the view speaks {}, manifold speaks {v}; rebuild manifold-view-pdfium",
+            v - 1
+        )
+    );
+}
+
+/// A renderer of another render protocol that keeps running after its header is killed, not waited for: the
+/// mismatch is the reason, whatever it would do next.
+#[test]
+fn a_mismatched_renderer_that_lingers_is_killed() {
+    let v = manifold_view_protocol::render::RENDER_PROTOCOL_VERSION;
+    let start = Instant::now();
+    assert_eq!(
+        run("mismatch-linger", LONG).unwrap_err(),
+        format!(
+            "render protocol mismatch: the view speaks {}, manifold speaks {v}; rebuild manifold-view-pdfium",
+            v - 1
+        )
+    );
+    assert!(start.elapsed() < Duration::from_secs(10), "the child that kept running was killed, not waited for");
+}
+
 #[test]
 fn a_hang_times_out() {
     let start = Instant::now();

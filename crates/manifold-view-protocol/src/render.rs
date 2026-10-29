@@ -10,6 +10,9 @@ use std::time::Duration;
 /// Bump when the frame layout changes. Separate from `PROTOCOL_VERSION`: engines and renderers move independently.
 pub const RENDER_PROTOCOL_VERSION: u32 = 1;
 const MAGIC: [u8; 4] = *b"MRND";
+/// Starts `read_frame`'s reason for a frame of another render protocol; `run_child` returns that reason whatever the
+/// child's exit says.
+const RENDER_MISMATCH: &str = "render protocol mismatch";
 /// magic + version + width + height + page count.
 pub const HEADER_LEN: usize = 20;
 /// A bound on what a child may claim, so a corrupt header can't make the app allocate gigabytes.
@@ -43,10 +46,11 @@ pub fn read_frame(input: &mut impl Read) -> Result<Frame, String> {
         return Err("bad magic".into());
     }
     let field = |i: usize| u32::from_le_bytes(header[4 + 4 * i..8 + 4 * i].try_into().expect("4 bytes"));
-    if field(0) != RENDER_PROTOCOL_VERSION {
+    let version = field(0);
+    if version != RENDER_PROTOCOL_VERSION {
+        let rebuild = if version < RENDER_PROTOCOL_VERSION { "manifold-view-pdfium" } else { "manifold" };
         return Err(format!(
-            "render protocol mismatch: the view speaks {}, manifold speaks {RENDER_PROTOCOL_VERSION}",
-            field(0)
+            "{RENDER_MISMATCH}: the view speaks {version}, manifold speaks {RENDER_PROTOCOL_VERSION}; rebuild {rebuild}"
         ));
     }
     let (width, height, page_count) = (field(1), field(2), field(3));
@@ -108,8 +112,9 @@ pub fn channel() -> (Cancel, Inbox) {
 /// Runs `command` (a view process), reads its frame from stdout and maps every way it can go wrong to one reason
 /// (`label` names it, e.g. "PDF renderer"): a spawn failure is "not installed", a hang past `timeout` is
 /// "timed out" (the child is killed), a `Cancel` kills it and returns "cancelled", exit 1 with stderr text is that
-/// text's last line, any other failed exit is "crashed", and output that is not a valid frame is "returned a bad
-/// frame". A complete valid frame is the result whatever the child does next: it is killed rather than waited for.
+/// text's last line, any other failed exit is "crashed", a frame of another render protocol kills it and returns the
+/// mismatch naming which side to rebuild (`read_frame`), and other output that is not a valid frame is "returned a
+/// bad frame". A complete valid frame is the result whatever the child does next: it is killed rather than waited for.
 /// `spawn` starts the configured command: the app's closure retries a freshly extracted exe and assigns the child to
 /// its kill-on-close job; tests pass `|c| c.spawn()`.
 pub fn run_child(
@@ -139,9 +144,10 @@ pub fn run_child(
         text
     });
     let event = inbox.rx.recv_timeout(timeout);
-    // Only a bad frame leaves the child to finish by itself, so its exit status can say why; a timeout, a cancel and a
-    // good frame all end it now.
-    if !matches!(event, Ok(Event::Frame(Err(_)))) {
+    // A bad frame leaves the child to finish by itself, so its exit status can say why; a timeout, a cancel, a good
+    // frame and a frame of another render protocol (the mismatch is the reason, whatever the exit says) end it now.
+    let mismatch = matches!(&event, Ok(Event::Frame(Err(reason))) if reason.starts_with(RENDER_MISMATCH));
+    if mismatch || !matches!(event, Ok(Event::Frame(Err(_)))) {
         let _ = child.kill();
     }
     let status = child.wait().map_err(|e| format!("{label} could not be waited on: {e}"))?;
@@ -150,6 +156,8 @@ pub fn run_child(
         Err(_) => Err(format!("{label} timed out")),
         Ok(Event::Cancel) => Err("cancelled".into()),
         Ok(Event::Frame(Ok(frame))) => Ok(frame),
+        // Killing it gave a failed exit, which says nothing: the mismatch is the reason.
+        Ok(Event::Frame(Err(reason))) if mismatch => Err(reason),
         Ok(Event::Frame(Err(reason))) => {
             if status.code() == Some(1) {
                 if let Some(line) = stderr_text.lines().rev().find(|l| !l.trim().is_empty()) {
@@ -159,11 +167,7 @@ pub fn run_child(
             if !status.success() {
                 return Err(format!("{label} crashed"));
             }
-            Err(if reason.starts_with("render protocol mismatch") {
-                reason
-            } else {
-                format!("{label} returned a bad frame ({reason})")
-            })
+            Err(format!("{label} returned a bad frame ({reason})"))
         }
     }
 }
@@ -211,5 +215,30 @@ mod tests {
         let mut zero = good.clone();
         zero[8..12].copy_from_slice(&0u32.to_le_bytes());
         assert!(err(&zero).contains("empty"));
+    }
+
+    /// A frame of another render protocol says which side to rebuild: the renderer when it is older, manifold when it
+    /// is newer.
+    #[test]
+    fn a_render_mismatch_names_which_side_to_rebuild() {
+        let v = RENDER_PROTOCOL_VERSION;
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &frame()).unwrap();
+        let with_version = |version: u32| {
+            let mut other = bytes.clone();
+            other[4..8].copy_from_slice(&version.to_le_bytes());
+            read_frame(&mut other.as_slice()).unwrap_err()
+        };
+        assert_eq!(
+            with_version(v + 1),
+            format!("render protocol mismatch: the view speaks {}, manifold speaks {v}; rebuild manifold", v + 1)
+        );
+        assert_eq!(
+            with_version(v - 1),
+            format!(
+                "render protocol mismatch: the view speaks {}, manifold speaks {v}; rebuild manifold-view-pdfium",
+                v - 1
+            )
+        );
     }
 }
