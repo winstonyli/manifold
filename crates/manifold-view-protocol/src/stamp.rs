@@ -213,7 +213,7 @@ mod tests {
 
     /// The test exe links `send_version`, so it carries the section as every host does, with this build's number, and
     /// the number `send_version` puts on the wire is the one on disk. On ELF this also proves the section is kept by
-    /// `send_version`'s read: a linker drops an unreferenced one there (CI's Linux job and Task 1 Step 5's WSL run).
+    /// `send_version`'s read: a linker drops an unreferenced one there (CI's Linux job, or this crate's tests run in WSL).
     #[test]
     fn this_test_exe_carries_its_protocol_number() {
         let mut channel = crate::MessageChannel::new(Cursor::new(Vec::<u8>::new()));
