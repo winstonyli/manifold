@@ -272,15 +272,20 @@ fn an_app_that_stops_draining_stops_the_reader_and_loses_nothing() {
     }
 }
 
+/// A host speaking another protocol, older or newer, becomes a "can't start" (`HOST_FATAL`) naming which side to
+/// rebuild, so the tab is a failed card with that reason and is never respawned.
 #[test]
-fn a_stale_view_host_is_a_protocol_mismatch_crash() {
-    assert!(matches!(first_event_after_version(manifold_view_protocol::PROTOCOL_VERSION), ViewToHost::Cookies(_)));
-    match first_event_after_version(manifold_view_protocol::PROTOCOL_VERSION + 1) {
-        ViewToHost::Crashed { reason } => {
-            assert!(reason.starts_with(manifold_view_protocol::PROTOCOL_MISMATCH), "{reason}")
+fn a_host_speaking_another_protocol_cannot_start_and_says_which_side_to_rebuild() {
+    use manifold_view_protocol::{Skew, HOST_FATAL, PROTOCOL_VERSION as V};
+    assert!(matches!(first_event_after_version(V), ViewToHost::Cookies(_)));
+    for host in [V - 1, V + 1] {
+        let skew = Skew::between(Some(host), V).unwrap();
+        match first_event_after_version(host) {
+            ViewToHost::Crashed { reason } => assert_eq!(reason, format!("{HOST_FATAL}{skew}")),
+            other => panic!("expected a Crashed naming the skew, got {other:?}"),
         }
-        other => panic!("expected a protocol-mismatch Crashed, got {other:?}"),
     }
+    assert!(Skew::between(Some(V + 1), V).unwrap().to_string().ends_with("; rebuild manifold"));
 }
 
 /// A second spawn for the same tab id keeps the first one's log.

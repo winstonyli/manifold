@@ -35,26 +35,50 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// 8: `ViewToHost::DownloadFailed` carries a `DownloadFailure` (why: a `FailureKind` and the engine's or OS's words).
 pub const PROTOCOL_VERSION: u32 = 8;
 
-/// Starts the `ViewToHost::Crashed` reason for a version mismatch, so the
-/// host shows a failed card instead of respawning the same stale binary.
-pub const PROTOCOL_MISMATCH: &str = "protocol mismatch";
-
 /// Starts the one line an engine host writes to stderr (its per-tab log) when it cannot start at all and
 /// exits before connecting, e.g. a CEF runtime that doesn't support the host's API version. manifold shows the rest
 /// of that line as the failure (`process_manager::connect_host`) instead of the raw log tail. A host that fails
 /// to start after connecting (WebView2 creating its environment) also sends that line as an `ViewToHost::Crashed`
 /// reason, and manifold leaves a failed card naming the rest instead of respawning (`tabs::after_crash`).
+/// The app's reader also makes one, with the `Skew` as the rest, for a host that speaks another protocol
+/// (`process_manager::spawn_reader_thread`).
 pub const HOST_FATAL: &str = "view-host fatal: ";
 
-/// `Ok` when the peer speaks `PROTOCOL_VERSION`.
-pub fn check_version(theirs: u32) -> Result<(), String> {
-    if theirs == PROTOCOL_VERSION {
-        return Ok(());
+/// Which protocol a host speaks against the one manifold speaks, when they differ. Built only by `between`, which names
+/// both sides, so no caller can swap them. Its `Display` is the one reason text, and it names the side to rebuild.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Skew {
+    host: Option<u32>,
+    app: u32,
+}
+
+impl Skew {
+    /// `None` when the host speaks `app`. `host` is `None` for a host that carries no number (`host_protocol`).
+    pub fn between(host: Option<u32>, app: u32) -> Option<Skew> {
+        (host != Some(app)).then_some(Skew { host, app })
     }
-    Err(format!(
-        "{PROTOCOL_MISMATCH}: the engine host speaks protocol {theirs}, manifold speaks {PROTOCOL_VERSION}; \
-         rebuild the engine host"
-    ))
+
+    pub fn host(self) -> Option<u32> {
+        self.host
+    }
+
+    pub fn app(self) -> u32 {
+        self.app
+    }
+}
+
+impl std::fmt::Display for Skew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.host {
+            None => f.write_str(
+                "the engine host carries no protocol number (built before hosts were stamped); rebuild the engine host",
+            ),
+            Some(host) => {
+                let rebuild = if host < self.app { "the engine host" } else { "manifold" };
+                write!(f, "the engine host speaks protocol {host}, manifold speaks {}; rebuild {rebuild}", self.app)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -111,10 +135,18 @@ mod tests {
     }
 
     #[test]
-    fn a_version_mismatch_names_both_versions() {
-        assert!(check_version(PROTOCOL_VERSION).is_ok());
-        let err = check_version(PROTOCOL_VERSION + 1).unwrap_err();
-        assert!(err.starts_with(PROTOCOL_MISMATCH), "{err}");
-        assert!(err.contains(&(PROTOCOL_VERSION + 1).to_string()));
+    fn a_skew_names_which_side_to_rebuild() {
+        assert_eq!(Skew::between(Some(5), 5), None);
+        let older = Skew::between(Some(4), 5).unwrap();
+        assert_eq!((older.host(), older.app()), (Some(4), 5));
+        assert_eq!(older.to_string(), "the engine host speaks protocol 4, manifold speaks 5; rebuild the engine host");
+        assert_eq!(
+            Skew::between(Some(6), 5).unwrap().to_string(),
+            "the engine host speaks protocol 6, manifold speaks 5; rebuild manifold"
+        );
+        assert_eq!(
+            Skew::between(None, 5).unwrap().to_string(),
+            "the engine host carries no protocol number (built before hosts were stamped); rebuild the engine host"
+        );
     }
 }

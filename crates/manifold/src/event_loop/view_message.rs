@@ -93,10 +93,9 @@ impl App {
             }
             ViewToHost::Crashed { reason } => {
                 let Some(spawn) = self.restart_spawn(tab_id) else { return false };
-                // A stale engine binary (protocol mismatch) or a host that cannot
-                // start would fail the same way again, and a page or install that
-                // crashes on every start would loop forever; each is left as a
-                // failed card instead.
+                // A host that cannot start (or speaks another protocol) would fail
+                // the same way again, and a page or install that crashes on every
+                // start would loop forever; each is left as a failed card instead.
                 let times = self.spawns.tab_crashes.entry(tab_id).or_default();
                 match crate::tabs::after_crash(&reason, times, std::time::Instant::now()) {
                     AfterCrash::Restart => {}

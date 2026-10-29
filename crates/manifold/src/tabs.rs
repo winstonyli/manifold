@@ -290,10 +290,10 @@ pub(crate) enum LeftClosed {
 #[derive(Debug, PartialEq)]
 pub(crate) enum AfterCrash<'a> {
     Restart,
-    /// Leave a failed card: the host speaks another protocol version, or keeps crashing (`crashes_too_often`).
+    /// Leave a failed card: the host keeps crashing (`crashes_too_often`).
     GiveUp,
-    /// Leave a failed card naming why: the host could not start at all (its reason began with
-    /// `manifold_view_protocol::HOST_FATAL`), so a respawn would fail the same way.
+    /// Leave a failed card naming why: the host could not start at all, or speaks another protocol (its reason began
+    /// with `manifold_view_protocol::HOST_FATAL`), so a respawn would fail the same way.
     CannotStart(&'a str),
 }
 
@@ -306,7 +306,7 @@ pub(crate) fn after_crash<'a>(
     if let Some(why) = reason.strip_prefix(manifold_view_protocol::HOST_FATAL) {
         return AfterCrash::CannotStart(why.trim());
     }
-    if reason.starts_with(manifold_view_protocol::PROTOCOL_MISMATCH) || crashes_too_often(times, now) {
+    if crashes_too_often(times, now) {
         return AfterCrash::GiveUp;
     }
     AfterCrash::Restart
@@ -660,8 +660,8 @@ impl App {
         self.save_session();
     }
 
-    /// A tab whose engine keeps crashing (`crashes_too_often`), or speaks
-    /// another protocol version, becomes a failed card: the reason is its
+    /// A tab whose engine keeps crashing (`crashes_too_often`), or whose host
+    /// cannot start (it speaks another protocol, say), becomes a failed card: the reason is its
     /// tooltip, and opening it tries again. Respawning would only loop.
     /// `why` picks the toast: `CannotStart` says why the host could not start.
     pub(crate) fn leave_failed_card(&mut self, id: NodeId, reason: &str, why: LeftClosed) {

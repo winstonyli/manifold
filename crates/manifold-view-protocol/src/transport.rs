@@ -29,6 +29,12 @@ pub type RemoteTransport = MessageChannel<TcpStream>;
 /// unbounded, the engine's memory grew instead and the app never knew (wave 3b).
 pub const VIEW_INBOX: usize = 256;
 
+/// What this engine host (speaking `PROTOCOL_VERSION`) makes of manifold's number `app`: `None` when they agree,
+/// else the `Skew` naming which side to rebuild.
+fn skew_with_app(app: u32) -> Option<crate::Skew> {
+    crate::Skew::between(Some(crate::PROTOCOL_VERSION), app)
+}
+
 /// An engine's reader thread: forwards each `HostToView` from
 /// `from_host` into the returned channel, so the engine's main thread (which
 /// has to keep driving its browser's event loop) only ever polls it. Stops
@@ -38,17 +44,17 @@ pub const VIEW_INBOX: usize = 256;
 /// its usual path instead of running orphaned. Before this was shared, only
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
-/// Reads the host's `PROTOCOL_VERSION` first; a mismatch is a `Shutdown`.
+/// Reads manifold's `PROTOCOL_VERSION` first; a mismatch is logged naming which side to rebuild (`Skew`) and is a `Shutdown`.
 /// The channel holds `VIEW_INBOX` messages; past that the reader waits for the engine to take one.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
 ) -> mpsc::Receiver<HostToView> {
     let (tx, rx) = mpsc::sync_channel(VIEW_INBOX);
     std::thread::spawn(move || {
-        match from_host.recv_version().map(crate::check_version) {
-            Ok(Ok(())) => {}
-            Ok(Err(mismatch)) => {
-                eprintln!("{mismatch}");
+        match from_host.recv_version().map(skew_with_app) {
+            Ok(None) => {}
+            Ok(Some(skew)) => {
+                eprintln!("{skew}");
                 let _ = tx.send(HostToView::Shutdown);
                 return;
             }
@@ -440,6 +446,15 @@ mod tests {
         let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
         host.join().unwrap();
         assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToView::Shutdown));
+    }
+
+    /// The host speaks `PROTOCOL_VERSION`; manifold's number decides which side the host's log line says to rebuild.
+    #[test]
+    fn the_host_names_which_side_to_rebuild() {
+        let v = crate::PROTOCOL_VERSION;
+        assert_eq!(skew_with_app(v), None);
+        assert!(skew_with_app(v + 1).unwrap().to_string().ends_with("; rebuild the engine host"));
+        assert!(skew_with_app(v - 1).unwrap().to_string().ends_with("; rebuild manifold"));
     }
 
     /// An intruder that keeps reconnecting with a bad token must not keep

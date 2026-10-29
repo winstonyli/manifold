@@ -20,8 +20,15 @@ fn a_host_that_cannot_start_is_not_restarted_and_says_why() {
     let fatal = format!("{}{why}", manifold_view_protocol::HOST_FATAL);
     assert_eq!(after_crash(&fatal, &mut times, t0), AfterCrash::CannotStart(why));
     assert!(times.is_empty(), "not counted as a crash");
-    let mismatch = format!("{}: host 2, engine 3", manifold_view_protocol::PROTOCOL_MISMATCH);
-    assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::GiveUp);
+    let skew = manifold_view_protocol::Skew::between(
+        Some(manifold_view_protocol::PROTOCOL_VERSION + 1),
+        manifold_view_protocol::PROTOCOL_VERSION,
+    )
+    .unwrap()
+    .to_string();
+    let mismatch = format!("{}{skew}", manifold_view_protocol::HOST_FATAL);
+    assert_eq!(after_crash(&mismatch, &mut times, t0), AfterCrash::CannotStart(skew.as_str()));
+    assert!(times.is_empty(), "a mismatch is not counted as a crash");
     // A plain crash still restarts, up to the cap.
     let lost = "view-host connection lost";
     assert_eq!(after_crash(lost, &mut times, t0), AfterCrash::Restart);

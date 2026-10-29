@@ -860,9 +860,10 @@ fn is_spawn_header(line: &str) -> bool {
 /// ignored; only a tab that's still the *current* one has a live `rx` to
 /// actually receive this.
 ///
-/// Reads the engine's `PROTOCOL_VERSION` first. A stale host (built from an
-/// older `messages.rs`) gets a `Crashed` whose reason starts with
-/// `PROTOCOL_MISMATCH`, so no message of it is ever misread.
+/// Reads the engine's `PROTOCOL_VERSION` first. A host speaking another protocol gets a `Crashed` whose reason is
+/// `HOST_FATAL` plus the `Skew`, so no message of it is ever misread and the tab becomes a failed card saying which
+/// side to rebuild (`tabs::after_crash`). The app refuses such a host before spawning it when it can read its stamp
+/// (`OnDisk::skew`); this is the backstop for one it cannot.
 ///
 /// Frames go to `frame` (newest wins); everything else goes through a channel of `view_io::EVENTS_CAP`, whose
 /// `send` waits while the app is that far behind (survey E3).
@@ -878,19 +879,22 @@ fn spawn_reader_thread<S: std::io::Read + std::io::Write + Send + 'static>(
     let (tx, rx) = mpsc::sync_channel(view_io::EVENTS_CAP);
     std::thread::spawn(move || {
         let lost = || ViewToHost::Crashed { reason: "view-host connection lost".to_string() };
-        match from_view.recv_version().map(manifold_view_protocol::check_version) {
-            Ok(Ok(())) => {}
-            Ok(Err(mismatch)) => {
-                eprintln!("{mismatch}");
-                let _ = tx.send(ViewToHost::Crashed { reason: mismatch });
-                wake();
-                return;
+        let skew = match from_view.recv_version() {
+            Ok(version) => {
+                manifold_view_protocol::Skew::between(Some(version), manifold_view_protocol::PROTOCOL_VERSION)
             }
             Err(_) => {
                 let _ = tx.send(lost());
                 wake();
                 return;
             }
+        };
+        if let Some(skew) = skew {
+            eprintln!("{skew}");
+            let reason = format!("{}{skew}", manifold_view_protocol::HOST_FATAL);
+            let _ = tx.send(ViewToHost::Crashed { reason });
+            wake();
+            return;
         }
         while let Ok(msg) = from_view.recv::<ViewToHost>() {
             match msg {
