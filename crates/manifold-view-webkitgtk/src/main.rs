@@ -21,6 +21,16 @@ const DEFAULT_HEIGHT: i32 = 768;
 /// At most one frame per this, as WebView2's own `FRAME_INTERVAL`: about 30 fps.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
+/// What the user can do about a download WebKit reports `failed` with `error`: its three `DownloadError` codes, a
+/// cancel and an error of any other domain being `Other`.
+fn failure_kind(error: &gtk::glib::Error) -> FailureKind {
+    match error.kind::<webkit2gtk::DownloadError>() {
+        Some(webkit2gtk::DownloadError::Network) => FailureKind::Network,
+        Some(webkit2gtk::DownloadError::Destination) => FailureKind::FolderUnusable,
+        _ => FailureKind::Other,
+    }
+}
+
 fn main() {
     manifold_view_protocol::host_env::apply(&manifold_view_protocol::host_env::settings_from_env());
     // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
@@ -156,13 +166,14 @@ fn main() {
             let pending_for_failed = pending_for_started.clone();
             let failed_for_handler = failed.clone();
             let dest_for_failed = dest_for_events.clone();
-            download.connect_failed(move |_download, _error| {
+            download.connect_failed(move |_download, error| {
                 failed_for_handler.set(true);
+                // GLib's words can hold a Linux path, and only `path` is mapped into the app's terms: they go to this
+                // host's log, and the card gets the kind alone.
+                eprintln!("download failed: {}", error.message());
                 if let Some(path) = dest_for_failed.borrow().clone() {
-                    pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed {
-                        path,
-                        failure: DownloadFailure::new(FailureKind::Other, ""),
-                    });
+                    let failure = DownloadFailure::new(failure_kind(error), "");
+                    pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed { path, failure });
                 }
             });
 
@@ -633,4 +644,21 @@ fn tightly_packed_rgba(pixbuf: &gtk::gdk_pixbuf::Pixbuf) -> Vec<u8> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WebKit's three download error codes, as real `glib::Error`s so the `kind` lookup runs too; a cancel and an error
+    /// of another domain say nothing the user can act on.
+    #[test]
+    fn webkits_download_errors_map_to_failure_kinds() {
+        use gtk::glib::{Error, FileError};
+        use webkit2gtk::DownloadError as E;
+        assert_eq!(failure_kind(&Error::new(E::Network, "x")), FailureKind::Network);
+        assert_eq!(failure_kind(&Error::new(E::Destination, "x")), FailureKind::FolderUnusable);
+        assert_eq!(failure_kind(&Error::new(E::CancelledByUser, "x")), FailureKind::Other);
+        assert_eq!(failure_kind(&Error::new(FileError::Nospc, "x")), FailureKind::Other, "another error domain");
+    }
 }
