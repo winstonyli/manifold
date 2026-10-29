@@ -125,7 +125,7 @@ Task 3 Step 4 needs P7's answer, and Task 8 needs P5's and P12's. An executor th
     - The gate clicks no card by name. At d047184e, `click_control` and `click_named` in `crates/gate/src` name only toolbar, menu and settings controls.
   - Alternative A: apply `card_label` to download cards only. In `interact_card`, pass `body.tooltip.as_deref().filter(|_| self.nodes[&id].as_download().is_some())` to `card_label`, and drop "Every kind's tooltip counts" from `card_label`'s doc. The test's tab case stays, since it tests `card_label` alone.
   - Alternative B (D7-literal): put the reason in `accessible_detail`. It would have no folder, and it would show in the pane heading and the omnibar. If the owner picks B, stop: Task 8 needs re-planning.
-  - Answer: pending (owner).
+  - Answer: recommended (`card_label` for every card kind), owner 2026-10-28.
 - **P6. WebKit `filename_to_uri` failure.**
   - This is a third refusal feeder, outside `destination` (`main.rs:113-116`).
   - Recommended: refuse it as `Other` with an empty detail, writing GLib's words to the host's stderr.
@@ -134,7 +134,7 @@ Task 3 Step 4 needs P7's answer, and Task 8 needs P5's and P12's. An executor th
   - WebView2's `SetResultFilePath` failure: D5 gives it the HRESULT's message as the detail, and also says a detail never holds a path. No `SetResultFilePath` failure has been seen yet, so nothing shows that its message keeps the second rule. Task 3 has two variants:
     - Recommended: the safe form, **A3-log**, by default. The detail is empty and the message goes to the host's stderr (`eprintln!`). **A3-msg**, the message as the detail, is used only when Task 1 branch (a) saw the message and it names no path. In branches (b) to (e) no message was seen, so they use A3-log.
     - Alternative (D5-literal): A3-msg unless Task 1 saw a message that names a path. Branches (b) to (e) then put a message nobody has seen into the tooltip, with nothing checking it for a path.
-    - Answer: pending (owner).
+    - Answer: recommended (A3-log by default), owner 2026-10-28.
   - WebKit's detail is always empty (D9).
   - `destination`'s refusals carry the `io::Error`'s `Display`, which never includes a path.
 - **P8. Mapping choices beyond D6.**
@@ -162,7 +162,7 @@ Task 3 Step 4 needs P7's answer, and Task 8 needs P5's and P12's. An executor th
     - `folder_of` and its doc go, and `download_tooltip` passes `self.download_folder()`;
     - in `a_failed_cards_tooltip_names_its_folder_and_survives_a_rename`, the "a full path keeps its own folder" assert names `&b` instead, with the message "every card names the folder the app means now", and its doc and Review Focus 5 change to match;
     - Task 9's two PARKED texts that cite `download_failure::folder_of` cite `App::download_folder` instead.
-  - Answer: pending (owner).
+  - Answer: recommended (a full path's own folder; `download_folder()` for a bare name), owner 2026-10-28.
 - **P13. CEF `is_canceled()` -> `Other`, checked before the reason.** A cancelled item's reason is `USER_CANCELED`, which is already `Other`. The flag guards against an engine that cancels with some other reason. This is D5's "plus `is_canceled()`".
 - **P14. The probe reuses the gate's `download-real` view.**
   - It overrides the seeded folder through `PROBE_DL_DRIVE` in `instance::seed_settings`, rather than adding a gate view.
@@ -2831,5 +2831,5 @@ Filled in by Task 1 Step 7.
   state 1 reason 2 path C:\real.zip
   ```
 
-- Task 3 variant, by the branch rules and P7's answer (A3-msg / A3-log): A3-log under P7's recommendation (no `SetResultFilePath` failure was seen); A3-msg under the D5-literal alternative. Set when P7 is answered.
+- Task 3 variant, by the branch rules and P7's answer (A3-msg / A3-log): **A3-log** (P7 answered: recommended; no `SetResultFilePath` failure was seen).
 - For (a), the message names a path (yes/no): not applicable (branch b).
