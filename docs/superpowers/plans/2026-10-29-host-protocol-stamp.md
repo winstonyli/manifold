@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Host Protocol Stamp Implementation Plan
