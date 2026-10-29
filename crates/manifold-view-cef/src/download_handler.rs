@@ -64,9 +64,9 @@ wrap_download_handler! {
         // starts. The path comes from the rule every host uses (`downloads::destination`): the folder the app set,
         // made if missing, and the suggested name's last component, numbered if a file or a download still in
         // `assigned` has it. `show_dialog: false`: there is no window for a save-as dialog. A download that can't be
-        // placed is reported started and failed (`downloads::refused`) and handed back to CEF's default handling
-        // (return 0), which cancels it for a windowless browser (Alloy style); `on_download_updated` reports nothing
-        // of it, since its id was never assigned.
+        // placed is reported started and failed with `destination`'s reason (`downloads::refused`) and handed back to
+        // CEF's default handling (return 0), which cancels it for a windowless browser (Alloy style);
+        // `on_download_updated` reports nothing of it, since its id was never assigned.
         fn on_before_download(
             &self,
             _browser: Option<&mut Browser>,
@@ -95,9 +95,9 @@ wrap_download_handler! {
                     callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
                     true as _
                 }
-                Err(path) => {
+                Err(refusal) => {
                     let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
-                    let messages = manifold_view_protocol::downloads::refused(path.to_string_lossy().into_owned(), url);
+                    let messages = manifold_view_protocol::downloads::refused(refusal, url);
                     results.queue.extend(messages);
                     0
                 }

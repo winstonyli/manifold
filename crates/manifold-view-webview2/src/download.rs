@@ -15,8 +15,11 @@
 //! and only once the folder is made: Edge fires no `DownloadStarting` at all when it can't make that folder
 //! (2026-10-28-dldir-profile-bad).
 //!
-//! A download the host can't place (no folder from the app, one that can't be made, a path Edge refuses) is
-//! cancelled and reported started and failed (`downloads::refused`), so the app shows a failed card.
+//! A download the host can't place is cancelled and reported started and failed with its reason
+//! (`downloads::refused`), so the app shows a failed card that says why: no folder from the app, or one that can't be
+//! made (`downloads::destination` classifies both), or a path Edge refuses (`SetResultFilePath` fails:
+//! `FolderUnusable`; its HRESULT's message can name the path, so it goes to this host's log, not the card). A
+//! download Edge ends `INTERRUPTED` says why by its `InterruptReason` (`failure_kind`).
 //!
 //! A transfer that breaks is retried by the engine as a second `DownloadStarting`, whose operation starts with the
 //! first one's `InterruptReason` rather than none (runs 2026-10-28-dldir-result2, -result-etag2). The retry takes the
@@ -97,14 +100,14 @@ fn retry_path<'a>(held: &[Seen<'a>], uri: &str) -> Option<&'a Path> {
 
 /// Where a download of `uri` that Edge proposed as `proposed` is saved: a retry (`broken_at_start`) of a broken held
 /// download takes that download's path; anything else is named by `downloads::destination` in `folder`, numbered
-/// against existing files and every held download. `Err` is a download to refuse.
+/// against existing files and every held download. `Err` is a download to refuse, and why.
 fn save_path(
     held: &[Seen<'_>],
     uri: &str,
     broken_at_start: bool,
     proposed: &str,
     folder: Option<&Path>,
-) -> Result<PathBuf, PathBuf> {
+) -> Result<PathBuf, downloads::Refusal> {
     match retry_path(held, uri) {
         Some(path) if broken_at_start => Ok(path.to_path_buf()),
         _ => downloads::destination(folder, proposed, |p| {
@@ -160,18 +163,24 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
             save_path(&seen, &uri, broken_at_start, &proposed, downloads::folder().as_deref())
         };
         let url = Some(uri.clone()).filter(|u| !u.is_empty());
-        // A path Edge won't take (`SetResultFilePath` fails) is refused like a folder that can't be made.
+        // A path Edge won't take (`SetResultFilePath` fails) is an unusable folder. Its message goes to the log, not
+        // the card.
         let placed = decided.and_then(|path| match unsafe { args.SetResultFilePath(&HSTRING::from(path.as_path())) } {
             Ok(()) => Ok(path),
-            Err(_) => Err(path),
+            Err(e) => {
+                // Its words could name the path, which a detail never holds: to this host's log, not the card (run
+                // 2026-10-28-dl-fail-croot).
+                eprintln!("download: SetResultFilePath refused: {}", e.message());
+                Err(downloads::Refusal { path, failure: DownloadFailure::new(FailureKind::FolderUnusable, "") })
+            }
         });
         let path = match placed {
             Ok(path) => path,
-            Err(path) => {
+            Err(refusal) => {
                 unsafe {
                     let _ = args.SetCancel(true);
                 }
-                pending_for_handler.borrow_mut().extend(downloads::refused(path.to_string_lossy().into_owned(), url));
+                pending_for_handler.borrow_mut().extend(downloads::refused(refusal, url));
                 return Ok(());
             }
         };
@@ -338,7 +347,7 @@ mod tests {
             "only the leaf, made safe"
         );
         assert_eq!(
-            save_path(&[], "http://h/a", false, r"C:\names\a.zip", None),
+            save_path(&[], "http://h/a", false, r"C:\names\a.zip", None).map_err(|r| r.path),
             Err(PathBuf::from("a.zip")),
             "no folder: refused"
         );

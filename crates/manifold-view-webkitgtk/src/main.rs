@@ -77,10 +77,11 @@ fn main() {
     // (`manifold_view_protocol::downloads::destination`): the folder the app set (`downloads::folder`, a
     // `/mnt/<drive>/...` path under WSL), made if missing, and the suggested name's last component, numbered if
     // taken (WebKit doesn't overwrite, so a second download of one name would otherwise fail). With no folder, or one
-    // that can't be made, the download is reported started and failed (`downloads::refused`) and cancelled. `reserved`
-    // holds names handed out and not yet finished, so concurrent same-name downloads get distinct names before either
-    // file exists. The destination is set as a properly escaped `file://` URI (`glib::filename_to_uri`), so a `#` or
-    // space in a name works.
+    // that can't be made, the download is reported started and failed with `destination`'s reason
+    // (`downloads::refused`) and cancelled; a destination GLib can't make a URI of is refused as `Other`, GLib's
+    // words going to this host's log (they can hold a Linux path). `reserved` holds names handed out and not yet
+    // finished, so concurrent same-name downloads get distinct names before either file exists. The destination is
+    // set as a properly escaped `file://` URI (`glib::filename_to_uri`), so a `#` or space in a name works.
     //
     // `decide-destination` also reads `total_bytes` (the response's
     // `Content-Length`, via `WebKitURIResponse::content_length` -- 0 means
@@ -114,17 +115,20 @@ fn main() {
                 )
                 .and_then(|dest| match gtk::glib::filename_to_uri(&dest, None) {
                     Ok(uri) => Ok((dest, uri)),
-                    Err(_) => Err(dest),
+                    Err(e) => {
+                        eprintln!("download: no file URI for the destination: {}", e.message());
+                        let failure = DownloadFailure::new(FailureKind::Other, "");
+                        Err(manifold_view_protocol::downloads::Refusal { path: dest, failure })
+                    }
                 });
                 let (dest, uri) = match decided {
                     Ok(pair) => pair,
-                    Err(dest) => {
+                    Err(refusal) => {
                         // Refused: reported started and failed, then cancelled, since WebKit's own default would save
                         // it into ~/Downloads. `dest_for_events` stays empty, so its later signals report nothing.
-                        pending_for_destination.borrow_mut().extend(manifold_view_protocol::downloads::refused(
-                            dest.to_string_lossy().into_owned(),
-                            url,
-                        ));
+                        pending_for_destination
+                            .borrow_mut()
+                            .extend(manifold_view_protocol::downloads::refused(refusal, url));
                         download.cancel();
                         return true;
                     }

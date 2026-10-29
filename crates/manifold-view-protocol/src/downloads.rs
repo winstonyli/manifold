@@ -146,24 +146,44 @@ pub fn same_download_path(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// A download the host refuses (`destination`'s `Err`): the path it would have had, which the failed card shows, and
+/// why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub path: PathBuf,
+    pub failure: DownloadFailure,
+}
+
 /// Where a download the server suggested as `suggested` is saved in `dir`: `unique_path` of its `safe_name`, the
-/// folder made first if missing. `Err` is the path it would have had when there is no folder, it is not absolute, or
-/// it cannot be made: the host then refuses the download (`refused`) rather than saving it anywhere else.
-pub fn destination(dir: Option<&Path>, suggested: &str, taken: impl Fn(&Path) -> bool) -> Result<PathBuf, PathBuf> {
+/// folder made first if missing. `Err` is a refusal, classified here once for every host: no folder, or one that is
+/// not absolute, is `FolderUnreachable` (the path is then the bare name, or the name in that folder); a folder that
+/// can't be made is `unmade_folder`'s kind. The host then refuses the download (`refused`) rather than saving it
+/// anywhere else.
+pub fn destination(dir: Option<&Path>, suggested: &str, taken: impl Fn(&Path) -> bool) -> Result<PathBuf, Refusal> {
     let name = safe_name(suggested);
     let Some(dir) = dir.filter(|dir| dir.is_absolute()) else {
-        return Err(dir.map_or_else(|| PathBuf::from(&name), |dir| dir.join(&name)));
+        let path = dir.map_or_else(|| PathBuf::from(&name), |dir| dir.join(&name));
+        return Err(Refusal { path, failure: DownloadFailure::new(FailureKind::FolderUnreachable, "") });
     };
-    std::fs::create_dir_all(dir).map_err(|_| dir.join(&name))?;
+    std::fs::create_dir_all(dir).map_err(|e| Refusal { path: dir.join(&name), failure: unmade_folder(&e) })?;
     Ok(unique_path(dir, &name, taken))
 }
 
-/// The messages for a download the host refused (`destination`'s `Err`): it starts and fails at once, so the app
-/// shows a failed card.
-pub fn refused(path: String, url: Option<String>) -> [ViewToHost; 2] {
+/// Why a download folder couldn't be made, from `create_dir_all`'s error: a full disk, or a folder that is unusable
+/// (no access, a file in its place, an offline share). The OS's words are the detail; an `io::Error` names no path.
+fn unmade_folder(e: &std::io::Error) -> DownloadFailure {
+    let kind =
+        if e.kind() == std::io::ErrorKind::StorageFull { FailureKind::DiskFull } else { FailureKind::FolderUnusable };
+    DownloadFailure::new(kind, e.to_string())
+}
+
+/// The messages for a download the host refused (`destination`'s `Err`, or a path its engine won't take): it starts
+/// and fails at once with the refusal's reason, so the app shows a failed card that says why.
+pub fn refused(refusal: Refusal, url: Option<String>) -> [ViewToHost; 2] {
+    let path = refusal.path.to_string_lossy().into_owned();
     [
         ViewToHost::DownloadStarted { path: path.clone(), total_bytes: None, url },
-        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(FailureKind::Other, "") },
+        ViewToHost::DownloadFailed { path, failure: refusal.failure },
     ]
 }
 
@@ -209,7 +229,8 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Review Focus 3: a folder that can't be had refuses the download; nothing is saved anywhere else.
+    /// Review Focus 3 (download-folder plan) and 2 (this plan): a folder that can't be had refuses the download, and
+    /// nothing is saved anywhere else; the refusal says why, in the OS's words, which name no path.
     #[test]
     fn a_destination_is_made_in_the_folder_or_refused() {
         let root = std::env::temp_dir().join(format!("manifold-destination-test-{}", std::process::id()));
@@ -220,25 +241,56 @@ mod tests {
         assert!(dir.is_dir(), "the folder is made at the first download");
         std::fs::write(dir.join("a.zip"), b"x").unwrap();
         assert_eq!(destination(Some(dir.as_path()), "a.zip", |p| p.exists()), Ok(dir.join("a (1).zip")));
-        assert_eq!(destination(None, "b.zip", none), Err(PathBuf::from("b.zip")), "no folder");
+        let unreachable = |path: PathBuf| -> Result<PathBuf, Refusal> {
+            Err(Refusal { path, failure: DownloadFailure::new(FailureKind::FolderUnreachable, "") })
+        };
+        assert_eq!(destination(None, "b.zip", none), unreachable(PathBuf::from("b.zip")), "no folder");
         let rel = Path::new("manifold-relative-dl");
-        assert_eq!(destination(Some(rel), "b.zip", none), Err(rel.join("b.zip")), "not a full path");
+        assert_eq!(destination(Some(rel), "b.zip", none), unreachable(rel.join("b.zip")), "not a full path");
         assert!(!rel.exists(), "a relative folder is never made");
         let file = root.join("a file");
         std::fs::write(&file, b"x").unwrap();
-        assert_eq!(destination(Some(file.as_path()), "c.zip", none), Err(file.join("c.zip")), "a file in its place");
+        let Err(refusal) = destination(Some(file.as_path()), "c.zip", none) else {
+            panic!("a file in the folder's place is refused")
+        };
+        assert_eq!(refusal.path, file.join("c.zip"));
+        assert_eq!(refusal.failure.kind, FailureKind::FolderUnusable, "a file in its place");
+        assert!(!refusal.failure.detail.is_empty(), "the OS's words");
+        assert!(!refusal.failure.detail.contains("manifold-destination-test"), "no path: {}", refusal.failure.detail);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A folder that can't be made on a full disk is `DiskFull`; any other reason is an unusable folder.
+    #[test]
+    fn a_full_disk_is_told_apart_from_an_unusable_folder() {
+        assert_eq!(unmade_folder(&std::io::Error::from(std::io::ErrorKind::StorageFull)).kind, FailureKind::DiskFull);
+        #[cfg(windows)]
+        assert_eq!(
+            unmade_folder(&std::io::Error::from_raw_os_error(112)).kind,
+            FailureKind::DiskFull,
+            "ERROR_DISK_FULL"
+        );
+        #[cfg(unix)]
+        assert_eq!(unmade_folder(&std::io::Error::from_raw_os_error(28)).kind, FailureKind::DiskFull, "ENOSPC");
+        let other = unmade_folder(&std::io::Error::from_raw_os_error(5));
+        assert_eq!(other.kind, FailureKind::FolderUnusable);
+        assert!(other.detail.contains("os error 5"), "{}", other.detail);
     }
 
     #[test]
     fn a_refused_download_starts_and_fails_at_once() {
-        let [started, failed] = refused(r"D:\dl\a.zip".into(), Some("http://h/a".into()));
+        let failure = DownloadFailure::new(FailureKind::FolderUnusable, "Access is denied. (os error 5)");
+        let refusal = Refusal { path: PathBuf::from(r"D:\dl\a.zip"), failure: failure.clone() };
+        let [started, failed] = refused(refusal, Some("http://h/a".into()));
         assert!(
             matches!(&started, ViewToHost::DownloadStarted { path, total_bytes: None, url }
                 if path == r"D:\dl\a.zip" && url.as_deref() == Some("http://h/a")),
             "{started:?}"
         );
-        assert!(matches!(&failed, ViewToHost::DownloadFailed { path, .. } if path == r"D:\dl\a.zip"), "{failed:?}");
+        assert!(
+            matches!(&failed, ViewToHost::DownloadFailed { path, failure: f } if path == r"D:\dl\a.zip" && *f == failure),
+            "{failed:?}"
+        );
     }
 
     #[test]
