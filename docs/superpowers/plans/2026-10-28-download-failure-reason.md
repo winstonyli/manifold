@@ -2820,9 +2820,16 @@ It also tells the user that a dev's CEF and Servo hosts built at protocol 7 now 
 
 Filled in by Task 1 Step 7.
 
-- Base (B):
-- Run id:
-- Branch:
+- Base (B): d047184e. The plan was committed as C = 878e75f9 (the run's `-dirty` base).
+- Run id: `2026-10-28-dl-fail-croot` (exit 1 as expected; `C:\` and the real Downloads folder unchanged).
+- Branch: **(b)**. `SetResultFilePath` accepted `C:\real.zip`; the download then ended `INTERRUPTED` with reason 2, `FILE_ACCESS_DENIED`, which confirms Task 5's `FolderUnusable` mapping. The card's path was `C:\real.zip`, 0 of 4 bytes, `failed: true`.
 - `probe.txt`:
-- Task 3 variant, by the branch rules and P7's answer (A3-msg / A3-log):
-- For (a), the message names a path (yes/no):
+
+  ```text
+  naming folder: Ok(())
+  starting uri http://127.0.0.1:47311/real.zip proposed C:\Users\WINSTO~1\AppData\Local\Temp\manifold-webview2-names\real.zip decided Ok("C:\\real.zip")
+  state 1 reason 2 path C:\real.zip
+  ```
+
+- Task 3 variant, by the branch rules and P7's answer (A3-msg / A3-log): A3-log under P7's recommendation (no `SetResultFilePath` failure was seen); A3-msg under the D5-literal alternative. Set when P7 is answered.
+- For (a), the message names a path (yes/no): not applicable (branch b).
