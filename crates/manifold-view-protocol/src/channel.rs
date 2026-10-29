@@ -49,9 +49,11 @@ impl<S: Read + Write> MessageChannel<S> {
         postcard::from_bytes(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 
-    /// Writes `PROTOCOL_VERSION`; the first thing each side sends.
+    /// Writes this exe's protocol number, read from the record it carries on disk (`stamp`), so the number on the wire
+    /// is the one `host_protocol` reads; the first thing each side sends.
     pub fn send_version(&mut self) -> io::Result<()> {
-        self.stream.write_all(&crate::PROTOCOL_VERSION.to_le_bytes())?;
+        let version = std::hint::black_box(&crate::stamp::STAMP).version;
+        self.stream.write_all(&version.to_le_bytes())?;
         self.stream.flush()
     }
 

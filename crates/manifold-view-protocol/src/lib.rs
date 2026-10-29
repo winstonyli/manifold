@@ -6,6 +6,7 @@ pub mod host_env;
 pub mod messages;
 pub mod nav_label;
 pub mod render;
+mod stamp;
 pub mod transport;
 
 pub use channel::MessageChannel;
@@ -17,6 +18,7 @@ pub use messages::{
     HostToView, InputEvent, KeyCode, MouseButton, PageKindReply, PageState, TabState, ViewToHost, PAGE_KIND_SCRIPT,
     PAGE_STATE_SCRIPT, PAGE_TEXT_SCRIPT, TEXT_CAP_UNITS,
 };
+pub use stamp::host_protocol;
 pub use transport::{LocalTransport, RemoteTransport};
 
 /// Written as the first 4 bytes (u32 LE) of every control stream, before any
