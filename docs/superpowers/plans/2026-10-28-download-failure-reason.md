@@ -85,7 +85,7 @@ status: active
   - CEF is not in the gate build line. It builds on Windows, warm, in `target/`.
   - WebKit builds only on Linux (`target-linux` via WSL).
   - The last task compile-checks both.
-  - C: has about 5 GB free, so the CEF check must reuse the warm `cef-dll-sys` build (`9c45eb8d830cb15c`) and must never start a cold one.
+  - The CEF check must reuse the warm `cef-dll-sys` build (`1350bf2d9e1a185f`, built cold once on 2026-10-28 in run 2026-10-28-cef-cold-build after the 2026-10-04 one stopped matching the dependency graph) and must never start another.
 
 ## Decisions for review
 
@@ -209,7 +209,7 @@ Task 3 Step 4 needs P7's answer, and Task 8 needs P5's and P12's. An executor th
 - **CEF and WebKit.**
   - Neither is in the clippy line or the hook. CEF compiles only through the CEF guard below; WebKit only through WSL, in Tasks 6, 7 and 10.
   - Tasks 2 and 3 edit both hosts without compiling them. Their edits are mechanical, and Tasks 6 and 7 compile and test them.
-- **Disk.** C: has about 5 GB free. Make no new target dir. The CEF guard refuses to start a cold `cef-dll-sys` build.
+- **Disk.** C: has about 16 GB free. Make no new target dir. The CEF guard refuses to start a cold `cef-dll-sys` build.
 - **While a run is live.** Never edit sources while a probe or gate run started from this repo is live.
 
 ### Pre-run check (before every `run.ps1` launch)
@@ -247,13 +247,13 @@ param([ValidateSet('check', 'test')][string]$Cmd = 'check', [Parameter(Mandatory
 $ErrorActionPreference = 'Stop'
 $repo = 'C:\Users\Winston Li\Documents\GitHub\manifold'
 $build = Join-Path $repo 'target\debug\build'
-$warm = Join-Path $build 'cef-dll-sys\9c45eb8d830cb15c'
+$warm = Join-Path $build 'cef-dll-sys\1350bf2d9e1a185f'
 function Get-CefBuildDirs {
     @(Get-ChildItem -Directory (Join-Path $build 'cef-dll-sys') -ErrorAction SilentlyContinue | ForEach-Object FullName) +
     @(Get-ChildItem -Directory $build -Filter 'cef-dll-sys-*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
 }
 if (-not (Test-Path (Join-Path $warm 'out\cef_windows_x86_64\libcef.dll'))) {
-    'not checked: the warm cef-dll-sys build (9c45eb8d830cb15c) is gone'; exit 2
+    'not checked: the warm cef-dll-sys build (1350bf2d9e1a185f) is gone'; exit 2
 }
 $before = Get-CefBuildDirs
 Remove-Item Env:CEF_PATH, Env:FLATPAK -ErrorAction SilentlyContinue
@@ -282,7 +282,7 @@ $p.WaitForExit()
 Get-Content $err -Tail 12
 if ($p.ExitCode -ne 0 -or $Cmd -eq 'check') { exit $p.ExitCode }
 # The test exe imports libcef.dll: run it directly with the warm build's CEF folder on PATH (cargo never sees that PATH).
-$exe = Select-String -Path $err -Pattern '\((target[\\/]debug[\\/]deps[\\/]manifold_view_cef-[0-9a-f]+\.exe)\)' |
+$exe = Select-String -Path $err -Pattern '\((target[\\/]debug[\\/][^)]*?manifold_view_cef-[0-9a-f]+\.exe)\)' |
     Select-Object -Last 1 | ForEach-Object { $_.Matches[0].Groups[1].Value }
 if (-not $exe) { 'compiled, not run: cargo named no test executable'; exit 3 }
 $env:PATH = (Join-Path $warm 'out\cef_windows_x86_64') + ';' + $env:PATH
@@ -2814,7 +2814,7 @@ The report states:
 - the WebKit result;
 - the gate's run id, with its CPU load and Defender state.
 
-It also tells the user that a dev's CEF and Servo hosts built at protocol 7 now fail the version check until rebuilt. Servo's build takes about 33 minutes (README "Building Servo on its own"); CEF's is the warm build above, if they use `target/`. Releases rebuild every host.
+It also tells the user that a dev's CEF and Servo hosts built before protocol 8 fail the version check until rebuilt (on 2026-10-28 the dev CEF host and the Servo copy beside manifold.exe were at protocol 6, target-servo's at 7). A warm Servo rebuild takes about 15 s (docs/runs.md); CEF's is the warm build above, if they use `target/`. The item 6 plan rebuilds every host once it lands. Releases rebuild every host.
 
 ## Probe finding (Task 1)
 
