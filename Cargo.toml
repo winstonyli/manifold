@@ -61,7 +61,7 @@ euclid = "0.22.14"
 # dependency, and this project already pulls in two `hashbrown` versions
 # transitively via `wgpu`/`naga`) -- adding it directly here is zero net
 # new dependency footprint, not a new crate. Used as a plain `BuildHasher`
-# for `std::collections::HashMap` directly (`foldhash::fast::RandomState`),
+# for `std::collections::HashMap` directly (`foldhash::fast::FixedState`),
 # not via `hashbrown::HashMap` itself -- that keeps `self.nodes`'s actual
 # type identical to before (same `std::collections::HashMap`, just a
 # different third generic parameter), so every existing call site across
