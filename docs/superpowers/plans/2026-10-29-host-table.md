@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # One Table per Host Implementation Plan
@@ -22,6 +22,7 @@ status: draft
 **Spec:** `docs/superpowers/specs/2026-10-29-host-table-design.md` ("One table per host"). Its decisions H1-H14 are approved and binding, and its "Order of work" (steps 1-7) is this plan's commit structure: Task N is step N. Where a line below restates the spec briefly, the spec wins on detail.
 
 **Base commit:** 10444ae5 ("docs: host table spec: stress round 5 ..."). Every line number below, and every one the spec cites, was read at 10444ae5.
+Started at 750b509b (2026-10-30).
 - The last commit there that touches code, `.github`, `.githooks`, `Cargo.*` or `CLAUDE.md` is 5a015745, which is older than the spec's first draft (b620c932). So the spec's code citations hold at 10444ae5.
 - Lines drift as tasks land, and another session may commit in this tree. Find each edit by the code quoted with it, not by its line number.
 - Step S2 under "Start: before Task 1" records the commit the work actually starts from, as B.
