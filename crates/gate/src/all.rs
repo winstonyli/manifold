@@ -3,14 +3,14 @@
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `shots-aa`. For any change to sync, the store, the
+//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `download`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `shots-aa`. For any change to sync, the store, the
 //!   mirror, session save/restore or the view hosts.
 //! - `light`: the same with `two` once and no `shots-aa`. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
 //! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
-//! `WITH_ENGINES="servo webkit"` adds an engine's steps to any mode, after `sleep-history`. `servo` adds `trail-servo`
+//! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode, (after `sleep-history`, except `cef`). `cef` adds `download-cef` (right after `download`, in `light` and up) and needs the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"). `servo` adds `trail-servo`
 //! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built in `target-servo` with its DLLs
 //! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `trail-webkit` and
 //! `sleep-webkit`, needs the WebKit host built in WSL, and takes `SITE_HOST=<ip>`, the WSL gateway as Windows sees it
@@ -19,7 +19,7 @@
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
-//! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .labels.log, .arrange.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
+//! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .labels.log, .arrange.log, .download.log, .download-cef.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
 //! .sleep-history.log, .layout.log, .shots-aa.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
 //! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
@@ -215,6 +215,8 @@ const STEPS: &[Step] = &[
     step("suggest-groups", Mode::Light),
     step("labels", Mode::Light),
     step("arrange", Mode::Light),
+    Step { stage: "download", env: &[("VIEWS", "webview2")], ..step("download", Mode::Light) },
+    Step { stage: "download", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("download-cef", Mode::Light) },
     step("link", Mode::Ui),
     step("unknown-type", Mode::Ui),
     step("closed", Mode::Ui),
@@ -357,7 +359,7 @@ mod tests {
         for step in STEPS {
             assert!(crate::windows_main::is_stage(step.stage), "{} -> {}", step.name, step.stage);
             assert!(names.insert(step.name), "{} twice", step.name);
-            assert!(step.engine.is_none_or(|e| ["servo", "webkit"].contains(&e)), "{}: unknown engine", step.name);
+            assert!(step.engine.is_none_or(|e| by_id(e).is_some()), "{}: unknown engine", step.name);
         }
     }
 
