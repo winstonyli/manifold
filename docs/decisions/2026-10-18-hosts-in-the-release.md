@@ -12,6 +12,9 @@ release's: `releases/download/v<exe version>/<file>-<platform>`. The hash compil
 so an exe can only ever install the exact files its release was built with. The CEF runtime archive (`libcef`, from the
 Spotify CDN) is not our file and keeps its own pin, `cef_pin.rs`, set by `gate cef-pin`.
 
+Since the host table (2026-10-29, `docs/superpowers/specs/2026-10-29-host-table-design.md`, H5), `gate release-pins`
+writes the manifest from the table's downloadable hosts and `release.yml` calls it; the decision itself is unchanged.
+
 A build with no manifest (a dev build, the gate) pins nothing: its engines read Unavailable unless a sibling host
 exists. A debug build also reads the file named by `MANIFOLD_HOST_PINS_FILE`, which is how the gate shows the download
 states with a made-up host. A release build ignores that variable.

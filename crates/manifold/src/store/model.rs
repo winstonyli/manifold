@@ -224,7 +224,7 @@ impl Kind {
     }
 }
 
-/// Engine codes for the `view_kind` field: code `n` is `ENGINES[n - 1]`,
+/// Engine codes for the `view_kind` field: code `n` is `VIEW_KINDS[n - 1]`,
 /// spelled as `process_manager::view_kind_serde` spells it.
 pub const VIEW_KINDS: [&str; 4] = ["servo", "cef", "webkit", "webview2"];
 

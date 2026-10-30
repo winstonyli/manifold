@@ -118,7 +118,7 @@ fn runtime_has_type(runtime: &Runtime, ty: &str) -> bool {
     }
 }
 
-/// `store::model::ENGINES` order: code `n` is `ENGINES[n - 1]`.
+/// `store::model::VIEW_KINDS` order: code `n` is `VIEW_KINDS[n - 1]`.
 pub(crate) fn view_code(kind: ViewKind) -> u64 {
     kind.desc().code
 }

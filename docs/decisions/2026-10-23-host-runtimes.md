@@ -1,12 +1,16 @@
 # Host runtimes: Os, HostRuntime and HostLink (2026-10-23)
 
-Plan: `docs/superpowers/plans/2026-10-23-host-runtimes.md`. Code: `crates/manifold/src/process_manager/runtime.rs`.
+Plan: `docs/superpowers/plans/2026-10-23-host-runtimes.md`. Code: `crates/manifold/src/process_manager/runtime.rs`; `Os`
+has lived in `crates/manifold-hosts/src/lib.rs` since the host table (2026-10-29, spec
+`docs/superpowers/specs/2026-10-29-host-table-design.md`, H11).
 
 ## Decision
 
 An engine row (`ViewDesc`) states two facts instead of a spawn mode and an allow-list of OS strings:
 
 - `host_os: Option<Os>`, the OS its host is built for (`None`: whichever OS manifold runs on, as for Servo and CEF).
+  Amended 2026-10-29 (host table spec, H2): this fact is now the host's row, `Host.os` in `crates/manifold-hosts`,
+  which `ViewDesc.host` points to; `Host::built_for` resolves `None`.
 - `link: HostLink`, how the host reaches manifold: `PipesShm` (named pipes and a file-backed frame) or `Tcp`.
 
 `HostRuntime::between(host, here)` says how a host built for one OS runs on another: `Native` on the same OS, `Wsl` for a
@@ -17,6 +21,8 @@ host-pin platform id and the reaping rule all read these; none keeps its own OS 
 
 - **A. Typed `Os` on the row**, with the pin id (`windows-x64`, `linux-x64`, `macos-x64`) derived. `std::env::consts::OS`
   strings and `cfg!(windows)` no longer decide anything; any OS that is not Windows, Linux or macOS is `Os::Other`, which no host is built for, so only Servo and CEF run there.
+  Amended 2026-10-29 (host table spec, H11): `Os` moved, with its tests, to `crates/manifold-hosts`; the row that holds
+  it is the host's (`Host.os`).
 - **B. README matrix hand-written**, with unit tests over every (OS, engine) pair (`runtime::tests`) so it cannot drift
   from the code unnoticed.
 - **C. Transport is the host's property, not the runtime's.** The plan first said "per host-and-runtime pair". Only a
@@ -66,7 +72,9 @@ host can be added beside it.
 - **Hosts are a runtime registry, not stored cards.** They differ per machine; a stored card would sync and need a
   `FORMAT_VERSION` bump.
 - **Tags carry classification only.** `binary`, `prepare`, `source`, `link`, `host_os`, `runtime_dir`, `color`, copy stay
-  plain host data. No family "card" above the host.
+  plain host data. No family "card" above the host. Amended 2026-10-29 (host table spec, H2): `binary`, `source`,
+  `host_os` and `runtime_dir` are still plain data, in a table of their own: `ViewDesc.host` points to the host's row
+  (`manifold_hosts::Host`: `exe`, `delivery`, `os`, `runtime`); `prepare`, `link`, `color` and copy stay on `ViewDesc`.
 - **No capability rows yet.** `Caps` is card-shell abilities (select, drag, menu); the four readers hold a `ViewKind`, not
   a card, and read `ViewKind::has(tag)`. A row requiring `Find` or `DevTools` would be added with a consumer.
 - **`TagSet` is `u32`** (was `u16`): 9 tags now.
