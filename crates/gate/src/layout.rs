@@ -341,6 +341,12 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
                 shot.region
             );
         }
+        // The 1 px slack above hides a menu that comes out a pixel wider or narrower, which then differs along its
+        // edge in the shots; the width must not depend on the cards at all.
+        let (first_width, again_width) = (shot.region[2] - shot.region[0], ar - al - 2.0 * EDGE);
+        if !check(&format!("{label}: it is as wide without the cards"), (first_width - again_width).abs() < 0.01) {
+            println!("  width {first_width} first, {again_width} again");
+        }
         let [_, _, _, bottom] = union(&again);
         let header = sc.list_below.map_or(f64::MAX, |h| shot.region[1] + h);
         let compared = [shot.region[0], shot.region[1], shot.region[2], shot.region[3].min(bottom - EDGE).min(header)];
