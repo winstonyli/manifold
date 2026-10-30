@@ -353,7 +353,7 @@ fn sync_host(root: &Path, host: &Host, outcome: &mut Outcome) -> HostSync {
   a root both cargo layouts are searched, as today. It is `pub(crate)`, for `release-pins`.
 - `copy_runtime` takes its label prefix from `runtime.dir` (today `cef-runtime/{name}`, `:157`).
 - `SERVO_DLLS`, `SERVO_EXE`, `sync_servo`, `sync_cef` and `run`'s literal paths are deleted. `copy_dir`, `sync_file`,
-  `Outcome`, `step_error` and `finish` stay.
+  `Outcome`, `step_error` and `finish` stay (`sync_file`'s skip line moves to `say()`).
 
 What changes for this machine's tree: Servo's DLLs come from `target-servo/debug/build/mozangle/` instead of whichever of
 the two trees built last (both hold the same files on 2026-10-29); nothing else.
