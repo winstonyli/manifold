@@ -2,10 +2,11 @@
 //! `webview2`; `VIEWS="webview2 cef"` adds CEF, whose host must be built). Two cases per view, each on its own profile:
 //! the profile's own download folder, where the one card must complete and save `real.zip` with the server's bytes; and
 //! a folder that cannot be made (a path under a regular file), where the host refuses the download and the one card must
-//! show it failed as `FolderUnusable` (`downloads::refused`). It checks the card and the folder only: on CEF the refused
-//! download is also saved in the user's own Downloads folder, which this stage does not see (PARKED "CEF's refused
-//! download"). WebKit has no gate stage (it runs under WSL), so its `/mnt/<drive>/...` folder stays unexercised (PARKED).
+//! show it failed as `FolderUnusable` (`downloads::refused`). It also checks that no `real*.zip*` appears in the user's own
+//! Downloads folder: CEF's refusal (return 0) used to leave the file there, and the host now cancels it. WebKit has no
+//! gate stage (it runs under WSL), so its `/mnt/<drive>/...` folder stays unexercised (PARKED).
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -50,6 +51,7 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
     } else {
         download_dir(&profile)?
     };
+    let before = users_downloads();
     let mut inst = Instance::launch(exe, &profile, work, &format!("download-{name}.log"))?;
     inst.send("WAITTABS")?;
     let saved = folder.join("real.zip");
@@ -66,7 +68,13 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
         return Err(io::Error::other(format!("{view}: the download of {url} is not one card {want}: {cards:?}")));
     }
     if refused {
-        crate::check::check(&format!("{view} refused: nothing is saved"), !folder.exists());
+        crate::check::check(&format!("{view} refused: nothing is saved in the folder"), !folder.exists());
+        // A refusal that only failed the card would still let the engine save the file in the user's own folder.
+        let leaked: Vec<_> = users_downloads().difference(&before).cloned().collect();
+        crate::check::check(
+            &format!("{view} refused: nothing is saved in the user's Downloads folder {leaked:?}"),
+            leaked.is_empty(),
+        );
     } else {
         crate::check::check_eq(
             &format!("{view} saved: real.zip holds the server's bytes"),
@@ -83,4 +91,16 @@ fn set_download_folder(profile: &Path, folder: &Path) -> io::Result<()> {
     let mut settings: Value = serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
     settings["download_directory"] = Value::from(folder.to_string_lossy().into_owned());
     fs::write(path, settings.to_string())
+}
+
+/// The names `real*.zip*` (also a partial `.crdownload`) in the user's own Downloads folder (where the server's file would be saved if an engine ignored
+/// the app's folder); empty if there is no such folder. Only these names, so another program's downloads don't count.
+fn users_downloads() -> BTreeSet<String> {
+    let Some(home) = std::env::var_os("USERPROFILE") else { return BTreeSet::new() };
+    let Ok(entries) = fs::read_dir(Path::new(&home).join("Downloads")) else { return BTreeSet::new() };
+    entries
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("real") && n.contains(".zip"))
+        .collect()
 }

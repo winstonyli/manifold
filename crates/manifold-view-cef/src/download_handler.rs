@@ -23,12 +23,21 @@ pub struct DownloadResults {
     /// reserved names: concurrent same-name downloads get distinct names
     /// before either file exists.
     assigned: HashMap<u32, PathBuf>,
+    /// The ids of downloads `on_before_download` refused, until the engine reports them ended: `on_download_updated`
+    /// cancels each, because handing one back to CEF (return 0) does not cancel it -- the engine saves the file in
+    /// the user's own Downloads folder (`gate download`, `VIEWS=cef`).
+    refused: HashSet<u32>,
 }
 
 pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
 
 pub fn new_shared_download_path() -> SharedDownloadPath {
-    Rc::new(RefCell::new(DownloadResults { queue: Vec::new(), started: HashSet::new(), assigned: HashMap::new() }))
+    Rc::new(RefCell::new(DownloadResults {
+        queue: Vec::new(),
+        started: HashSet::new(),
+        assigned: HashMap::new(),
+        refused: HashSet::new(),
+    }))
 }
 
 #[derive(Clone)]
@@ -65,8 +74,9 @@ wrap_download_handler! {
         // made if missing, and the suggested name's last component, numbered if a file or a download still in
         // `assigned` has it. `show_dialog: false`: there is no window for a save-as dialog. A download that can't be
         // placed is reported started and failed with `destination`'s reason (`downloads::refused`) and handed back to
-        // CEF's default handling (return 0), which cancels it for a windowless browser (Alloy style);
-        // `on_download_updated` reports nothing of it, since its id was never assigned.
+        // CEF (return 0), which does not cancel it: the engine saves it in the user's own Downloads folder. So its id
+        // goes in `refused`, and `on_download_updated` cancels it there and reports nothing of it (its id was never
+        // assigned).
         fn on_before_download(
             &self,
             _browser: Option<&mut Browser>,
@@ -99,6 +109,7 @@ wrap_download_handler! {
                     let url = Some(CefString::from(&item.url()).to_string()).filter(|u| !u.is_empty());
                     let messages = manifold_view_protocol::downloads::refused(refusal, url);
                     results.queue.extend(messages);
+                    results.refused.insert(item.id());
                     0
                 }
             }
@@ -108,11 +119,20 @@ wrap_download_handler! {
             &self,
             _browser: Option<&mut Browser>,
             download_item: Option<&mut DownloadItem>,
-            _callback: Option<&mut DownloadItemCallback>,
+            callback: Option<&mut DownloadItemCallback>,
         ) {
             if let Some(item) = download_item {
                 let mut results = self.handler.result.borrow_mut();
                 let id = item.id();
+                if results.refused.contains(&id) {
+                    if let Some(callback) = callback {
+                        callback.cancel();
+                    }
+                    if item.is_complete() != 0 || item.is_canceled() != 0 || item.is_interrupted() != 0 {
+                        results.refused.remove(&id);
+                    }
+                    return;
+                }
                 // Nothing to report before `on_before_download` has named
                 // it (CEF sends a few updates first, with an empty
                 // `full_path`), or after it ended.
