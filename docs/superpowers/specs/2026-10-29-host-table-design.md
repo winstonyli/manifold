@@ -338,8 +338,9 @@ fn sync_host(root: &Path, host: &Host, outcome: &mut Outcome) -> HostSync {
     //     runtime_ready = copy_runtime returned Ok (a file that failed is already in `outcome` and does not clear
     //         it), or the marker was in place
     //     the exe into folder/<runtime.dir>/ only if runtime_ready, always compared (it is rebuilt with its crate);
-    //     sync_file prints its skip line (through say(), on stdout like the others) when the exe is not built. With no runtime in the folder the copy is not
-    //     attempted: the line above already says why, and a bare path-not-found error would be a second error.
+    //     sync_file prints its skip line (through say(), on stdout like the others) when the exe is not built.
+    //     With no runtime in the folder the copy is not attempted: the line above already says why, and a bare
+    //     path-not-found error would be a second error.
     // return Synced
 }
 ```
@@ -704,7 +705,8 @@ Each stays outside the table; where it duplicates a row, a test ties it.
   glob against `embedded_record`, step 6, since the glob exists only after the YAML change). The YAML change and the
   `release_verify` rename are the last commit with code.
 - **R3. Sync behaviour changes on purpose** (H9): a missing build folder skips that host only; a part found in no
-  build output but in place is kept; a CEF build with neither gets a clearer error than today's path-not-found.
+  build output but in place is kept; a CEF build with neither gets a clearer error than today's path-not-found;
+  every skip line goes to stdout, where two were on stderr.
 - **R4. Asset rename** (H6): published releases keep the old record names; anything outside the repo that fetched
   `embedded-host.sha256` breaks. In the repo, `release.yml` and `release_verify.rs` name them (README `:389` names
   `embedded-pdf-view`), and all three change together (grep 2026-10-29: otherwise only old plans and specs).

@@ -76,7 +76,7 @@ status: draft
   - At 10444ae5 those paths were clean. Every `git add` below names its paths.
   - An untracked file outside those paths (at the repo root, for instance) is not this plan's. Never stage it, and leave it alone.
     - `run.ps1` marks every run's commit `-dirty` while `git status --porcelain -- . ':!docs/runs.md'` (`run.ps1:63`) lists anything, untracked files included. At 10444ae5 it listed nothing, so an Expected line below that says "no `-dirty`" holds only while it still lists nothing.
-- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` caps build jobs only; the whole-crate `cargo test` lines for `-p manifold` and `-p gate` below (and Task 8 Step 2's multi-crate line) carry `-- --test-threads 8` for that reason. A filtered run needs none, and `-p manifold-hosts` (a dozen small tests, no dependencies) and its WSL line carry none. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
+- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` caps build jobs only; the whole-crate `cargo test` lines for `-p manifold` and `-p gate` below (and Task 8 Step 2's multi-crate line) carry `-- --test-threads 8` for that reason. A filtered run needs none, and standalone `-p manifold-hosts` lines (a dozen small tests, no dependencies) and its WSL line carry none. The three `Downloads::start()` tests in `shots_net.rs` share one fixed port (`DOWNLOADS_PORT`, `:122`), so a whole-crate gate run that fails `a_killed_download_server_refuses_the_retry` may be that overlap: rerun it alone with `cargo test -j 8 -p gate shots_net -- --test-threads=1` and report it before treating it as a defect. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
 - **One cargo per target dir.**
   - Before any cargo command, run `Get-Process cargo -ErrorAction SilentlyContinue` in PowerShell. If one is running, it is another session's build in `target/`: wait for it to exit.
   - Before a WSL cargo run, `wsl.exe -d Ubuntu -e pgrep -af "[c]argo"` must print nothing.
@@ -252,7 +252,7 @@ Expected:
 These are the inputs and conditions the spec implies that no ordinary test run exercises, most likely to bite first. Each line names the test or step that pins it.
 
 1. **The release subcommands' stdout is piped into `$GITHUB_ENV`.** The YAML runs `& target/debug/gate.exe release-pins ... | Add-Content $env:GITHUB_ENV`, and only the dry run executes it (H14).
-   - Any stdout line that is not `NAME=VALUE` corrupts the job's environment. Examples: a progress line from a reused helper (`sync_file` prints to stdout, `sync_deps.rs:70`-`82`), the manifest text, or a debug print.
+   - Any stdout line that is not `NAME=VALUE` corrupts the job's environment. Examples: a progress line from a reused helper (`sync_file`'s progress lines print to stdout, `sync_deps.rs:76` and `:80`), the manifest text, or a debug print.
    - The dispatcher itself adds nothing for `Stage::args` stages (`main.rs:216`).
    - Expected: stdout is exactly the lines the core returns. Everything else, including the manifest text, goes to stderr.
    - Pinned in Task 5: the wrapper prints only the core's returned `Vec<String>`, and the core calls no printing helper. Also pinned in Task 8 Step 7, which runs `release-embedded` on this machine's `target/release` hosts and checks every stdout line against `^[A-Z0-9_]+=.+$`.
@@ -371,7 +371,7 @@ How to work:
   - `[workspace.dependencies]`, at HEAD :23.
 - Modify: `Cargo.lock` (cargo adds a four-line `manifold-hosts` package entry on the first cargo command).
 - Modify: `crates/gate/src/tier.rs`:
-  - the Full arm, at HEAD :107-113, and the gate arm it makes dead, at HEAD :122-124 (deleted);
+  - the Full arm's replaced part, at HEAD :107-113 (the arm starts at :104), and the gate arm it makes dead, at HEAD :122-124 (deleted);
   - its tests, at HEAD :282.
 - Modify: `.github/workflows/ci.yml` :16, :17, :24.
 - Modify: `.githooks/pre-commit` :7.
@@ -4557,7 +4557,7 @@ fn copy_runtime(out: &Path, folder: &Path, dir: &str, outcome: &mut Outcome) -> 
 ```
 
 - Produces (the output Task 7's README "Runtime-file placement" text describes; each line starts `sync-runtime-deps: `):
-  - unchanged: `recopied <label>`, `<label> already current`, `copied <dir>/<name>/`, `no candidate found for <dir>/<exe file>, skipping` (now on stdout through `say()`; HEAD's `sync_file` printed it on stderr), `<label> is in use: close manifold and run again`, `everything already current, nothing to do`; the labels are `<dev_dir or target>/debug/<file>` for a sidecar and `<runtime.dir>/<name>` for a runtime file or the exe copy;
+  - unchanged: `recopied <label>`, `<label> already current`, `copied <dir>/<name>/`, `<label> is in use: close manifold and run again`, `everything already current, nothing to do`; changed only in stream: `no candidate found for <dir>/<exe file>, skipping` (stdout through `say()`, stderr at HEAD `:72`; Q-streams); the labels are `<dev_dir or target>/debug/<file>` for a sidecar and `<runtime.dir>/<name>` for a runtime file or the exe copy;
   - new skip and keep lines (stdout): `no <dev_dir or target>/debug, skipping <package>`, `no build output holds <file>, keeping <label> in place`, `no build output holds <file> and no <exe file> is built, skipping`, `no build output holds <package>'s runtime, keeping <dir>/<lib> in place`, `no build output holds <package>'s runtime and no <exe file> is built, skipping`;
   - errors (stderr, exit 1): `no build output holds <file>, which <exe file> needs: build <package> first`; `no build output holds the runtime <exe file> needs (<lib>): a CEF_PATH build leaves it outside OUT_DIR, so copy it into <dev_dir or target>/debug/<dir>/`; `no build folder for any host - build first`.
   - `<package>` is `Host.exe` (`manifold-view-servo`), `<exe file>` is `file_name(Os::here())` (`manifold-view-servo.exe`).
@@ -4915,7 +4915,7 @@ A compile error instead means a name in the test module differs from Task 1's cr
 
 - [ ] **Step 6: Write `sync_host`, `find_first` and `run_in`, and delete what they replace**
 
-Replace everything in `crates/gate/src/sync_deps.rs` above `#[cfg(test)]` (the module doc through `sync_runtime_deps`, including Step 3's stubs) with the code below. As in Step 4, Read the file and Write it whole: the code below, then the test module exactly as Step 4 left it. It deletes `SERVO_DLLS`, `SERVO_EXE`, `find_newest`, `sync_servo`, `sync_cef` and `run`'s literal paths; `copy_dir`, `sync_file`, `Outcome`, `step_error`, `finish` and `sync_runtime_deps` are copied unchanged; `copy_runtime` takes its label prefix and folder name from the row (`dir`, today the literal `cef-runtime` at HEAD :157). The repo root comes from the existing `crate::cef_pin::repo()` (`cef_pin.rs:20`-`22`, the same `CARGO_MANIFEST_DIR/../..` that HEAD :177 spelled). `run` is no longer canonicalized: every printed path is a relative label, and a missing `target/debug` is now one host's skip, not the run's failure (H9).
+Replace everything in `crates/gate/src/sync_deps.rs` above `#[cfg(test)]` (the module doc through `sync_runtime_deps`, including Step 3's stubs) with the code below. As in Step 4, Read the file and Write it whole: the code below, then the test module exactly as Step 4 left it. It deletes `SERVO_DLLS`, `SERVO_EXE`, `find_newest`, `sync_servo`, `sync_cef` and `run`'s literal paths; `copy_dir`, `Outcome`, `step_error`, `finish` and `sync_runtime_deps` are copied unchanged, and `sync_file` differs from HEAD in one line (its no-candidate skip line goes through `say()`, on stdout: Q-streams); `copy_runtime` takes its label prefix and folder name from the row (`dir`, today the literal `cef-runtime` at HEAD :157). The repo root comes from the existing `crate::cef_pin::repo()` (`cef_pin.rs:20`-`22`, the same `CARGO_MANIFEST_DIR/../..` that HEAD :177 spelled). `run` is no longer canonicalized: every printed path is a relative label, and a missing `target/debug` is now one host's skip, not the run's failure (H9).
 
 ```rust
 //! `gate sync-runtime-deps` (was scripts/sync-runtime-deps.sh): puts each engine host's runtime files beside the host
@@ -5249,7 +5249,8 @@ part found in no build output is kept when it is in place, an error
 only when the host exe is built. The CEF exe is copied into cef-runtime/
 only once the runtime was copied or is in place, so a CEF_PATH build
 with no runtime gets one error naming CEF_PATH instead of a bare
-path-not-found. SERVO_DLLS, SERVO_EXE, find_newest, sync_servo and
+path-not-found. Every skip line now goes to stdout through say(); two
+were on stderr. SERVO_DLLS, SERVO_EXE, find_newest, sync_servo and
 sync_cef are deleted. The gate depends on manifold-hosts (Cargo.lock).
 
 <attribution>
@@ -8413,7 +8414,7 @@ The report says:
   - What still spells a host outside the table: `install-check`'s usage literal (`main.rs:185`, tied by a test), the Linux job's two literals (H10), the upload pattern and the `windows-x64` stem in the YAML, and `fresh.rs`'s `[&WEBVIEW2, &PDFIUM]`, one more spelling of the gate build line's hosts.
   - What would remove them: PARKED "Host table (2026-10-29)", "The `-p` crate lists are repeated"; the spec's "Weighed and not taken" `gate release-assets` and a leaf bin for the Linux job, each taken if its literal drifts.
 - **Next steps, ranked, each with a one-line why.** Number them in one sequence with any options in the same message (options 1-3, next steps 4-6), so a bare "4 5" is unambiguous:
-  - ask the user to push the branch (the plan never pushes and does not assume it), then run `release.yml`'s dry run, before any tag (Q-dryrun, H14: the first run of the YAML change and of `release-pins`);
+  - the user pushes the branch and runs `release.yml`'s dry run, before any tag (the plan never pushes and does not assume it; Q-dryrun, H14: the first run of the YAML change and of `release-pins`);
   - read CI's Linux job on that push (Review Focus 2);
   - a `WITH_ENGINES="servo webkit"` gate run, if the user wants the `SITE_HOST` and `kill_hosts` paths run live (Review Focus 5);
   - the PARKED "Host table (2026-10-29)" items.
@@ -8427,25 +8428,26 @@ The plan follows each answer. About fifty smaller choices inside the settled des
 - **Q-tier. Decided: one `tier.rs` Full arm for every crate but the app, over a fourth per-crate arm (Task 1, Steps 12-15).** It replaces the protocol, pages, engine-crate and gate arms (`tier.rs:108`-`110`, `:122`-`:124`), so the next crate needs no edit, and it moves no tracked path (every crate but the app was Full). The arm reads "every path under `crates/` outside `crates/manifold`", the spec's wording. The spec's "Tests, Tier" and H12 are amended to match. Checked by compiling `tier.rs` alone: the old arms fail the new test at `tier.rs:283` (`left: "TIER light"`), the new arm passes all 6.
 - **Q-engines. Decided: edit the two comments, over leaving them and parking them.** `session_sync.rs:121` and `store/model.rs:227` still say `ENGINES`, which no longer exists; Task 7 Step 14 changes them to `VIEW_KINDS`. Comment-only, and beyond the spec's "Docs" list.
 - **Q-killhosts. Decided: error, over killing nothing silently.** `kill_hosts` returns an `InvalidInput` error when the view names no host (Task 4).
-- **Q-streams. Decided: one stream, stdout.** Every sync skip line goes through `say()` (Task 3): the new ones, CEF's `no cef-dll-sys output directory found` (stderr at HEAD, `sync_deps.rs:141`) and `sync_file`'s `no candidate found for <label>, skipping` (stderr at HEAD, `:72`). Errors stay on stderr. Step 8's before/after diff is unchanged on this tree, where neither skip line prints.
+- **Q-streams. Decided: one stream, stdout.** Every sync skip line goes through `say()` (Task 3): the new ones, CEF's skip (stderr at HEAD, `sync_deps.rs:141`, replaced by the two `say()` lines in `copy_runtime`) and `sync_file`'s `no candidate found for <label>, skipping` (stderr at HEAD, `:72`). Errors stay on stderr. Step 8's before/after diff is unchanged on this tree, where neither skip line prints.
 - **Q-embed-dir. Decided: `target/`, over a separate `CARGO_TARGET_DIR`.** The real-embed test builds in `target/` (Task 2 Step B16, Task 8 Step 6), because C: is nearly full. The next normal build reruns `build.rs`.
 - **Q-verify-scope. Decided: local checks only, over adding engine runs.** No local release CEF or Servo build (so `gate package` and `release-pins` first run in the release dry run); `release-embedded` against whatever `target/release` holds (Task 8 Step 7 runs `v0.0.0`; Task 5 Step 8 smoke-runs `v0.0.0-local`); the final gate at `full` without `WITH_ENGINES`; WSL runs only `-p manifold-hosts`.
 - **Q-dryrun. Decided: a dry run comes before any tag.** `release.yml` changes in Task 6 and first runs in the workflow's manual dry run, which needs the branch pushed. The plan never pushes; at the end of Task 8 the executor asks for the push and does not assume it, and no tag comes before the dry run (Step 14's ranked next steps).
-- **Q-disk. Unchanged:** the Global Constraint (checked before every build and run), Step S1, the pre-run check and Task 8 Steps 1 and 6 stop and ask under 2 GB free and delete nothing. Free space swings with other sessions' builds: 5 GB on 2026-10-29, 26 to 28 GB on 2026-10-30.
+- **Q-disk. Unchanged:** the Global Constraint says what to do under 2 GB free (stop and ask, delete nothing, make no new target dir) before every build and run; Step S1, the pre-run check and Task 8 Steps 1 and 6 check the same threshold. Free space swings with other sessions' builds: 5 GB on 2026-10-29, 26 to 28 GB on 2026-10-30.
 
 ---
 
 ## Review rounds
 
-Rounds 1 to 3 were adversarial, each by eight read-only Sonnet reviewers (spec coverage A and B, Task 1, Task 2 Part A, Task 2 Part B with Task 3, Tasks 4 and 5, Tasks 6 and 7, cross-task seams). Round 4 came after the decisions and was focused on that delta, by three reviewers (tier, decisions, round-3 edits). Each reviewer checked its steps against the tree at HEAD and cited file:line evidence; one compiled Task 1's leaf crate in a scratch workspace.
+Rounds 1 to 3 were adversarial, each by eight read-only Sonnet reviewers (spec coverage A and B, Task 1, Task 2 Part A, Task 2 Part B with Task 3, Tasks 4 and 5, Tasks 6 and 7, cross-task seams). Rounds 4 and 5 came after the decisions and were focused on that delta, by three reviewers each (round 4: tier, decisions, round-3 edits; round 5: Q-streams, test threads, citations and the rest). Each reviewer checked its steps against the tree at HEAD and cited file:line evidence; one compiled Task 1's leaf crate in a scratch workspace.
 
 | Round | Plan commit after | Material | Minor | What it caught |
 |---|---|---|---|---|
 | 1 | `5d77fa32` | 6 | about 36 (20 fixed, the rest nits) | Plan activation split across Start S4 and Task 1 Step 1; stackdump mentions; the `tail -n 1` trailer check printing a blank line; Task 3 Step 8 and Task 8 Step 8 comparing against the wrong baseline or a hard-coded README line; a clippy lint (`cloned-ref-to-slice-refs`) in Task 1's test; stale PARKED citations. |
 | 2 | `076b8416` | 1 | about 17 | Task 7 Step 9 re-cited PARKED entries by reading old line numbers, which pointed at the wrong code (`process_manager.rs:355` is `set_visible`, `:1028` a doc comment); now by label. Plus a loose manifest assertion made exact, Task 8 Step 10 wording, `-j 8` vs test threads, README checks. |
 | 3 | `a16ff790` | 0 | 7 distinct (10 reports) | `settings_page.rs:805` missing from Step 9; `-- --test-threads 8` on some whole-crate test lines (round 4 found three more); the cargo warning's backticks; a missing blank line; the disk figure. |
-| 4 | this commit | 2 | about 20 | Q-streams was half implemented (`sync_file`'s skip line stayed on stderr); `-- --test-threads 8` was missing on the three `-p gate` whole-crate lines in Tasks 4 to 6. Minors: stale line citations in Task 1 (`:107-113`, `:282`), Q-decisions worded as lettered options, `shots.rs` +2 rule, greps that matched several lines. |
+| 4 | `0bcb1296` | 2 | about 20 | Q-streams was half implemented (`sync_file`'s skip line stayed on stderr); `-- --test-threads 8` was missing on the three `-p gate` whole-crate lines in Tasks 4 to 6 and in one prose mention. Minors: stale line citations in Task 1 (`:107-113`, `:282`), Q-decisions worded as lettered options, `shots.rs` +2 rule, greps that matched several lines. |
+| 5 | this commit | 1 | about 12 | Task 3 Step 6 still called `sync_file` "copied unchanged" after Q-streams changed it (the same defect class as row 4). Minors: the CEF skip line is replaced by two lines, not moved; Review Focus 1's `sync_file` citation; a note that the `shots_net` tests share a fixed port; Q-disk and Step 14 wording. |
 
 Left as they were in round 3: the ENGINES comment edits in `session_sync.rs:121` and `store/model.rs:227` (beyond the spec; the user kept them, Q-engines) and the `package.rs` module-doc `windows-x64` wording (still true; optional).
 
-The open decisions were answered on 2026-10-30 (see "Decisions on the open questions" above). Q-tier changed Task 1 Steps 12-15 and the spec, so a fourth, focused round re-checked that change and the round-3 edits (row 4).
+The open decisions were answered on 2026-10-30 (see "Decisions on the open questions" above). Q-tier changed Task 1 Steps 12-15 and the spec, so focused rounds 4 and 5 re-checked that change, the round-3 edits and their own fixes (rows 4 and 5).
