@@ -447,14 +447,13 @@ impl DownloadPayload {
 /// `App::nodes`'s own map type -- `std::collections::HashMap` (same type,
 /// same API, at every one of its call sites throughout this file) with
 /// `foldhash` plugged in as the hasher instead of the standard library's
-/// own SipHash default, with a fixed seed (`FixedState`), so two runs that fill it alike iterate it alike and the
-/// edges drawn from it blend in one order (`shots-aa`). SipHash's DoS-resistance guarantee is wasted here:
+/// own SipHash default. SipHash's DoS-resistance guarantee is wasted here:
 /// every key is an app-generated id (`"tab-0"`, `"note-5"`, ...), never
 /// derived from untrusted input, and this map is looked up many times per
 /// frame across the Graph-view render loops. `foldhash` is already fully
 /// resolved in this workspace's own dependency tree (see `Cargo.toml`'s
 /// own comment on it) -- this is a hasher swap, not a new dependency.
-pub(crate) type NodeMap = HashMap<NodeId, GraphNode, foldhash::fast::FixedState>;
+pub(crate) type NodeMap = HashMap<NodeId, GraphNode, foldhash::fast::RandomState>;
 
 /// One node in the graph view. Its document fields (`pos`, `color`, `pinned`, `parent`, the "opened from" edge,
 /// and `group`, the level it is shown in) are not fields here: see `Mirror`; where its card is drawn is
@@ -570,22 +569,6 @@ mod tests {
     }
 
     use super::*;
-
-    /// Two maps filled the same way iterate the same way, so the edges drawn from `nodes` come out in one order
-    /// every run (`shots-aa` compares two runs pixel for pixel).
-    #[test]
-    fn two_node_maps_filled_alike_iterate_alike() {
-        let mut app = crate::App::default();
-        let ids: Vec<NodeId> = (0..64).map(|_| app.alloc_node_id()).collect();
-        let fill = || {
-            let mut map = NodeMap::default();
-            for id in &ids {
-                map.insert(*id, GraphNode { runtime: Runtime::None });
-            }
-            map.keys().copied().collect::<Vec<_>>()
-        };
-        assert_eq!(fill(), fill());
-    }
 
     /// A card's screen-reader name is its kind, then its title (or the first line of a note).
     #[test]

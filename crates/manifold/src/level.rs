@@ -192,7 +192,7 @@ impl App {
         entries
     }
 
-    /// The current level's edges: each stored node's `parent` link, then each Link node, whose two ends are both on
+    /// The current level's edges, in `node_order` (not hash order): each stored node's `parent` link, then each Link node, whose two ends are both on
     /// this level, then each `jar` edge whose two ends are. Between stored nodes an edge runs between the facing side midpoints of the two cards
     /// (`link_gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
     /// (`nearest_link`'s tie rule).
@@ -230,7 +230,7 @@ impl App {
         }
         let rects: HashMap<CardId, egui::Rect> = items.iter().map(|e| (e.id, e.rect)).collect();
         let rect_of = |id: CardId| rects.get(&id).copied();
-        let opened = self.nodes.keys().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
+        let opened = self.node_order.iter().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
             let parent_id = self.opened_from(id)?;
             self.nodes.get(&parent_id).filter(|_| self.in_level(parent_id))?;
             let (from, to) =
@@ -269,7 +269,7 @@ impl App {
         });
         // A jar edge shows while its source and its jar are both live cards at this level. One reaching a jar in an
         // enclosing group, or a group's edge to a jar inside it, has no line here: its far end is on another level.
-        let jars = self.nodes.keys().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
+        let jars = self.node_order.iter().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
             let jar = self.doc.mirror.jar(id)?;
             self.nodes.get(&jar).filter(|_| self.in_level(jar))?;
             let (from, to) = crate::link_gestures::facing_ends(rect_of(CardId::from(id))?, rect_of(CardId::from(jar))?);
@@ -451,6 +451,23 @@ mod tests {
         items.iter_mut().filter(|e| e.id == CardId::from(C)).for_each(|e| e.rect = e.rect.translate(shift));
         let moved = app.level_edges_from(&items);
         assert_eq!(moved[0].to, app.level_edges()[0].to + shift, "the edge follows the given rect");
+    }
+
+    /// Opened-from and jar edges are listed in `node_order`, not in the node map's hash order: a `NodeId` holds a
+    /// per-launch random actor, so hash order differs between launches and overlapping strokes blended differently
+    /// (`shots-aa` compares two runs pixel for pixel).
+    #[test]
+    fn level_edges_follow_node_order_not_hash_order() {
+        let mut app = App::default();
+        app.insert_placeholder_node(P, egui::vec2(0.0, 0.0), Kind::Download, download("p.bin"));
+        for i in 0..40 {
+            let id = node(100 + i);
+            app.insert_placeholder_node(id, egui::vec2(100.0, i as f32 * 10.0), Kind::Download, download("c.bin"));
+            app.edit_parent(id, Some(P));
+        }
+        let expected: Vec<CardId> = app.node_order.iter().filter(|id| **id != P).map(|id| CardId::from(*id)).collect();
+        let drawn: Vec<CardId> = app.level_edges().iter().map(|e| e.to_id).collect();
+        assert_eq!(drawn, expected);
     }
 
     #[test]
