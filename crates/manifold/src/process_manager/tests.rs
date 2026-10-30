@@ -1,6 +1,7 @@
 use super::*;
 use crate::card_id::testutil::node;
 use crate::view_install::{no_download_reason, NO_PIN_REASON};
+use manifold_hosts::{CEF_RUNTIME_DIR, HOSTS_DIR, PDFIUM, SERVO, WEBKIT, WEBVIEW2};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -547,8 +548,9 @@ fn webkit_is_installed_with_its_host_else_offered_or_unavailable() {
 }
 
 /// Where each host runs in place from, given `manifold.exe`'s folder (`run_in_place_from`): its dev build folder found
-/// by walking up (`ViewDesc::dev_dir`), then beside the exe; CEF only from its `cef-runtime/` copy, the one a tab runs.
-/// WebKit falls back to its downloaded copy in `engine-hosts/`, whether or not it is there yet.
+/// by walking up (`Host::dev_dir`), then beside the exe; CEF only from its `cef-runtime/` copy, the one a tab runs;
+/// WebView2 and the PDF view (no dev folder) only beside the exe. WebKit falls back to its downloaded copy in
+/// `engine-hosts/`, whether or not it is there yet.
 #[test]
 fn each_host_is_found_in_its_dev_folder_then_beside_the_exe() {
     let root = crate::store::testutil::temp_dir("host-lookup");
@@ -556,23 +558,23 @@ fn each_host_is_found_in_its_dev_folder_then_beside_the_exe() {
     let repo = root.join("work").join("repo");
     let exe_dir = repo.join("target").join("debug");
     std::fs::create_dir_all(&exe_dir).unwrap();
-    for kind in ViewKind::ALL {
-        assert_eq!(run_in_place_from(kind, &exe_dir, true), None, "{kind:?}: nothing built");
+    for host in manifold_hosts::ALL {
+        assert_eq!(run_in_place_from(host, &exe_dir, true), None, "{}: nothing built", host.id);
     }
-    let hosts = root.join("engine-hosts");
+    let hosts = root.join(HOSTS_DIR);
     assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts), true), Some(hosts.join("manifold-view-webkitgtk")));
     assert_eq!(pick_webkit_host(&exe_dir, None, true), None);
-    for (kind, dev) in [(ViewKind::Servo, "target-servo"), (ViewKind::Webkit, "target-linux")] {
-        assert_eq!(kind.desc().dev_dir, Some(dev));
+    for (host, dev) in [(&SERVO, "target-servo"), (&WEBKIT, "target-linux")] {
+        assert_eq!(host.dev_dir, Some(dev));
         let dev_dir = repo.join(dev).join("debug");
         std::fs::create_dir_all(&dev_dir).unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir, true), None, "{kind:?}: the folder alone is not a host");
-        let flat = exe_dir.join(host_file_name(kind));
+        assert_eq!(run_in_place_from(host, &exe_dir, true), None, "{}: the folder alone is not a host", host.id);
+        let flat = exe_dir.join(host.file_name(Os::here()));
         std::fs::write(&flat, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir, true), Some(flat), "{kind:?}: a packaged host beside the exe");
-        let built = dev_dir.join(host_file_name(kind));
+        assert_eq!(run_in_place_from(host, &exe_dir, true), Some(flat), "{}: a packaged host beside the exe", host.id);
+        let built = dev_dir.join(host.file_name(Os::here()));
         std::fs::write(&built, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir, true), Some(built), "{kind:?}: the dev build wins");
+        assert_eq!(run_in_place_from(host, &exe_dir, true), Some(built), "{}: the dev build wins", host.id);
     }
     assert_eq!(
         pick_webkit_host(&exe_dir, Some(&hosts), true),
@@ -580,17 +582,21 @@ fn each_host_is_found_in_its_dev_folder_then_beside_the_exe() {
     );
     // CEF runs only from its runtime folder: a flat exe alone is not in place, so its stamp is never read for a copy
     // the tab would not run.
-    assert_eq!(ViewKind::Cef.desc().dev_dir, None);
-    std::fs::write(exe_dir.join(host_file_name(ViewKind::Cef)), b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir, true), None, "a flat CEF exe alone");
-    let copy = exe_dir.join(CEF_RUNTIME_DIR).join(host_file_name(ViewKind::Cef));
+    assert_eq!(CEF.dev_dir, None);
+    std::fs::write(exe_dir.join(CEF.file_name(Os::here())), b"host").unwrap();
+    assert_eq!(run_in_place_from(&CEF, &exe_dir, true), None, "a flat CEF exe alone");
+    let copy = CEF.beside(Os::here(), &exe_dir);
+    assert_eq!(copy, exe_dir.join(CEF_RUNTIME_DIR).join(CEF.file_name(Os::here())));
     std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
     std::fs::write(&copy, b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Cef, &exe_dir, true), Some(copy));
-    assert_eq!(ViewKind::Webview2.desc().dev_dir, None);
-    let webview2 = exe_dir.join(host_file_name(ViewKind::Webview2));
-    std::fs::write(&webview2, b"host").unwrap();
-    assert_eq!(run_in_place_from(ViewKind::Webview2, &exe_dir, true), Some(webview2));
+    assert_eq!(run_in_place_from(&CEF, &exe_dir, true), Some(copy));
+    for host in [&WEBVIEW2, &PDFIUM] {
+        assert_eq!(host.dev_dir, None);
+        let beside = exe_dir.join(host.file_name(Os::here()));
+        assert_eq!(run_in_place_from(host, &exe_dir, true), None, "{}: not built", host.id);
+        std::fs::write(&beside, b"host").unwrap();
+        assert_eq!(run_in_place_from(host, &exe_dir, true), Some(beside), "{}: beside the exe", host.id);
+    }
 }
 
 /// The dev folder is looked for in the exe's folder and its four parents (as WebKit's lookup walked): a host in
@@ -601,15 +607,15 @@ fn the_dev_folder_is_searched_four_parents_up_and_no_further() {
     let exe_dir = root.join("p5").join("p4").join("p3").join("p2").join("p1").join("exe");
     std::fs::create_dir_all(&exe_dir).unwrap();
     let put = |parent: &Path| {
-        let built = parent.join("target-servo").join("debug").join(host_file_name(ViewKind::Servo));
+        let built = parent.join("target-servo").join("debug").join(SERVO.file_name(Os::here()));
         std::fs::create_dir_all(built.parent().unwrap()).unwrap();
         std::fs::write(&built, b"host").unwrap();
         built
     };
     put(&root.join("p5"));
-    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir, true), None, "five parents up is out of reach");
+    assert_eq!(run_in_place_from(&SERVO, &exe_dir, true), None, "five parents up is out of reach");
     let reached = put(&root.join("p5").join("p4"));
-    assert_eq!(run_in_place_from(ViewKind::Servo, &exe_dir, true), Some(reached), "four parents up is reached");
+    assert_eq!(run_in_place_from(&SERVO, &exe_dir, true), Some(reached), "four parents up is reached");
 }
 
 /// A build that pins its hosts (a release) never runs a host from a dev build folder: any user can create a folder in a
@@ -619,20 +625,34 @@ fn the_dev_folder_is_searched_four_parents_up_and_no_further() {
 fn a_pinned_build_runs_no_host_from_a_dev_folder() {
     let root = crate::store::testutil::temp_dir("host-pinned");
     let exe_dir = root.join("repo").join("target").join("debug");
-    for (kind, dev) in [(ViewKind::Servo, "target-servo"), (ViewKind::Webkit, "target-linux")] {
-        let built = root.join("repo").join(dev).join("debug").join(host_file_name(kind));
+    for (host, dev) in [(&SERVO, "target-servo"), (&WEBKIT, "target-linux")] {
+        let built = root.join("repo").join(dev).join("debug").join(host.file_name(Os::here()));
         std::fs::create_dir_all(built.parent().unwrap()).unwrap();
         std::fs::write(&built, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir, false), None, "{kind:?}: a dev build is not run");
-        let hosts = root.join("engine-hosts");
-        if kind == ViewKind::Webkit {
-            assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts), false), Some(hosts.join(host_file_name(kind))));
+        assert_eq!(run_in_place_from(host, &exe_dir, false), None, "{}: a dev build is not run", host.id);
+        let hosts = root.join(HOSTS_DIR);
+        if host.id == WEBKIT.id {
+            let downloaded = hosts.join(host.file_name(Os::here()));
+            assert_eq!(pick_webkit_host(&exe_dir, Some(&hosts), false), Some(downloaded));
         }
         std::fs::create_dir_all(&exe_dir).unwrap();
-        let flat = exe_dir.join(host_file_name(kind));
+        let flat = exe_dir.join(host.file_name(Os::here()));
         std::fs::write(&flat, b"host").unwrap();
-        assert_eq!(run_in_place_from(kind, &exe_dir, false), Some(flat), "{kind:?}: a host beside the exe runs");
+        assert_eq!(run_in_place_from(host, &exe_dir, false), Some(flat), "{}: a host beside the exe runs", host.id);
     }
+}
+
+/// Each engine reads its own row of the host table (`ViewDesc::host`), and the one row no engine reaches is the PDF
+/// view's, which is not an engine.
+#[test]
+fn each_engine_has_its_own_host_row_and_only_pdfium_has_no_engine() {
+    let ids = ViewKind::ALL.map(|kind| kind.desc().host.id);
+    let mut distinct = ids.to_vec();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(distinct.len(), ids.len(), "two engines share a row: {ids:?}");
+    let unreached: Vec<&str> = manifold_hosts::ALL.iter().map(|host| host.id).filter(|id| !ids.contains(id)).collect();
+    assert_eq!(unreached, [PDFIUM.id]);
 }
 
 /// Servo follows its host files on every OS: Installed when they are there (a host in place counts, whatever the pin
@@ -1088,7 +1108,7 @@ fn a_webview2_hosts_profile_dir_is_in_its_default_user_data_folder() {
 #[test]
 fn an_extracted_webview2_host_keeps_its_user_data_folder_in_its_own_engine_hosts_folder() {
     let hosts = Path::new("data/engine-hosts");
-    let host = crate::embedded_host::Embedded::Webview2.host_path(hosts);
+    let host = WEBVIEW2.installed_in(Os::here(), hosts);
     assert_eq!(host, hosts.join("webview2").join("manifold-view-webview2.exe"));
     assert_eq!(
         super::webview2_profile_dir(&host, 0),

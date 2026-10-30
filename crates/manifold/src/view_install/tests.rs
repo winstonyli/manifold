@@ -150,9 +150,9 @@ fn cef_pin() -> &'static Pin {
     crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests")
 }
 
-/// The runtime library's file name on this platform.
+/// The runtime library's file name on this platform (`Host::runtime_lib`).
 fn lib() -> &'static str {
-    crate::cef_platform::PLATFORM.runtime_lib
+    CEF.runtime_lib(Os::here()).expect("CEF has a runtime")
 }
 
 /// A bring-your-own directory as CEF's own archive lays it out: the runtime library and `archive.json`.
@@ -1400,6 +1400,17 @@ fn webkit_installs_its_elf_under_its_own_marker() {
     verify_installed_host(&dir, f).unwrap();
     std::fs::remove_file(dir.join("manifold-view-webkitgtk")).unwrap();
     assert_eq!(host_state(&dir, ViewKind::Webkit, f), RuntimeOnDisk::Missing, "the marker without the ELF");
+}
+
+/// A host's own file name is the one the OS it is built for gives it (`Host::file_name`): WebKit's Linux ELF has no
+/// `.exe` even when manifold runs on Windows, so a removal in a build that pins nothing finds it with no marker.
+#[test]
+fn host_file_names_name_each_host_as_the_os_it_is_built_for_does() {
+    let dir = temp_dir("host-names");
+    assert_eq!(host_file_names(&dir, ViewKind::Webkit, &[]), ["manifold-view-webkitgtk"]);
+    assert_eq!(host_file_names(&dir, ViewKind::Cef, &[]), [CEF.file_name(Os::here())]);
+    std::fs::write(dir.join("manifold-view-webkitgtk"), b"elf").unwrap();
+    assert_eq!(installed_paths_in(&dir, ViewKind::Webkit, &[]), [dir.join("manifold-view-webkitgtk")]);
 }
 
 #[test]

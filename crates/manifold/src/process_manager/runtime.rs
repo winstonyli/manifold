@@ -1,65 +1,17 @@
 //! Where an engine's host is built to run, and how that maps onto the machine manifold runs on.
 //!
-//! `Os` is the operating systems an engine host can target, and `Other` for every one without a host of its own. `HostRuntime` says how a host built for one OS runs
-//! on another: natively on its own, or a Linux host through WSL on Windows. `HostLink` is how a host reaches
-//! manifold, a property of the host, not of the runtime. A fourth compatibility layer (Wine) would be one more
-//! `HostRuntime` and one more arm of `HostRuntime::between`.
+//! `Os` (the host table's, `manifold_hosts::Os`) is the operating systems an engine host can target, and `Other` for
+//! every one without a host of its own; a host's row says which it is built for (`Host::os`). `HostRuntime` says how
+//! a host built for one OS runs on another: natively on its own, or a Linux host through WSL on Windows. `HostLink` is
+//! how a host reaches manifold, a property of the host, not of the runtime. A fourth compatibility layer (Wine) would
+//! be one more `HostRuntime` and one more arm of `HostRuntime::between`.
 
 use super::ViewKind;
+use manifold_hosts::Os;
 use std::path::Path;
 
 /// The WSL distro the WebKit host runs in (`webkit.rs`), and whose share Explorer opens for its other paths.
 pub(crate) const WSL_DISTRO: &str = "Ubuntu";
-
-/// An operating system a host is built for, or manifold runs on. `Other` is any not named here (FreeBSD and the like):
-/// only the engines built for whichever OS manifold runs on (Servo, CEF) can run there.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Os {
-    Windows,
-    Linux,
-    Mac,
-    Other,
-}
-
-impl Os {
-    /// In the order a refusal lists them ("needs Windows or Linux").
-    pub(crate) const ALL: [Os; 4] = [Os::Windows, Os::Linux, Os::Mac, Os::Other];
-
-    /// The OS of a `std::env::consts::OS` value.
-    pub(crate) fn from_consts(os: &str) -> Os {
-        match os {
-            "windows" => Os::Windows,
-            "linux" => Os::Linux,
-            "macos" => Os::Mac,
-            _ => Os::Other,
-        }
-    }
-
-    /// The OS manifold is running on.
-    pub(crate) fn here() -> Os {
-        Os::from_consts(std::env::consts::OS)
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        match self {
-            Os::Windows => "Windows",
-            Os::Linux => "Linux",
-            Os::Mac => "macOS",
-            Os::Other => "another OS",
-        }
-    }
-
-    /// `host_pin`'s name for the platform a host built for this OS is pinned under.
-    pub(crate) fn pin_platform(self) -> &'static str {
-        match self {
-            Os::Windows => "windows-x64",
-            Os::Linux => "linux-x64",
-            Os::Mac => "macos-x64",
-            // No host is pinned for it, so a lookup finds nothing.
-            Os::Other => "other-x64",
-        }
-    }
-}
 
 /// How a host built for one OS runs on another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +39,7 @@ impl HostRuntime {
     }
 
     fn for_os(kind: ViewKind, here: Os) -> Option<HostRuntime> {
-        match kind.desc().host_os {
+        match kind.desc().host.os {
             None => Some(HostRuntime::Native),
             Some(host) => HostRuntime::between(host, here),
         }
@@ -196,18 +148,6 @@ mod tests {
     }
 
     #[test]
-    fn an_os_name_from_the_standard_library_reads_as_one_of_four() {
-        assert_eq!(Os::from_consts("windows"), Os::Windows);
-        assert_eq!(Os::from_consts("linux"), Os::Linux);
-        assert_eq!(Os::from_consts("macos"), Os::Mac);
-        for other in ["freebsd", "openbsd"] {
-            assert_eq!(Os::from_consts(other), Os::Other, "{other}");
-        }
-        assert_eq!(Os::Windows.pin_platform(), "windows-x64");
-        assert_eq!(Os::Linux.pin_platform(), "linux-x64");
-    }
-
-    #[test]
     fn the_reason_an_engine_is_unavailable_names_the_oses_that_can_run_it() {
         for os in [Os::Linux, Os::Mac, Os::Other] {
             assert_eq!(unavailable_reason(ViewKind::Webview2, os).as_deref(), Some("needs Windows"), "{os:?}");
@@ -230,7 +170,7 @@ mod tests {
     fn a_wsl_host_speaks_tcp() {
         for kind in ViewKind::ALL {
             for here in Os::ALL {
-                let Some(host) = kind.desc().host_os else { continue };
+                let Some(host) = kind.desc().host.os else { continue };
                 if HostRuntime::between(host, here) == Some(HostRuntime::Wsl) {
                     assert_eq!(kind.desc().link, HostLink::Tcp, "{kind:?} on {here:?}");
                 }

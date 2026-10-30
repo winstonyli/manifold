@@ -10,8 +10,10 @@
 //! shows the download states.
 //!
 //! The manifest is `{"cef": {"windows-x64": [{"file": "manifold-view-cef.exe", "size": 123, "sha256": "..."}]}}`
-//! with the engine's store name (`ViewKind::desc().name`) as the first key.
+//! with the host's id (`manifold_hosts::Host::id`, the engine's store name) as the first key, and under each platform
+//! exactly the files the host table pins there (`Host::pinned_under`).
 
+use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use crate::process_manager::ViewKind;
@@ -84,7 +86,10 @@ fn leak(s: &str) -> &'static str {
 }
 
 /// The entries `manifest` lists, with each URL under `v<version>`'s release. Blank text is an empty table; a
-/// malformed hash, a zero size or a path in a file name is an error (the whole manifest is refused).
+/// malformed hash, a zero size or a path in a file name is an error (the whole manifest is refused), and so is an entry
+/// whose files are not, as a set, the ones the host table pins for that host under that platform (`Host::pinned_under`:
+/// none for a host that is not downloaded, a platform no host is pinned for, or another OS's platform). The check reads
+/// the platform string, not the OS this runs on, so a manifest parses the same on Windows and Linux.
 fn parse(manifest: &str, version: &str) -> Result<Vec<Entry>, String> {
     if manifest.trim().is_empty() {
         return Ok(Vec::new());
@@ -112,6 +117,14 @@ fn parse(manifest: &str, version: &str) -> Result<Vec<Entry>, String> {
                 let url = leak(&format!("{RELEASES}v{version}/{file}-{platform}"));
                 components.push(Component { file: leak(file), url, size, sha256: leak(sha256) });
             }
+            let Some(pinned) = kind.desc().host.pinned_under(platform) else {
+                return Err(format!("{who}: the host table pins no files there"));
+            };
+            let want: BTreeSet<&str> = pinned.iter().map(String::as_str).collect();
+            let got: BTreeSet<&str> = components.iter().map(|c| c.file).collect();
+            if got != want {
+                return Err(format!("{who}: lists {got:?}, the host table pins {want:?}"));
+            }
             let components = Box::leak(components.into_boxed_slice());
             entries.push(Entry { kind, platform: leak(platform), components });
         }
@@ -122,6 +135,7 @@ fn parse(manifest: &str, version: &str) -> Result<Vec<Entry>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use manifold_hosts::{Os, CEF, SERVO, WEBKIT, WEBVIEW2};
 
     const HASH: &str = "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c";
 
@@ -144,14 +158,12 @@ mod tests {
 
     #[test]
     fn a_host_is_fetched_from_its_own_releases_download() {
-        let entries = parse(&manifest("manifold-view-cef.exe", 740_000, HASH), "1.2.3").unwrap();
+        let exe = CEF.file_name(Os::Windows);
+        let entries = parse(&manifest(&exe, 740_000, HASH), "1.2.3").unwrap();
         let table: &'static [Entry] = Box::leak(entries.into_boxed_slice());
         let c = &lookup(table, ViewKind::Cef, "windows-x64")[0];
-        assert_eq!(c.file, "manifold-view-cef.exe");
-        assert_eq!(
-            c.url,
-            "https://github.com/winstonyli/manifold/releases/download/v1.2.3/manifold-view-cef.exe-windows-x64"
-        );
+        assert_eq!(c.file, exe);
+        assert_eq!(c.url, format!("https://github.com/winstonyli/manifold/releases/download/v1.2.3/{exe}-windows-x64"));
         assert_eq!((c.size, c.sha256), (740_000, HASH));
         assert!(lookup(table, ViewKind::Cef, "linux-x64").is_empty());
         assert!(lookup(table, ViewKind::Servo, "windows-x64").is_empty());
@@ -159,20 +171,55 @@ mod tests {
 
     #[test]
     fn a_bad_manifest_is_refused_whole() {
+        let exe = CEF.file_name(Os::Windows);
+        assert!(parse(&manifest(&exe, 1, HASH), "1.2.3").is_ok(), "each case below is this one manifest, broken once");
         for bad in [
-            manifest("manifold-view-cef.exe", 1, ""),
-            manifest("manifold-view-cef.exe", 1, &HASH.to_uppercase()),
-            manifest("manifold-view-cef.exe", 1, &HASH[1..]),
-            manifest("manifold-view-cef.exe", 1, &HASH.replace('d', "g")),
-            manifest("manifold-view-cef.exe", 0, HASH),
+            manifest(&exe, 1, ""),
+            manifest(&exe, 1, &HASH.to_uppercase()),
+            manifest(&exe, 1, &HASH[1..]),
+            manifest(&exe, 1, &HASH.replace('d', "g")),
+            manifest(&exe, 0, HASH),
             manifest("", 1, HASH),
             manifest("../x.exe", 1, HASH),
             manifest("a\\\\b.exe", 1, HASH), // JSON `a\\b.exe`, the name a\b.exe
-            manifest("manifold-view-cef.exe", 1, HASH).replace("cef", "nosuch"),
+            manifest(&exe, 1, HASH).replace("cef", "nosuch"),
             "[]".to_owned(),
             "{".to_owned(),
         ] {
             assert!(parse(&bad, "1.2.3").is_err(), "accepted {bad}");
         }
+    }
+
+    /// Each entry lists exactly the files the host table pins for that host under that platform (`Host::pinned_under`),
+    /// whatever OS parses it: a host without one of its sidecars, a host that is not downloaded, a platform no host is
+    /// pinned for and a host under another OS's platform each refuse the whole manifest.
+    #[test]
+    fn a_manifest_must_list_exactly_what_the_host_table_pins() {
+        let files = |names: &[String]| -> serde_json::Value {
+            names.iter().map(|file| serde_json::json!({"file": file, "size": 1, "sha256": HASH})).collect()
+        };
+        let servo = SERVO.pinned_under("windows-x64").expect("Servo is pinned for Windows");
+        let no_egl: Vec<String> = servo.iter().filter(|file| file.as_str() != "libEGL.dll").cloned().collect();
+        assert_eq!(no_egl.len() + 1, servo.len(), "Servo's Windows host has libEGL.dll beside it: {servo:?}");
+        let without_egl = serde_json::json!({"servo": {"windows-x64": files(&no_egl)}});
+        let err = parse(&without_egl.to_string(), "1.2.3").unwrap_err();
+        let listed: std::collections::BTreeSet<&str> = no_egl.iter().map(String::as_str).collect();
+        let pinned: std::collections::BTreeSet<&str> = servo.iter().map(String::as_str).collect();
+        assert_eq!(err, format!("servo/windows-x64: lists {listed:?}, the host table pins {pinned:?}"));
+        let refused = [
+            ("webview2", "windows-x64", files(&[WEBVIEW2.file_name(Os::Windows)])),
+            ("cef", "plan9-x64", files(&CEF.pinned_files(Os::Windows))),
+            ("webkit", "windows-x64", files(&WEBKIT.pinned_files(Os::Linux))),
+        ];
+        for (id, platform, listed) in refused {
+            let err = parse(&serde_json::json!({ id: { platform: listed } }).to_string(), "1.2.3").unwrap_err();
+            assert_eq!(err, format!("{id}/{platform}: the host table pins no files there"));
+        }
+        let cef = files(&CEF.pinned_files(Os::Windows));
+        let webkit = files(&WEBKIT.pinned_files(Os::Linux));
+        let both = serde_json::json!({"cef": {"windows-x64": cef}, "webkit": {"linux-x64": webkit}});
+        let entries = parse(&both.to_string(), "1.2.3").unwrap();
+        let got: Vec<(ViewKind, &str)> = entries.iter().map(|e| (e.kind, e.platform)).collect();
+        assert_eq!(got, [(ViewKind::Cef, "windows-x64"), (ViewKind::Webkit, "linux-x64")]);
     }
 }

@@ -11,9 +11,9 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use crate::host_pin::Component as HostFile;
-use crate::process_manager::runtime::Os;
-use crate::process_manager::{HostSource, ViewKind, CEF_RUNTIME_DIR};
+use crate::process_manager::ViewKind;
 
+use manifold_hosts::{Delivery, Os, CEF, CEF_RUNTIME_DIR};
 use manifold_view_protocol::transport::to_hex;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
@@ -129,15 +129,17 @@ impl Plan {
     }
 }
 
-/// Whether `kind` is installed by downloading (`HostSource::Download`), rather than run in place (from its dev folder
-/// or beside `manifold.exe`) or carried inside it.
+/// Whether `kind` is installed by downloading (its host row's `Delivery::Download`), rather than run in place (from its
+/// dev folder or beside `manifold.exe`) or carried inside it.
 pub(crate) fn downloads(kind: ViewKind) -> bool {
-    kind.desc().source == HostSource::Download
+    kind.desc().host.delivery == Delivery::Download
 }
 
-/// Whether `kind` also needs a runtime archive besides its host exe (`ViewDesc::runtime`).
+/// Whether `kind` also needs a runtime archive besides its host exe (`Host::runtime`), which also takes a
+/// bring-your-own runtime directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather than
+/// single pinned files.
 pub(crate) fn has_runtime(kind: ViewKind) -> bool {
-    kind.desc().runtime_dir.is_some()
+    kind.desc().host.runtime.is_some()
 }
 
 /// The Visual C++ runtime DLLs Servo's Windows host imports (its mozjs and ANGLE are built against the dynamic CRT, so
@@ -165,10 +167,10 @@ pub(crate) fn missing_vc_runtime() -> Vec<&'static str> {
     }
 }
 
-/// `host_pin`'s name for the platform `kind`'s host is built for: this build's own OS, except an engine built for
-/// another (WebKit's is a Linux ELF even when manifold runs on Windows, through WSL).
+/// `host_pin`'s name for the platform `kind`'s host is built for (`Host::pin_platform`): this build's own OS, except an
+/// engine built for another (WebKit's is a Linux ELF even when manifold runs on Windows, through WSL).
 pub(crate) fn host_platform(kind: ViewKind) -> &'static str {
-    kind.desc().host_os.unwrap_or_else(Os::here).pin_platform()
+    kind.desc().host.pin_platform(Os::here())
 }
 
 /// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.
@@ -248,7 +250,7 @@ pub(crate) fn runtime_state(dir: &Path, pin: &Pin) -> RuntimeOnDisk {
 /// `kind`'s host marker in the hosts directory `dir`: one `<sha256> <file>` line per installed file, written last
 /// by `install_host`.
 fn host_marker_path(dir: &Path, kind: ViewKind) -> PathBuf {
-    dir.join(format!("{}.host", kind.desc().name))
+    dir.join(format!("{}.host", kind.desc().host.id))
 }
 
 fn marker_text(files: &[HostFile]) -> String {
@@ -314,8 +316,8 @@ fn custom_version(dir: &Path) -> Result<String, String> {
     }
 }
 
-/// Whether `dir` is a CEF runtime this host runs on: it holds the platform's runtime library
-/// (`CefPlatform::runtime_lib`; nothing else is required, e.g. CEF 154's archive has no `libEGL.dll`)
+/// Whether `dir` is a CEF runtime this host runs on: it holds the runtime library of the OS CEF's host is built for
+/// (`Host::runtime_lib`; nothing else is required, e.g. CEF 154's archive has no `libEGL.dll`)
 /// and its version (`custom_version`: `archive.json` or our `MARKER`) is the pin's CEF major or a later one
 /// (`runtime_compat`, while that major keeps our API version in its supported range); a version with no
 /// readable major is not usable. An `Err` says what is wrong, naming both versions on a mismatch.
@@ -323,7 +325,7 @@ pub(crate) fn validate_custom(dir: &Path, pin: &Pin) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("{} is not a directory", dir.display()));
     }
-    let lib = crate::cef_platform::PLATFORM.runtime_lib;
+    let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
     if !dir.join(lib).is_file() {
         return Err(format!("no {lib} in that directory"));
     }
@@ -840,10 +842,11 @@ fn leftovers() -> [String; 3] {
 }
 
 /// The file names in the hosts directory that are `kind`'s host: the pinned `files`, those its marker lists (an
-/// install of another release) and the host exe's own name.
+/// install of another release) and the host exe's own name (`Host::file_name`: as the OS it is built for names it, so
+/// WebKit's has no `.exe` on Windows).
 fn host_file_names(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<String> {
     let mut names: Vec<String> = files.iter().map(|f| f.file.to_string()).collect();
-    names.push(crate::cef_platform::PLATFORM.host_exe(kind.desc().binary));
+    names.push(kind.desc().host.file_name(Os::here()));
     if let Ok(marker) = std::fs::read_to_string(host_marker_path(dir, kind)) {
         names.extend(marker.lines().filter_map(|line| line.split_once(' ')).map(|(_, name)| name.to_string()));
     }
@@ -857,7 +860,7 @@ fn host_file_names(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<String
 /// `kind`'s partial downloads and temporaries in `dir`: `<file>.<hash prefix>.part`, `<file>.tmp`, the marker's `.tmp`.
 fn host_leftovers(dir: &Path, kind: ViewKind, files: &[HostFile]) -> Vec<PathBuf> {
     let names = host_file_names(dir, kind, files);
-    let marker_tmp = format!("{}.host.tmp", kind.desc().name);
+    let marker_tmp = format!("{}.host.tmp", kind.desc().host.id);
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     entries
         .flatten()

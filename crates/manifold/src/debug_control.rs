@@ -449,7 +449,7 @@ const VERBS: &[Verb] = &[
         job(move |app, _| {
             eprintln!(
                 "view-state {}: {} [{}]",
-                kind.desc().name,
+                kind.desc().host.id,
                 crate::view_info::view_status_label(&app.view_status(kind)).0,
                 crate::view_info::on_disk_text(kind, crate::process_manager::view_on_disk(kind))
             )

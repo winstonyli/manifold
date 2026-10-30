@@ -17,6 +17,7 @@ use crate::view_install::{
     downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
     RuntimeOnDisk, ViewStatus,
 };
+use manifold_hosts::{Host, Os, CEF};
 use manifold_view_protocol::host_env;
 use manifold_view_protocol::transport::{self, LocalTransport};
 use manifold_view_protocol::{HostSettings, HostToView, ViewToHost};
@@ -33,49 +34,23 @@ pub enum ViewKind {
     Webview2,
 }
 
-/// Where an engine's host executable comes from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostSource {
-    /// Carried inside `manifold.exe` when the build embeds it (`MANIFOLD_WEBVIEW2_HOST`, see `embedded_host`) and
-    /// extracted at spawn when no host is in place (`run_in_place`). A build that embeds nothing finds it there like
-    /// any other.
-    Embedded(embedded_host::Embedded),
-    /// Pinned in `host_pin` and installed on demand into `engine-hosts/` (`view_install`), unless a host is already in
-    /// place (a dev tree's build, or a Linux package's).
-    Download,
-}
-
-/// CEF's runtime archive unpacked beside its host: `<hosts dir>/cef-runtime/`, and in a dev build next to the exe.
-pub(crate) const CEF_RUNTIME_DIR: &str = "cef-runtime";
-
-/// What each engine is: the one place everything that differs between engines lives -- name, store code, binary,
-/// label, pixel order, jar use, which OS its host is built for and how it reaches manifold, how it is installed, and
-/// how the picker shows it.
+/// What each engine is: the one place everything that differs between engines lives -- name (its host's id), store
+/// code, host, label, pixel order, jar use, how its host reaches manifold, and how the picker shows it. The host's own
+/// layout (its exe, the OS it is built for, its dev folder, how it is delivered, its runtime) is its row in the host
+/// table (`manifold_hosts`), which `build.rs` and the gate read too.
 /// `desc` is an exhaustive `match`, so a new `ViewKind` fails to compile until it has a row here.
 pub(crate) struct ViewDesc {
-    /// The string `settings.json`, session exports and the `view_kind` store field hold.
-    pub(crate) name: &'static str,
-    /// The store's `view_kind` field code: `store::model::ENGINES[code - 1]` is `name`.
+    /// The store's `view_kind` field code: `store::model::VIEW_KINDS[code - 1]` is `host.id`.
     pub(crate) code: u64,
-    pub(crate) binary: &'static str,
+    /// The host's row: its `id` is the string `settings.json`, session exports and the `view_kind` store field hold,
+    /// and its `os` the OS it is built for (`runtime::HostRuntime::between` says where that runs).
+    pub(crate) host: &'static Host,
     pub(crate) label: &'static str,
     /// What the host is and can do (`Tag`: its rendering-engine family, frame format, jar, DevTools and find). A live
     /// tab inherits them (`App::card_kind`).
     pub(crate) tags: TagSet,
-    pub(crate) source: HostSource,
-    /// The OS the host is built for (`runtime::HostRuntime::between` says where that runs); `None`: whichever OS
-    /// manifold runs on.
-    pub(crate) host_os: Option<runtime::Os>,
     /// How the host reaches manifold.
     pub(crate) link: runtime::HostLink,
-    /// The directory name (`CEF_RUNTIME_DIR`) of a runtime archive it needs besides its host exe, which also takes a
-    /// bring-your-own runtime directory: only CEF's, the one component that is an archive (`Pin`, `unpack`) rather
-    /// than single pinned files.
-    pub(crate) runtime_dir: Option<&'static str>,
-    /// The folder a dev tree builds this host in, beside `target/` (`<dev_dir>/debug/<host>`), when that is not
-    /// `target/` itself: Servo's `target-servo` (README "Building Servo on its own") and WebKit's `target-linux` (built
-    /// inside WSL). manifold runs a host found there in place (`availability::run_in_place`).
-    pub(crate) dev_dir: Option<&'static str>,
     /// May be a fresh profile's starting engine (`platform_default_view_kind`): not an opt-in download, nor one
     /// that needs setup first.
     pub(crate) starting_default: bool,
@@ -119,16 +94,11 @@ impl ViewKind {
     pub(crate) fn desc(self) -> ViewDesc {
         match self {
             ViewKind::Servo => ViewDesc {
-                name: "servo",
                 code: 1,
-                binary: "manifold-view-servo",
+                host: &manifold_hosts::SERVO,
                 label: "Servo",
                 tags: TagSet::of(&[Tag::Servo]),
-                source: HostSource::Download,
-                host_os: None,
                 link: HostLink::PipesShm,
-                runtime_dir: None,
-                dev_dir: Some("target-servo"),
                 starting_default: true,
                 missing_system_libs: crate::view_install::missing_vc_runtime,
                 download_note: "",
@@ -146,16 +116,11 @@ impl ViewKind {
                 picker_rank: 2,
             },
             ViewKind::Cef => ViewDesc {
-                name: "cef",
                 code: 2,
-                binary: "manifold-view-cef",
+                host: &manifold_hosts::CEF,
                 label: "Blink (CEF)",
                 tags: TagSet::of(&[Tag::Blink, Tag::Bgra, Tag::Jars, Tag::DevTools, Tag::Find]),
-                source: HostSource::Download,
-                host_os: None,
                 link: HostLink::PipesShm,
-                runtime_dir: Some(CEF_RUNTIME_DIR),
-                dev_dir: None,
                 starting_default: false,
                 missing_system_libs: || crate::cef_platform::PLATFORM.missing_system_libs(),
                 download_note: "",
@@ -170,18 +135,14 @@ impl ViewKind {
                 picker_rank: 0,
             },
             ViewKind::Webkit => ViewDesc {
-                name: "webkit",
                 code: 3,
-                binary: "manifold-view-webkitgtk",
+                // A Linux program (`WEBKIT.os`): native on Linux, through WSL on Windows (pinned under linux-x64;
+                // README "Engines by OS").
+                host: &manifold_hosts::WEBKIT,
                 label: "WebKit",
                 tags: TagSet::of(&[Tag::WebKit, Tag::Find]),
-                source: HostSource::Download,
-                // A Linux program: native on Linux, through WSL on Windows (pinned under linux-x64; README "Engines by OS").
                 // TCP because nothing else crosses the WSL boundary.
-                host_os: Some(Os::Linux),
                 link: HostLink::Tcp,
-                runtime_dir: None,
-                dev_dir: Some("target-linux"),
                 starting_default: false,
                 missing_system_libs: Vec::new,
                 download_note: "
@@ -202,16 +163,11 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
                 picker_rank: 3,
             },
             ViewKind::Webview2 => ViewDesc {
-                name: "webview2",
                 code: 4,
-                binary: "manifold-view-webview2",
+                host: &manifold_hosts::WEBVIEW2,
                 label: "WebView2",
                 tags: TagSet::of(&[Tag::Blink, Tag::Bgra, Tag::Jars, Tag::DevTools, Tag::Find]),
-                source: HostSource::Embedded(embedded_host::Embedded::Webview2),
-                host_os: Some(Os::Windows),
                 link: HostLink::PipesShm,
-                runtime_dir: None,
-                dev_dir: None,
                 starting_default: true,
                 missing_system_libs: Vec::new,
                 download_note: "",
@@ -235,7 +191,7 @@ Not included: WebKit runs inside WSL, which needs a distro named Ubuntu with xvf
     /// Case-insensitive, so the headless `SPLIT` argument and the stored
     /// lowercase names share one parser.
     pub(crate) fn from_name(name: &str) -> Option<ViewKind> {
-        Self::ALL.into_iter().find(|k| k.desc().name.eq_ignore_ascii_case(name))
+        Self::ALL.into_iter().find(|k| k.desc().host.id.eq_ignore_ascii_case(name))
     }
 
     pub(crate) fn from_code(code: u64) -> Option<ViewKind> {
@@ -253,7 +209,7 @@ pub(crate) mod view_kind_serde {
     use serde::{Serialize, Serializer};
 
     pub fn serialize<S: Serializer>(kind: &ViewKind, s: S) -> Result<S::Ok, S::Error> {
-        kind.desc().name.serialize(s)
+        kind.desc().host.id.serialize(s)
     }
 }
 
@@ -640,10 +596,7 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
 /// `cef-runtime/` copy a dev build keeps, else the one `view_install::install_host` downloaded into `engine-hosts/`.
 fn shipped_cef_host() -> PathBuf {
     sibling_host(ViewKind::Cef)
-        .or_else(|| {
-            let file = crate::cef_platform::PLATFORM.host_exe(ViewKind::Cef.desc().binary);
-            view_hosts_dir().map(|dir| dir.join(file)).filter(|path| path.exists())
-        })
+        .or_else(|| view_hosts_dir().map(|dir| CEF.installed_in(Os::here(), &dir)).filter(|path| path.exists()))
         .unwrap_or_else(cef_sibling_exe)
 }
 
@@ -1009,8 +962,8 @@ fn prepare_cef(kind: ViewKind, custom: Option<&Path>) -> Result<Prepared, SpawnE
 /// host wins as it does everywhere else; a build that embeds nothing extracts nothing. Each host gets a profile name
 /// of its own among the live hosts, reused once a host is gone.
 fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, SpawnError> {
-    let extracted = match (view_hosts_dir(), kind.desc().source) {
-        (Some(dir), HostSource::Embedded(host)) if sibling_host(kind).is_none() => host.ensure(&dir)?,
+    let extracted = match view_hosts_dir() {
+        Some(dir) if sibling_host(kind).is_none() => embedded_host::ensure(kind.desc().host, &dir)?,
         _ => None,
     };
     let exe = view_binary_path(kind);
@@ -1051,7 +1004,7 @@ pub fn spawn_tab(
     if let Some(reason) = unsupported_on(Os::here(), kind) {
         return Err(SpawnError::Io(std::io::Error::new(std::io::ErrorKind::Unsupported, reason)));
     }
-    let custom_cef = custom_cef.filter(|_| desc.runtime_dir.is_some());
+    let custom_cef = custom_cef.filter(|_| desc.host.runtime.is_some());
     let on_disk = view_on_disk_fresh(kind);
     check_spawnable(kind, &plan_for(kind), on_disk, custom_cef)?;
     // A host that came from a download, not a host in place, is hashed again here: the folder it sits in is
@@ -1178,11 +1131,11 @@ mod webkit;
 use crate::view_install::host_platform;
 #[cfg(test)]
 use availability::{
-    availability_with, host_file_name, on_disk_cached, pick_webkit_host, read_on_disk_at, run_in_place_from,
-    stamp_cached, OnDiskCache, StampCache, ON_DISK_CHECK_TTL,
+    availability_with, on_disk_cached, pick_webkit_host, read_on_disk_at, run_in_place_from, stamp_cached, OnDiskCache,
+    StampCache, ON_DISK_CHECK_TTL,
 };
 use availability::{
-    cef_sibling_exe, platform_unavailable_reason, sibling_binary, sibling_host, view_binary_path, view_on_disk_fresh,
+    cef_sibling_exe, platform_unavailable_reason, run_in_place, sibling_host, view_binary_path, view_on_disk_fresh,
     webkit_host_path,
 };
 pub(crate) use availability::{
@@ -1200,22 +1153,21 @@ use profiles::{claim_slot, sweep_cache_dirs, sweep_view_logs_in, WEBVIEW2_PROFIL
 pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };
-use runtime::{HostLink, HostRuntime, Os};
+use runtime::{HostLink, HostRuntime};
 use webkit::spawn_webkit_tab;
 #[cfg(test)]
 use webkit::{webkit_env, webkit_shell_command};
 #[cfg(test)]
 mod tests;
 
-/// The PDF view exe: beside `manifold.exe` when built there (dev trees, the gate), else the copy embedded in this
-/// build, extracted on first use. `None` when neither exists.
+/// The PDF view exe: in place beside `manifold.exe` when built there (dev trees, the gate; `run_in_place`), else the
+/// copy embedded in this build, extracted on first use (`embedded_host::ensure`). `None` when neither exists.
 pub(crate) fn pdf_view_exe() -> std::io::Result<Option<std::path::PathBuf>> {
-    let sibling = sibling_binary("manifold-view-pdfium");
-    if sibling.exists() {
-        return Ok(Some(sibling));
+    if let Some(exe) = run_in_place(&manifold_hosts::PDFIUM) {
+        return Ok(Some(exe));
     }
     match view_hosts_dir() {
-        Some(dir) => embedded_host::Embedded::Pdfium.ensure(&dir),
+        Some(dir) => embedded_host::ensure(&manifold_hosts::PDFIUM, &dir),
         None => Ok(None),
     }
 }

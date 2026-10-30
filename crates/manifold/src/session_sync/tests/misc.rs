@@ -198,10 +198,10 @@ fn view_table_matches_the_store_and_round_trips() {
     for (i, kind) in ViewKind::ALL.into_iter().enumerate() {
         let desc = kind.desc();
         assert_eq!(desc.code, i as u64 + 1, "codes are 1-based positions in ALL");
-        assert_eq!(crate::store::model::VIEW_KINDS[i], desc.name, "the store names the same engine");
-        assert_eq!(serde_json::to_value(Wrap(kind)).unwrap(), serde_json::json!(desc.name));
+        assert_eq!(crate::store::model::VIEW_KINDS[i], desc.host.id, "the store names the same engine");
+        assert_eq!(serde_json::to_value(Wrap(kind)).unwrap(), serde_json::json!(desc.host.id));
         assert_eq!(view_kind_of(view_code(kind)), kind);
-        assert_eq!(ViewKind::from_name(&desc.name.to_uppercase()), Some(kind));
+        assert_eq!(ViewKind::from_name(&desc.host.id.to_uppercase()), Some(kind));
     }
     assert_eq!(ViewKind::from_name("gecko"), None);
     assert_eq!(ViewKind::from_code(0), None);

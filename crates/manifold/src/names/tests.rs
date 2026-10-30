@@ -466,15 +466,13 @@ fn production(src: &str) -> &str {
     starts.iter().filter_map(|m| src.find(m)).min().map_or(src, |i| &src[..i])
 }
 
-/// The `.name` reads on `line`: `.name` not followed by more of an identifier (`.name_format`), not assigned
-/// (`.name = `), and not an engine descriptor's (`desc().name`).
+/// The `.name` reads on `line`: `.name` not followed by more of an identifier (`.name_format`) and not assigned
+/// (`.name = `).
 fn name_reads(line: &str) -> usize {
     line.match_indices(".name")
         .filter(|(i, _)| {
             let rest = &line[i + ".name".len()..];
-            !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_')
-                && !rest.starts_with(" = ")
-                && !line[..*i].ends_with("desc()")
+            !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_') && !rest.starts_with(" = ")
         })
         .count()
 }
@@ -492,7 +490,6 @@ fn name_reads_counts_reads_only() {
     assert_eq!(name_reads("f(&a.name, &b.name)"), 2);
     assert_eq!(name_reads("group.name = clean;"), 0);
     assert_eq!(name_reads("label.name_format(font)"), 0);
-    assert_eq!(name_reads("engine.desc().name"), 0);
     assert_eq!(production("a\n#[cfg(test)]\nmod tests {\nb.name\n}"), "a\n");
 }
 

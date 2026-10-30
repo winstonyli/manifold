@@ -469,7 +469,8 @@ impl App {
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Use your own Blink (CEF) folder").small().color(palette(ui.visuals()).text));
         let configured = self.settings.value.cef_directory.clone().unwrap_or_default();
-        let hint = format!("Folder with {}", crate::cef_platform::PLATFORM.runtime_lib);
+        let lib = manifold_hosts::CEF.runtime_lib(manifold_hosts::Os::here()).expect("CEF has a runtime");
+        let hint = format!("Folder with {lib}");
         if let Some(text) = folder_field(ui, &mut self.view_ui.cef_dir_draft, &configured, &hint) {
             if crate::settings::typed_folder(&text) != configured {
                 self.set_cef_directory(&text);

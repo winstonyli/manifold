@@ -1,17 +1,14 @@
-//! What differs per OS about installing and launching CEF, in one place (spec "Platforms",
+//! What differs per OS about CEF's runtime archive and the libraries its host loads (spec "Platforms",
 //! `docs/superpowers/specs/2026-10-02-engine-install-design.md`). Windows has a pin and a tested
 //! install; Linux has a pin and a layout checked against the real archive, but its install is unrun.
 //!
 //! CEF CDN platform ids: `windows64`, `linux64`, `macosx64`, `macosarm64` (see `cef_pin::pin_for`).
 
-/// The per-platform facts the install and the host launch read.
+/// The per-platform facts of CEF's runtime archive that the install reads, and the system libraries its host loads. The
+/// host's file name and the runtime's marker library are its row in the host table (`manifold_hosts::CEF`).
 pub(crate) struct CefPlatform {
     /// The CEF CDN's platform id: the `_<id>_` in `cef_binary_<version>_<id>_minimal.tar.bz2`.
     pub(crate) id: &'static str,
-    /// The runtime library whose presence marks a CEF directory.
-    pub(crate) runtime_lib: &'static str,
-    /// Appended to an engine host's binary name (`.exe` on Windows).
-    pub(crate) exe_suffix: &'static str,
     /// The archive's subfolders (under its one top folder) that hold the runtime; flattened on unpack.
     pub(crate) runtime_dirs: [&'static str; 2],
     /// Build leftovers inside the runtime folders: any path with one of these directory names...
@@ -25,11 +22,6 @@ pub(crate) struct CefPlatform {
 }
 
 impl CefPlatform {
-    /// `binary`'s file name on this platform.
-    pub(crate) fn host_exe(&self, binary: &str) -> String {
-        format!("{binary}{}", self.exe_suffix)
-    }
-
     /// The `system_libs` the system does not list (`ldconfig -p`), so the download can warn before a host that
     /// cannot start. Empty when none are needed, when all are present, or when the listing cannot be read
     /// (unknown is not a warning). The listing is re-read at most every 10 s: the dialog asks every frame.
@@ -76,8 +68,6 @@ fn missing_in_listing(listing: &str, needed: &'static [&'static str]) -> Vec<&'s
 #[cfg(windows)]
 pub(crate) const PLATFORM: CefPlatform = CefPlatform {
     id: "windows64",
-    runtime_lib: "libcef.dll",
-    exe_suffix: ".exe",
     runtime_dirs: ["Release", "Resources"],
     skip_dirs: ["include", "cmake", "libcef_dll"],
     skip_files: ["CMakeLists.txt", "debug.log"],
@@ -91,8 +81,6 @@ pub(crate) const PLATFORM: CefPlatform = CefPlatform {
 #[cfg(not(windows))]
 pub(crate) const PLATFORM: CefPlatform = CefPlatform {
     id: "linux64",
-    runtime_lib: "libcef.so",
-    exe_suffix: "",
     runtime_dirs: ["Release", "Resources"],
     skip_dirs: ["include", "cmake", "libcef_dll"],
     skip_files: ["CMakeLists.txt", "debug.log"],
@@ -113,12 +101,6 @@ mod tests {
         assert_eq!(missing_in_listing(listing, &["libnss3.so", "libnspr4.so"]), vec!["libnspr4.so"]);
         assert!(missing_in_listing(listing, &["libnss3.so"]).is_empty());
         assert_eq!(missing_in_listing("", &["libnss3.so"]), vec!["libnss3.so"]);
-    }
-
-    #[test]
-    fn host_exe_adds_the_platforms_suffix() {
-        assert_eq!(PLATFORM.host_exe("manifold-view-cef"), format!("manifold-view-cef{}", PLATFORM.exe_suffix));
-        assert_eq!(PLATFORM.host_exe("x"), if cfg!(windows) { "x.exe" } else { "x" });
     }
 
     #[test]

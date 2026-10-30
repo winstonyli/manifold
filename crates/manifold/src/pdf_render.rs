@@ -137,7 +137,7 @@ impl PdfRenderer {
 fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<PdfRenderResult, String> {
     let exe = crate::process_manager::pdf_view_exe()
         .map_err(|e| format!("{LABEL} could not be extracted: {e}"))?
-        .ok_or_else(|| format!("{LABEL} is not installed: build manifold-view-pdfium"))?;
+        .ok_or_else(|| format!("{LABEL} is not installed: build {}", manifold_hosts::PDFIUM.exe))?;
     let mut command = std::process::Command::new(exe);
     command.arg(path);
     let frame = manifold_view_protocol::render::run_child(command, LABEL, RENDER_TIMEOUT, inbox, |command| {

@@ -185,9 +185,7 @@ impl Default for Settings {
         Self {
             default_search_engine: SearchEngine::DuckDuckGo,
             theme: ThemeChoice::System,
-            default_starting_view_kind: crate::process_manager::platform_default_view_kind(
-                crate::process_manager::runtime::Os::here(),
-            ),
+            default_starting_view_kind: crate::process_manager::platform_default_view_kind(manifold_hosts::Os::here()),
             zoom_factor: 1.0,
             home_page: "manifold://start".to_string(),
             window_width: None,
@@ -389,7 +387,7 @@ mod tests {
         let old: Settings = serde_json::from_str(r#"{"home_page":"https://a.test"}"#).unwrap();
         assert_eq!(
             old.default_starting_view_kind,
-            crate::process_manager::platform_default_view_kind(crate::process_manager::runtime::Os::here())
+            crate::process_manager::platform_default_view_kind(manifold_hosts::Os::here())
         );
         let saved: Settings = serde_json::from_str(r#"{"default_starting_view_kind":"webview2"}"#).unwrap();
         assert_eq!(saved.default_starting_view_kind, ViewKind::Webview2);

@@ -15,6 +15,7 @@ egui-winit = { workspace = true, features = ["accesskit"] }
 egui_commonmark = { workspace = true, features = ["pulldown_cmark"] }
 etcetera.workspace = true
 image = { workspace = true, features = ["jpeg", "ico", "webp", "bmp", "gif"] }
+manifold-hosts.workspace = true
 manifold-pages.workspace = true
 manifold-view-protocol.workspace = true
 pollster.workspace = true
@@ -40,6 +41,7 @@ winit.workspace = true
 skrifa.workspace = true
 
 [build-dependencies]
+manifold-hosts.workspace = true
 sha2.workspace = true
 
 # Windows-only dependencies. `manifold` also compiles on Linux (`cargo check
