@@ -22,6 +22,8 @@ mod closed;
 #[cfg(windows)]
 mod dblprobe;
 #[cfg(windows)]
+mod download;
+#[cfg(windows)]
 mod focus;
 mod fresh;
 mod http;
@@ -156,6 +158,7 @@ mod windows_main {
         Stage::work("hscroll", crate::probes::hscroll),
         Stage::work("key", crate::probes::key),
         Stage::work("page-kind", crate::probes::page_kind),
+        Stage::work("download", crate::download::download),
         Stage::work("chrome-shots", crate::shots::chrome_shots),
         Stage::work("chrome-shots-sizes", crate::shots::chrome_shots_sizes),
         Stage::work("shots-aa", crate::shots::shots_aa),
