@@ -311,8 +311,10 @@ manifold-view-pdfium.exe ..." in place of "the PDF view").
 
 ```rust
 /// What `sync_host` found, so `run_in` and the tests read it instead of captured output.
+#[derive(Debug, PartialEq, Eq)]
 enum HostSync { NothingToSync, NoBuildFolder, Synced }
 
+/// Every OS-taking leaf method below gets `Os::here()`, and the sidecar filter is `pinned_files`'s own.
 fn sync_host(root: &Path, host: &Host, outcome: &mut Outcome) -> HostSync {
     // nothing to sync (no sidecar for Os::here(), no runtime): return NothingToSync, printing nothing
     // folder = root/<dev_dir or "target">/debug; not a dir: one skip line, return NoBuildFolder
@@ -356,7 +358,7 @@ New stages in `STAGES` (`main.rs:138`-`189`), in a new `cfg(windows)` module `re
 thin wrapper over a core taking the repo root and returning the lines it prints, so the tests run on temp trees and
 assert on returned values, not captured output (as `sync_host` returns `HostSync`):
 `release_pins_in(root, tag, dist, foreign) -> Result<Vec<String>, String>` and `release_embedded_in(root, tag, dist)`
-likewise; the wrapper passes the repo root (`Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")`, as `sync_deps.rs:177`
+likewise (both `pub(crate)`); the wrapper passes the repo root (`Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")`, as `sync_deps.rs:177`
 does) and prints the lines to stdout. `target/release` is joined to `root`; `dist` and `foreign` resolve as
 `root.join(dist)` (an absolute argument stays absolute; the runner's cwd is the repo root, so the YAML's relative `dist`
 means the same), and the printed paths are `std::path::absolute(root.join(..))`. Tests pass absolute paths inside the
@@ -369,8 +371,9 @@ temp root.
   the Linux job's artifact, `webkit-host/`). Each file is copied to `DIST/<file>-<platform>` and hashed with the gate's
   `sha2`, and the manifest `DIST/manifold-<TAG>-<platform>.host-pins.json` is written with `serde_json`
   (`preserve_order`, `crates/gate/Cargo.toml:11`). A missing file is an error naming it and where it was looked for. The
-  manifest's text goes to stderr, as `release.yml:101`'s `Get-Content` put it in the log; on success stdout holds one
-  line, `MANIFOLD_HOST_PINS=<path>`.
+  manifest's text goes to stderr, as `release.yml:101`'s `Get-Content` put it in the log: the wrapper `eprintln!`s
+  the file it reads back from the path in the returned `MANIFOLD_HOST_PINS=` line (the core returns no text, so no test
+  depends on captured output). On success stdout holds that one line, `MANIFOLD_HOST_PINS=<path>`.
 - **`release-embedded`** creates `DIST/embedded` if missing and loops the `Embedded` rows: copies
   `target/release/<file>` to `DIST/embedded/<file>`, writes `DIST/manifold-<TAG>-<platform>.embedded-<id>.sha256`
   (`<hash>  <file>`, the format `release.yml:117`-`120` writes), and prints `<embed_var>=<path>` per host.
@@ -431,7 +434,8 @@ and verify steps (`:124`-`130`) are unchanged.
   result being empty. So a host or sidecar left out of the release, an extra file, or a host under the wrong platform
   fails the verify. The re-hash of each file against the manifest (`:58`-`63`) is unchanged and reads only files.
 - **`package.rs`**: `installed_files` (`:131`-`137`) is `host.installed_files(Os::here())` for a `Download` host built for
-  `Os::here()`. The engines it checks (`:208`, `:219`) and `install-check`'s messages (`:110`, `:114`) come from the same
+  `Os::here()`; it and `install` (`:139`) move from `Vec<&'static str>` and `&[&str]` to `Vec<String>` and `&[String]`,
+  the table's owned names. The engines it checks (`:208`, `:219`) and `install-check`'s messages (`:110`, `:114`) come from the same
   filter, which yields CEF and Servo: WebKit is pinned but runs only through WSL, which the release runner and a bare
   `gate package` run do not have. `install-check`'s usage string (`main.rs:185`) stays a literal, `cef|servo EXE`, because
   `STAGES` is a `const` table of `&'static str`s (`main.rs:126`, `:138`); a gate test checks that its first word, split
@@ -442,12 +446,12 @@ and verify steps (`:124`-`130`) are unchanged.
   its copy in the runtime folder". The dep-info list (`:69`) names `[&WEBVIEW2, &PDFIUM]` by row (the hosts the gate's
   build line builds; one list of those is PARKED "The `-p` crate lists are repeated"), and the hint at `:87` is built
   from the same list. The test fixture's names (`:114`) come from the same rows.
-- **Fixtures and probes**: `jar.rs:481`, `:744`; `probes.rs:560`-`561`; `shots.rs:75` (`FAKE_CEF_HOST`), `:1590`,
+- **Fixtures and probes**: `jar.rs:481`, `:744`; `probes.rs:560`-`561`; `shots.rs:74` (`FAKE_CEF_HOST`), `:1590`,
   `:1630`, `:1632`, `:1652`-`1653`, `:1704`; `stress.rs:40`; `package.rs:168`, `:226` read `file_name(Os::here())`,
   `CEF_RUNTIME_DIR`, `HOSTS_DIR` or `runtime_lib(Os::here())`. In the same functions: `shots.rs:1625`'s
   `cef.host` marker takes its id from `CEF.id`; `:1633`'s `ready` stays a literal (the app's marker, not a layout
   fact); `:1645`'s fixture manifest keys come from `CEF.id` and `Os::here().pin_platform()` (the new `host_pin::parse`
-  reads them). `FAKE_CEF_HOST` (`shots.rs:75`, destructured at `:1641` and `:1801`; the latter's `.ends_with(".exe")` becomes a
+  reads them). `FAKE_CEF_HOST` (`shots.rs:74`, destructured at `:1641` and `:1801`; the latter's `.ends_with(".exe")` becomes a
   comparison with `CEF.file_name(Os::here())`) is a `const` tuple, which cannot call `file_name`: it becomes a
   function. `stress.rs:40`'s script is a `const` string: it takes the exe name as a `-Name` parameter, as
   `sleep.rs:84`-`88` does. `fresh.rs:114`'s fixture takes its host names from rows; `"manifold"` there is the app's own
@@ -472,7 +476,7 @@ and verify steps (`:124`-`130`) are unchanged.
   row (only WebKit is built for another OS than Windows, the `SITE_HOST` predicate). `pinned_under` cases:
   `cef`/`windows-x64` and `webkit`/`linux-x64` give their files; `webkit`/`windows-x64`, an unknown platform and an
   `Embedded` row give `None`; `cef`/`macos-x64` gives its files (the table is OS-agnostic; the app looks up only
-  `Os::here()`), `cef`/`other-x64` gives `None` (no host is pinned for `Os::Other`, as `runtime.rs:46`-`47` says).
+  `Os::here()`), `cef`/`other-x64` gives `None` (no host is pinned for `Os::Other`, as `runtime.rs:58`-`59` says).
 - **`Os`** (leaf): `runtime.rs:198`-`208` (`from_consts` and `pin_platform`) moves into the leaf, extended with
   `exe_suffix`, `name` and every `pin_platform`. The golden `file_name` literals replace `cef_platform.rs:119`-`122`.
 - **Layout** (leaf, `tests/layout.rs`, reading repo files from `CARGO_MANIFEST_DIR/../..` with `std::fs` and substring
@@ -509,12 +513,13 @@ and verify steps (`:124`-`130`) are unchanged.
     `two_embedded_hosts_extract_side_by_side` (`:325`-`334`) compares with `PDFIUM.installed_in(Os::here(), &dir)` in
     place of the literal `pdfium/manifold-view-pdfium.exe`, which would fail on the Linux CI job. New: the generated
     table's ids equal the `Embedded` rows' ids, in order.
-  - Names guard: `names/tests.rs:470`, `:477` and `:495` (the `desc().name` exemption) are deleted (H3).
+  - Names guard: `names/tests.rs:470` (a doc comment) and `:477` (a clause of the filter) are edited to drop the
+    `desc().name` exemption, and `:495` is deleted (H3).
 - **Manifests**: `host_pin::parse` refuses a manifest whose file set for a host differs from the table (Servo without
   `libEGL.dll`), names a host that is not downloaded, names an unknown platform, or puts a host under another OS's
   platform (`webkit`/`windows-x64`), and accepts `cef`/`windows-x64` with `webkit`/`linux-x64`; its tests build file
   names with `CEF.file_name(Os::Windows)` and the like, never `Os::here()` (the Linux CI job runs them). `manifest_gaps`
-  is tested directly: a missing host, a missing sidecar, an extra file, a host under the wrong platform, and `cef` under
+  (step 6) is tested directly: a missing host, a missing sidecar, an extra file, a host under the wrong platform, and `cef` under
   `linux-x64` in a Windows release (which `pinned_under` alone accepts).
 - **Gate**:
   - `sync_host` and `run_in` on temp trees, asserting on `HostSync`, `Outcome` and the files (not on printed lines):
@@ -527,27 +532,40 @@ and verify steps (`:124`-`130`) are unchanged.
     `run_in` fails when no host returned `Synced`. `a_held_file_says_to_close_manifold` (`:330`) stays. Three existing
     tests are rewritten over `sync_host(root, &HOST, ..)`, with fixtures under `<root>/target-servo/debug` and
     `<root>/target/debug` (they now build `build/` and the exe directly under one temp dir, `:297`-`302`): `:235`
-    (`the_newest_in_either_build_folder_wins`) asserts the first root that has a match wins, not the newest across
-    roots; `:257` (the Servo DLLs) keeps its assertions with the error text now "build manifold-view-servo first"
+    (`the_newest_in_either_build_folder_wins_and_sync_copies_only_on_change`) splits in two: its newest-match
+    assertions move to a `sync_host` test with Servo-style `.dll` sidecars, asserting the first root that has a match
+    wins, not the newest across roots; its copy-only-on-change assertions stay as a direct `sync_file` test; `:257` (the Servo DLLs) keeps its assertions with the error text now "build manifold-view-servo first"
     (`:288`'s `contains` changes to match); `:296` (`a_cef_file_that_cant_be_copied_is_listed_and_the_rest_still_copy`)
     keeps its assertions: one runtime file fails, the rest and the exe still copy, exactly one error, `finish` is `Err`
     (a per-file failure does not clear `runtime_ready`).
-  - `release_pins_in` and `release_embedded_in` on temp trees (a root with `target/release/` and no `DIST`): files
-    copied and named `<file>-<platform>`, manifest keys and sizes, a missing file an error naming it, a foreign host
-    taken from `FOREIGN`, records in the `<hash>  <file>` format, the returned `NAME=VALUE` lines with absolute paths
-    and no `\\?\`; `embedded_record`'s literal names. The manifest `release_pins_in` writes, parsed by
-    `release_verify::manifest_files` and checked by `manifest_gaps(entries, Os::here())`, leaves no gap, so producer and
-    verifier cannot drift. A test reads `release.yml` (through `CARGO_MANIFEST_DIR/../..`) and checks that the
-    `-Filter "..."` glob on the `gh release create` line (split on `*`, starts and ends with) matches
-    `embedded_record("manifold-vX.Y.Z-windows-x64", host)` for every `Embedded` row: the upload line that first runs on
-    a real tag (H14). Another: for every `Download` host, `pinned_under(host.pin_platform(Os::here()))` equals
-    `Some(pinned_files(Os::here()))` as a set, so `host_pin::parse` and `manifest_gaps` agree.
-  - `fresh.rs`: new cases, not edits (the fixture has no CEF exe today, and `touch` makes no parent folder). The
-    fixture gains `manifold-view-cef.exe` and a `cef-runtime/` copy, with a `touch` that creates the parent, named from
-    the CEF row and its `runtime.dir`. A runtime copy older than the built exe is an `Err` naming `gate
-    sync-runtime-deps` and `ALLOW_STALE`; an absent copy is skipped.
-  - The `install-check` usage literal is `cef|servo EXE`; the test takes its first whitespace-separated word, splits it
-    on `|`, and compares with the filter's ids as a set.
+  - Step 5 (`release_hosts.rs`): `release_pins_in` and `release_embedded_in` on temp trees (a root with
+    `target/release/` and no `DIST`): files copied and named `<file>-<platform>`, manifest keys and sizes, a missing
+    file an error naming it, a foreign host taken from `FOREIGN`, records in the `<hash>  <file>` format, the returned
+    `NAME=VALUE` lines with absolute paths and no `\\?\`; `embedded_record`'s literal names.
+  - Step 6 (`release_verify.rs`, with `manifest_gaps` and the YAML change; `Pinned` with its fields, `manifest_files`
+    and `manifest_gaps` are `pub(crate)`, and `release_pins_in` is too, so the tests can sit in either module):
+    - the round trip: the manifest `release_pins_in` writes, parsed by `manifest_files` and checked by
+      `manifest_gaps(entries, Os::here())`, leaves no gap, so producer and verifier cannot drift;
+    - the upload glob: the test reads `release.yml` (through `CARGO_MANIFEST_DIR/../..`), takes the text between
+      `-Filter "` and the next `"` on the line holding `gh release create`, and fails naming that line if there is
+      none. It replaces the literal `$stem` with `manifold-vX.Y.Z-windows-x64`, splits the result on `*`, and asserts
+      that `embedded_record("manifold-vX.Y.Z-windows-x64", host)` starts with the left half and ends with the right
+      half for every `Embedded` row, and that `manifold-vX.Y.Z-windows-x64.exe.sha256` does not match (so it cannot
+      pass vacuously): the upload line that first runs on a real tag (H14);
+    - for every `Download` host, `pinned_under(host.pin_platform(Os::here()))` equals `Some(pinned_files(Os::here()))`
+      as a set, so `host_pin::parse` and `manifest_gaps` agree (it uses only leaf methods and could sit in step 1, but
+      it names `manifest_gaps`, so it lands with it).
+  - `fresh.rs`: the fixture is extended (`:114`: the CEF exe `manifold-view-cef.exe` and a `cef-runtime/` copy, with a
+    `touch` that creates the parent, named from the CEF row and its `runtime.dir`) and new cases are added: a runtime
+    copy older than the built exe is an `Err` naming `gate sync-runtime-deps` and `ALLOW_STALE`; an absent copy is
+    skipped.
+  - `sleep.rs` and `all.rs` are pinned by the golden `file_name` and `built_for` literals and the grep list
+    (`manifold-view-{`), not by a test of their own: `kill_hosts` has no test today and the `SITE_HOST` predicate is
+    inline in a stage.
+  - The `install-check` usage literal is `cef|servo EXE`; the test sits in `main.rs`'s `windows_main` tests
+    (`:344`-`345`, beside `stage_names_are_unique_and_the_usage_lists_the_public_ones`, since `STAGES` is private to
+    that module), takes the literal's first whitespace-separated word, splits it on `|`, and compares with the ids of
+    the `Download` hosts built for `Os::here()` as a set.
 - **Tier**: `tier.rs` classifies `crates/manifold-hosts/**` as Full (today `:151` would send `src/lib.rs` to Light as a
   "path on no list"); its case beside `:281` uses `crates/manifold-hosts/src/lib.rs` and `tests/layout.rs`, since
   `:107` already sends every `crates/*/Cargo.toml` to Full.
@@ -605,7 +623,7 @@ Each stays outside the table; where it duplicates a row, a test ties it.
   and records (`:107`-`112`, `:117`-`123`; `:107`'s `Resolve-Path` of the pin manifest becomes the gate's printed
   `MANIFOLD_HOST_PINS`).
 - `release_verify.rs`'s two hand-written embedded checks and the asset names `embedded-host` and `embedded-pdf-view`.
-- The names guard's `desc().name` exemption (`names/tests.rs:470`, `:477`, `:495`).
+- The names guard's `desc().name` exemption (edited out of `names/tests.rs:470` and `:477`; the assertion at `:495` goes).
 - PARKED entries GATE-CEF-DIR, "One table per host" and "Servo's DLLs come from the newest mozangle output in either
   target folder".
 
@@ -617,12 +635,16 @@ Each stays outside the table; where it duplicates a row, a test ties it.
   release-embedded` prints and the workflow forwards (`:390`, which says `release.yml` sets them), and the stale
   `hosts.yml` in the Packaging bullet (`:388`; that workflow no longer exists).
 - README `:22` ("`ViewDesc::host_os` read through `process_manager/runtime.rs`") names `Host.os` read through
-  `Host::built_for`; README `:35` (the Linux CI test line) gains `-p manifold-hosts`.
+  `Host::built_for`; README `:35` (the Linux CI test line) gains `-p manifold-hosts`; the Architecture crate map
+  (`:9`-`18`) gains a `manifold-hosts` line (zero-dependency leaf: the host table, shared by the app, its build script
+  and the gate).
 - `docs/decisions/2026-10-23-host-runtimes.md:7`-`9` (the `ViewDesc` row's `host_os: Option<Os>`) and `:68`-`69`:
-  amended per H2 (the facts now live on `Host`), with a pointer here.
+  amended per H2 (the facts now live on `Host`), with a pointer here; its code pointer (`:3`) and ruling A (`:18`),
+  which put `Os` in `runtime.rs`, gain a note that `Os` now lives in `manifold-hosts`.
 - PARKED.md: the three entries above deleted. Its "Host table (2026-10-29)" section (H13 and "Weighed and not taken"'s
   freshness entry) is already in; its "`-p` crate lists are repeated" entry gains `README.md:35`, `main.rs:8` and
-  `:246` (the gate's own spelling of the build line) and `sleep.rs:20` as evidence; "Hosts outside the in-place lookup
+  `:246` (the gate's own spelling of the build line), `sleep.rs:20` and the module docs `click_count.rs:4`,
+  `iframe_typing.rs:4`, `page_text.rs:4`, `search.rs:4` and `shots.rs:50` as evidence; "Hosts outside the in-place lookup
   are not stamp-checked" (`:156`) is re-cited from the deleted `availability.rs:42` (`in_place_paths`) to
   `Host::in_place`, and the shifted `process_manager.rs` line numbers in both sections are refreshed; `:87` ("split
   `ViewDesc` into engine and host parts") is re-read against `ViewDesc.host`: the macOS spike is still its trigger, so
@@ -630,14 +652,23 @@ Each stays outside the table; where it duplicates a row, a test ties it.
 - `CLAUDE.md` "Formatting and lints": the clippy command gains `-p manifold-hosts`.
 - Code comments that name a deleted item change with the code. The rule, with a check: when the work lands, grep the
   tree (excluding `docs/superpowers` and `.superpowers`) for `HostSource`, `Embedded::`, `PLATFORM.host_exe`,
-  `PLATFORM.exe_suffix`, `runtime_lib` on `CefPlatform` (not `Host::runtime_lib`), `beside_exe`, `in_place_paths`,
-  `sibling_binary`, `host_file_name`, `ViewDesc::dev_dir`, `find_newest`, `sync_servo`, `sync_cef`, `embedded-host`,
-  `embedded-pdf-view` and `MANIFOLD_*_SHA256`, and fix every hit. The `host_exe` parameters in `profiles.rs` and
-  `process_manager.rs` (`custom_host_path`) are unrelated and stay. The app-crate needles join `deleted_names.rs`'s list,
-  so that half is a test; the gate and docs half is the manual grep. Known hits and doc comments on items this
-  deletes or rewrites: `process_manager.rs:39`-`49`, `:71`, `:76`, `:1213`, `:1218`; `host_pin.rs:12`-`13`;
-  `view_install.rs:132`, `:138`, `:318`; `availability.rs:6`-`7`, `:14`-`15`, `:25`-`29`, `:38`-`41`, `:52`,
-  `:79`-`80`; `embedded_host.rs:2`, `:12`, `:50`, `:68`; `build.rs:1`-`6`; `release_verify.rs:2`-`6`; `package.rs:129`;
+  `PLATFORM.exe_suffix`, `PLATFORM.runtime_lib`, `CefPlatform::runtime_lib`, `beside_exe`, `in_place_paths`,
+  `sibling_binary`, `host_file_name(`, `ViewDesc::dev_dir`, `find_newest`, `sync_servo`, `sync_cef`, `embedded-host`,
+  `embedded-pdf-view` and the two variables `MANIFOLD_WEBVIEW2_SHA256` and `MANIFOLD_PDFIUM_SHA256`, and fix every hit.
+  The `host_exe` parameters in `profiles.rs` and `process_manager.rs` (`custom_host_path`) are unrelated and stay. The
+  bare words `host_file_name` and `runtime_lib` are not needles: the first is a substring of the kept `host_file_names`
+  (`view_install.rs:844`), the second of the new `CEF.runtime_lib(..)` and `Host::runtime_lib` calls. The needles above
+  are chosen so that a plain `contains` is exact; the app-crate ones (`HostSource`, `Embedded::`, `PLATFORM.host_exe`,
+  `PLATFORM.exe_suffix`, `PLATFORM.runtime_lib`, `CefPlatform::runtime_lib`, `beside_exe`, `in_place_paths`,
+  `sibling_binary`, `host_file_name(`, `ViewDesc::dev_dir`, `MANIFOLD_WEBVIEW2_SHA256`, `MANIFOLD_PDFIUM_SHA256`) join
+  `deleted_names.rs`'s list (`crates/manifold/src/deleted_names.rs:31` is a substring scan of `crates/manifold/src`),
+  in the commit that deletes the last of them (step 2), after a run on the post-change tree finds no hit. The gate
+  and docs half (`find_newest`, `sync_servo`, `sync_cef`, `embedded-host`, `embedded-pdf-view`, which live outside
+  `crates/manifold/src`) is the manual grep. Known hits and doc comments on items this deletes or rewrites:
+  `process_manager.rs:39`-`49`, `:51`-`54` (the `ViewDesc` struct doc, rewritten to "name, store code, host, label, ..."),
+  `:71`, `:76`, `:1213`, `:1218`; `host_pin.rs:12`-`13`; `view_install.rs:132`, `:138`, `:318` (`CefPlatform::runtime_lib`
+  in a doc comment: reworded by hand); `availability.rs:6`-`7`, `:14`-`15`, `:25`-`29`, `:38`-`41`, `:52`, `:79`-`80`,
+  `:92`; `embedded_host.rs:2`, `:12`, `:50`, `:68`; `build.rs:1`-`6`; `release_verify.rs:2`-`6`; `package.rs:129`;
   `sync_deps.rs:1`-`16`; `process_manager/tests.rs:550`.
 - `CHANGELOG.md`: nothing now; the entry is written at the bump (Internal: the host table; Changed: the record asset
   names).
@@ -650,17 +681,20 @@ Each stays outside the table; where it duplicates a row, a test ties it.
   only on a real tag. Mitigation: `release-pins` and `release-embedded` are unit-tested on temp trees, and
   `release-embedded` can also run locally against this machine's `target/release` WebView2 build into a scratch folder.
   A wrong manifest fails `release-verify`'s exact-set check and `gate package`'s engine states in the same run. The
-  `:144` line is tied by two tests: the layout test (the `-Match` alternation) and a gate test (the `-Filter` glob
-  against `embedded_record`). The YAML change and the `release_verify` rename are the last commit.
+  `:144` line is tied by two tests: the layout test (the `-Match` alternation, step 1) and a gate test (the `-Filter`
+  glob against `embedded_record`, step 6, since the glob exists only after the YAML change). The YAML change and the
+  `release_verify` rename are the last commit with code.
 - **R3. Sync behaviour changes on purpose** (H9): a missing build folder skips that host only; a part found in no
   build output but in place is kept; a CEF build with neither gets a clearer error than today's path-not-found.
 - **R4. Asset rename** (H6): published releases keep the old record names; anything outside the repo that fetched
-  `embedded-host.sha256` breaks. In the repo, `release.yml`, `release_verify.rs` and README `:389` name them, and all
-  three change together (grep 2026-10-29: otherwise only old plans and specs).
+  `embedded-host.sha256` breaks. In the repo, `release.yml` and `release_verify.rs` name them (README `:389` names
+  `embedded-pdf-view`), and all three change together (grep 2026-10-29: otherwise only old plans and specs).
 - **R5. Manifest key order changes** (Servo, CEF, WebKit, from `ALL`, in place of CEF, Servo, WebKit at
   `release.yml:85`-`87`). Both parsers iterate the object, so order does not matter.
 - **R6. The exact-set check in `host_pin::parse` makes a malformed release manifest pin nothing at run time.** A
-  release cannot ship one: `release-verify` runs the same predicate, and `gate package` the engine states, first.
+  release cannot ship one: `release-verify` runs `manifest_gaps`, which is at least as strict (its expected set is built
+  from the same `pin_platform` and `pinned_files`, and a test ties it to `host_pin::parse`), so a manifest that passes
+  it passes the app's check; `gate package` checks the engine states, first.
 - **R7. `build.rs` gains its first path-crate build dependency** (beside `sha2`). A compile error in the leaf then stops
   every build of the app, which `cargo test -p manifold-hosts` catches first.
 
@@ -690,9 +724,12 @@ Each step leaves the tree building with its tests green, so each can be committe
    (`build.rs`, `embedded_host.rs`), `prepare_webview2`, `pdf_view_exe`, the names guard; `Cargo.lock`.
 3. `sync_host` and `run_in`; `Cargo.lock` (the gate's dependency).
 4. The other gate readers (`fresh`, `package`, fixtures, `sleep`, `all`).
-5. `release-pins` and `release-embedded` with `embedded_record` and their tests, called by nothing yet.
-6. Last, one commit: `release_verify` (the record names, the one embedded loop, `manifest_gaps`) and the whole
-   `release.yml` change, writer, upload and reader of the renamed records together (H6), with README "Releases".
+5. `release-pins` and `release-embedded` with `embedded_record` and their temp-tree and name tests (Tests, "Step 5"),
+   called by nothing yet.
+6. Last, one commit: `release_verify` (the record names, the one embedded loop, `manifest_gaps`, the `pub(crate)`
+   visibilities) and the whole `release.yml` change, writer, upload and reader of the renamed records together (H6),
+   with README "Releases" and the tests that need both halves (Tests, "Step 6": the round trip, the upload glob, the
+   `pinned_under`/`manifest_gaps` agreement and `manifest_gaps` itself).
 7. The remaining docs and the PARKED deletions.
 
 Verification before merging: `cargo test` for every crate touched, `-p manifold-hosts` included; `gate
