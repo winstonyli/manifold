@@ -76,7 +76,7 @@ status: draft
   - At 10444ae5 those paths were clean. Every `git add` below names its paths.
   - An untracked file outside those paths (at the repo root, for instance) is not this plan's. Never stage it, and leave it alone.
     - `run.ps1` marks every run's commit `-dirty` while `git status --porcelain -- . ':!docs/runs.md'` (`run.ps1:63`) lists anything, untracked files included. At 10444ae5 it listed nothing, so an Expected line below that says "no `-dirty`" holds only while it still lists nothing.
-- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` is the core cap. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
+- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` caps build jobs only; for a long `cargo test`, add `-- --test-threads 8`. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
 - **One cargo per target dir.**
   - Before any cargo command, run `Get-Process cargo -ErrorAction SilentlyContinue` in PowerShell. If one is running, it is another session's build in `target/`: wait for it to exit.
   - Before a WSL cargo run, `wsl.exe -d Ubuntu -e pgrep -af "[c]argo"` must print nothing.
@@ -121,7 +121,7 @@ status: draft
   - The sync comparison uses the hosts already built in this tree: `target/debug/manifold-view-cef.exe` with `target/debug/cef-runtime/`, and `target-servo/debug/manifold-view-servo.exe` with its two DLLs.
   - WebKit is touched only through the leaf's WSL test run.
 - **Disk.**
-  - C: had 4.6 GB free on 2026-10-29 (100% used). Check it with `df -h /c | tail -n 1` before every build and run.
+  - C: had a few GB free on 2026-10-29 (3.2 GB at the last review; 100% used). Check it with `df -h /c | tail -n 1` before every build and run.
   - Under 2 GB free, stop and ask the user. Delete nothing to make room.
   - Make no new target dir.
 - **While a run is live.** Never edit sources while a run started from this repo is live.
@@ -495,7 +495,7 @@ manifold-hosts = { path = "crates/manifold-hosts" } # std only; only manifold an
 manifold-pages = { path = "crates/manifold-pages" }
 ```
 
-Nothing uses the workspace dependency until Tasks 2 and 3. Cargo allows it, but on this toolchain every cargo command (tests, clippy, the hook's clippy) prints one `warning: unused workspace dependency 'manifold-hosts'` (`cargo::unused_workspace_dependencies`, warn by default) until Task 2 adds `manifold-hosts.workspace = true`. It is cargo's lint, not a clippy finding, and `-D warnings` does not turn it into an error. Leave the entry in.
+Nothing uses the workspace dependency until Tasks 2 and 3. Cargo allows it, but on a recent toolchain cargo may print, on each command (tests, clippy, the hook's clippy), one `warning: unused workspace dependency 'manifold-hosts'` (`cargo::unused_workspace_dependencies`, warn by default) until Task 2 adds `manifold-hosts.workspace = true`. It is cargo's lint, not a clippy finding, and `-D warnings` does not turn it into an error. Leave the entry in.
 
 - [ ] **Step 3: Write `lib.rs`: the types and the failing tests**
 
@@ -1636,7 +1636,7 @@ git status --short
 Expected:
 - `cargo fmt --all` may rewrap lines in `crates/manifold-hosts`; that is fine.
 - The tests give `7 passed` (lib), `5 passed` (layout), `0` doc tests and `6 passed` (tier). `--locked` passes because Step 4 already wrote `Cargo.lock`.
-- clippy finishes with no clippy finding; the one `unused workspace dependency 'manifold-hosts'` cargo warning from Step 2 is expected, here and in the tests above. With a cold cache it can take several minutes; give it a 600000 ms timeout.
+- clippy finishes with no clippy finding; if cargo reports the `unused workspace dependency 'manifold-hosts'` warning from Step 2, it is expected, here and in the tests above. With a cold cache it can take several minutes; give it a 600000 ms timeout.
 - `git diff --stat` lists exactly `.githooks/pre-commit`, `.github/workflows/ci.yml`, `CLAUDE.md`, `Cargo.lock`, `Cargo.toml`, `README.md` and `crates/gate/src/tier.rs`.
 - `git status --short` also shows `?? crates/manifold-hosts/`.
 
@@ -1743,7 +1743,7 @@ How to work:
   - the module doc (:3-6) and the imports (:8-9);
   - `Os` deleted (:14-62);
   - `for_os` (:89-94);
-  - the moved test deleted (:198-208);
+  - the copied test deleted (:198-211);
   - `a_wsl_host_speaks_tcp` (:233).
 - Modify: `crates/manifold/src/settings.rs` (:189, :392).
 - Modify: `crates/manifold/src/process_manager/availability.rs`:
@@ -1772,7 +1772,7 @@ How to work:
 - Modify and test: `crates/manifold/src/host_pin.rs`:
   - the module doc (:12-13), the import (:15) and the `parse` doc (:86-87);
   - the set check after the files loop (:114);
-  - tests: the import (:124), two tests rewritten (:146-177) and one added.
+  - tests: the import (:124), two tests rewritten (:145-177) and one added.
 
 **Interfaces:**
 - Consumes from Task 1 (the leaf, its spec "The crate" API, exactly):
@@ -1818,7 +1818,7 @@ use manifold_hosts::{Delivery, Os, CEF, CEF_RUNTIME_DIR};
 - Deletes:
   - `process_manager::HostSource` and `process_manager::CEF_RUNTIME_DIR`;
   - `ViewDesc.{name, binary, source, host_os, runtime_dir, dev_dir}`;
-  - `runtime::Os` and its test `an_os_name_from_the_standard_library_reads_as_one_of_four`, which Task 1 moved into the leaf;
+  - `runtime::Os` and its test `an_os_name_from_the_standard_library_reads_as_one_of_four`, which Task 1 copied into the leaf (Task 2 deletes the originals);
   - `availability::{sibling_binary, host_file_name, beside_exe, in_place_paths}` and the `"engine-hosts"` literal;
   - `CefPlatform.{runtime_lib, exe_suffix}`, `CefPlatform::host_exe` and `host_exe_adds_the_platforms_suffix`.
 - Unchanged signatures, which now read `kind.desc().host`:
@@ -2338,7 +2338,7 @@ with:
 /// How a host built for one OS runs on another.
 ```
 
-At HEAD :89-94, replace:
+At HEAD :89-90, replace:
 
 ```rust
     fn for_os(kind: ViewKind, here: Os) -> Option<HostRuntime> {
@@ -2352,7 +2352,7 @@ with:
         match kind.desc().host.os {
 ```
 
-At HEAD :197-211, delete the test that Task 1 moved into the leaf. Replace:
+At HEAD :198-211, delete the test that Task 1 copied into the leaf. Replace:
 
 ```rust
     #[test]
@@ -3436,7 +3436,9 @@ with:
         assert_eq!(no_egl.len() + 1, servo.len(), "Servo's Windows host has libEGL.dll beside it: {servo:?}");
         let without_egl = serde_json::json!({"servo": {"windows-x64": files(&no_egl)}});
         let err = parse(&without_egl.to_string(), "1.2.3").unwrap_err();
-        assert!(err.starts_with("servo/windows-x64: lists ") && err.contains("libEGL.dll"), "{err}");
+        let listed: std::collections::BTreeSet<&str> = no_egl.iter().map(String::as_str).collect();
+        let pinned: std::collections::BTreeSet<&str> = servo.iter().map(String::as_str).collect();
+        assert_eq!(err, format!("servo/windows-x64: lists {listed:?}, the host table pins {pinned:?}"));
         let refused = [
             ("webview2", "windows-x64", files(&[WEBVIEW2.file_name(Os::Windows)])),
             ("cef", "plan9-x64", files(&CEF.pinned_files(Os::Windows))),
@@ -3466,7 +3468,7 @@ Why the tests are written this way (spec "Tests", Manifests):
   - A host under another OS's platform: `webkit/windows-x64`.
 - The accepted pair is the spec's `cef`/`windows-x64` with `webkit`/`linux-x64`. Entry order is the manifest's (`serde_json` has `preserve_order` in this crate), and alphabetical order would give the same answer.
 
-Red, argued and not run (the crate does not build until Part B ends): at HEAD, `parse` accepts any file list for a known engine. So `parse(&without_egl.to_string(), ..).unwrap_err()` panics with "called `Result::unwrap_err()` on an `Ok` value", and so would each `refused` case. The two rewritten tests pass at HEAD and after the change; they are re-expressed, not new behaviour.
+Red, argued and not run (the crate does not build until Part B ends): at HEAD, `parse` accepts any file list for a known engine. So `parse(&without_egl.to_string(), ..).unwrap_err()` panics with "called `Result::unwrap_err()` on an `Ok` value", and so would each `refused` case. The two rewritten tests assert the same behaviour before and after the change (they are re-expressed over the rows, so they only compile once the dependency from Step 1 is in); they are not new behaviour.
 
 - [ ] **Step 21: `host_pin.rs`: each entry must be the table's file set**
 
@@ -3607,7 +3609,7 @@ Expected from `git diff --stat`: exactly these 14 files, and nothing under `crat
 Expected from `git status`: the same 14 files as ` M`, and no `??` line under `crates`. `Cargo.lock` is unchanged, because no cargo command ran. Part B's first cargo run adds `manifold-hosts` to the `manifold` package's dependencies there; Task 1 already locked the leaf package itself.
 **Part A ends here: no cargo command, no commit.**
 - The tree does not build yet. `prepare_webview2` still names `HostSource` and `kind.desc().source`, and `pdf_view_exe` still calls `sibling_binary` and `embedded_host::Embedded`, all deleted or rewritten above.
-- Part B continues in this same working tree, with the next step number. It rewrites those two functions, `embedded_host.rs` and `build.rs`, and the names guard, `deleted_names.rs` and `pdf_render.rs:140`.
+- Part B continues in this same working tree, with Step B1. It rewrites those two functions, `embedded_host.rs` and `build.rs`, and the names guard, `deleted_names.rs` and `pdf_render.rs:140`.
 - Then it runs `cargo fmt --all`, the tests and clippy over both halves, and makes Task 2's one commit, `Cargo.lock` included.
 
 Part B's test run, `cargo test -j 8 -p manifold --bin manifold` (the app has no lib target), must include these tests from Part A:
@@ -6795,7 +6797,7 @@ Expected: `git status --short` lists ` M crates/gate/src/main.rs` and `?? crates
 
 ### Task 6: release_verify, manifest_gaps and the release.yml change
 
-Spec step 6, the last commit with code ("Other gate readers", the `release_verify.rs` bullet; the `release.yml` block after "`gate release-pins` ... and `gate release-embedded`"; Tests, Gate, the "Step 6" bullet; H5, H6, H14; Risks R2, R4, R5, R6; Deleted, the `release.yml` and `release_verify.rs` lines; Docs, README "Releases"). One commit, because the renamed hash records have a writer (`gate release-embedded`, called from the YAML), an uploader (the draft-release line) and a reader (`release_verify`), and all three change together (H6). After it, `release.yml` holds no host table, no source search and no embedded file path: it builds, calls the two Task 5 stages, and forwards their `NAME=path` lines to `$GITHUB_ENV`.
+Spec step 6, the last commit with gate or release code (Task 7 follows with docs and two ENGINES comment edits) ("Other gate readers", the `release_verify.rs` bullet; the `release.yml` block after "`gate release-pins` ... and `gate release-embedded`"; Tests, Gate, the "Step 6" bullet; H5, H6, H14; Risks R2, R4, R5, R6; Deleted, the `release.yml` and `release_verify.rs` lines; Docs, README "Releases"). One commit, because the renamed hash records have a writer (`gate release-embedded`, called from the YAML), an uploader (the draft-release line) and a reader (`release_verify`), and all three change together (H6). After it, `release.yml` holds no host table, no source search and no embedded file path: it builds, calls the two Task 5 stages, and forwards their `NAME=path` lines to `$GITHUB_ENV`.
 
 **Files:**
 - Modify: `crates/gate/src/release_verify.rs` (124 lines at HEAD 10444ae5; Tasks 1-5 do not touch it): module doc and imports (HEAD :1-12), `Pinned` (:24-32), `manifest_files`' signature (:34-35), `verify` (:56-85), and the test module's end (:121-124).
@@ -7535,8 +7537,11 @@ The paragraphs before it (`Cargo doesn't do this itself`, the WebView2 note, the
 after it (`Why this needs a script at all`, which describes the newest-file pick within a build folder, and the prune
 paragraph) stay: both still hold under the one rule (spec H9, "`gate sync-runtime-deps`").
 
-Run: `grep -c -F -e 'takes the newest of either' -e '{target-servo,target}/debug/build' README.md`
+Run: `grep -c -F -e 'takes the newest of either' -e '{target-servo,target}/debug/build' -e "It finds Servo's ANGLE DLLs under" README.md`
 Expected: `0`
+
+Run: `grep -c -F "fighting Cargo's model." README.md`
+Expected: `1` (the new paragraph keeps the old one's closing sentence; this proves the whole old line, not part of it, was replaced)
 
 - [ ] **Step 4: Amend `docs/decisions/2026-10-23-host-runtimes.md` (spec H2, H11)**
 
@@ -7736,7 +7741,15 @@ The entry's *What*, *Why parked*, *Trigger* and *Fix* still hold after Task 2 (t
 `run_in_place` finds; `prepare_cef` still copies `shipped_cef_host()` into a custom folder); read them once against
 the code at the lines just cited before writing `verified DATE-TODAY`. If one no longer holds, stop and report it.
 
-Two more entries cite `process_manager.rs` by line, and Task 2 moves those lines: `- **Two hosts can name the same file.**` (HEAD `:129`, `process_manager.rs:1028`) and `- **A settings message refused by a full send queue counts as sent.**` (HEAD `:137`, `process_manager.rs:355`). For each, read the cited line at B (`git show 10444ae5:crates/manifold/src/process_manager.rs | sed -n '1028p'`, then `'355p'`), find that same code in the current file with Grep, and replace the number with the new line. If the code was deleted, stop and report it.
+Other PARKED entries cite files this branch changes (Tasks 2, 3 and 6 move their lines), and several of the numbers were already stale at HEAD. Locate each by its parenthetical label, never by the old number: the old number can point at the wrong code (HEAD `process_manager.rs:355` is `set_visible` and `:1028` is a doc comment; the labelled code is at `:364` and `:1041`). Per entry, run the Grep, read the line it finds, and replace only the number in the entry's `file:NNN` with that line:
+- `- **Two hosts can name the same file.**` (HEAD `:129`): `process_manager.rs:1028` (`spawn_tab`): `grep -n 'pub fn spawn_tab(' crates/manifold/src/process_manager.rs`.
+- `- **The Settings page reads the disk on the UI thread.**` (HEAD `:133`): `view_install.rs:1020` (`cef_dir_verdict`): `grep -n 'fn cef_dir_verdict(' crates/manifold/src/view_install.rs`.
+- `- **WSL drives are assumed at `/mnt`.**` (HEAD `:135`): `runtime.rs:99` (`host_path`) and `:116` (`app_path`): `grep -n 'fn host_path(\|fn app_path(' crates/manifold/src/process_manager/runtime.rs`.
+- `- **A settings message refused by a full send queue counts as sent.**` (HEAD `:137`): `process_manager.rs:355` (`set_settings`): `grep -n 'pub fn set_settings(' crates/manifold/src/process_manager.rs`; its `view_io.rs:134` (`push`) is untouched, so leave it unless `grep -n 'fn push(' crates/manifold/src/process_manager/view_io.rs` finds it elsewhere.
+- `- **A renderer that writes a bad frame and then hangs holds a worker.**` (HEAD `:154`): `pdf_render.rs:18` (`WORKERS = 2`): `grep -n 'WORKERS' crates/manifold/src/pdf_render.rs`.
+- `- **Opt-in chrome-shots views reach a card by a fixed Tab count, and the counts are stale.**` (HEAD `:147`): its `shots.rs` citations (for example `shots.rs:1017`, `note-key`): Task 4 edits `crates/gate/src/shots.rs` at the top and from `:1590`, so re-run `grep -n 'note-key' crates/gate/src/shots.rs` and fix any number that moved.
+
+Read each line the Grep finds against the entry's label before writing the number. If a labelled item is gone, stop and report it.
 
 Run: `grep -c -F 'in_place_paths' PARKED.md`
 Expected: `0`
@@ -8255,7 +8268,7 @@ grep -E '"(exit|commit)"' "$BEFORE/run.json" "$AFTER/run.json"
 diff "$BEFORE/out.log" "$AFTER/out.log"; diff "$BEFORE/err.log" "$AFTER/err.log"
 ```
 
-This is the first run of the new sync on this tree, recorded as it comes; there is no settling run. Expected:
+This is the first recorded run of the new sync (Task 3 Step 8 ran it unrecorded as a smoke test). Expected:
 - both `"exit"` values are `0`;
 - `AFTER`'s `"commit"` is the final HEAD with no `-dirty`;
 - both diffs print nothing.
