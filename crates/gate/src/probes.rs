@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use manifold_hosts::{Os, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
@@ -556,10 +557,8 @@ pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
         fs::create_dir_all(&bin)?;
         let lone = bin.join("manifold.exe");
         fs::copy(exe, &lone)?;
-        fs::write(
-            bin.join("manifold-view-webview2.exe"),
-            unloadable_copy(&exe.with_file_name("manifold-view-webview2.exe"))?,
-        )?;
+        let webview2 = WEBVIEW2.file_name(Os::here());
+        fs::write(bin.join(&webview2), unloadable_copy(&exe.with_file_name(&webview2))?)?;
         let profile = work.join("appdata");
         seed(&lone, &profile, "webview2", &[])?;
         let mut inst = Instance::launch(&lone, &profile, work, "log")?;

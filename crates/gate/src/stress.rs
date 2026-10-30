@@ -12,6 +12,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use manifold_hosts::{Os, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, Section};
@@ -35,14 +36,15 @@ pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -
 
 /// Suspends (NtSuspendProcess) the WebView2 engine hosts whose parent is `parent`; returns their pids.
 fn suspend_engines(work: &Path, parent: u32) -> io::Result<Vec<String>> {
-    const SCRIPT: &str = "param([int]$Parent)
+    const SCRIPT: &str = "param([int]$Parent, [string]$Name)
 Add-Type -Namespace P -Name N -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr h);'
-Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='manifold-view-webview2.exe'\" | ForEach-Object {
+Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='$Name'\" | ForEach-Object {
     $null = [P.N]::NtSuspendProcess((Get-Process -Id $_.ProcessId).Handle)
     $_.ProcessId
 }
 ";
-    powershell(work, "suspend", SCRIPT, &["-Parent", &parent.to_string()])
+    let name = WEBVIEW2.file_name(Os::here());
+    powershell(work, "suspend", SCRIPT, &["-Parent", &parent.to_string(), "-Name", &name])
 }
 
 /// "unresponsive" and "loaded" of the card `id`.

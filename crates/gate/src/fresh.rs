@@ -5,6 +5,13 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use manifold_hosts::{Host, Os, PDFIUM, WEBVIEW2};
+
+/// The hosts the gate's build line builds beside manifold.exe: separate crates that `-p manifold` does not build, so
+/// each is judged by its own dep-info, and the build hint names them (one list of these is PARKED "The `-p` crate
+/// lists are repeated").
+static DEP_INFO_HOSTS: [&Host; 2] = [&WEBVIEW2, &PDFIUM];
+
 /// The sources a dep-info file lists: one make rule, `<exe>: <src> <src> ...`, with a space in a path escaped as
 /// `\ ` (paths are Windows paths, so a backslash before anything else is no escape).
 pub fn parse_dep_info(text: &str) -> Vec<PathBuf> {
@@ -51,22 +58,24 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
         return Ok(());
     }
     let dir = exe.parent().unwrap_or(Path::new("."));
-    // CEF runs from an isolated copy that only `gate sync-runtime-deps` refreshes. The app itself refuses a copy whose
-    // protocol number differs from its own (Unavailable, naming which side to rebuild); this catches a copy that is
-    // older but speaks the same protocol, which would run old code silently.
-    let cef = dir.join("manifold-view-cef.exe");
-    let cef_copy = dir.join("cef-runtime").join("manifold-view-cef.exe");
-    if let (Some(built), Some(copy)) = (mtime(&cef), mtime(&cef_copy)) {
-        if built > copy {
-            return Err(
-                "cef-runtime/manifold-view-cef.exe is older than the built one: run `target/debug/gate.exe sync-runtime-deps`, or set ALLOW_STALE=1."
-                    .into(),
-            );
+    // A host with a runtime (CEF) runs from an isolated copy in its runtime folder that only `gate sync-runtime-deps`
+    // refreshes. The app itself refuses a copy whose protocol number differs from its own (Unavailable, naming which
+    // side to rebuild); this catches a copy that is older but speaks the same protocol, which would run old code
+    // silently.
+    for host in manifold_hosts::ALL {
+        let Some(runtime) = &host.runtime else { continue };
+        let file = host.file_name(Os::here());
+        if let (Some(built), Some(copy)) = (mtime(&dir.join(&file)), mtime(&host.beside(Os::here(), dir))) {
+            if built > copy {
+                return Err(format!(
+                    "{}/{file} is older than the built one: run `target/debug/gate.exe sync-runtime-deps`, or set ALLOW_STALE=1.",
+                    runtime.dir
+                ));
+            }
         }
     }
-    // The WebView2 host and the PDF view are separate crates that `-p manifold` does not build; judge each by its own
-    // dep-info, and skip one that is absent.
-    let hosts = [dir.join("manifold-view-webview2.exe"), dir.join("manifold-view-pdfium.exe")];
+    // The hosts in `DEP_INFO_HOSTS`, each judged by its own dep-info; one that is absent is skipped.
+    let hosts: Vec<PathBuf> = DEP_INFO_HOSTS.iter().map(|h| dir.join(h.file_name(Os::here()))).collect();
     let mut report = String::new();
     for e in std::iter::once(exe).chain(hosts.iter().map(PathBuf::as_path)) {
         if e != exe && !e.exists() {
@@ -83,14 +92,15 @@ pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
     if report.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "{report}Build first (cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium), or set ALLOW_STALE=1."
-        ))
+        let crates: String = DEP_INFO_HOSTS.iter().map(|h| format!(" -p {}", h.exe)).collect();
+        Err(format!("{report}Build first (cargo build -j 8 -p manifold{crates}), or set ALLOW_STALE=1."))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use manifold_hosts::CEF;
+
     use super::*;
 
     #[test]
@@ -100,8 +110,9 @@ mod tests {
         assert!(parse_dep_info("garbage").is_empty());
     }
 
-    /// A folder with manifold.exe, the WebView2 host and the PDF view, each with a `.d` naming `src.rs`; `src.rs` and
-    /// every exe get the mtimes (seconds since the epoch) the test sets.
+    /// A folder with manifold.exe and the hosts in `DEP_INFO_HOSTS`, each with a `.d` naming `src.rs`, and CEF's built
+    /// exe with its copy in its runtime folder (`cef_exe_and_copy`); `src.rs` and every exe get the mtimes (seconds
+    /// since the epoch) the test sets.
     struct Bin(PathBuf);
 
     impl Bin {
@@ -111,20 +122,29 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             let bin = Bin(dir);
             bin.touch("src.rs", 1);
-            for n in ["manifold", "manifold-view-webview2", "manifold-view-pdfium"] {
-                let rule = format!("{}: {}", bin.0.join(format!("{n}.exe")).display(), bin.0.join("src.rs").display());
+            // `manifold` is the app's own exe, not a host row.
+            let exes = std::iter::once(("manifold", "manifold.exe".to_owned()))
+                .chain(DEP_INFO_HOSTS.iter().map(|h| (h.exe, h.file_name(Os::here()))));
+            for (stem, file) in exes {
+                let rule = format!("{}: {}", bin.0.join(&file).display(), bin.0.join("src.rs").display());
                 std::fs::write(
-                    bin.0.join(format!("{n}.d")),
+                    bin.0.join(format!("{stem}.d")),
                     rule.replace(' ', "\\ ").replacen(".exe:\\ ", ".exe: ", 1),
                 )
                 .unwrap();
-                bin.touch(&format!("{n}.exe"), 2);
+                bin.touch(&file, 2);
             }
+            let (cef, copy) = cef_exe_and_copy();
+            bin.touch(&cef, 2);
+            bin.touch(&copy, 2);
             bin
         }
 
+        /// Sets `file`'s mtime, creating the file and its folder if they are missing.
         fn touch(&self, file: &str, secs: u64) {
-            let f = std::fs::OpenOptions::new().create(true).append(true).open(self.0.join(file)).unwrap();
+            let path = self.0.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let f = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
             f.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
         }
 
@@ -168,5 +188,33 @@ mod tests {
 
         bin.touch("manifold.exe", 2);
         assert!(bin.check().unwrap_err().contains("manifold.exe is older"), "only manifold.exe stale");
+    }
+
+    /// CEF's built exe and its copy in its runtime folder, relative to a `Bin`'s folder.
+    fn cef_exe_and_copy() -> (String, String) {
+        let file = CEF.file_name(Os::here());
+        let runtime = CEF.runtime.as_ref().expect("CEF has a runtime");
+        let copy = format!("{}/{file}", runtime.dir);
+        (file, copy)
+    }
+
+    /// A host's copy in its runtime folder (CEF's `cef-runtime/`) older than the built exe is refused, naming the sync
+    /// that refreshes it and `ALLOW_STALE`; with no copy there is nothing to compare.
+    #[test]
+    fn a_stale_runtime_copy_is_refused_and_an_absent_one_skipped() {
+        if std::env::var_os("ALLOW_STALE").is_some() {
+            return;
+        }
+        let bin = Bin::new("runtime");
+        let (cef, copy) = cef_exe_and_copy();
+        assert_eq!(bin.check(), Ok(()), "the copy is as new as the built exe");
+
+        bin.touch(&cef, 3);
+        let err = bin.check().unwrap_err();
+        assert!(err.contains(&format!("{copy} is older than the built one")), "{err}");
+        assert!(err.contains("sync-runtime-deps") && err.contains("ALLOW_STALE"), "{err}");
+
+        std::fs::remove_file(bin.0.join(&copy)).unwrap();
+        assert_eq!(bin.check(), Ok(()), "an absent copy is skipped");
     }
 }

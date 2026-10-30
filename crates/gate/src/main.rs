@@ -356,5 +356,16 @@ mod windows_main {
             assert!(!usage.contains("gate hold"), "the test aid is not listed");
             assert!(is_stage("trail") && !is_stage("sleep-history"));
         }
+
+        /// `install-check`'s usage names exactly the engines it installs, as a set: the downloaded hosts built for this
+        /// OS. `STAGES` holds only literals, so the literal is checked here against the host table.
+        #[test]
+        fn install_checks_usage_lists_the_installable_hosts() {
+            let usage = STAGES.iter().find(|s| s.name == "install-check").and_then(|s| s.usage).unwrap_or("");
+            let listed: std::collections::BTreeSet<&str> =
+                usage.split_whitespace().next().unwrap_or("").split('|').collect();
+            let hosts: std::collections::BTreeSet<&str> = crate::package::installable().map(|h| h.id).collect();
+            assert_eq!(listed, hosts, "gate install-check {usage}");
+        }
     }
 }

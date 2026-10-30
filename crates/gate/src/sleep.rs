@@ -23,6 +23,8 @@ use std::io;
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use manifold_hosts::Os;
+
 use crate::check::{check, check_eq, Section};
 use crate::instance::{poll, Instance, STEP_TIMEOUT};
 use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
@@ -80,11 +82,15 @@ fn last_segment(state: &State) -> String {
 }
 
 /// Kills the engine hosts that are children of `parent` (only this instance's own: other manifolds may be running).
+/// WebKit's host is no Windows process (manifold's child there is the `wsl.exe` relay), so for WebKit this kills
+/// nothing. A `view` that names no host (`VIEWS` is free text) is an `InvalidInput` error.
 fn kill_hosts(work: &Path, parent: u32, view: &str) -> io::Result<()> {
     const SCRIPT: &str = "param([int]$Parent, [string]$Name)
 Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='$Name'\" | ForEach-Object { $_.ProcessId }
 ";
-    let name = format!("manifold-view-{view}.exe");
+    let host = manifold_hosts::by_id(view)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no engine host is named {view:?}")))?;
+    let name = host.file_name(Os::here());
     for pid in powershell(work, "hosts", SCRIPT, &["-Parent", &parent.to_string(), "-Name", &name])? {
         Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid])

@@ -34,7 +34,7 @@
 //! the profile's data dir; the download goes through `HTTPS_PROXY` to `shots_net::Proxy`, which refuses or stalls), and
 //! two more name a bring-your-own folder that matches the pin or not (Custom). A release pins its hosts through a
 //! manifest compiled into the exe; a debug build reads one from `MANIFOLD_HOST_PINS_FILE`, so the block writes a fixture
-//! manifest with a made-up CEF host (`FAKE_CEF_HOST`) and needs no real download.
+//! manifest with a made-up CEF host (`fake_cef_host`) and needs no real download.
 //!
 //! `gate chrome-shots-sizes` runs it at each of `SIZES` (`"400 300,800 600,1920 1080"`) into `OUT/<W>x<H>/`, with
 //! `VIEWS` defaulting to the ones that need no click on a fixed coordinate. `gate layout` checks the popups' bounds
@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
+use manifold_hosts::{Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
@@ -71,8 +72,9 @@ use crate::suggest;
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
-const FAKE_CEF_HOST: (&str, u64, &str) =
-    ("manifold-view-cef.exe", 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c");
+fn fake_cef_host() -> (String, u64, &'static str) {
+    (CEF.file_name(Os::here()), 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c")
+}
 const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
@@ -1587,7 +1589,7 @@ impl Shots {
         let profile = root.join("manifold");
         seed_settings(&profile, "webview2", more)?;
         // etcetera's data dir under this APPDATA.
-        self.eng_data = profile.join("manifold").join("data").join("engine-hosts");
+        self.eng_data = profile.join("manifold").join("data").join(HOSTS_DIR);
         fs::create_dir_all(&self.eng_data)?;
         import_session(
             eng_exe,
@@ -1622,14 +1624,15 @@ impl Shots {
             fs::File::create(self.eng_data.join(file))?.set_len(*size)?;
             marker.push_str(&format!("{} {file}\n", if old { "0".repeat(64) } else { sha.clone() }));
         }
-        fs::write(self.eng_data.join("cef.host"), marker)
+        fs::write(self.eng_data.join(format!("{}.host", CEF.id)), marker)
     }
 
     /// A runtime directory with a (sparse) 423 MB libcef.dll and `marker` in `ready`.
     fn fake_runtime(&self, marker: &str) -> io::Result<()> {
-        let dir = self.eng_data.join("cef-runtime");
+        let dir = self.eng_data.join(CEF_RUNTIME_DIR);
         fs::create_dir_all(&dir)?;
-        fs::File::create(dir.join("libcef.dll"))?.set_len(423 * 1024 * 1024)?;
+        let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
+        fs::File::create(dir.join(lib))?.set_len(423 * 1024 * 1024)?;
         fs::write(dir.join("ready"), marker)
     }
 
@@ -1638,19 +1641,21 @@ impl Shots {
     }
 
     fn engine_states(&mut self, exe: &Path) -> io::Result<()> {
-        let (file, size, sha256) = FAKE_CEF_HOST;
-        let pins = vec![(file.to_string(), size, sha256.to_string())];
+        let (file, size, sha256) = fake_cef_host();
+        let pins = vec![(file.clone(), size, sha256.to_string())];
+        // The manifest's keys: the host's id, then the platform it is pinned under (the app's parser reads both).
+        let (id, platform) = (CEF.id, Os::here().pin_platform());
         fs::write(
             self.work.join("host-pins.json"),
-            json!({"cef": {"windows-x64": [{"file": file, "size": size, "sha256": sha256}]}}).to_string(),
+            json!({id: {platform: [{"file": file, "size": size, "sha256": sha256}]}}).to_string(),
         )?;
         let pin_version = pin_version(CEF_PIN).ok_or_else(|| io::Error::other("cef_pin.rs has no version"))?;
         let eng = self.work.join("eng");
         fs::create_dir_all(&eng)?;
         let eng_exe = eng.join("manifold.exe");
         fs::copy(exe, &eng_exe)?;
-        let host = exe.with_file_name("manifold-view-webview2.exe");
-        fs::copy(&host, eng.join("manifold-view-webview2.exe"))?;
+        let webview2 = WEBVIEW2.file_name(Os::here());
+        fs::copy(exe.with_file_name(&webview2), eng.join(&webview2))?;
         let proxy = Proxy::start(true)?;
 
         self.engine_app(&eng_exe, &proxy, "states", "")?;
@@ -1701,7 +1706,8 @@ impl Shots {
             // Its path shows on the settings page, so it is named by its files, not kept in the work dir.
             let archive = json!({"type": "minimal", "name": format!("cef_binary_{archive}_windows64_minimal.tar.bz2")})
                 .to_string();
-            let dir = content_dir(&std::env::temp_dir(), &[("libcef.dll", b""), ("archive.json", archive.as_bytes())])?;
+            let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
+            let dir = content_dir(&std::env::temp_dir(), &[(lib, b""), ("archive.json", archive.as_bytes())])?;
             let more = format!(", \"cef_directory\": {}", Value::String(dir.display().to_string().replace('\\', "/")));
             self.engine_app(&eng_exe, &proxy, name, &more)?;
             self.fake_host(&pins, false)?; // a bring-your-own runtime still needs the downloaded host
@@ -1798,8 +1804,8 @@ mod tests {
 
     #[test]
     fn the_fixture_host_and_the_repos_cef_pin_parse() {
-        let (file, size, sha) = FAKE_CEF_HOST;
-        assert!(file.ends_with(".exe") && size > 0 && sha.len() == 64);
+        let (file, size, sha) = fake_cef_host();
+        assert!(file == CEF.file_name(Os::here()) && size > 0 && sha.len() == 64);
         assert!(pin_version(CEF_PIN).is_some_and(|v| v.contains("chromium")));
     }
 

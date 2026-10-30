@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::thread::{self, sleep};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use manifold_hosts::{by_id, Os};
 use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::GetSystemTimes;
@@ -315,10 +316,15 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
         }
         let mut c = gate(step.stage);
         c.envs(step.env.iter().copied());
-        if step.engine == Some("webkit") {
-            // The page server's address as WSL sees it; `gate()` removed it for the other steps.
+        // A host built for another OS than the gate's runs in a VM (WebKit's, in WSL), which reaches the page server
+        // at the address `SITE_HOST` names; `gate()` removed it for the other steps.
+        let vm_engine = step.engine.filter(|e| by_id(e).expect("known engine").built_for(Os::here()) != Os::here());
+        if let Some(engine) = vm_engine {
             let Ok(ip) = std::env::var("SITE_HOST") else {
-                append(&log, &format!("GATE {} not run: WITH_ENGINES has webkit but SITE_HOST is not set", step.name));
+                append(
+                    &log,
+                    &format!("GATE {} not run: WITH_ENGINES has {engine} but SITE_HOST is not set", step.name),
+                );
                 g.failed = true;
                 continue;
             };

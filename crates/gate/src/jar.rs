@@ -32,6 +32,7 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
+use manifold_hosts::{Os, CEF_RUNTIME_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, check_is, note_failure, Section};
@@ -478,7 +479,8 @@ impl Probe {
 
     /// Ten WebView2 tabs opened and closed in turn: Local State may gain no profile names outside the pool.
     fn ten(&self) -> io::Result<()> {
-        let local_state = self.exe.with_file_name("manifold-view-webview2.exe.WebView2/EBWebView/Local State");
+        let webview2 = WEBVIEW2.file_name(Os::here());
+        let local_state = self.exe.with_file_name(format!("{webview2}.WebView2/EBWebView/Local State"));
         let before = profile_names(&local_state).unwrap_or_default();
         self.rm_jars();
         let jar_log = self.run("ten", "webview2", "/whoami?c", |inst, _| {
@@ -741,7 +743,7 @@ pub(crate) fn jar(exe: &Path, work: &Path) -> ExitCode {
     let host = std::env::var("JAR_PROBE_HOST").unwrap_or_else(|_| "jar.localhost".into());
     let base = format!("http://{host}:{}", server.port());
     let profile = work.join("appdata");
-    let cef = exe.with_file_name("cef-runtime").display().to_string().replace('\\', "/");
+    let cef = exe.with_file_name(CEF_RUNTIME_DIR).display().to_string().replace('\\', "/");
     // The home page is what NEWTAB opens: tab B of the two-tab run.
     let more = format!(", \"home_page\": \"{base}/whoami?b\", \"cef_directory\": \"{cef}\"");
     if let Err(e) = seed_settings(&profile, "webview2", &more) {

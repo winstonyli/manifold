@@ -18,6 +18,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use manifold_hosts::{Delivery, Host, Os, HOSTS_DIR};
+
 use crate::check::{check, Section};
 use crate::instance::{log_tail, Instance};
 use crate::probes::{finish, guarded, quit, seed, tab_node, Site};
@@ -27,14 +29,16 @@ const FIXTURE: &str = "crates/manifold-view-pdfium/tests/fixture.pdf";
 const PDF_WAIT: Duration = Duration::from_secs(180);
 const INSTALL_WAIT: Duration = Duration::from_secs(600);
 
-/// The newest `dist/manifold-v*-windows-x64.exe` under `repo`.
+/// The newest `dist/manifold-v*-<platform>.exe` under `repo`, `<platform>` being this OS's pin platform (`windows-x64`
+/// on Windows).
 fn newest_release(repo: &Path) -> Option<PathBuf> {
+    let suffix = format!("-{}.exe", Os::here().pin_platform());
     let mut found: Vec<_> = fs::read_dir(repo.join("dist"))
         .ok()?
         .flatten()
         .filter(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
-            n.starts_with("manifold-v") && n.ends_with("-windows-x64.exe")
+            n.starts_with("manifold-v") && n.ends_with(&suffix)
         })
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
@@ -42,10 +46,11 @@ fn newest_release(repo: &Path) -> Option<PathBuf> {
     found.pop().map(|(_, p)| p)
 }
 
-/// Whether the pin manifest has a `windows-x64` entry with files for `kind` (an engine's store name such as `cef`).
+/// Whether the pin manifest has an entry with files for `kind` (an engine's store name such as `cef`) under this OS's
+/// pin platform (`windows-x64` on Windows).
 fn pins(manifest: &str, kind: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(manifest)
-        .is_ok_and(|m| m[kind]["windows-x64"].as_array().is_some_and(|files| !files.is_empty()))
+        .is_ok_and(|m| m[kind][Os::here().pin_platform()].as_array().is_some_and(|files| !files.is_empty()))
 }
 
 /// Whether `log`'s `view-state ENGINE:` line says what a build with (`pinned`) or without a download reports.
@@ -103,15 +108,19 @@ pub(crate) fn package(args: &[String]) -> ExitCode {
 }
 
 /// `gate install-check ENGINE EXE`: the exe alone in a temp folder with APPDATA redirected, asked to install the
-/// engine (`cef` or `servo`) from the network, as a user's Download click does. For a published release only: a draft's asset URLs are not public. Waits up
-/// to 10 minutes for `VIEWSTATE ENGINE` to read Installed or Failed.
+/// engine (one `installable` yields: `cef` or `servo`) from the network, as a user's Download click does. For a
+/// published release only: a draft's asset URLs are not public. Waits up to 10 minutes for `VIEWSTATE ENGINE` to read
+/// Installed or Failed.
 pub(crate) fn install_check(args: &[String]) -> ExitCode {
+    // Sorted, so the messages read as the stage's usage literal in `main.rs` (`cef|servo EXE`).
+    let mut ids: Vec<&str> = installable().map(|h| h.id).collect();
+    ids.sort_unstable();
     let [engine, exe_src] = args else {
-        eprintln!("usage: gate install-check cef|servo EXE");
+        eprintln!("usage: gate install-check {} EXE", ids.join("|"));
         return ExitCode::from(2);
     };
     let Some(files) = installed_files(engine) else {
-        eprintln!("install-check knows cef and servo, not {engine:?}");
+        eprintln!("install-check knows {}, not {engine:?}", ids.join(" and "));
         return ExitCode::from(2);
     };
     let work = match work_dir(None, "install-check") {
@@ -126,17 +135,22 @@ pub(crate) fn install_check(args: &[String]) -> ExitCode {
     finish(&work)
 }
 
-/// The files, relative to `engine-hosts/`, an installed `engine` leaves on disk; None for an engine that is not
-/// downloaded. The Servo list is the manifest's three files and is unconfirmed until a published release carries them.
-fn installed_files(engine: &str) -> Option<Vec<&'static str>> {
-    match engine {
-        "cef" => Some(vec!["manifold-view-cef.exe", "cef-runtime/libcef.dll"]),
-        "servo" => Some(vec!["manifold-view-servo.exe", "libEGL.dll", "libGLESv2.dll"]),
-        _ => None,
-    }
+/// The hosts `gate install-check` installs and `gate package` reads the state of, in `ALL`'s order: the downloaded
+/// hosts built for this OS (Servo and CEF on Windows). WebKit's is pinned too, but runs only through WSL, which the
+/// release runner and a bare `gate package` run do not have.
+pub(crate) fn installable() -> impl Iterator<Item = &'static Host> {
+    let here = Os::here();
+    manifold_hosts::ALL.into_iter().filter(move |h| h.delivery == Delivery::Download && h.built_for(here) == here)
 }
 
-fn install(engine: &str, files: &[&str], exe_src: &Path, work: &Path) -> io::Result<()> {
+/// The files, relative to `HOSTS_DIR`, an installed `engine` leaves on disk (`Host::installed_files`); None for an
+/// engine `installable` does not yield (the id is matched exactly, as the app's state lines spell it). Servo's were
+/// confirmed on disk from a published release by run `2026-10-23-install-check-v080`.
+fn installed_files(engine: &str) -> Option<Vec<String>> {
+    installable().find(|h| h.id == engine).map(|h| h.installed_files(Os::here()))
+}
+
+fn install(engine: &str, files: &[String], exe_src: &Path, work: &Path) -> io::Result<()> {
     let bin = work.join("bin");
     fs::create_dir_all(&bin)?;
     let exe = bin.join("manifold.exe");
@@ -165,7 +179,7 @@ fn install(engine: &str, files: &[&str], exe_src: &Path, work: &Path) -> io::Res
         &format!("{engine} installed from the network (last state {last:?})"),
         last.starts_with(&format!("{prefix}Installed")),
     );
-    let hosts = profile.join("manifold").join("data").join("engine-hosts");
+    let hosts = profile.join("manifold").join("data").join(HOSTS_DIR);
     for file in files {
         check(&format!("{file} is on disk"), hosts.join(file).is_file());
     }
@@ -205,8 +219,8 @@ fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
     inst.send("WAITTABS")?;
     // The tab's page reports its load once the WebView2 host is extracted from the embed and running.
     let loaded = site.wait_for("load ", 1, Duration::from_secs(60));
-    for line in ["VIEWSTATE cef", "VIEWSTATE servo"] {
-        inst.send(line)?;
+    for host in installable() {
+        inst.send(&format!("VIEWSTATE {}", host.id))?;
     }
     inst.send(&format!("ADDFILE {} 600 500", fixture.display()))?;
     inst.send("WAITTABS")?;
@@ -216,28 +230,26 @@ fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
 
     let log = fs::read_to_string(&inst.log).unwrap_or_default();
     let manifest = fs::read_to_string(exe_src.with_extension("host-pins.json")).unwrap_or_default();
-    for engine in ["cef", "servo"] {
+    for engine in installable().map(|h| h.id) {
         let (ok, line) = engine_state_ok(&log, engine, pins(&manifest, engine));
         if !check(&format!("{engine} state line is right (got {line:?})"), ok) {
             println!("    log tail:\n{}", log_tail(&inst.log, 5));
         }
     }
     check("a WebView2 tab loaded the local page (host extracted from the embed)", loaded);
-    let hosts = profile.join("manifold").join("data").join("engine-hosts");
-    check(
-        "the WebView2 host was extracted under the redirected APPDATA",
-        hosts.join("webview2").join("manifold-view-webview2.exe").is_file(),
-    );
     let rendered = log.lines().any(|l| l.starts_with("pdf: rendered ") && l.contains("fixture.pdf: 1000x500, 1 page"));
     if !check("the PDF view rendered the fixture (1000x500, 1 page)", rendered) {
         for l in log.lines().filter(|l| l.starts_with("pdf: ")) {
             println!("    log: {l}");
         }
     }
-    check(
-        "the PDF view was extracted under the redirected APPDATA",
-        hosts.join("pdfium").join("manifold-view-pdfium.exe").is_file(),
-    );
+    let hosts = profile.join("manifold").join("data").join(HOSTS_DIR);
+    for host in manifold_hosts::ALL.into_iter().filter(|h| h.delivery == Delivery::Embedded) {
+        check(
+            &format!("{} was extracted under the redirected APPDATA", host.file_name(Os::here())),
+            host.installed_in(Os::here(), &hosts).is_file(),
+        );
+    }
     let beside: Vec<String> =
         fs::read_dir(&bin)?.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
     check(&format!("nothing but manifold.exe sits beside the exe (found {beside:?})"), beside == ["manifold.exe"]);
@@ -265,5 +277,18 @@ mod tests {
         assert!(!pins(manifest, "servo"));
         assert!(!pins(r#"{"cef": {"linux-x64": [{}]}}"#, "cef"));
         assert!(!pins("", "cef"));
+    }
+
+    /// install-check installs the downloaded hosts built for the gate's OS, and finds on disk the files they had before
+    /// the lists came from the host table. WebKit (built for Linux), the embedded hosts and an id spelled in another
+    /// case are not installable.
+    #[test]
+    fn install_check_knows_cef_and_servo_and_their_files() {
+        let files = |engine: &str| installed_files(engine).map(|f| f.join(" "));
+        assert_eq!(files("cef").as_deref(), Some("manifold-view-cef.exe cef-runtime/libcef.dll"));
+        assert_eq!(files("servo").as_deref(), Some("manifold-view-servo.exe libEGL.dll libGLESv2.dll"));
+        for other in ["webkit", "webview2", "pdfium", "CEF", "chrome"] {
+            assert_eq!(files(other), None, "{other}");
+        }
     }
 }
