@@ -1805,7 +1805,11 @@ mod tests {
     #[test]
     fn the_fixture_host_and_the_repos_cef_pin_parse() {
         let (file, size, sha) = fake_cef_host();
-        assert!(file == CEF.file_name(Os::here()) && size > 0 && sha.len() == 64);
+        assert!(
+            file == if cfg!(windows) { "manifold-view-cef.exe" } else { "manifold-view-cef" }
+                && size > 0
+                && sha.len() == 64
+        );
         assert!(pin_version(CEF_PIN).is_some_and(|v| v.contains("chromium")));
     }
 
