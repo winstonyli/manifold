@@ -4,7 +4,7 @@ status: draft
 
 # One Table per Host Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Execute inline, in task order (each task consumes the one before; Task 8 Step 9 dispatches the one final whole-branch review). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Every engine host's layout facts (exe name, the OS it is built for, dev build folder, delivery, sidecar files, runtime folder) live in one row of a new zero-dependency crate, `manifold-hosts`, read by the app, its build script, the gate and, through two new gate subcommands, the release workflow.
 
@@ -74,15 +74,14 @@ status: draft
   - `git status --short -- crates README.md PARKED.md ROADMAP.md CLAUDE.md docs .github .githooks Cargo.toml Cargo.lock` must print nothing before the Start steps and before each commit, apart from the current task's own files.
   - This is the guard against another session's work. If anything else is listed, stop and report it. Never stage, revert or edit another agent's changes.
   - At 10444ae5 those paths were clean. Every `git add` below names its paths.
-  - One untracked file sits at the repo root, outside those paths: `grep.exe.stackdump`. It is a Git Bash `grep` crash dump (an msys stack trace, written 2026-10-29 20:55), not repo content.
-    - Never stage it.
-    - Ask the user once, in Step S1, whether to delete it.
-    - While it exists, `run.ps1` marks every run's commit `-dirty`, because its check `git status --porcelain -- . ':!docs/runs.md'` (`run.ps1:63`) lists untracked files. So an Expected line below that says "no `-dirty`" also accepts `<commit>-dirty`, but only while that command lists nothing but `?? grep.exe.stackdump`.
+  - An untracked file outside those paths (at the repo root, for instance) is not this plan's. Never stage it, and leave it alone.
+    - `run.ps1` marks every run's commit `-dirty` while `git status --porcelain -- . ':!docs/runs.md'` (`run.ps1:63`) lists anything, untracked files included. At 10444ae5 it listed nothing, so an Expected line below that says "no `-dirty`" holds only while it still lists nothing.
+- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` is the core cap. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
 - **One cargo per target dir.**
   - Before any cargo command, run `Get-Process cargo -ErrorAction SilentlyContinue` in PowerShell. If one is running, it is another session's build in `target/`: wait for it to exit.
   - Before a WSL cargo run, `wsl.exe -d Ubuntu -e pgrep -af "[c]argo"` must print nothing.
 - **Commands.** Every cargo line uses `-j 8` (CLAUDE.md).
-  - The clippy line is CLAUDE.md's "Formatting and lints" command. Task 1 adds `-p manifold-hosts` to it, to `.githooks/pre-commit:7` and to `ci.yml:16` together. After Task 1 it is `cargo clippy -j 8 -p manifold -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate -p manifold-hosts --all-targets -- -D warnings`, with the `-p` flags in whatever order Task 1 wrote.
+  - The clippy line is CLAUDE.md's "Formatting and lints" command. Task 1 adds `-p manifold-hosts` to it, to `.githooks/pre-commit:7` and to `ci.yml:16` together. After Task 1 it is `cargo clippy -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings`. Every task's clippy step runs that line. Before Task 1 lands, the same line without `-p manifold-hosts`.
   - The test lines are listed below. The app has no lib target, hence `--bin manifold`.
     - `cargo test -j 8 -p manifold-hosts`
     - `cargo test -j 8 -p manifold --bin manifold`
@@ -101,7 +100,7 @@ status: draft
   - The pre-commit hook runs fmt and clippy. Never bypass it with `--no-verify`. Never write an `#[allow]` without a `reason`.
   - Commit messages end with the `Co-Authored-By:` trailer that your own session's system reminder gives. It names your session's model, which differs between the planner, implementers and reviewers.
     - Each commit block writes the trailer as the placeholder `<attribution>`. Put that line in its place.
-    - A message ending in the literal placeholder is wrong. After each commit, check it with `git log -1 --format=%B | tail -n 1`.
+    - A message ending in the literal placeholder is wrong. After each commit, check it with `git log -1 --format=%B | grep -v '^$' | tail -n 1`.
     - If it is wrong, fix it before going on with `git commit --amend -F -` and the corrected message in a heredoc. A bare `--amend` opens an editor, which this environment can't use.
   - Never push, tag or bump.
   - No CHANGELOG edit: the entry is written at the bump (spec "Docs").
@@ -187,9 +186,7 @@ Run:
 - the start-condition `git status` line (expected: no output);
 - `Get-Process cargo -ErrorAction SilentlyContinue` (expected: nothing);
 - `df -h /c | tail -n 1` (expected: at least 2 GB free);
-- `git status --porcelain -- . ':!docs/runs.md'` (expected: nothing, or only `?? grep.exe.stackdump`).
-
-If the stackdump is listed, ask the user whether to delete it (Global Constraints, "Start condition"), and go on either way.
+- `git status --porcelain -- . ':!docs/runs.md'` (expected: nothing; a line listed here is not this plan's, see Global Constraints "Start condition", and makes later runs read `-dirty`).
 
 - [ ] **Step S2: Record B**
 
@@ -228,7 +225,7 @@ On 2026-10-29 Servo's DLLs in `target-servo/debug/build/mozangle/ad274970f12e1e2
 - [ ] **Step S4: Set the spec and this plan active, and commit with the run row**
 
 1. In `docs/superpowers/specs/2026-10-29-host-table-design.md`, change the front matter's `status: draft` to `status: active`.
-2. Set up this plan's repo copy, `docs/superpowers/plans/2026-10-29-host-table.md`. If it is not in the tree, write this plan there with the Write tool, exactly as approved. Then:
+2. In this plan's repo copy, `docs/superpowers/plans/2026-10-29-host-table.md` (tracked since 07e3f325):
    - change its front matter to `status: active`;
    - add one line under **Base commit**: `Started at <B> (<date>).`
 3. Commit:
@@ -242,12 +239,12 @@ docs: host table: spec and plan active; runs: sync-before
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected:
 - `cargo fmt --all` changes nothing.
-- `git diff --stat` lists only `docs/runs.md` (the `sync-before` row), the spec and, if it was already tracked, the plan. `git status --short -- docs` shows the plan as `??` if Step S4 created it, and nothing else outside those three files.
+- `git diff --stat` lists only `docs/runs.md` (the `sync-before` row), the spec and the plan. `git status --short -- docs` shows nothing else.
 - The last command prints the trailer line, not `<attribution>`.
 
 ## Review Focus
@@ -287,7 +284,7 @@ Paths are relative to the repo root. Line ranges are at 10444ae5.
 
 - **Start** (before Task 1)
   - `docs/superpowers/specs/2026-10-29-host-table-design.md`: front matter `active`.
-  - `docs/superpowers/plans/2026-10-29-host-table.md` (this plan's repo copy): created if missing, set `active`, start commit B.
+  - `docs/superpowers/plans/2026-10-29-host-table.md` (this plan's repo copy, tracked as a draft since 07e3f325): set `active`, start commit B.
   - `docs/runs.md`: the `sync-before` row.
 - **Task 1: the leaf crate**
   - `crates/manifold-hosts/Cargo.toml` (new): package `manifold-hosts`, `version.workspace`, `edition.workspace`, `[lints] workspace = true`, no dependencies of any kind.
@@ -295,6 +292,7 @@ Paths are relative to the repo root. Line ranges are at 10444ae5.
   - `crates/manifold-hosts/tests/layout.rs` (new): checks the rows against `crates/<exe>/Cargo.toml`, `.gitignore`, `release.yml` and the other crates' manifests.
   - `Cargo.toml`: the root `members` (`:3`-`13`) and `[workspace.dependencies]` (`:23`-`24`).
   - `Cargo.lock`: the new package.
+  - `README.md`: the crate-map line (`:9`-`18`) and `-p manifold-hosts` on the CI line (`:35`); Task 7 only checks both.
   - `crates/gate/src/tier.rs`: the Full rule for `crates/manifold-hosts/**`, and its test case beside `:281`.
   - `.github/workflows/ci.yml` (`:16`, `:17`, `:24`), `.githooks/pre-commit` (`:7`) and `CLAUDE.md` ("Formatting and lints"): `-p manifold-hosts`.
 - **Task 2: the app reads the table** (parts 2A and 2B, one commit)
@@ -307,6 +305,7 @@ Paths are relative to the repo root. Line ranges are at 10444ae5.
   - `crates/manifold/src/process_manager/tests.rs`: the in-place tests are rewritten over the rows, with a PDFium case added.
   - `crates/manifold/src/view_install.rs` and `crates/manifold/src/view_install/tests.rs`: Download/runtime checks, the pin platform, `host_file_names` (WebKit has no `.exe`), the marker names and the `runtime_lib` reads.
   - `crates/manifold/src/settings.rs` (`Os` import at `:189`, `:392`) and `crates/manifold/src/settings_page.rs` (`:472`, the runtime marker hint).
+  - `crates/manifold/src/pdf_render.rs` (`:140`): the not-installed hint takes the exe name from `PDFIUM.exe`; its text is unchanged.
   - `crates/manifold/src/cef_platform.rs`: `runtime_lib`, `exe_suffix`, `host_exe` and its test are deleted.
   - `crates/manifold/src/host_pin.rs`: the exact-set check through `Host::pinned_under`, and the doc at `:12`-`13`.
   - `crates/manifold/src/debug_control.rs` (`:452`), `crates/manifold/src/debug_export.rs` (`:420`) and `crates/manifold/src/session_sync/tests/misc.rs` (`:201`): `desc().host.id`.
@@ -328,11 +327,12 @@ Paths are relative to the repo root. Line ranges are at 10444ae5.
   - `crates/gate/src/main.rs`: `mod release_hosts`, and `release-pins` and `release-embedded` in `STAGES`.
 - **Task 6: the verifier and the workflow, one commit**
   - `crates/gate/src/release_verify.rs`: the record names from `embedded_record`, one embedded loop, `manifest_gaps`, the `pub(crate)` visibilities, and the round-trip, upload-glob and agreement tests.
-  - `crates/gate/src/release_hosts.rs`: only if Task 6's tests sit there.
+  - `crates/gate/src/release_hosts.rs` (Task 5's file): the imports and the round-trip, agreement and upload-glob tests.
   - `.github/workflows/release.yml`: `:74`-`101` and `:107`-`123` are replaced by the two subcommands, `manifold.exe` gets a step of its own, and the upload at `:144` takes the records by pattern.
   - `README.md` "Releases" bullets (`:387`-`390`): the subcommands, the record names, the printed variables, and the stale `hosts.yml`.
 - **Task 7: the remaining docs**
-  - `README.md`: the crate map (`:9`-`18`), `:22` (`Host.os` through `Host::built_for`), `:33` (checked), `:35` (the Linux CI test line gains `-p manifold-hosts`), and `:80` ("Runtime-file placement": search order, per-host skip, a part kept in place, the CEF error).
+  - `crates/manifold/src/session_sync.rs` (`:121`) and `crates/manifold/src/store/model.rs` (`:227`): doc comments that still say `ENGINES` become `VIEW_KINDS`. An addition beyond the spec's "Docs" list, comment-only.
+  - `README.md`: `:22` (`Host.os` through `Host::built_for`), `:33` (checked), and `:80` ("Runtime-file placement": search order, per-host skip, a part kept in place, the CEF error).
   - `PARKED.md`: GATE-CEF-DIR (`:61`), "One table per host" (`:157`) and "Servo's DLLs come from the newest mozangle output ..." (`:158`) are deleted. "The `-p` crate lists are repeated" gains its evidence, `:156` is re-cited to `Host::in_place`, `:87` is re-read and reworded, and `process_manager.rs` line numbers are refreshed.
   - `docs/decisions/2026-10-23-host-runtimes.md` (`:3`, `:7`-`9`, `:18`, `:68`-`69`) and `docs/decisions/2026-10-18-hosts-in-the-release.md` (`:8`): amendment notes; the decisions themselves are unchanged.
 - **Task 8: final checks and the full gate**
@@ -363,7 +363,6 @@ How to work:
 - Change nothing beyond this task; report every deviation.
 
 **Files:**
-- Create: `docs/superpowers/plans/2026-10-29-host-table.md` (this plan, `status: active`; Step 1, its own commit).
 - Create: `crates/manifold-hosts/Cargo.toml`.
 - Create: `crates/manifold-hosts/src/lib.rs` (the table, the helpers and their unit tests).
 - Create: `crates/manifold-hosts/tests/layout.rs` (checks against the repo's files).
@@ -446,26 +445,10 @@ impl Host {
   - `git status --short -- crates Cargo.toml Cargo.lock README.md CLAUDE.md .github .githooks .gitignore docs`;
   - `Get-Process cargo -ErrorAction SilentlyContinue` (PowerShell).
 
-  The untracked `grep.exe.stackdump` at the repo root is outside these paths and stays untouched.
-- Run `git rev-parse --short HEAD`. That commit is B. If it is not `10444ae5`:
-  - run `git diff --stat 10444ae5 B -- Cargo.toml Cargo.lock crates/gate/src/tier.rs .github .githooks CLAUDE.md README.md .gitignore`;
-  - re-find every anchor this task quotes in those files before going on.
+- B is the commit Step S2 recorded, not HEAD (HEAD is Step S4's commit now). Do not recompute it. Run `git diff --stat 10444ae5 HEAD -- Cargo.toml Cargo.lock crates .github .githooks CLAUDE.md README.md .gitignore`. Expected: empty. If it prints anything, re-find every anchor this task quotes in those files before going on.
 - Run `ls crates/manifold-hosts`. Expected: `No such file or directory`. If the folder exists, stop and report.
-- Copy this plan to `docs/superpowers/plans/2026-10-29-host-table.md`:
-  - set its front matter to `status: active`;
-  - under **Base commit:**, add the line `Started at <B> (<today's date>).`.
 
-```bash
-git add docs/superpowers/plans/2026-10-29-host-table.md
-git commit -F - <<'EOF'
-plans: host table
-
-<attribution>
-EOF
-git log -1 --format=%B | tail -n 1
-```
-
-Expected: the pre-commit hook skips (no Rust file staged), and the last line printed is the attribution line.
+Step S4 already committed this plan as `active`; this task's only commit is Step 20's.
 
 - [ ] **Step 2: The crate's manifest and its place in the workspace**
 
@@ -512,7 +495,7 @@ manifold-hosts = { path = "crates/manifold-hosts" } # std only; only manifold an
 manifold-pages = { path = "crates/manifold-pages" }
 ```
 
-Nothing uses the workspace dependency until Tasks 2 and 3, which cargo allows.
+Nothing uses the workspace dependency until Tasks 2 and 3. Cargo allows it, but on this toolchain every cargo command (tests, clippy, the hook's clippy) prints one `warning: unused workspace dependency 'manifold-hosts'` (`cargo::unused_workspace_dependencies`, warn by default) until Task 2 adds `manifold-hosts.workspace = true`. It is cargo's lint, not a clippy finding, and `-D warnings` does not turn it into an error. Leave the entry in.
 
 - [ ] **Step 3: Write `lib.rs`: the types and the failing tests**
 
@@ -608,8 +591,7 @@ mod tests {
         for other in ["freebsd", "openbsd", ""] {
             assert_eq!(Os::from_consts(other), Os::Other, "{other:?}");
         }
-        let facts: Vec<_> =
-            Os::ALL.into_iter().map(|os| (os, os.name(), os.pin_platform(), os.exe_suffix())).collect();
+        let facts: Vec<_> = Os::ALL.into_iter().map(|os| (os, os.name(), os.pin_platform(), os.exe_suffix())).collect();
         assert_eq!(
             facts,
             [
@@ -893,7 +875,7 @@ mod tests {
             assert_eq!(host.installed_in(running, hosts), under(hosts, golden.installed_in), "{case}");
             let beside = under(exe_dir, golden.beside);
             assert_eq!(host.beside(running, exe_dir), beside, "{case}");
-            assert_eq!(host.in_place(running, exe_dir, false), [beside.clone()], "{case}");
+            assert_eq!(host.in_place(running, exe_dir, false), std::slice::from_ref(&beside), "{case}");
             let mut walked: Vec<PathBuf> = match golden.walks {
                 Some(dev) => exe_dirs.iter().map(|dir| under(dir, &[dev, "debug", golden.file_name])).collect(),
                 None => Vec::new(),
@@ -1533,7 +1515,7 @@ with:
         return full("dependency, protocol, pages, host table or engine crate");
 ```
 
-Nothing else matches the old reason text: `git grep -n "pages or engine crate"` finds only this line at HEAD.
+Nothing else matches the old reason text: `git grep -n "pages or engine crate" -- crates` finds only this line at HEAD.
 
 - [ ] **Step 15: Run the tier tests**
 
@@ -1654,9 +1636,9 @@ git status --short
 Expected:
 - `cargo fmt --all` may rewrap lines in `crates/manifold-hosts`; that is fine.
 - The tests give `7 passed` (lib), `5 passed` (layout), `0` doc tests and `6 passed` (tier). `--locked` passes because Step 4 already wrote `Cargo.lock`.
-- clippy finishes with no warning. With a cold cache it can take several minutes; give it a 600000 ms timeout.
+- clippy finishes with no clippy finding; the one `unused workspace dependency 'manifold-hosts'` cargo warning from Step 2 is expected, here and in the tests above. With a cold cache it can take several minutes; give it a 600000 ms timeout.
 - `git diff --stat` lists exactly `.githooks/pre-commit`, `.github/workflows/ci.yml`, `CLAUDE.md`, `Cargo.lock`, `Cargo.toml`, `README.md` and `crates/gate/src/tier.rs`.
-- `git status --short` also shows `?? crates/manifold-hosts/` and the old `?? grep.exe.stackdump`.
+- `git status --short` also shows `?? crates/manifold-hosts/`.
 
 A clippy finding in the new crate is fixed in the code. It is never silenced with an `#[allow]` that gives no reason (CLAUDE.md "Formatting and lints"). If the fix changes a public signature from the Interfaces block above, stop and report it, because Tasks 2-4 call it as written there.
 
@@ -1705,12 +1687,12 @@ to full; CI, the pre-commit hook and CLAUDE.md lint and test it.
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected:
 - `git diff --stat` matches Step 18's.
-- `git status --short` after the add shows only the old `?? grep.exe.stackdump` as untracked.
+- `git status --short` after the add shows nothing untracked.
 - The pre-commit hook runs fmt and clippy (Rust files are staged) and passes.
 - The last line printed is the attribution line.
 - Nothing is pushed.
@@ -2294,7 +2276,7 @@ use manifold_hosts::Os;
 use std::path::Path;
 ```
 
-At HEAD :14-63, delete `Os` and its `impl`. Replace this block, up to and including the next item's doc line:
+At HEAD :14-64, delete `Os` and its `impl`. Replace this block, up to and including the next item's doc line:
 
 ```rust
 /// An operating system a host is built for, or manifold runs on. `Other` is any not named here (FreeBSD and the like):
@@ -3234,7 +3216,7 @@ with:
 
 The old wording no longer holds: the host's file name and the runtime library now live in the host table.
 
-At HEAD :7-16, replace:
+At HEAD :7-15, replace:
 
 ```rust
 /// The per-platform facts the install and the host launch read.
@@ -3622,8 +3604,7 @@ Expected from `git diff --stat`: exactly these 14 files, and nothing under `crat
 - `crates/manifold/src/view_install.rs`
 - `crates/manifold/src/view_install/tests.rs`
 
-Expected from `git status`: the same 14 files as ` M`, and no `??` line under `crates`. `Cargo.lock` is unchanged, because no cargo command ran. Part B's first cargo run adds `manifold-hosts` to the `manifold` package's dependencies there; Task 1 already locked the leaf package itself. The repo-root `grep.exe.stackdump`, untracked before this task, is not this task's file: leave it alone.
-
+Expected from `git status`: the same 14 files as ` M`, and no `??` line under `crates`. `Cargo.lock` is unchanged, because no cargo command ran. Part B's first cargo run adds `manifold-hosts` to the `manifold` package's dependencies there; Task 1 already locked the leaf package itself.
 **Part A ends here: no cargo command, no commit.**
 - The tree does not build yet. `prepare_webview2` still names `HostSource` and `kind.desc().source`, and `pdf_view_exe` still calls `sibling_binary` and `embedded_host::Embedded`, all deleted or rewritten above.
 - Part B continues in this same working tree, with the next step number. It rewrites those two functions, `embedded_host.rs` and `build.rs`, and the names guard, `deleted_names.rs` and `pdf_render.rs:140`.
@@ -3743,7 +3724,6 @@ Expected:
 - `git log`: Task 1's commit, the leaf crate.
 - `git status --short`:
   - only ` M` lines under `crates/manifold/`, which are Part A's files;
-  - `?? grep.exe.stackdump`, an untracked file that predates this plan. Leave it alone; it is never staged;
   - no `Cargo.lock`.
 - The leaf: eight lines, one per name.
 - `Cargo.toml`: five lines in this order: `[dependencies]`, `manifold-hosts.workspace = true`, `[dev-dependencies]`, `[build-dependencies]`, `manifold-hosts.workspace = true`.
@@ -4466,7 +4446,7 @@ Expected: `test result: ok. 11 passed; 0 failed`, and both entries end in `""`.
 Run the clippy command from CLAUDE.md (Task 1 added `-p manifold-hosts` to it), then the format check:
 
 ```bash
-cargo clippy -j 8 -p manifold -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p manifold-hosts -p gate --all-targets -- -D warnings
+cargo clippy -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings
 cargo fmt --all --check
 ```
 
@@ -4478,7 +4458,7 @@ Expected: clippy exits 0 with no warning, and the format check prints nothing. A
 cargo fmt --all
 git status --short
 git diff --stat
-git add -A -- crates/manifold Cargo.lock
+git add -u -- crates/manifold Cargo.lock
 git status --short
 git commit -F - <<'EOF'
 app: every host's layout comes from its row in manifold-hosts
@@ -4506,19 +4486,18 @@ H7, H8, H11, H12; Order of work, step 2).
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected:
 - The first `git status --short`:
   - ` M` lines under `crates/manifold/` and ` M Cargo.lock`;
-  - `?? grep.exe.stackdump`, which stays untracked;
   - nothing else. Any other path means a part touched a file outside its list: stop and report before staging.
 - `git diff --stat` lists:
   - Part A's files;
   - `crates/manifold/build.rs`, `src/deleted_names.rs`, `src/embedded_host.rs`, `src/names/tests.rs`, `src/pdf_render.rs` and `src/process_manager.rs`;
   - `Cargo.lock` with `1 +`.
-- The second `git status --short`: every path staged (`M` in the first column), with only `?? grep.exe.stackdump` left.
+- The second `git status --short`: every path staged (`M` in the first column), and nothing else.
 - The pre-commit hook runs `cargo fmt --all --check` and the clippy line, and both pass. Never use `--no-verify`. If the hook fails, fix the cause, stage again and make a new commit attempt.
 - The last line printed is the attribution line.
 
@@ -4542,7 +4521,7 @@ Spec step 3 ("The gate", `gate sync-runtime-deps`; Tests, Gate, the `sync_host` 
   - `Host` fields `id: &'static str`, `exe: &'static str`, `dev_dir: Option<&'static str>`, `runtime: Option<Runtime>`; `Sidecar` fields `file: &'static str`, `from: BuildOutput`; `Runtime` fields `dir: &'static str`, `from: BuildOutput`; `BuildOutput` fields `krate: &'static str`, `tail: &'static str`;
   - `Host::file_name(&self, running: Os) -> String`, `Host::sidecars_for(&self, running: Os) -> impl Iterator<Item = &Sidecar>`, `Host::runtime_lib(&self, running: Os) -> Option<&'static str>`;
   - the rows' values the tests' fixtures spell: `SERVO` has `dev_dir` `Some("target-servo")` and, for `Os::Windows`, the sidecars `libEGL.dll` and `libGLESv2.dll`, each `from: BuildOutput { krate: "mozangle", tail: <the file> }`; `CEF` has `dev_dir` `None`, no sidecar, and `runtime` `{ dir: "cef-runtime", lib: libcef.dll on Windows, from: BuildOutput { krate: "cef-dll-sys", tail: "cef_windows_x86_64" } }`; `WEBKIT`, `WEBVIEW2` and `PDFIUM` have no sidecar for `Os::Windows` and no runtime; `ALL` is `[&SERVO, &CEF, &WEBKIT, &WEBVIEW2, &PDFIUM]`.
-- Consumes (Global Constraints, "Pre-run capture"): BEFORE, the output of `target/debug/gate.exe sync-runtime-deps` on this tree at the plan's start, stdout and stderr together, then an `exit N` line.
+- Consumes (Start, Step S3): BEFORE, the `sync-before` run folder under `%LOCALAPPDATA%\claude-runs\manifold\` (`out.log`, `err.log`, `run.json`) holding `target/debug/gate.exe sync-runtime-deps` run on this tree at the plan's start.
 - Produces (in `crates/gate/src/sync_deps.rs`):
 
 ```rust
@@ -4643,7 +4622,7 @@ Expected: it compiles, with dead-code warnings naming `HostSync`, `sync_host` an
 
 - [ ] **Step 4: Write the failing tests**
 
-In `crates/gate/src/sync_deps.rs`, replace the whole test module, from `#[cfg(test)]` (HEAD :213) to the end of the file (HEAD :345), with the module below. It keeps `touch`, `scratch` and `a_held_file_says_to_close_manifold` as they are; splits `the_newest_in_either_build_folder_wins_and_sync_copies_only_on_change` (HEAD :235) into `each_part_comes_from_the_hosts_own_build_folder_first_and_the_newest_there` (the first root that has a match wins, not the newest across roots) and `sync_file_copies_only_on_change`; rewrites `servo_dlls_go_beside_its_host_and_a_failed_one_does_not_stop_the_rest` (HEAD :257) and `a_cef_file_that_cant_be_copied_is_listed_and_the_rest_still_copy` (HEAD :296) over `sync_host` with fixtures under `<root>/target-servo/debug` and `<root>/target/debug`, keeping their assertions (the error text is now "build manifold-view-servo first"); and adds four tests for the rest of the rule. They assert on `HostSync`, `Outcome` and the files, never on printed lines. The literals `target-servo/debug/libEGL.dll: ` and `cef-runtime/a.dll: ` pin the two label forms.
+In `crates/gate/src/sync_deps.rs`, replace the whole test module, from `#[cfg(test)]` (HEAD :213) to the end of the file (HEAD :345), with the module below. The module is too large and repeats too much to be an Edit `old_string`: Read the file, then Write it whole, keeping everything above `#[cfg(test)]` exactly as it is (Step 3's version) and putting the new module below it. It keeps `touch`, `scratch` and `a_held_file_says_to_close_manifold` as they are; splits `the_newest_in_either_build_folder_wins_and_sync_copies_only_on_change` (HEAD :235) into `each_part_comes_from_the_hosts_own_build_folder_first_and_the_newest_there` (the first root that has a match wins, not the newest across roots) and `sync_file_copies_only_on_change`; rewrites `servo_dlls_go_beside_its_host_and_a_failed_one_does_not_stop_the_rest` (HEAD :257) and `a_cef_file_that_cant_be_copied_is_listed_and_the_rest_still_copy` (HEAD :296) over `sync_host` with fixtures under `<root>/target-servo/debug` and `<root>/target/debug`, keeping their assertions (the error text is now "build manifold-view-servo first"); and adds four tests for the rest of the rule. They assert on `HostSync`, `Outcome` and the files, never on printed lines. The literals `target-servo/debug/libEGL.dll: ` and `cef-runtime/a.dll: ` pin the two label forms.
 
 ```rust
 #[cfg(test)]
@@ -4916,7 +4895,7 @@ A compile error instead means a name in the test module differs from Task 1's cr
 
 - [ ] **Step 6: Write `sync_host`, `find_first` and `run_in`, and delete what they replace**
 
-Replace everything in `crates/gate/src/sync_deps.rs` above `#[cfg(test)]` (the module doc through `sync_runtime_deps`, including Step 3's stubs) with the code below. It deletes `SERVO_DLLS`, `SERVO_EXE`, `find_newest`, `sync_servo`, `sync_cef` and `run`'s literal paths; `copy_dir`, `sync_file`, `Outcome`, `step_error`, `finish` and `sync_runtime_deps` are copied unchanged; `copy_runtime` takes its label prefix and folder name from the row (`dir`, today the literal `cef-runtime` at HEAD :157). The repo root comes from the existing `crate::cef_pin::repo()` (`cef_pin.rs:20`-`22`, the same `CARGO_MANIFEST_DIR/../..` that HEAD :177 spelled). `run` is no longer canonicalized: every printed path is a relative label, and a missing `target/debug` is now one host's skip, not the run's failure (H9).
+Replace everything in `crates/gate/src/sync_deps.rs` above `#[cfg(test)]` (the module doc through `sync_runtime_deps`, including Step 3's stubs) with the code below. As in Step 4, Read the file and Write it whole: the code below, then the test module exactly as Step 4 left it. It deletes `SERVO_DLLS`, `SERVO_EXE`, `find_newest`, `sync_servo`, `sync_cef` and `run`'s literal paths; `copy_dir`, `sync_file`, `Outcome`, `step_error`, `finish` and `sync_runtime_deps` are copied unchanged; `copy_runtime` takes its label prefix and folder name from the row (`dir`, today the literal `cef-runtime` at HEAD :157). The repo root comes from the existing `crate::cef_pin::repo()` (`cef_pin.rs:20`-`22`, the same `CARGO_MANIFEST_DIR/../..` that HEAD :177 spelled). `run` is no longer canonicalized: every printed path is a relative label, and a missing `target/debug` is now one host's skip, not the run's failure (H9).
 
 ```rust
 //! `gate sync-runtime-deps` (was scripts/sync-runtime-deps.sh): puts each engine host's runtime files beside the host
@@ -5213,24 +5192,24 @@ In PowerShell, run `Get-Process cargo, gate, manifold, manifold-view-cef, manifo
 
 ```bash
 cargo build -j 8 -p gate
-target/debug/gate.exe sync-runtime-deps > "<scratchpad>/sync-runtime-deps-after.txt" 2>&1; echo "exit $?" >> "<scratchpad>/sync-runtime-deps-after.txt"
-diff "<scratchpad>/sync-runtime-deps-before.txt" "<scratchpad>/sync-runtime-deps-after.txt"
+BEFORE=$(ls -dt "$LOCALAPPDATA"/claude-runs/manifold/????-??-??-sync-before* | head -1); echo "$BEFORE"
+target/debug/gate.exe sync-runtime-deps > "<scratchpad>/sync-after.out" 2> "<scratchpad>/sync-after.err"; echo "exit $?"
+diff "$BEFORE/out.log" "<scratchpad>/sync-after.out"; echo "diff exit $?"
+cat "<scratchpad>/sync-after.err"
 ```
 
-`<scratchpad>/sync-runtime-deps-before.txt` is BEFORE, the file Global Constraints' "Pre-run capture" wrote. If that capture used another file name or form, use its file, and capture AFTER the same way, so the two compare line for line.
+`$BEFORE` is the run folder Step S3 recorded (`out.log`, `err.log`, `run.json`). This is an unrecorded smoke run: it writes no `docs/runs.md` row, and Task 8 Step 10 makes the recorded comparison.
 
-Expected: `diff` prints nothing, apart from differences the BEFORE run caused itself (it is a sync, so anything it copied is current now):
-- a BEFORE line `sync-runtime-deps: recopied <label>` whose AFTER line is `sync-runtime-deps: <label> already current`;
-- a BEFORE line `sync-runtime-deps: copied cef-runtime/<dir>/` with no AFTER line;
-- when BEFORE copied anything, AFTER's last line before `exit 0` is `sync-runtime-deps: everything already current, nothing to do`, which BEFORE lacks;
-- `sync-runtime-deps: recopied cef-runtime/manifold-view-cef.exe` in AFTER (and no `everything already current` line) only if something rebuilt `target/debug/manifold-view-cef.exe` after the capture: `stat -c '%y' target/debug/manifold-view-cef.exe "<scratchpad>/sync-runtime-deps-before.txt"` then shows the exe newer than BEFORE. No task up to this one builds that host (no host crate depends on `manifold-hosts`, H1), so expect it only if another session built it; say so in the report.
+Expected: `exit 0`, `diff exit 0` with no diff output, and an empty `sync-after.err` (as `$BEFORE/err.log` is).
+
+Both runs start from a synced tree (Step S3 ran the sync once before recording), so no `recopied` or `copied` line is expected in either. The one exception is `sync-runtime-deps: recopied cef-runtime/manifold-view-cef.exe` in AFTER (and no `everything already current` line), when something rebuilt `target/debug/manifold-view-cef.exe` after the capture: `stat -c '%y' target/debug/manifold-view-cef.exe "$BEFORE/out.log"` then shows the exe newer than the BEFORE log. No task up to this one builds that host (no host crate depends on `manifold-hosts`, H1), so expect it only if another session built it; say so in the report.
 
 Why nothing else differs (the spec's "What changes for this machine's tree"):
 - Servo's two lines read `sync-runtime-deps: target-servo/debug/libEGL.dll already current` (and `libGLESv2.dll`) in both. The source moves from the newest across both trees (`target/debug/build/mozangle/ad274970f12e1e29/out/`, mtime 1792731909) to `target-servo/debug/build/mozangle/ad274970f12e1e29/out/`, and the source is never printed. Both trees' outputs and the copies in `target-servo/debug/` are byte-identical: sha256 `63f9174985fd…` for every `libEGL.dll` and `2cf899204b24…` for every `libGLESv2.dll` (checked 2026-10-29).
 - CEF has no `dev_dir`, so its one root is `target/debug/build`, as at HEAD. Its one match is `cef-dll-sys/1350bf2d9e1a185f/out/cef_windows_x86_64` (the other three hash folders hold no `cef_windows_x86_64`). Its labels (`cef-runtime/<name>`, `cef-runtime/manifold-view-cef.exe`) and their order (`read_dir`, then the exe) are unchanged.
 - The rows run in `ALL`'s order (Servo, CEF, WebKit, WebView2, PDFium): Servo, then CEF, as at HEAD. The last three have nothing to sync and print nothing. Both build folders exist, so no skip, keep or error line is new.
 
-Any other difference stops the task: report both files. That includes a line naming another file, a new skip, keep or error line, or a different `exit` line. A `<label> is in use: close manifold and run again` line in AFTER only means a running manifold holds the file: ask the user to close it, then run the two capture lines again.
+Any other difference stops the task: report `$BEFORE/out.log`, `sync-after.out` and `sync-after.err`. That includes a line naming another file, a new skip, keep or error line, or a non-zero `exit`. A `<label> is in use: close manifold and run again` line in AFTER only means a running manifold holds the file: ask the user to close it, then run the sync and the `diff` again.
 
 - [ ] **Step 9: Commit**
 
@@ -5255,7 +5234,7 @@ sync_cef are deleted. The gate depends on manifold-hosts (Cargo.lock).
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected: `git diff --stat` lists exactly `Cargo.lock` (1 insertion), `crates/gate/Cargo.toml` (1 insertion) and `crates/gate/src/sync_deps.rs`. The pre-commit hook passes (fmt and clippy). The last line printed is your session's `Co-Authored-By:` trailer, not `<attribution>`.
@@ -6147,7 +6126,7 @@ use manifold_hosts::{Os, WEBVIEW2};
 use serde_json::{json, Value};
 ```
 
-Replace `suspend_engines`' script head and call (at HEAD :38-46), so the script takes the exe name as a parameter, as `sleep.rs`'s does:
+Replace `suspend_engines`' script head and call (at HEAD :38-45), so the script takes the exe name as a parameter, as `sleep.rs`'s does:
 
 ```rust
     const SCRIPT: &str = "param([int]$Parent)
@@ -6338,7 +6317,7 @@ name kill_hosts looks for (manifold-view-webkit.exe named no host).
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected: `git diff --stat` lists exactly the nine files above (`cargo fmt --all` may have re-wrapped a line of this task's; nothing else changes). The pre-commit hook passes (fmt and clippy). The last line printed is your session's `Co-Authored-By:` trailer, not `<attribution>`.
@@ -6782,10 +6761,7 @@ Get-Content "$dist\manifold-v0.0.0-local-windows-x64.embedded-webview2.sha256"
 Remove-Item -Recurse -Force $dist
 ```
 
-Expected:
-- the gate prints exactly two lines, `MANIFOLD_WEBVIEW2_HOST=<scratchpad>\release-embedded-check\embedded\manifold-view-webview2.exe` and `MANIFOLD_PDFIUM_HOST=<scratchpad>\release-embedded-check\embedded\manifold-view-pdfium.exe` (absolute, no `\\?\`), then `exit 0`;
-- four file names, in any order: `manifold-v0.0.0-local-windows-x64.embedded-pdfium.sha256`, `manifold-v0.0.0-local-windows-x64.embedded-webview2.sha256`, `manifold-view-pdfium.exe`, `manifold-view-webview2.exe` (the two exes are the copies in `embedded\`, the folder the gate's lines name);
-- the record reads `<hash>  manifold-view-webview2.exe`, and `<hash>` equals the `Get-FileHash` line.
+Expected: two `MANIFOLD_<ID>_HOST=<absolute path>` lines, `exit 0`, and a record whose `<hash>` equals the `Get-FileHash` line. This is a smoke run only; Task 8 Step 7 holds the full list of expectations and is the one home for them.
 
 If either exe is missing from `target/release`, the gate instead prints `release-embedded: <id> <file>: not found (looked for <repo>\target\release\<file>)` on stderr and `exit 1`: that is the error path working, not a failure of this task; say so in the report and go on. Do not build the release hosts for this check.
 
@@ -6812,10 +6788,10 @@ renamed records' upload and reader.
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
-Expected: `git status --short` lists ` M crates/gate/src/main.rs` and `?? crates/gate/src/release_hosts.rs` (an untracked file that was there before the task, such as `grep.exe.stackdump`, is left alone, not added). `git diff --cached --stat` lists exactly `crates/gate/src/main.rs` (4 insertions) and `crates/gate/src/release_hosts.rs` (new). The pre-commit hook passes (fmt and clippy). The last line printed is your session's `Co-Authored-By:` trailer, not `<attribution>`. No gate run here: Task 8 runs the full gate on the finished plan.
+Expected: `git status --short` lists ` M crates/gate/src/main.rs` and `?? crates/gate/src/release_hosts.rs`. `git diff --cached --stat` lists exactly `crates/gate/src/main.rs` (4 insertions) and `crates/gate/src/release_hosts.rs` (new). The pre-commit hook passes (fmt and clippy). The last line printed is your session's `Co-Authored-By:` trailer, not `<attribution>`. No gate run here: Task 8 runs the full gate on the finished plan.
 
 ### Task 6: release_verify, manifest_gaps and the release.yml change
 
@@ -6847,7 +6823,7 @@ pub(crate) fn manifest_files(manifest: &str) -> Result<Vec<Pinned>, String>;
 pub(crate) fn manifest_gaps(entries: &[Pinned], running: Os) -> Vec<String>;
 ```
 
-- Produces (`gate release-verify vX.Y.Z [DIST]`, usage unchanged): the stem `manifold-vX.Y.Z-<Os::here().pin_platform()>`; a new check `the manifest pins exactly the host table's files for this release's platform` (on failure `FAIL: ...: got [<gaps>], wanted []`); the per-file re-hash unchanged; `<stem>.exe matches its .sha256`; one check per `Embedded` row, `embedded/<file> matches <stem>.embedded-<id>.sha256`.
+- Produces (`gate release-verify vX.Y.Z [DIST]`, usage unchanged): the stem `manifold-vX.Y.Z-<Os::here().pin_platform()>`; a new check `the manifest pins exactly the host table's files for this release's platform` (on failure `FAIL: ...: got ["<gap>", ...], wanted []`); the per-file re-hash unchanged; `<stem>.exe matches its .sha256`; one check per `Embedded` row, `embedded/<file> matches <stem>.embedded-<id>.sha256`.
 - Produces (`release.yml`): the Windows job's steps "Downloadable hosts and their pin manifest", "Embedded hosts" and "manifold.exe" exactly as the spec's block; the draft release uploads `(Get-ChildItem dist -File -Filter "$stem.embedded-*.sha256" | ForEach-Object FullName)` where it named the two records. No `embedded-host`, `embedded-pdf-view`, `MANIFOLD_`, `embedded/`, `mozangle` or `libEGL` left in the file.
 - Produces (README "Releases"): the bullets name `gate release-pins`, `gate release-embedded` (three times), the records `.embedded-pdfium.sha256` and `.embedded-webview2.sha256`, and no `hosts.yml`. Task 7 consumes this as "Task 6, README Releases".
 
@@ -7012,14 +6988,14 @@ with:
         // The upload line first runs on a real tag (spec H14), so its glob is tied to embedded_record here.
         let yml = fs::read_to_string(repo().join(".github").join("workflows").join("release.yml")).unwrap();
         let line = yml.lines().find(|line| line.contains("gh release create")).expect("no gh release create line");
+        let stem = "manifold-vX.Y.Z-windows-x64";
         let glob = line
             .split_once("-Filter \"")
             .and_then(|(_, rest)| rest.split_once('"'))
-            .map(|(glob, _)| glob.replace("$stem", "manifold-vX.Y.Z-windows-x64"))
+            .map(|(glob, _)| glob.replace("$stem", stem))
             .unwrap_or_else(|| panic!("no -Filter \"...\" on: {line}"));
         let (left, right) = glob.split_once('*').unwrap_or_else(|| panic!("no * in the -Filter glob {glob}"));
         let matches = |name: &str| name.strip_prefix(left).is_some_and(|rest| rest.ends_with(right));
-        let stem = "manifold-vX.Y.Z-windows-x64";
         for host in manifold_hosts::ALL.iter().filter(|host| host.delivery == Delivery::Embedded) {
             let record = embedded_record(stem, host);
             assert!(matches(record.as_str()), "{glob} does not match {record}");
@@ -7034,7 +7010,7 @@ The last test is the spec's upload-glob test: it takes the text between `-Filter
 - [ ] **Step 4: Run the tests to see them fail**
 
 Run: `cargo test -j 8 -p gate -- release_hosts release_verify`
-Expected: the test build fails, no test runs. The errors name `manifest_gaps` (`error[E0432]: unresolved import` in `release_hosts.rs`, `error[E0425]: cannot find function` in `release_verify.rs`'s tests) and the private `manifest_files` and `Pinned` (`error[E0603]: ... is private`).
+Expected: the test build fails, no test runs. The errors, among others, name `manifest_gaps` (`error[E0432]: unresolved import` in `release_hosts.rs`, `error[E0425]: cannot find function` in `release_verify.rs`'s tests), `Os` (`error[E0433]: failed to resolve: use of undeclared type` in `release_verify.rs`'s tests, until Step 5 imports it) and the private `manifest_files` and `Pinned` (`error[E0603]: ... is private`).
 
 - [ ] **Step 5: `release_verify` reads the table**
 
@@ -7461,7 +7437,7 @@ and the upload glob to embedded_record. README "Releases" follows.
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected: `git diff --stat` lists exactly `.github/workflows/release.yml`, `README.md`, `crates/gate/src/release_hosts.rs` and `crates/gate/src/release_verify.rs`. The pre-commit hook passes (fmt and clippy). The last line printed is your session's `Co-Authored-By:` trailer, not `<attribution>`. No gate run here: the change reaches `crates/gate/` (tier `full`), and Task 8 runs the full gate on the finished plan.
@@ -7760,6 +7736,8 @@ The entry's *What*, *Why parked*, *Trigger* and *Fix* still hold after Task 2 (t
 `run_in_place` finds; `prepare_cef` still copies `shipped_cef_host()` into a custom folder); read them once against
 the code at the lines just cited before writing `verified DATE-TODAY`. If one no longer holds, stop and report it.
 
+Two more entries cite `process_manager.rs` by line, and Task 2 moves those lines: `- **Two hosts can name the same file.**` (HEAD `:129`, `process_manager.rs:1028`) and `- **A settings message refused by a full send queue counts as sent.**` (HEAD `:137`, `process_manager.rs:355`). For each, read the cited line at B (`git show 10444ae5:crates/manifold/src/process_manager.rs | sed -n '1028p'`, then `'355p'`), find that same code in the current file with Grep, and replace the number with the new line. If the code was deleted, stop and report it.
+
 Run: `grep -c -F 'in_place_paths' PARKED.md`
 Expected: `0`
 
@@ -7808,8 +7786,8 @@ git show HEAD:PARKED.md | grep -c '^- \*\*'
 grep -c '^- \*\*' PARKED.md
 git diff --stat -- PARKED.md
 ```
-Expected: `0` (no marker left); the second count is the first count minus 3 (three entries deleted, none added); one
-file changed. Then open each `LINE-` value just written for the entries of Steps 8-10 against Step 6's table (the
+Expected: the first command prints `0` (no marker left); the third prints the second minus 3 (three entries deleted,
+none added); `--stat` lists one file. Then open each `LINE-` value just written for the entries of Steps 8-10 against Step 6's table (the
 numbers in the file must equal the table's, entry by entry).
 
 - [ ] **Step 12: The deleted-identifier grep (spec "Docs", the manual half)**
@@ -7821,7 +7799,7 @@ docs, with the gate's needles (`find_newest`, `sync_servo`, `sync_cef`, `embedde
 
 Run:
 ```bash
-git grep -n -F -e HostSource -e 'Embedded::' -e PLATFORM.host_exe -e PLATFORM.exe_suffix -e PLATFORM.runtime_lib -e CefPlatform::runtime_lib -e beside_exe -e in_place_paths -e sibling_binary -e 'host_file_name(' -e ViewDesc::dev_dir -e MANIFOLD_WEBVIEW2_SHA256 -e MANIFOLD_PDFIUM_SHA256 -e find_newest -e sync_servo -e sync_cef -e embedded-host -e embedded-pdf-view -e 'manifold-view-{' -- ':!docs/superpowers' ':!CHANGELOG.md' ':!crates/manifold/src/deleted_names.rs'
+git grep -n -F -e HostSource -e 'Embedded::' -e PLATFORM.host_exe -e PLATFORM.exe_suffix -e PLATFORM.runtime_lib -e CefPlatform::runtime_lib -e beside_exe -e in_place_paths -e sibling_binary -e 'host_file_name(' -e ViewDesc::dev_dir -e MANIFOLD_WEBVIEW2_SHA256 -e MANIFOLD_PDFIUM_SHA256 -e find_newest -e sync_servo -e sync_cef -e embedded-host -e embedded-pdf-view -e 'manifold-view-{' -- . ':!docs/superpowers' ':!CHANGELOG.md' ':!crates/manifold/src/deleted_names.rs'
 ```
 Expected: no output. (`CHANGELOG.md` is history; `docs/superpowers` holds the plans and specs that name the old items
 on purpose; `.superpowers/` is untracked, so `git grep` skips it.)
@@ -7881,7 +7859,7 @@ Run:
 ```bash
 git grep -n -F -e 'everything that differs between engines lives -- name, store code, binary,' -e 'ENGINES[code - 1]' -e 'desc().name' -e 'ViewDesc::runtime' -e '`Os` is the operating systems an engine host can target' -e 'MANIFOLD_<NAME>_SHA256' -e 'embedded WebView2 host and PDF view copies in DIST/embedded' -e "The Servo list is the manifest's three files" -e 'newest mozangle output' -- crates
 git grep -n -E 'pub\(crate\) (name|binary|source|host_os|runtime_dir|dev_dir):' -- crates/manifold/src/process_manager.rs
-git grep -n -w -F -e 'enum Embedded' -e 'fn host_path(' -- crates/manifold/src/embedded_host.rs
+git grep -n -F -e 'enum Embedded' -e 'fn host_path(' -- crates/manifold/src/embedded_host.rs
 git grep -n -F -e 'pub(crate) const CEF_RUNTIME_DIR' -e 'enum HostSource' -- crates/manifold/src/process_manager.rs
 ```
 Expected: no output from any of the four. A hit is a site its owner left: stop and report it, with the line, to the
@@ -7987,12 +7965,11 @@ no spec or plan file.
 
 ```bash
 git add README.md PARKED.md docs/decisions/2026-10-23-host-runtimes.md docs/decisions/2026-10-18-hosts-in-the-release.md
-git add -u -- crates
+git add crates/manifold/src/session_sync.rs crates/manifold/src/store/model.rs
 git status --short
 ```
-Expected: every changed file staged (`M` in the first column), nothing in the second column of a tracked file. A `??`
-line is a file this task did not create (it creates none; at plan time `grep.exe.stackdump` was untracked in the repo
-root) and stays as it is.
+Add each other file Step 12 or Step 15 fixed by name too (the `git diff --stat` above lists them). Expected: every changed file staged (`M` in the first column), nothing in the second column of a tracked file. A `??`
+line is a file this task did not create (it creates none): stop and report it.
 
 ```bash
 git commit -F - <<'EOF'
@@ -8013,7 +7990,7 @@ name replaced.
 The pre-commit hook runs `cargo fmt --all --check` and the clippy line when Rust files are staged; never pass
 `--no-verify`. If it fails, fix the cause, re-stage and commit again.
 
-Run: `git log -1 --format=%B | tail -n 1`
+Run: `git log -1 --format=%B | grep -v '^$' | tail -n 1`
 Expected: the last attribution line.
 
 Run: `git status --short --untracked-files=no`
@@ -8099,12 +8076,12 @@ Expected:
 
 - [ ] **Step 5: Grep for deleted names**
 
-These are the spec's "Docs" needles, with `manifold-view-{` for `sleep.rs:87`, over the whole tree. Excluded:
-- `docs/superpowers` and `.superpowers` (old plans and specs);
+These are the spec's "Docs" needles, with `manifold-view-{` for `sleep.rs:87`, over the whole tree: the same grep, with the same pathspec, that Task 7 Step 12 ran before this task. That run owned each hit and stopped; here no owner is left, so a hit is fixed where it stands (below). Excluded:
+- `docs/superpowers` (old plans and specs; `.superpowers/` is untracked, so `git grep` skips it) and `CHANGELOG.md` (history);
 - `crates/manifold/src/deleted_names.rs`, which lists the app-crate needles in its own test and skips itself when scanning.
 
 ```bash
-git grep -n -F -e HostSource -e 'Embedded::' -e PLATFORM.host_exe -e PLATFORM.exe_suffix -e PLATFORM.runtime_lib -e CefPlatform::runtime_lib -e beside_exe -e in_place_paths -e sibling_binary -e 'host_file_name(' -e ViewDesc::dev_dir -e MANIFOLD_WEBVIEW2_SHA256 -e MANIFOLD_PDFIUM_SHA256 -e find_newest -e sync_servo -e sync_cef -e embedded-host -e embedded-pdf-view -e 'manifold-view-{' -- . ':!docs/superpowers' ':!.superpowers' ':!crates/manifold/src/deleted_names.rs'
+git grep -n -F -e HostSource -e 'Embedded::' -e PLATFORM.host_exe -e PLATFORM.exe_suffix -e PLATFORM.runtime_lib -e CefPlatform::runtime_lib -e beside_exe -e in_place_paths -e sibling_binary -e 'host_file_name(' -e ViewDesc::dev_dir -e MANIFOLD_WEBVIEW2_SHA256 -e MANIFOLD_PDFIUM_SHA256 -e find_newest -e sync_servo -e sync_cef -e embedded-host -e embedded-pdf-view -e 'manifold-view-{' -- . ':!docs/superpowers' ':!CHANGELOG.md' ':!crates/manifold/src/deleted_names.rs'
 ```
 
 Expected: no output (exit 1). At 10444ae5 it listed 118 matching lines in 15 files.
@@ -8194,7 +8171,7 @@ New wording that the spec's "Docs" section requires:
 grep -c 'manifold-hosts' README.md docs/decisions/2026-10-23-host-runtimes.md
 grep -c 'release-pins' README.md docs/decisions/2026-10-18-hosts-in-the-release.md
 grep -c -e 'release-embedded' -e 'embedded-webview2' -e 'embedded-pdfium' README.md
-grep -n 'crate lists are repeated' PARKED.md | grep -c 'README.md:35'
+L=$(grep -n -F '**CI** (' README.md | cut -d: -f1); echo "CI line $L"; grep -n 'crate lists are repeated' PARKED.md | grep -c "README.md:$L"
 grep -c 'Host::in_place' PARKED.md
 grep -n -i -E 'host table|manifold-hosts|one table' ROADMAP.md
 ```
@@ -8204,12 +8181,12 @@ Expected:
   - the crate map, the Linux CI line and the `runtime.rs` decision note name `manifold-hosts`;
   - README "Releases" and the 2026-10-18 decision's note name `release-pins`;
   - README names the new subcommand and record names;
-  - the `-p` entry cites `README.md:35`;
+  - the `-p` entry cites the CI paragraph's current line (`README.md:36` once Task 1's crate-map line is in: 35 at HEAD);
   - the re-cited PARKED `:156` entry names `Host::in_place`.
 - The ROADMAP grep prints nothing: ROADMAP has no host-table line, and this plan adds none.
 
 Then read the amended passages once:
-- README `:22`, `:33`, `:35` and `:80`, and the Releases bullets;
+- README's host-table paragraph (HEAD `:22`), the paragraph after it (`:33`), the CI paragraph (`:35`) and "Runtime-file placement" (`:80`), and the Releases bullets (HEAD line numbers; each is one line further down after Task 1's crate-map line);
 - `docs/decisions/2026-10-23-host-runtimes.md` `:3`, `:7`-`9`, `:18` and `:68`-`69`, which keep their text and gain notes;
 - `docs/decisions/2026-10-18-hosts-in-the-release.md` `:8`.
 
@@ -8362,7 +8339,7 @@ runs: sync-after, gate-host-table; host table spec and plan done
 
 <attribution>
 EOF
-git log -1 --format=%B | tail -n 1
+git log -1 --format=%B | grep -v '^$' | tail -n 1
 ```
 
 Expected:
@@ -8403,7 +8380,7 @@ The report says:
 - **Architecture check:**
   - What still spells a host outside the table: `install-check`'s usage literal (`main.rs:185`, tied by a test), the Linux job's two literals (H10), the upload pattern and the `windows-x64` stem in the YAML, and `fresh.rs`'s `[&WEBVIEW2, &PDFIUM]`, one more spelling of the gate build line's hosts.
   - What would remove them: PARKED "Host table (2026-10-29)", "The `-p` crate lists are repeated"; the spec's "Weighed and not taken" `gate release-assets` and a leaf bin for the Linux job, each taken if its literal drifts.
-- **Next steps, ranked, each with a one-line why:**
+- **Next steps, ranked, each with a one-line why.** Number them in one sequence with any options in the same message (options 1-3, next steps 4-6), so a bare "4 5" is unambiguous:
   - push the branch and run `release.yml`'s dry run (H14: the first run of the YAML change and of `release-pins`);
   - read CI's Linux job on that push (Review Focus 2);
   - a `WITH_ENGINES="servo webkit"` gate run, if the user wants the `SITE_HOST` and `kill_hosts` paths run live (Review Focus 5);
