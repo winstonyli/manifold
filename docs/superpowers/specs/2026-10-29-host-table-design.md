@@ -338,7 +338,7 @@ fn sync_host(root: &Path, host: &Host, outcome: &mut Outcome) -> HostSync {
     //     runtime_ready = copy_runtime returned Ok (a file that failed is already in `outcome` and does not clear
     //         it), or the marker was in place
     //     the exe into folder/<runtime.dir>/ only if runtime_ready, always compared (it is rebuilt with its crate);
-    //     sync_file prints today's skip line when the exe is not built. With no runtime in the folder the copy is not
+    //     sync_file prints its skip line (through say(), on stdout like the others) when the exe is not built. With no runtime in the folder the copy is not
     //     attempted: the line above already says why, and a bare path-not-found error would be a second error.
     // return Synced
 }
@@ -578,7 +578,7 @@ and verify steps (`:124`-`130`) are unchanged.
 - **Tier**: `tier.rs` classifies every path under `crates/` outside `crates/manifold` as Full (today `:151` would send
   `crates/manifold-hosts/src/lib.rs` to Light as a "path on no list"). One arm replaces the protocol, pages, engine-crate
   and gate arms (`:108`-`:110`, `:122`-`:124`), so a crate added later needs no edit; no existing path changes tier,
-  since every crate but the app was Full already. Its cases beside `:281` use `crates/manifold-hosts/src/lib.rs` and
+  since every crate but the app was Full already. Its cases beside `:282` use `crates/manifold-hosts/src/lib.rs` and
   `tests/layout.rs` (`:107` already sends every `crates/*/Cargo.toml` to Full), a later crate's path, and
   `crates/manifold/build.rs`, which stays Light. *Amended 2026-10-30:* this was an added `under("crates/manifold-hosts")`
   arm, the fourth of one shape; the user chose the single arm.
