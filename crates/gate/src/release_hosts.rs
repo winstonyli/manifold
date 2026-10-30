@@ -156,6 +156,7 @@ pub fn release_embedded(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::release_verify::{manifest_files, manifest_gaps, Pinned};
 
     const TAG: &str = "vX.Y.Z";
 
@@ -286,5 +287,61 @@ mod tests {
         assert_eq!(webview2, "manifold-vX.Y.Z-windows-x64.embedded-webview2.sha256");
         let pdfium = embedded_record(stem, &manifold_hosts::PDFIUM);
         assert_eq!(pdfium, "manifold-vX.Y.Z-windows-x64.embedded-pdfium.sha256");
+    }
+
+    /// The manifest `release_pins_in` writes for a `release_tree`, parsed as `release-verify` parses it.
+    fn written_manifest(name: &str) -> Vec<Pinned> {
+        let root = release_tree(name);
+        let lines = release_pins_in(&root, TAG, &root.join("dist"), &root.join("webkit-host")).unwrap();
+        let path = lines[0].strip_prefix("MANIFOLD_HOST_PINS=").unwrap();
+        let entries = manifest_files(&fs::read_to_string(path).unwrap()).unwrap();
+        let _ = fs::remove_dir_all(&root);
+        entries
+    }
+
+    fn sorted(mut files: Vec<String>) -> Vec<String> {
+        files.sort_unstable();
+        files
+    }
+
+    #[test]
+    fn the_written_manifest_has_no_gap() {
+        // The round trip: what release-pins writes is what release-verify accepts, so the two cannot drift.
+        let entries = written_manifest("round-trip");
+        assert_eq!(entries.len(), 5);
+        assert_eq!(manifest_gaps(&entries, Os::here()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn every_entry_of_the_written_manifest_is_one_the_app_accepts() {
+        // Spec R6: a manifest manifest_gaps passes also passes host_pin::parse, whose check is Host::pinned_under.
+        let entries = written_manifest("agreement");
+        assert_eq!(entries.len(), 5);
+        for e in &entries {
+            let host = manifold_hosts::by_id(&e.kind).unwrap_or_else(|| panic!("no row {}", e.kind));
+            let same = entries.iter().filter(|o| o.kind == e.kind && o.platform == e.platform);
+            let want = sorted(same.map(|o| o.file.clone()).collect());
+            assert_eq!(host.pinned_under(&e.platform).map(sorted), Some(want), "{}/{}", e.kind, e.platform);
+        }
+    }
+
+    #[test]
+    fn the_draft_release_uploads_every_embedded_record() {
+        // The upload line first runs on a real tag (spec H14), so its glob is tied to embedded_record here.
+        let yml = fs::read_to_string(repo().join(".github").join("workflows").join("release.yml")).unwrap();
+        let line = yml.lines().find(|line| line.contains("gh release create")).expect("no gh release create line");
+        let stem = "manifold-vX.Y.Z-windows-x64";
+        let glob = line
+            .split_once("-Filter \"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(glob, _)| glob.replace("$stem", stem))
+            .unwrap_or_else(|| panic!("no -Filter \"...\" on: {line}"));
+        let (left, right) = glob.split_once('*').unwrap_or_else(|| panic!("no * in the -Filter glob {glob}"));
+        let matches = |name: &str| name.strip_prefix(left).is_some_and(|rest| rest.ends_with(right));
+        for host in manifold_hosts::ALL.iter().filter(|host| host.delivery == Delivery::Embedded) {
+            let record = embedded_record(stem, host);
+            assert!(matches(record.as_str()), "{glob} does not match {record}");
+        }
+        assert!(!matches("manifold-vX.Y.Z-windows-x64.exe.sha256"), "{glob} matches the exe's record too");
     }
 }

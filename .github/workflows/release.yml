@@ -67,60 +67,27 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
       - name: Downloadable hosts and their pin manifest
         run: |
-          # Each host is attached to this release; manifold.exe is built with the manifest of their sizes and hashes.
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo build --release --locked -p manifold-view-cef
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          # Extra host files: ANGLE's DLLs come from mozangle's build output (the newest copy is the one this build
-          # made); WebKit's host comes from the Linux job.
-          $sources = @{ 'manifold-view-webkitgtk' = 'webkit-host/manifold-view-webkitgtk' }
-          if (-not (Test-Path $sources['manifold-view-webkitgtk'])) { throw 'no WebKit host from the Linux job' }
-          foreach ($dll in 'libEGL.dll', 'libGLESv2.dll') {
-            $sources[$dll] = Get-ChildItem target/release/build -Recurse -Filter $dll | Where-Object FullName -Match 'mozangle' | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
-            if (-not $sources[$dll]) { throw "no $dll under target/release/build" }
-          }
-          function Source($name) { if ($sources.ContainsKey($name)) { $sources[$name] } else { "target/release/$name" } }
-          $hosts = [ordered]@{
-            cef = [ordered]@{ 'windows-x64' = @('manifold-view-cef.exe') }
-            servo = [ordered]@{ 'windows-x64' = @('manifold-view-servo.exe', 'libEGL.dll', 'libGLESv2.dll') }
-            webkit = [ordered]@{ 'linux-x64' = @('manifold-view-webkitgtk') }
-          }
-          $manifest = [ordered]@{}
-          foreach ($kind in $hosts.Keys) {
-            $manifest[$kind] = [ordered]@{}
-            foreach ($platform in $hosts[$kind].Keys) {
-              $files = foreach ($name in $hosts[$kind][$platform]) {
-                Copy-Item (Source $name) "dist/$name-$platform"
-                [ordered]@{ file = $name; size = (Get-Item "dist/$name-$platform").Length; sha256 = (Get-FileHash "dist/$name-$platform" -Algorithm SHA256).Hash.ToLower() }
-              }
-              $manifest[$kind][$platform] = @($files)
-            }
-          }
-          $manifest | ConvertTo-Json -Depth 6 | Set-Content -Encoding ascii "dist/manifold-$env:TAG-windows-x64.host-pins.json"
-          Get-Content "dist/manifold-$env:TAG-windows-x64.host-pins.json"
-      - name: Embedded hosts and manifold.exe
+          & target/debug/gate.exe release-pins $env:TAG dist webkit-host | Add-Content $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: Embedded hosts
         run: |
           $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo build --release --locked -p manifold-view-webview2 -p manifold-view-pdfium
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $env:MANIFOLD_HOST_PINS = (Resolve-Path "dist/manifold-$env:TAG-windows-x64.host-pins.json").Path
-          New-Item -ItemType Directory -Force dist/embedded | Out-Null
-          Copy-Item target/release/manifold-view-webview2.exe dist/embedded/
-          Copy-Item target/release/manifold-view-pdfium.exe dist/embedded/
-          $env:MANIFOLD_WEBVIEW2_HOST = (Resolve-Path dist/embedded/manifold-view-webview2.exe).Path
-          $env:MANIFOLD_PDFIUM_HOST = (Resolve-Path dist/embedded/manifold-view-pdfium.exe).Path
+          & target/debug/gate.exe release-embedded $env:TAG dist | Add-Content $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      - name: manifold.exe
+        run: |
+          $env:RUSTFLAGS = '-C target-feature=+crt-static'
           cargo build --release --locked -p manifold
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $stem = "manifold-$env:TAG-windows-x64"
           Copy-Item target/release/manifold.exe "dist/$stem.exe"
-          function Record($path, $out) {
-            $h = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
-            "$h  $(Split-Path $path -Leaf)" | Set-Content -Encoding ascii $out
-          }
-          Record "dist/$stem.exe" "dist/$stem.exe.sha256"
-          Record "dist/embedded/manifold-view-webview2.exe" "dist/$stem.embedded-host.sha256"
-          Record "dist/embedded/manifold-view-pdfium.exe" "dist/$stem.embedded-pdf-view.sha256"
+          $h = (Get-FileHash "dist/$stem.exe" -Algorithm SHA256).Hash.ToLower()
+          "$h  $stem.exe" | Set-Content -Encoding ascii "dist/$stem.exe.sha256"
       - name: Package check and release-verify
         run: |
           $stem = "manifold-$env:TAG-windows-x64"
@@ -141,5 +108,5 @@ jobs:
           $stem = "manifold-$env:TAG-windows-x64"
           & target/debug/gate.exe release-notes $env:TAG "dist/$stem.host-pins.json" | Set-Content -Encoding utf8 notes.md
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" "dist/$stem.embedded-host.sha256" "dist/$stem.embedded-pdf-view.sha256" "dist/$stem.host-pins.json" (Get-ChildItem dist -File | Where-Object Name -Match '-(windows|linux)-x64$' | ForEach-Object FullName)
+          gh release create $env:TAG --draft --verify-tag --title $env:TAG --notes-file notes.md "dist/$stem.exe" "dist/$stem.exe.sha256" (Get-ChildItem dist -File -Filter "$stem.embedded-*.sha256" | ForEach-Object FullName) "dist/$stem.host-pins.json" (Get-ChildItem dist -File | Where-Object Name -Match '-(windows|linux)-x64$' | ForEach-Object FullName)
           if ($LASTEXITCODE -ne 0) { exit 1 }
