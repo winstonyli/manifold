@@ -2,8 +2,9 @@
 //! `webview2`; `VIEWS="webview2 cef"` adds CEF, whose host must be built). Two cases per view, each on its own profile:
 //! the profile's own download folder, where the one card must complete and save `real.zip` with the server's bytes; and
 //! a folder that cannot be made (a path under a regular file), where the host refuses the download and the one card must
-//! show it failed as `FolderUnusable` (`downloads::refused`; for CEF, `on_before_download` returning 0 is what ends it).
-//! WebKit has no gate stage (it runs under WSL), so its `/mnt/<drive>/...` folder stays unexercised (PARKED).
+//! show it failed as `FolderUnusable` (`downloads::refused`). It checks the card and the folder only: on CEF the refused
+//! download is also saved in the user's own Downloads folder, which this stage does not see (PARKED "CEF's refused
+//! download"). WebKit has no gate stage (it runs under WSL), so its `/mnt/<drive>/...` folder stays unexercised (PARKED).
 
 use std::fs;
 use std::io;
