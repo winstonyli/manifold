@@ -1,0 +1,8 @@
+[package]
+name = "manifold-hosts"
+version.workspace = true
+edition.workspace = true
+description = "The host table: one row per engine host's layout, for manifold, its build script and the gate."
+
+[lints]
+workspace = true

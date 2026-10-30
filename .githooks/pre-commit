@@ -4,4 +4,4 @@
 git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$|rustfmt\.toml$' || exit 0
 cargo fmt --all --check >/dev/null 2>&1 || { echo "pre-commit: run 'cargo fmt --all'" >&2; exit 1; }
 # WebKit doesn't build on Windows, Servo takes about 33 minutes, and CEF's build needs its download; lint the rest.
-cargo clippy -q -j 8 -p manifold -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings || { echo "pre-commit: clippy failed" >&2; exit 1; }
+cargo clippy -q -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings || { echo "pre-commit: clippy failed" >&2; exit 1; }

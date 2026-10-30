@@ -104,12 +104,9 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
     if matches!(p, "Cargo.toml" | "Cargo.lock")
         || p.starts_with(".cargo/")
         || p.starts_with("rust-toolchain")
-        || (p.starts_with("crates/") && p.ends_with("/Cargo.toml"))
-        || under("crates/manifold-view-protocol")
-        || under("crates/manifold-pages")
-        || (p.starts_with("crates/manifold-view-") && p["crates/".len()..].contains('/'))
+        || (p.starts_with("crates/") && (p.ends_with("/Cargo.toml") || !under("crates/manifold")))
     {
-        return full("dependency, protocol, pages or engine crate");
+        return full("dependency, or any crate but the app (the gate, protocol, pages, host table and engines)");
     }
     if let Some(rel) = in_src {
         let first = rel.split('/').next().unwrap_or("");
@@ -118,9 +115,6 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         if (CORE_MODULES.contains(&stem) && (is_dir || first.ends_with(".rs"))) || (is_dir && first == "store") {
             return full("sync, store, mirror, session, engine or network core");
         }
-    }
-    if under("crates/gate") {
-        return full("the gate's own code");
     }
     if let Some(rel) = in_src {
         if rel.contains('/') {
@@ -280,6 +274,12 @@ mod tests {
         assert_eq!(tier_of(&["Cargo.lock"], &[]), "TIER full");
         assert_eq!(tier_of(&["crates/manifold-view-cef/src/lib.rs"], &[]), "TIER full");
         assert_eq!(tier_of(&["crates/manifold-pages/assets/start.html"], &[]), "TIER full");
+        assert_eq!(tier_of(&["crates/manifold-hosts/src/lib.rs"], &[]), "TIER full");
+        assert_eq!(tier_of(&["crates/manifold-hosts/tests/layout.rs"], &[]), "TIER full");
+        // Every crate but the app is Full, so a crate added later needs no edit here.
+        assert_eq!(tier_of(&["crates/some-later-crate/src/lib.rs"], &[]), "TIER full");
+        // The app crate is classified by its own lists: a file outside its source folder is on none.
+        assert_eq!(tier_of(&["crates/manifold/build.rs"], &[]), "TIER light");
     }
 
     #[test]

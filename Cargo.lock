@@ -5030,6 +5030,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "manifold-hosts"
+version = "0.9.0"
+
+[[package]]
 name = "manifold-pages"
 version = "0.9.0"
 
