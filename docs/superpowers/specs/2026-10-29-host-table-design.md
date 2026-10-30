@@ -80,7 +80,7 @@ the plan and the review can cite them.
 - **H12. Checks** (detailed under "Tests"): layout tests in the leaf; a test in the app that `ViewKind` maps onto the
   rows; two checks of a manifest against one table, `host_pin::parse` through `Host::pinned_under` (any platform valid
   for the host) and `release_verify` through `manifest_gaps` (exactly `pin_platform(running)`), with a test that they
-  agree; a `tier.rs` Full rule for `crates/manifold-hosts`; and a golden test, so the table is not its own only witness.
+  agree; a `tier.rs` Full arm for every crate but the app (so for `crates/manifold-hosts`); and a golden test, so the table is not its own only witness.
 - **H13. Parked with this design, not done in it:** the app's CEF-only runtime code, the repeated `-p` crate lists, and
   per-host environment variable names spelled in both app and host. They are in PARKED.md, "Host table (2026-10-29)".
 - **H14. Release proof needs a push.** The `release.yml` change cannot run locally; its first real run is the workflow's
@@ -575,9 +575,13 @@ and verify steps (`:124`-`130`) are unchanged.
     beside `stage_names_are_unique_and_the_usage_lists_the_public_ones` at `:349`, since `STAGES` is private to that
     module), takes the literal's first whitespace-separated word, splits it on `|`, and compares with the ids of
     the `Download` hosts built for `Os::here()` as a set.
-- **Tier**: `tier.rs` classifies `crates/manifold-hosts/**` as Full (today `:151` would send `src/lib.rs` to Light as a
-  "path on no list"); its case beside `:281` uses `crates/manifold-hosts/src/lib.rs` and `tests/layout.rs`, since
-  `:107` already sends every `crates/*/Cargo.toml` to Full.
+- **Tier**: `tier.rs` classifies every path under `crates/` outside `crates/manifold` as Full (today `:151` would send
+  `crates/manifold-hosts/src/lib.rs` to Light as a "path on no list"). One arm replaces the protocol, pages, engine-crate
+  and gate arms (`:108`-`:110`, `:122`-`:124`), so a crate added later needs no edit; no existing path changes tier,
+  since every crate but the app was Full already. Its cases beside `:281` use `crates/manifold-hosts/src/lib.rs` and
+  `tests/layout.rs` (`:107` already sends every `crates/*/Cargo.toml` to Full), a later crate's path, and
+  `crates/manifold/build.rs`, which stays Light. *Amended 2026-10-30:* this was an added `under("crates/manifold-hosts")`
+  arm, the fourth of one shape; the user chose the single arm.
 
 The leaf's own tests run in CI (`ci.yml:17`, `:24`) and with `cargo test -p manifold-hosts`; the gate's unit stage
 (`all.rs:287`-`303`) runs only at tier `ui`, which a leaf change never is, so it does not list the leaf.
@@ -588,7 +592,7 @@ The leaf's own tests run in CI (`ci.yml:17`, `:24`) and with `cargo test -p mani
   and the clippy command in CLAUDE.md "Formatting and lints"; README `:35` spells the Linux test line (Docs).
 - `Cargo.lock` is committed with every commit that adds the crate or a dependency on it (`manifold`, `gate`):
   `release.yml` and `ci.yml` build `--locked`, and the pre-commit hook does not.
-- `tier.rs`: the Full rule above.
+- `tier.rs`: the Full arm above.
 
 ## Not covered
 

@@ -62,7 +62,7 @@ status: draft
   - Layout tests in the leaf, plus a golden test.
   - `ViewKind` maps onto the rows.
   - Two checks of a manifest against one table: `host_pin::parse` through `Host::pinned_under`, and `release_verify` through `manifest_gaps`, with a test that they agree.
-  - A `tier.rs` Full rule for `crates/manifold-hosts`.
+  - One `tier.rs` Full arm for every crate but the app, which covers `crates/manifold-hosts` and any later crate (amended 2026-10-30, Q-tier).
 - **H13. Parked with this design, not done in it:** the app's CEF-only runtime code, the repeated `-p` crate lists, and per-host environment variable names. They are in PARKED.md, "Host table (2026-10-29)".
 - **H14. Release proof needs a push.**
   - The `release.yml` change first runs in the workflow's manual dry run, which needs the branch pushed, and pushing is the user's call.
@@ -293,7 +293,7 @@ Paths are relative to the repo root. Line ranges are at 10444ae5.
   - `Cargo.toml`: the root `members` (`:3`-`13`) and `[workspace.dependencies]` (`:23`-`24`).
   - `Cargo.lock`: the new package.
   - `README.md`: the crate-map line (`:9`-`18`) and `-p manifold-hosts` on the CI line (`:35`); Task 7 only checks both.
-  - `crates/gate/src/tier.rs`: the Full rule for `crates/manifold-hosts/**`, and its test case beside `:281`.
+  - `crates/gate/src/tier.rs`: one Full arm for every crate but the app (it replaces the protocol, pages, engine-crate and gate arms), and its test cases beside `:281`.
   - `.github/workflows/ci.yml` (`:16`, `:17`, `:24`), `.githooks/pre-commit` (`:7`) and `CLAUDE.md` ("Formatting and lints"): `-p manifold-hosts`.
 - **Task 2: the app reads the table** (parts 2A and 2B, one commit)
   - `crates/manifold/Cargo.toml`: `manifold-hosts` as a normal and a build dependency.
@@ -350,7 +350,7 @@ Spec step 1 ("The crate"; Tests, "Golden table", "`Os`", "Layout" and "Tier"; To
 
 It also covers the tooling around the crate:
 - `Cargo.lock`;
-- the `tier.rs` Full rule;
+- the `tier.rs` Full arm for every crate but the app;
 - `-p manifold-hosts` in `ci.yml`, the pre-commit hook and CLAUDE.md's clippy command (together, so they never disagree);
 - README's crate map and CI line.
 
@@ -371,8 +371,8 @@ How to work:
   - `[workspace.dependencies]`, at HEAD :23.
 - Modify: `Cargo.lock` (cargo adds a four-line `manifold-hosts` package entry on the first cargo command).
 - Modify: `crates/gate/src/tier.rs`:
-  - the Full rule, at HEAD :109-112;
-  - its test, at HEAD :282.
+  - the Full arm, at HEAD :108-112, and the gate arm it makes dead, at HEAD :122-124 (deleted);
+  - its tests, at HEAD :282.
 - Modify: `.github/workflows/ci.yml` :16, :17, :24.
 - Modify: `.githooks/pre-commit` :7.
 - Modify: `CLAUDE.md` :11 ("Formatting and lints").
@@ -435,7 +435,7 @@ impl Host {
 - Also produces:
   - the root `[workspace.dependencies]` entry `manifold-hosts = { path = "crates/manifold-hosts" }`. Tasks 2 and 3 add `manifold-hosts.workspace = true` to `crates/manifold/Cargo.toml` (`[dependencies]` and `[build-dependencies]`) and `crates/gate/Cargo.toml`;
   - the layout test `only_the_app_and_the_gate_depend_on_the_table_and_it_on_nothing`. It fails if any other `crates/*/Cargo.toml` names `manifold-hosts`;
-  - `tier.rs`'s Full rule for `crates/manifold-hosts/**`;
+  - `tier.rs`'s one Full arm for every crate but the app, which covers `crates/manifold-hosts/**` and later crates;
   - `-p manifold-hosts` in `ci.yml` :16, :17 and :24, `.githooks/pre-commit` :7 and CLAUDE.md's clippy command, all placed right after `-p manifold`. Later tasks' clippy line is `cargo clippy -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings`;
   - README's crate-map line starting `manifold-hosts` and `-p manifold-hosts` on README's CI line (Task 7 checks both).
 
@@ -1468,7 +1468,7 @@ Run: `cargo test -j 8 -p manifold-hosts --test layout`
 
 Expected: `test result: ok. 5 passed; 0 failed`.
 
-- [ ] **Step 12: The tier test for the leaf (failing)**
+- [ ] **Step 12: The tier tests for the leaf and for any later crate (failing)**
 
 In `crates/gate/src/tier.rs`, at HEAD :282, replace:
 
@@ -1483,10 +1483,14 @@ with:
         assert_eq!(tier_of(&["crates/manifold-pages/assets/start.html"], &[]), "TIER full");
         assert_eq!(tier_of(&["crates/manifold-hosts/src/lib.rs"], &[]), "TIER full");
         assert_eq!(tier_of(&["crates/manifold-hosts/tests/layout.rs"], &[]), "TIER full");
+        // Every crate but the app is Full, so a crate added later needs no edit here.
+        assert_eq!(tier_of(&["crates/some-later-crate/src/lib.rs"], &[]), "TIER full");
+        // The app crate is classified by its own lists: a file outside its source folder is on none.
+        assert_eq!(tier_of(&["crates/manifold/build.rs"], &[]), "TIER light");
     }
 ```
 
-Today these paths reach `light("path on no list")` (HEAD :151). `crates/manifold-hosts/Cargo.toml` is already Full through the `crates/*/Cargo.toml` arm (:107), so it is not a case here.
+Today the three Full paths reach `light("path on no list")` (HEAD :151). `crates/manifold-hosts/Cargo.toml` is already Full through the `crates/*/Cargo.toml` arm (:107), so it is not a case here. The last assertion passes before and after: it pins the boundary the new arm must not cross.
 
 - [ ] **Step 13: Run it to see it fail**
 
@@ -1494,28 +1498,40 @@ Run: `cargo test -j 8 -p gate the_gate_and_the_crate_manifests_are_full`
 
 Expected: `test result: FAILED. 0 passed; 1 failed`. The panic is at the first new line (`crates/gate/src/tier.rs:283`), with `left: "TIER light"` and `right: "TIER full"`.
 
-- [ ] **Step 14: The Full rule**
+- [ ] **Step 14: The Full arm**
 
-In `crates/gate/src/tier.rs`, at HEAD :109-112, replace:
+In `crates/gate/src/tier.rs`, at HEAD :107-113, replace:
 
 ```rust
+        || (p.starts_with("crates/") && p.ends_with("/Cargo.toml"))
+        || under("crates/manifold-view-protocol")
         || under("crates/manifold-pages")
         || (p.starts_with("crates/manifold-view-") && p["crates/".len()..].contains('/'))
     {
         return full("dependency, protocol, pages or engine crate");
+    }
 ```
 
 with:
 
 ```rust
-        || under("crates/manifold-pages")
-        || under("crates/manifold-hosts")
-        || (p.starts_with("crates/manifold-view-") && p["crates/".len()..].contains('/'))
+        || (p.starts_with("crates/") && (p.ends_with("/Cargo.toml") || !under("crates/manifold")))
     {
-        return full("dependency, protocol, pages, host table or engine crate");
+        return full("dependency, or any crate but the app (the gate, protocol, pages, host table and engines)");
+    }
 ```
 
-Nothing else matches the old reason text: `git grep -n "pages or engine crate" -- crates` finds only this line at HEAD.
+Then delete the arm the new one makes dead (HEAD :122-124):
+
+```rust
+    if under("crates/gate") {
+        return full("the gate's own code");
+    }
+```
+
+`under` needs the `/` after its prefix, so `crates/manifold-hosts/...` is not under `crates/manifold`. The change moves no existing path: every crate but the app (`gate`, `manifold-pages`, `manifold-view-*`) was Full already, and `git ls-files crates` shows no other crate.
+
+Nothing else reads the old reason texts: `git grep -n -F -e "pages or engine crate" -e "the gate's own code" -- crates` finds only the two lines this step removes.
 
 - [ ] **Step 15: Run the tier tests**
 
@@ -1682,8 +1698,8 @@ the leaf's.
 A golden test writes every row's derived values out by hand for Windows
 and Linux. tests/layout.rs ties the table to the host crates' names,
 .gitignore and release.yml, and keeps the leaf free of dependencies and
-off every crate but manifold and gate. The gate's tier sends the crate
-to full; CI, the pre-commit hook and CLAUDE.md lint and test it.
+off every crate but manifold and gate. The gate's tier sends every
+crate but the app to full; CI, the pre-commit hook and CLAUDE.md lint and test it.
 
 <attribution>
 EOF
@@ -8287,7 +8303,7 @@ Any diff line is either explained or a regression:
 - [ ] **Step 11: Pick the gate tier**
 
 Run: `target/debug/gate.exe tier <B>`, with `<B>` from this plan's "Started at" line.
-Expected: its last line is `TIER full` (the leaf crate and engine code changed; `tier.rs` sends `crates/manifold-hosts/**` to Full since Task 1).
+Expected: its last line is `TIER full` (the leaf crate and engine code changed; `tier.rs` has sent every crate but the app to Full since Task 1).
 
 Run `full` whatever it prints (CLAUDE.md "Gate"; the spec's verification asks for tier `full`).
 
@@ -8402,18 +8418,18 @@ The report says:
 
 ---
 
-## Open decisions (answer by id before execution)
+## Decisions on the open questions (answered 2026-10-30: "as recommended")
 
-The plan follows each recommendation unless the entry says otherwise. About fifty smaller choices inside the settled design (message wording, helper placement, test shape) are made and explained in the step that uses them; they need no answer.
+The plan follows each answer. About fifty smaller choices inside the settled design (message wording, helper placement, test shape) are made and explained in the step that uses them; they needed no answer.
 
-- **Q-tier. The tier rule for the new crate (Task 1, Steps 12-15).** (a) The spec's explicit `|| under("crates/manifold-hosts")` arm, which the plan writes. (b) One arm: every path under `crates/` outside `crates/manifold` is `Full`. (b) subsumes the protocol, pages, engine-crate, hosts and gate arms of `tier.rs:107-124`, so the next crate needs no edit; (a) is the fourth same-shaped arm. Recommend (b); it replaces the plan's Task 1 tier edit and the `tier.rs` tests move with it. (a) is additive and leaves no rework, so it is safe to take now and generalize later.
-- **Q-engines. Two comment edits beyond the spec (Task 7 Step 14).** `session_sync.rs:121` and `store/model.rs:227` still say `ENGINES`, which no longer exists. (a) Edit them to `VIEW_KINDS`, comment-only (the plan does). (b) Leave them and park them. Recommend (a): the comments name a constant that no longer exists, and a grep for `ENGINES` finds them.
-- **Q-killhosts. `kill_hosts` on an unknown view name (Task 4).** (a) Return an `InvalidInput` error (the plan does; `VIEWS` is free env text). (b) Keep today's behaviour of killing nothing and returning `Ok`. Recommend (a): a typo in `VIEWS` should say so.
-- **Q-streams. Where the sync's skip lines go (Task 3).** Today's CEF "no cef-dll-sys output directory found" line goes to stderr; the plan prints every skip through `say()` on stdout. (a) One stream for all (the plan). (b) Keep missing-source lines on stderr. Recommend (a). It changes nothing in Step 8's before/after diff on this tree, where both build folders exist.
-- **Q-embed-dir. Where the real-embed test builds (Task 2 Step B16, Task 8 Step 6).** README says to use a separate `CARGO_TARGET_DIR`; the plan builds in `target/` because C: has 5 GB or less free and a second app build is several GB. (a) `target/` (the plan; the next normal build reruns `build.rs`). (b) A separate target dir (a cold app build of several GB). Recommend (a).
-- **Q-verify-scope. What runs locally (Task 5 Step 8, Task 8).** The plan does not build release CEF and Servo to run `gate package` or `release-pins` locally (both first run in the release dry run), runs `release-embedded v0.0.0` against whatever `target/release` holds, runs the final gate at `full` without `WITH_ENGINES`, and runs only `-p manifold-hosts` under WSL. (a) As planned. (b) Add a `WITH_ENGINES="servo webkit"` gate run and a `-p manifold` WSL test. Recommend (a): (b) needs a long Servo or WebKit build and several GB, and the dry run and CI cover the rest.
-- **Q-dryrun. The release dry run (spec H14).** `release.yml` changes in Task 6 and first runs in the workflow's manual dry run, which needs the branch pushed. The plan never pushes. Your call, after Task 8: push and dispatch the dry run (recommended before any tag), or tag only after a later dry run.
-- **Q-disk. Disk floor.** Step S1 and every build check stop and ask under 2 GB free and delete nothing. C: swung between 149 MB and 5 GB on 2026-10-29. Free space first if a run stops there.
+- **Q-tier. Decided (b): one `tier.rs` Full arm for every crate but the app (Task 1, Steps 12-15).** It replaces the protocol, pages, engine-crate and gate arms (`tier.rs:108`-`110`, `:122`-`:124`), so the next crate needs no edit, and it moves no existing path (every crate but the app was Full). The spec's "Tests, Tier" and H12 are amended to match. Checked by compiling `tier.rs` alone: the old arms fail the new test at `tier.rs:283` (`left: "TIER light"`), the new arm passes all 6.
+- **Q-engines. Decided (a): edit the two comments.** `session_sync.rs:121` and `store/model.rs:227` say `VIEW_KINDS` (Task 7 Step 14), comment-only and beyond the spec's "Docs" list.
+- **Q-killhosts. Decided (a):** `kill_hosts` returns an `InvalidInput` error when the view names no host (Task 4).
+- **Q-streams. Decided (a):** every sync skip line goes through `say()` on stdout (Task 3). Step 8's before/after diff is unchanged on this tree, where both build folders exist.
+- **Q-embed-dir. Decided (a):** the real-embed test builds in `target/`, not a separate `CARGO_TARGET_DIR` (Task 2 Step B16, Task 8 Step 6), because C: is nearly full. The next normal build reruns `build.rs`.
+- **Q-verify-scope. Decided (a):** no local release CEF or Servo build (so `gate package` and `release-pins` first run in the release dry run); `release-embedded v0.0.0` against whatever `target/release` holds; the final gate at `full` without `WITH_ENGINES`; WSL runs only `-p manifold-hosts`.
+- **Q-dryrun. Decided: a dry run comes before any tag.** `release.yml` changes in Task 6 and first runs in the workflow's manual dry run, which needs the branch pushed. The plan never pushes; at the end of Task 8 the executor asks for the push and does not assume it.
+- **Q-disk. Unchanged:** Step S1 and every build check stop and ask under 2 GB free and delete nothing. C: swung between 149 MB and 5 GB on 2026-10-29.
 
 ---
 
@@ -8427,6 +8443,6 @@ Three adversarial rounds, each by eight read-only Sonnet reviewers (spec coverag
 | 2 | `076b8416` | 1 | about 17 | Task 7 Step 9 re-cited PARKED entries by reading old line numbers, which pointed at the wrong code (`process_manager.rs:355` is `set_visible`, `:1028` a doc comment); now by label. Plus a loose manifest assertion made exact, Task 8 Step 10 wording, `-j 8` vs test threads, README checks. |
 | 3 | `a16ff790` | 0 | 7 distinct (10 reports) | `settings_page.rs:805` missing from Step 9; whole-crate test lines now carry `-- --test-threads 8`; the cargo warning's backticks; a missing blank line; the disk figure. |
 
-Not applied in round 3: the ENGINES comment edits in `session_sync.rs:121` and `store/model.rs:227` (beyond the spec; an open decision for the user, below) and the `package.rs` module-doc `windows-x64` wording (still true; optional).
+Left as they were in round 3: the ENGINES comment edits in `session_sync.rs:121` and `store/model.rs:227` (beyond the spec; the user kept them, Q-engines) and the `package.rs` module-doc `windows-x64` wording (still true; optional).
 
-Open decisions for the user are listed in the hand-over message, not here: this file keeps the plan, not the discussion.
+The open decisions were answered on 2026-10-30 (see "Decisions on the open questions" above). Q-tier changed Task 1 Steps 12-15 and the spec, so a fourth, focused round (below) re-checked that change.
