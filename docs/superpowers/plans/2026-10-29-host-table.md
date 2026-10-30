@@ -76,7 +76,7 @@ status: draft
   - At 10444ae5 those paths were clean. Every `git add` below names its paths.
   - An untracked file outside those paths (at the repo root, for instance) is not this plan's. Never stage it, and leave it alone.
     - `run.ps1` marks every run's commit `-dirty` while `git status --porcelain -- . ':!docs/runs.md'` (`run.ps1:63`) lists anything, untracked files included. At 10444ae5 it listed nothing, so an Expected line below that says "no `-dirty`" holds only while it still lists nothing.
-- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` caps build jobs only; for a long `cargo test`, add `-- --test-threads 8`. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
+- **CPU and priority.** Before a foreground cargo build or test expected to run over about 30 s, check `%LOCALAPPDATA%\cpu-leases\*.json` for a live `exclusive` lease (its pid alive and `until` in the future) and wait for it. `-j 8` caps build jobs only; the whole-crate `cargo test` lines below (and Task 8 Step 2) carry `-- --test-threads 8` for that reason, and a filtered run needs none. The gate runs go through `run.ps1` (Task 8 Step 12), which sets BelowNormal.
 - **One cargo per target dir.**
   - Before any cargo command, run `Get-Process cargo -ErrorAction SilentlyContinue` in PowerShell. If one is running, it is another session's build in `target/`: wait for it to exit.
   - Before a WSL cargo run, `wsl.exe -d Ubuntu -e pgrep -af "[c]argo"` must print nothing.
@@ -84,8 +84,8 @@ status: draft
   - The clippy line is CLAUDE.md's "Formatting and lints" command. Task 1 adds `-p manifold-hosts` to it, to `.githooks/pre-commit:7` and to `ci.yml:16` together. After Task 1 it is `cargo clippy -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings`. Every task's clippy step runs that line. Before Task 1 lands, the same line without `-p manifold-hosts`.
   - The test lines are listed below. The app has no lib target, hence `--bin manifold`.
     - `cargo test -j 8 -p manifold-hosts`
-    - `cargo test -j 8 -p manifold --bin manifold`
-    - `cargo test -j 8 -p gate`
+    - `cargo test -j 8 -p manifold --bin manifold -- --test-threads 8`
+    - `cargo test -j 8 -p gate -- --test-threads 8`
   - The gate build line (CLAUDE.md "Gate") is `cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`.
 - **Commit structure.**
   - Tasks 1-7 are the spec's "Order of work" steps 1-7, one commit each. Task 2 is written as parts 2A and 2B, with one commit at the end of 2B.
@@ -121,7 +121,7 @@ status: draft
   - The sync comparison uses the hosts already built in this tree: `target/debug/manifold-view-cef.exe` with `target/debug/cef-runtime/`, and `target-servo/debug/manifold-view-servo.exe` with its two DLLs.
   - WebKit is touched only through the leaf's WSL test run.
 - **Disk.**
-  - C: had a few GB free on 2026-10-29 (3.2 GB at the last review; 100% used). Check it with `df -h /c | tail -n 1` before every build and run.
+  - C: is near 100% full and its free space swings with other sessions' builds (149 MB to 5 GB on 2026-10-29). Check it with `df -h /c | tail -n 1` before every build and run.
   - Under 2 GB free, stop and ask the user. Delete nothing to make room.
   - Make no new target dir.
 - **While a run is live.** Never edit sources while a run started from this repo is live.
@@ -495,7 +495,7 @@ manifold-hosts = { path = "crates/manifold-hosts" } # std only; only manifold an
 manifold-pages = { path = "crates/manifold-pages" }
 ```
 
-Nothing uses the workspace dependency until Tasks 2 and 3. Cargo allows it, but on a recent toolchain cargo may print, on each command (tests, clippy, the hook's clippy), one `warning: unused workspace dependency 'manifold-hosts'` (`cargo::unused_workspace_dependencies`, warn by default) until Task 2 adds `manifold-hosts.workspace = true`. It is cargo's lint, not a clippy finding, and `-D warnings` does not turn it into an error. Leave the entry in.
+Nothing uses the workspace dependency until Tasks 2 and 3. Cargo allows it, but on a recent toolchain cargo may print, on each command (tests, clippy, the hook's clippy), one ``warning: unused workspace dependency `manifold-hosts` `` (`cargo::unused_workspace_dependencies`, warn by default) until Task 2 adds `manifold-hosts.workspace = true`. It is cargo's lint, not a clippy finding, and `-D warnings` does not turn it into an error. Leave the entry in.
 
 - [ ] **Step 3: Write `lib.rs`: the types and the failing tests**
 
@@ -1636,7 +1636,7 @@ git status --short
 Expected:
 - `cargo fmt --all` may rewrap lines in `crates/manifold-hosts`; that is fine.
 - The tests give `7 passed` (lib), `5 passed` (layout), `0` doc tests and `6 passed` (tier). `--locked` passes because Step 4 already wrote `Cargo.lock`.
-- clippy finishes with no clippy finding; if cargo reports the `unused workspace dependency 'manifold-hosts'` warning from Step 2, it is expected, here and in the tests above. With a cold cache it can take several minutes; give it a 600000 ms timeout.
+- clippy finishes with no clippy finding; if cargo reports the ``unused workspace dependency `manifold-hosts` `` warning from Step 2, it is expected, here and in the tests above. With a cold cache it can take several minutes; give it a 600000 ms timeout.
 - `git diff --stat` lists exactly `.githooks/pre-commit`, `.github/workflows/ci.yml`, `CLAUDE.md`, `Cargo.lock`, `Cargo.toml`, `README.md` and `crates/gate/src/tier.rs`.
 - `git status --short` also shows `?? crates/manifold-hosts/`.
 
@@ -3607,6 +3607,7 @@ Expected from `git diff --stat`: exactly these 14 files, and nothing under `crat
 - `crates/manifold/src/view_install/tests.rs`
 
 Expected from `git status`: the same 14 files as ` M`, and no `??` line under `crates`. `Cargo.lock` is unchanged, because no cargo command ran. Part B's first cargo run adds `manifold-hosts` to the `manifold` package's dependencies there; Task 1 already locked the leaf package itself.
+
 **Part A ends here: no cargo command, no commit.**
 - The tree does not build yet. `prepare_webview2` still names `HostSource` and `kind.desc().source`, and `pdf_view_exe` still calls `sibling_binary` and `embedded_host::Embedded`, all deleted or rewritten above.
 - Part B continues in this same working tree, with Step B1. It rewrites those two functions, `embedded_host.rs` and `build.rs`, and the names guard, `deleted_names.rs` and `pdf_render.rs:140`.
@@ -4403,7 +4404,7 @@ Expected:
 `<scratchpad>` is this session's scratchpad directory (its 8.3 path has no space). Run:
 
 ```bash
-cargo test -j 8 -p manifold --bin manifold 2>&1 | tee "<scratchpad>/task2-tests.txt" | tail -n 5
+cargo test -j 8 -p manifold --bin manifold -- --test-threads 8 2>&1 | tee "<scratchpad>/task2-tests.txt" | tail -n 5
 grep -cE 'test (embedded_host::tests::the_generated_table_holds_the_embedded_rows_in_order|embedded_host::tests::an_empty_embed_returns_none_and_touches_nothing|deleted_names::no_source_names_a_deleted_host_layout_item|deleted_names::no_source_names_a_deleted_enum|names::tests::name_reads_counts_reads_only|names::tests::every_stored_name_reaches_the_screen_through_a_name_rule|process_manager::tests::an_extracted_webview2_host_keeps_its_user_data_folder_in_its_own_engine_hosts_folder) \.\.\. ok' "<scratchpad>/task2-tests.txt"
 ```
 
@@ -5173,7 +5174,7 @@ rustfmt may rewrap the `None if exe_there => outcome.errors.push(...)` arm and t
 
 - [ ] **Step 7: Run the tests to see them pass, then clippy and the greps**
 
-Run: `cargo test -j 8 -p gate`
+Run: `cargo test -j 8 -p gate -- --test-threads 8`
 Expected: `test result: ok.`, with the nine `sync_deps::tests::` tests among the passed (the seven of Step 5 now pass); no warning.
 
 Run the clippy line (Global Constraints; with Task 1's `-p manifold-hosts`): `cargo clippy -j 8 -p manifold -p manifold-hosts -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p manifold-view-pdfium -p gate --all-targets -- -D warnings`
@@ -7743,11 +7744,11 @@ the code at the lines just cited before writing `verified DATE-TODAY`. If one no
 
 Other PARKED entries cite files this branch changes (Tasks 2, 3 and 6 move their lines), and several of the numbers were already stale at HEAD. Locate each by its parenthetical label, never by the old number: the old number can point at the wrong code (HEAD `process_manager.rs:355` is `set_visible` and `:1028` is a doc comment; the labelled code is at `:364` and `:1041`). Per entry, run the Grep, read the line it finds, and replace only the number in the entry's `file:NNN` with that line:
 - `- **Two hosts can name the same file.**` (HEAD `:129`): `process_manager.rs:1028` (`spawn_tab`): `grep -n 'pub fn spawn_tab(' crates/manifold/src/process_manager.rs`.
-- `- **The Settings page reads the disk on the UI thread.**` (HEAD `:133`): `view_install.rs:1020` (`cef_dir_verdict`): `grep -n 'fn cef_dir_verdict(' crates/manifold/src/view_install.rs`.
+- `- **The Settings page reads the disk on the UI thread.**` (HEAD `:133`): two citations. `view_install.rs:1020` (`cef_dir_verdict`): `grep -n 'fn cef_dir_verdict(' crates/manifold/src/view_install.rs`. `settings_page.rs:805` (`cached`; Task 2 Step 18 adds a line above it, and the old number pointed at the doc comment): `grep -n 'fn cached<' crates/manifold/src/settings_page.rs`, and write the `fn` line.
 - `- **WSL drives are assumed at `/mnt`.**` (HEAD `:135`): `runtime.rs:99` (`host_path`) and `:116` (`app_path`): `grep -n 'fn host_path(\|fn app_path(' crates/manifold/src/process_manager/runtime.rs`.
 - `- **A settings message refused by a full send queue counts as sent.**` (HEAD `:137`): `process_manager.rs:355` (`set_settings`): `grep -n 'pub fn set_settings(' crates/manifold/src/process_manager.rs`; its `view_io.rs:134` (`push`) is untouched, so leave it unless `grep -n 'fn push(' crates/manifold/src/process_manager/view_io.rs` finds it elsewhere.
 - `- **A renderer that writes a bad frame and then hangs holds a worker.**` (HEAD `:154`): `pdf_render.rs:18` (`WORKERS = 2`): `grep -n 'WORKERS' crates/manifold/src/pdf_render.rs`.
-- `- **Opt-in chrome-shots views reach a card by a fixed Tab count, and the counts are stale.**` (HEAD `:147`): its `shots.rs` citations (for example `shots.rs:1017`, `note-key`): Task 4 edits `crates/gate/src/shots.rs` at the top and from `:1590`, so re-run `grep -n 'note-key' crates/gate/src/shots.rs` and fix any number that moved.
+- `- **Opt-in chrome-shots views reach a card by a fixed Tab count, and the counts are stale.**` (HEAD `:147`): its `shots.rs` citations (for example `shots.rs:1017`, `note-key`): Task 4 edits `crates/gate/src/shots.rs` at the top and from `:1590`, so re-run `grep -n 'note-key' crates/gate/src/shots.rs` and fix any number that moved. The entry cites many `shots.rs` lines (`:1042`, `:1048`, `:942`, `:953`, `:986`, `:1214`, `:460`, `:593`, `:594`, `:610` and `:1017`); Task 4's edits move some of them, so check each against its label, not only `note-key`.
 
 Read each line the Grep finds against the entry's label before writing the number. If a labelled item is gone, stop and report it.
 
@@ -8056,7 +8057,7 @@ Expected: `Finished`, and no `warning:` or `error` line.
 Run CI's Windows test line (`ci.yml:17`, which holds `-p manifold-hosts` after Task 1), with `-j 8`:
 
 ```bash
-cargo test --locked -j 8 -p manifold -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p gate -p manifold-hosts 2>&1 | grep -E '^test result|FAILED|panicked|^error'; echo "exit ${PIPESTATUS[0]}"
+cargo test --locked -j 8 -p manifold -p manifold-view-protocol -p manifold-pages -p manifold-view-webview2 -p gate -p manifold-hosts -- --test-threads 8 2>&1 | grep -E '^test result|FAILED|panicked|^error'; echo "exit ${PIPESTATUS[0]}"
 ```
 
 Expected:
