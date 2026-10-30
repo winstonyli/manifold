@@ -46,6 +46,8 @@ mod profile;
 #[cfg(windows)]
 mod release_check;
 #[cfg(windows)]
+mod release_hosts;
+#[cfg(windows)]
 mod release_verify;
 mod search;
 mod session;
@@ -169,6 +171,8 @@ mod windows_main {
         Stage::work("sleep", crate::sleep::sleep).listed_as(""),
         Stage::work("jar", crate::jar::jar).listed_as(""),
         Stage::args("scale", "TABS...", crate::stress::scale),
+        Stage::args("release-pins", "vX.Y.Z DIST FOREIGN", crate::release_hosts::release_pins),
+        Stage::args("release-embedded", "vX.Y.Z DIST", crate::release_hosts::release_embedded),
         Stage::args("release-verify", "vX.Y.Z [DIST]", crate::release_verify::release_verify),
         Stage::args("release-check", "vX.Y.Z", crate::release_check::release_check),
         Stage::args("release-tag", "vX.Y.Z", crate::release_check::release_tag),
