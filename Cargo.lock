@@ -3091,6 +3091,7 @@ name = "gate"
 version = "0.9.0"
 dependencies = [
  "image",
+ "manifold-hosts",
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
