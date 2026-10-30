@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # One table per host — Design
