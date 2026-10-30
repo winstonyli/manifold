@@ -8402,5 +8402,31 @@ The report says:
 
 ---
 
+## Open decisions (answer by id before execution)
+
+The plan follows each recommendation unless the entry says otherwise. About fifty smaller choices inside the settled design (message wording, helper placement, test shape) are made and explained in the step that uses them; they need no answer.
+
+- **Q-tier. The tier rule for the new crate (Task 1, Steps 12-15).** (a) The spec's explicit `|| under("crates/manifold-hosts")` arm, which the plan writes. (b) One arm: every path under `crates/` outside `crates/manifold` is `Full`. (b) subsumes the protocol, pages, engine-crate, hosts and gate arms of `tier.rs:107-124`, so the next crate needs no edit; (a) is the fourth same-shaped arm. Recommend (b); it replaces the plan's Task 1 tier edit and the `tier.rs` tests move with it. (a) is additive and leaves no rework, so it is safe to take now and generalize later.
+- **Q-engines. Two comment edits beyond the spec (Task 7 Step 14).** `session_sync.rs:121` and `store/model.rs:227` still say `ENGINES`, which no longer exists. (a) Edit them to `VIEW_KINDS`, comment-only (the plan does). (b) Leave them and park them. Recommend (a): the comments name a constant that no longer exists, and a grep for `ENGINES` finds them.
+- **Q-killhosts. `kill_hosts` on an unknown view name (Task 4).** (a) Return an `InvalidInput` error (the plan does; `VIEWS` is free env text). (b) Keep today's behaviour of killing nothing and returning `Ok`. Recommend (a): a typo in `VIEWS` should say so.
+- **Q-streams. Where the sync's skip lines go (Task 3).** Today's CEF "no cef-dll-sys output directory found" line goes to stderr; the plan prints every skip through `say()` on stdout. (a) One stream for all (the plan). (b) Keep missing-source lines on stderr. Recommend (a). It changes nothing in Step 8's before/after diff on this tree, where both build folders exist.
+- **Q-embed-dir. Where the real-embed test builds (Task 2 Step B16, Task 8 Step 6).** README says to use a separate `CARGO_TARGET_DIR`; the plan builds in `target/` because C: has 5 GB or less free and a second app build is several GB. (a) `target/` (the plan; the next normal build reruns `build.rs`). (b) A separate target dir (a cold app build of several GB). Recommend (a).
+- **Q-verify-scope. What runs locally (Task 5 Step 8, Task 8).** The plan does not build release CEF and Servo to run `gate package` or `release-pins` locally (both first run in the release dry run), runs `release-embedded v0.0.0` against whatever `target/release` holds, runs the final gate at `full` without `WITH_ENGINES`, and runs only `-p manifold-hosts` under WSL. (a) As planned. (b) Add a `WITH_ENGINES="servo webkit"` gate run and a `-p manifold` WSL test. Recommend (a): (b) needs a long Servo or WebKit build and several GB, and the dry run and CI cover the rest.
+- **Q-dryrun. The release dry run (spec H14).** `release.yml` changes in Task 6 and first runs in the workflow's manual dry run, which needs the branch pushed. The plan never pushes. Your call, after Task 8: push and dispatch the dry run (recommended before any tag), or tag only after a later dry run.
+- **Q-disk. Disk floor.** Step S1 and every build check stop and ask under 2 GB free and delete nothing. C: swung between 149 MB and 5 GB on 2026-10-29. Free space first if a run stops there.
+
+---
+
 ## Review rounds
 
+Three adversarial rounds, each by eight read-only Sonnet reviewers (spec coverage A and B, Task 1, Task 2 Part A, Task 2 Part B with Task 3, Tasks 4 and 5, Tasks 6 and 7, cross-task seams). Each reviewer checked its steps against the tree at HEAD and cited file:line evidence; one compiled Task 1's leaf crate in a scratch workspace.
+
+| Round | Plan commit after | Material | Minor | What it caught |
+|---|---|---|---|---|
+| 1 | `5d77fa32` | 6 | about 36 (20 fixed, the rest nits) | Plan activation split across Start S4 and Task 1 Step 1; stackdump mentions; the `tail -n 1` trailer check printing a blank line; Task 3 Step 8 and Task 8 Step 8 comparing against the wrong baseline or a hard-coded README line; a clippy lint (`cloned-ref-to-slice-refs`) in Task 1's test; stale PARKED citations. |
+| 2 | `076b8416` | 1 | about 17 | Task 7 Step 9 re-cited PARKED entries by reading old line numbers, which pointed at the wrong code (`process_manager.rs:355` is `set_visible`, `:1028` a doc comment); now by label. Plus a loose manifest assertion made exact, Task 8 Step 10 wording, `-j 8` vs test threads, README checks. |
+| 3 | `a16ff790` | 0 | 7 distinct (10 reports) | `settings_page.rs:805` missing from Step 9; whole-crate test lines now carry `-- --test-threads 8`; the cargo warning's backticks; a missing blank line; the disk figure. |
+
+Not applied in round 3: the ENGINES comment edits in `session_sync.rs:121` and `store/model.rs:227` (beyond the spec; an open decision for the user, below) and the `package.rs` module-doc `windows-x64` wording (still true; optional).
+
+Open decisions for the user are listed in the hand-over message, not here: this file keeps the plan, not the discussion.
