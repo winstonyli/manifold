@@ -51,28 +51,8 @@ pub(crate) fn cluster(emb: &Embedding, min_similarity: f32) -> Vec<Vec<usize>> {
 mod tests {
     use super::*;
     use crate::search::lsa::{Embedder, LsaEmbedder};
+    use crate::search::testutil::{doc, topics};
     use crate::search::DocKey;
-    use crate::store::model::{ActorId, NodeId};
-    use std::collections::BTreeMap;
-
-    fn doc(n: u64, words: &str) -> (DocKey, Vec<(&str, u32)>) {
-        let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
-        for w in words.split_whitespace() {
-            *counts.entry(w).or_default() += 1;
-        }
-        (DocKey::Node(NodeId { actor: ActorId(1), counter: n }), counts.into_iter().collect())
-    }
-
-    fn topics() -> Vec<(DocKey, Vec<(&'static str, u32)>)> {
-        vec![
-            doc(1, "cat milk fur purr cat"),
-            doc(2, "cat fur kitten milk"),
-            doc(3, "kitten purr milk cat fur"),
-            doc(4, "rust cargo crate compile rust"),
-            doc(5, "cargo crate rust build"),
-            doc(6, "compile build crate rust cargo"),
-        ]
-    }
 
     #[test]
     fn average_linkage_splits_two_topics() {

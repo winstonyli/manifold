@@ -9,7 +9,7 @@
 //!
 //! Output goes to a log file, never an undrained pipe. Every instance is a member of one Windows Job Object with
 //! kill-on-close, so a killed or crashed `gate` leaves no `manifold.exe` (and, through manifold's own job, no
-//! engine host); `Drop` kills the child on the normal paths.
+//! view host); `Drop` kills the child on the normal paths.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -376,7 +376,7 @@ impl Instance {
         }
     }
 
-    /// Kills the instance (TerminateProcess) and reaps it. Its engine hosts die with it through manifold's own
+    /// Kills the instance (TerminateProcess) and reaps it. Its view hosts die with it through manifold's own
     /// kill-on-close job.
     pub fn kill(&mut self) {
         self.stdin = None;

@@ -75,7 +75,7 @@ pub(crate) const PLATFORM: CefPlatform = CefPlatform {
     system_libs: &[],
 };
 
-/// Every other OS reads as Linux for now (layout checked against the linux64 archive, install never run on
+/// Every other OS reads as Linux (layout checked against the linux64 archive, install never run on
 /// Linux); macOS (`macosx64`/`macosarm64`) needs its own entry (an app bundle layout, see the spec) and has no
 /// pin, so nothing is offered there either.
 #[cfg(not(windows))]

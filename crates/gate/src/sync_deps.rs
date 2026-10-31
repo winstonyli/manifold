@@ -1,4 +1,4 @@
-//! `gate sync-runtime-deps` (was scripts/sync-runtime-deps.sh): puts each engine host's runtime files beside the host
+//! `gate sync-runtime-deps` (was scripts/sync-runtime-deps.sh): puts each view host's runtime files beside the host
 //! a dev tree runs (README "Runtime-file placement"). Cargo does not, and the fingerprint folder they are built into
 //! can change on a rebuild that touched neither Cargo.toml nor Cargo.lock, silently staling an earlier copy.
 //!

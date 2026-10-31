@@ -211,7 +211,7 @@ struct Shots {
     out: PathBuf,
     size: (u32, u32),
     views: Vec<String>,
-    /// The engine-states instance's data dir for the engine hosts.
+    /// The engine-states instance's data dir for the view hosts.
     eng_data: PathBuf,
     /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
     suggestions: suggest::Server,

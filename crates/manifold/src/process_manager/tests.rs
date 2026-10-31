@@ -821,7 +821,7 @@ fn the_disk_check_judges_the_host_in_place_by_the_number_it_carries() {
     std::fs::write(&garbage, b"MZ not a program").unwrap();
     let skew = check(Some(garbage.as_path())).skew.expect("an unstamped file differs");
     assert_eq!((skew.host(), skew.app()), (None, manifold_view_protocol::PROTOCOL_VERSION));
-    assert!(skew.to_string().ends_with("; rebuild the engine host"), "{skew}");
+    assert!(skew.to_string().ends_with("; rebuild the view host"), "{skew}");
     assert_eq!(check(None), OnDisk::both(RuntimeOnDisk::Ready), "no host in place: no skew");
 }
 

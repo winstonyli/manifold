@@ -283,30 +283,7 @@ fn jacobi(mut a: Vec<Vec<f64>>) -> (Vec<f64>, Vec<Vec<f64>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::model::{ActorId, NodeId};
-
-    fn key(n: u64) -> DocKey {
-        DocKey::Node(NodeId { actor: ActorId(1), counter: n })
-    }
-
-    fn doc(n: u64, words: &str) -> (DocKey, Vec<(&str, u32)>) {
-        let mut counts: BTreeMap<&str, u32> = BTreeMap::new();
-        for w in words.split_whitespace() {
-            *counts.entry(w).or_default() += 1;
-        }
-        (key(n), counts.into_iter().collect())
-    }
-
-    fn topics() -> Vec<(DocKey, Vec<(&'static str, u32)>)> {
-        vec![
-            doc(1, "cat milk fur purr cat"),
-            doc(2, "cat fur kitten milk"),
-            doc(3, "kitten purr milk cat fur"),
-            doc(4, "rust cargo crate compile rust"),
-            doc(5, "cargo crate rust build"),
-            doc(6, "compile build crate rust cargo"),
-        ]
-    }
+    use crate::search::testutil::{doc, key, topics};
 
     fn mean(values: &[f32]) -> f32 {
         values.iter().sum::<f32>() / values.len() as f32

@@ -348,6 +348,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::theme::testutil::key_event as key;
 
     #[test]
     fn tier_and_tone_colors_come_from_the_visuals() {
@@ -356,16 +357,6 @@ mod tests {
         assert_eq!(ViewTier::Experimental.color(&visuals), crate::theme::accent(&visuals));
         assert_eq!(Tone::Danger.color(&visuals), crate::theme::danger(&visuals));
         assert_eq!(Tone::Weak.color(&visuals), crate::theme::palette(&visuals).text_weak);
-    }
-
-    fn key(key: egui::Key) -> egui::Event {
-        egui::Event::Key {
-            key,
-            physical_key: Some(key),
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }
     }
 
     /// Runs one frame of the picker (open, `selected` highlighted) with `events`, returning its pick.

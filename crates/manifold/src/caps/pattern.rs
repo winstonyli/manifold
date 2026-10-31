@@ -72,7 +72,7 @@ impl Pattern {
     }
 }
 
-/// A fact about a node that refines which rows apply (spec "Tags"), or about an engine host that its tabs inherit
+/// A fact about a node that refines which rows apply (spec "Tags"), or about a view host that its tabs inherit
 /// (`ViewDesc::tags`, merged into a live tab's tags by `App::card_kind`). Not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Tag {

@@ -229,16 +229,8 @@ pub(crate) mod fake {
         }
 
         /// One frame; `modifiers` is the keyboard state it starts with (egui reads it off `ModifiersChanged`).
-        pub(crate) fn frame(&mut self, mut events: Vec<egui::Event>, modifiers: egui::Modifiers) {
-            events.insert(0, egui::Event::ModifiersChanged(modifiers));
-            let input = egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
-                events,
-                ..Default::default()
-            };
-            let app = &mut self.app;
-            let mut output = self.ctx.run_ui(input, |ui| app.build_graph_ui(ui));
-            output.textures_delta.clear();
+        pub(crate) fn frame(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+            crate::theme::testutil::graph_frame(&self.ctx, &mut self.app, events, modifiers);
         }
 
         fn press(at: egui::Pos2, button: egui::PointerButton, pressed: bool) -> egui::Event {

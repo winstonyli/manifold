@@ -31,9 +31,9 @@ pub(crate) enum NodeAction {
     Sleep,
     /// A group's live tabs all do (`App::sleep_group`).
     SleepGroup,
-    /// A live tab that stopped responding gets a new engine host (`App::restart_view`).
+    /// A live tab that stopped responding gets a new view host (`App::restart_view`).
     RestartView,
-    /// A live tab that stopped responding has its engine host ended, leaving a failed card (`App::end_view`).
+    /// A live tab that stopped responding has its view host ended, leaving a failed card (`App::end_view`).
     EndView,
     CopyUrl,
     FitSubtree,

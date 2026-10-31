@@ -1,4 +1,4 @@
-//! The host table: one row per engine host, saying what its exe is called, where a dev tree builds it, how a user
+//! The host table: one row per view host, saying what its exe is called, where a dev tree builds it, how a user
 //! gets it and what must sit beside it, with the file names and paths derived from that. It is the one copy of a
 //! host's layout for the app, its build script and the gate, so they cannot drift apart.
 //!
@@ -108,7 +108,7 @@ pub struct Runtime {
     pub from: BuildOutput,
 }
 
-/// One engine host's row.
+/// One view host's row.
 #[derive(Debug)]
 pub struct Host {
     /// The engine's store name and the manifest key.

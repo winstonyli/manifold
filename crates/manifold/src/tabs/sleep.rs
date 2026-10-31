@@ -19,7 +19,7 @@ impl App {
         let Runtime::Tab(tab) = &node.runtime else { return false };
         let asleep = unloaded_from(tab, UnloadedState::Sleeping);
         // Replacing the payload drops the `ViewTab`, whose `Drop` shuts
-        // the engine host down (see `teardown_running_session`).
+        // the view host down (see `teardown_running_session`).
         node.runtime = Runtime::Unloaded(asleep);
         if let Some(gpu) = &mut self.gpu {
             gpu.free_tab_thumbnail(id);

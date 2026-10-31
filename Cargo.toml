@@ -45,27 +45,11 @@ egui_commonmark = { version = "0.25.0", default-features = false }
 egui-phosphor = { version = "0.14.0", default-features = false }
 egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
-# Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows,
-# Application Support on macOS) -- for the not-yet-built on-demand
-# engine-host download/install step, so that logic won't need rewriting
-# when this project ports off Windows-only.
+# Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows, Application Support on macOS), for the
+# profile folder and the downloaded hosts (`profile.rs`, `view_install.rs`).
 etcetera = "0.11"
 euclid = "0.22.14"
-# Hasher for `App::nodes` (a `HashMap<String, GraphNode>` keyed by an
-# app-generated, never untrusted-input-derived id, looked up many times
-# per frame across the Graph-view render loops) -- `std::collections::
-# HashMap`'s own default hasher (SipHash) is deliberately DoS-resistant
-# against adversarial keys, a guarantee this map has no use for and pays
-# for on every lookup regardless. Already fully resolved in this
-# workspace's own dependency tree (it's `hashbrown`'s own default-hasher
-# dependency, and this project already pulls in two `hashbrown` versions
-# transitively via `wgpu`/`naga`) -- adding it directly here is zero net
-# new dependency footprint, not a new crate. Used as a plain `BuildHasher`
-# for `std::collections::HashMap` directly (`foldhash::fast::RandomState`),
-# not via `hashbrown::HashMap` itself -- that keeps `self.nodes`'s actual
-# type identical to before (same `std::collections::HashMap`, just a
-# different third generic parameter), so every existing call site across
-# this file keeps compiling unchanged.
+# Hasher for `NodeMap` (`node.rs`): the keys are never untrusted, so the map skips SipHash's DoS resistance.
 foldhash = "0.2"
 # OS randomness for the session store's per-launch actor ids, document
 # ids and file generations (`store::model`, `store::journal`).

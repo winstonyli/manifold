@@ -627,18 +627,9 @@ mod tests {
         assert!(app.save_session());
         let fresh = add_note(&mut app, "fresh");
         assert_eq!(app.doc.writes.life(fresh), Some(crate::session_sync::Life::Create), "created this tick, not saved");
-        let set_readonly = |readonly: bool| {
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            #[allow(
-                clippy::permissions_set_readonly_false,
-                reason = "the Windows read-only attribute makes the append fail; a temp file this test owns"
-            )]
-            perms.set_readonly(readonly);
-            std::fs::set_permissions(&path, perms).unwrap();
-        };
-        set_readonly(true);
+        crate::store::testutil::set_readonly(&path, true);
         app.close_node(fresh);
-        set_readonly(false);
+        crate::store::testutil::set_readonly(&path, false);
         assert!(app.nodes.contains_key(&fresh), "still shown");
         assert!(!app.doc.writes.has_closed(), "no close queued");
         assert_eq!(app.doc.writes.life(fresh), Some(crate::session_sync::Life::Create), "still to be created");

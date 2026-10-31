@@ -55,7 +55,7 @@ fn main() {
     // spawn command (`ip route`'s default gateway) — not 127.0.0.1. WSL2's
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
-    // manifold_view_protocol::transport::listen_remote's doc comment.
+    // manifold_view_protocol::transport::connect_remote's doc comment.
     let host_ip = std::env::var("VIEW_HOST_IP").expect("VIEW_HOST_IP env var required");
 
     // Single TCP connection back to manifold, used for both directions

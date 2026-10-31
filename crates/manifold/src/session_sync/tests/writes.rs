@@ -708,18 +708,9 @@ fn a_failed_commit_keeps_a_pending_edit_for_the_retry() {
     let note = a_note(&mut app);
     assert!(app.save_session());
     app.edit_field(note, field::NAME, one());
-    let set_readonly = |readonly: bool| {
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        #[allow(
-            clippy::permissions_set_readonly_false,
-            reason = "the Windows read-only attribute makes the append fail; on Unix this would make the file writable by everyone, but it's a temp file this test owns"
-        )]
-        perms.set_readonly(readonly);
-        std::fs::set_permissions(&path, perms).unwrap();
-    };
-    set_readonly(true);
+    crate::store::testutil::set_readonly(&path, true);
     let saved = app.save_session();
-    set_readonly(false);
+    crate::store::testutil::set_readonly(&path, false);
     assert!(!saved);
     assert!(app.doc.writes.has_fields(), "kept for the next save");
     assert_eq!(stored(&app, note, field::NAME), FieldValue::Str(String::new()));

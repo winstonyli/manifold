@@ -224,7 +224,7 @@ pub struct HostSettings {
     pub download_dir: Option<String>,
 }
 
-/// Messages sent from the manifold process manager to an view-host.
+/// Messages sent from the manifold process manager to a view host.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[rustfmt::skip]
 pub enum HostToView {
@@ -409,7 +409,7 @@ pub fn restore_scroll_script(x: f64, y: f64) -> String {
     )
 }
 
-/// Messages sent from an view-host back to the manifold process manager.
+/// Messages sent from a view host back to the manifold process manager.
 ///
 /// `FrameReady`'s `pixels` field distinguishes the two transports: a
 /// same-machine view-host (Servo, CEF, WebView2) leaves it `None` and writes pixels

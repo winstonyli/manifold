@@ -16,7 +16,6 @@ impl App {
         ui: &mut egui::Ui,
         pass: &mut CardPass,
         id: NodeId,
-        _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let zoom_scale = pass.zoom_scale;

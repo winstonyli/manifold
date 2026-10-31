@@ -64,6 +64,7 @@ mod tests {
 #[cfg(test)]
 mod view_picker_tests {
     use super::*;
+    use crate::theme::testutil::key_event as key;
 
     fn escape() -> egui::Event {
         let key = egui::Key::Escape;
@@ -84,16 +85,6 @@ mod view_picker_tests {
         };
         let mut output = ctx.run_ui(input, |ui| app.build_ui(ui));
         output.textures_delta.clear(); // nothing uploads the font atlas here
-    }
-
-    fn key(key: egui::Key) -> egui::Event {
-        egui::Event::Key {
-            key,
-            physical_key: Some(key),
-            pressed: true,
-            repeat: false,
-            modifiers: egui::Modifiers::NONE,
-        }
     }
 
     /// The pane's half of the list navigation: Up/Down step only while a row has focus, and

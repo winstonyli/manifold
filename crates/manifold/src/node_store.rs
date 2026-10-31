@@ -135,7 +135,7 @@ impl App {
     }
 
     /// Takes `id` out of the live graph without touching the document: its `nodes` entry (a tab's `ViewTab` drops,
-    /// shutting its engine host down), a PDF's queued render, its `node_order` slot, the view state naming it
+    /// shutting its view host down), a PDF's queued render, its `node_order` slot, the view state naming it
     /// (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared by the delete paths
     /// (`take_out`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
     pub(crate) fn unshow(&mut self, id: NodeId) -> Option<crate::GraphNode> {

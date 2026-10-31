@@ -1,4 +1,4 @@
-//! The two probes that stress an engine host or a big session, as `gate` stages (they were bash scripts, and a Git Bash
+//! The two probes that stress a view host or a big session, as `gate` stages (they were bash scripts, and a Git Bash
 //! fork costs seconds on this machine). PowerShell runs only where Windows has no plain API in reach: suspending a
 //! process and reading a process tree's memory.
 //!
@@ -34,7 +34,7 @@ pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -
     Ok(String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_owned()).filter(|l| !l.is_empty()).collect())
 }
 
-/// Suspends (NtSuspendProcess) the WebView2 engine hosts whose parent is `parent`; returns their pids.
+/// Suspends (NtSuspendProcess) the WebView2 view hosts whose parent is `parent`; returns their pids.
 fn suspend_engines(work: &Path, parent: u32) -> io::Result<Vec<String>> {
     const SCRIPT: &str = "param([int]$Parent, [string]$Name)
 Add-Type -Namespace P -Name N -MemberDefinition '[DllImport(\"ntdll.dll\")] public static extern int NtSuspendProcess(IntPtr h);'
@@ -56,7 +56,7 @@ fn flags(state: &State, id: &str) -> (bool, bool) {
     )
 }
 
-/// A seeded tab's engine host is suspended and 1000 characters typed into the page, so the app's writer for it blocks
+/// A seeded tab's view host is suspended and 1000 characters typed into the page, so the app's writer for it blocks
 /// and its queue fills. The card must then read `unresponsive` with a "Not responding" toast while the app keeps
 /// answering; `RESTARTVIEW` must bring the tab back live and responsive and end the suspended host; and with a second
 /// host suspended `QUIT` must end the app within 10 s: closing a stuck tab never waits on it.
@@ -80,7 +80,7 @@ pub(crate) fn unresponsive(exe: &Path, work: &Path) -> ExitCode {
         }
         inst.export_state("open")?;
         let first = suspend_engines(work, inst.pid())?;
-        if !check("an engine host was suspended", !first.is_empty()) {
+        if !check("a view host was suspended", !first.is_empty()) {
             return Ok(());
         }
         // The stall reads after UNRESPONSIVE_AFTER (2 s) of a blocked write, so wait 3 s; then back in Graph view before
@@ -112,7 +112,7 @@ if (Get-Process -Id $P -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' 
             inst.send(line)?;
         }
         inst.export_state("open2")?;
-        if !check("a second engine host was suspended", !suspend_engines(work, inst.pid())?.is_empty()) {
+        if !check("a second view host was suspended", !suspend_engines(work, inst.pid())?.is_empty()) {
             return Ok(());
         }
         for line in [format!("TYPE {}", "b".repeat(1000)), "SLEEP 3".into(), "ESCAPE".into(), "SLEEP 1".into()] {

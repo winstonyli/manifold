@@ -468,7 +468,7 @@ impl Drop for ViewTab {
     }
 }
 
-/// Waits for an engine host to exit after `Shutdown`, killing it if needed.
+/// Waits for a view host to exit after `Shutdown`, killing it if needed.
 fn reap_host(kind: ViewKind, mut child: Child) {
     if kind.desc().link == HostLink::Tcp {
         // For a TCP host behind a launcher (the WSL2 case: `child` is only the Windows-side
@@ -977,7 +977,7 @@ fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, 
     })
 }
 
-/// Spawns an view-host for `kind`, wires up its control channel(s), and
+/// Spawns a view host for `kind`, wires up its control channel(s), and
 /// returns a handle the process manager (and the tab-swap logic) can drive.
 ///
 /// `tab_id`/`initial_url` are passed via env vars, not argv, for
@@ -1024,7 +1024,7 @@ pub fn spawn_tab(
 
     // Normally the socket/shared-memory id is just tab_id. But a prior run
     // that crashed (rather than exiting cleanly) can leave a stale
-    // view-host-*.exe still holding tab_id's named pipe indefinitely —
+    // manifold-view-*.exe still holding tab_id's named pipe indefinitely —
     // listen_local_pair_with_retry's short retries won't outlast that. In
     // that case, fall back once to a fresh disambiguating id for
     // socket/shared-memory naming only; tab_id itself keeps meaning what it
@@ -1044,7 +1044,6 @@ pub fn spawn_tab(
 
     let mut command = Command::new(&prepared.exe);
     command
-        .env("VIEW_TAB_ID", tab_id.to_string())
         .env(host_env::ENV_SOCKET_ID, &socket_id)
         .env(host_env::ENV_INITIAL_URL, initial_url)
         // A host never reads manifold's stdin (the debug-command pipe); `wsl.exe` would, and take commands from it.

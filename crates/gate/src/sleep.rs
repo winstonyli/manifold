@@ -9,7 +9,7 @@
 //!   at the position it had (|before - after| <= 2 px, before > 0)
 //! - `history`: two more pages, then sleep and wake; Back twice and Forward once must retrace them (the host keeps the
 //!   trail, `nav_history`)
-//! - `crash`: as history, but the engine host is killed instead of slept: the app restarts the tab and Back and
+//! - `crash`: as history, but the view host is killed instead of slept: the app restarts the tab and Back and
 //!   Forward must still work
 //! - `restart`: as history, but the app is quit and started again on the same profile (`tab-history.json`)
 //! - `dirty`: `/tall?dirty=1` has an input changed from its default: idle sleep must leave it awake, manual Sleep must
@@ -81,7 +81,7 @@ fn last_segment(state: &State) -> String {
     if seg.is_empty() { "/" } else { seg }.to_owned()
 }
 
-/// Kills the engine hosts that are children of `parent` (only this instance's own: other manifolds may be running).
+/// Kills the view hosts that are children of `parent` (only this instance's own: other manifolds may be running).
 /// WebKit's host is no Windows process (manifold's child there is the `wsl.exe` relay), so for WebKit this kills
 /// nothing. A `view` that names no host (`VIEWS` is free text) is an `InvalidInput` error.
 fn kill_hosts(work: &Path, parent: u32, view: &str) -> io::Result<()> {
@@ -89,7 +89,7 @@ fn kill_hosts(work: &Path, parent: u32, view: &str) -> io::Result<()> {
 Get-CimInstance Win32_Process -Filter \"ParentProcessId=$Parent AND Name='$Name'\" | ForEach-Object { $_.ProcessId }
 ";
     let host = manifold_hosts::by_id(view)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no engine host is named {view:?}")))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("no view host is named {view:?}")))?;
     let name = host.file_name(Os::here());
     for pid in powershell(work, "hosts", SCRIPT, &["-Parent", &parent.to_string(), "-Name", &name])? {
         Command::new("taskkill")
@@ -188,7 +188,7 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
             }
         }
         "history" | "crash" | "restart" => {
-            // Two more pages in Tab view, then sleep (history) or kill the engine host (crash), then Back twice.
+            // Two more pages in Tab view, then sleep (history) or kill the view host (crash), then Back twice.
             inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the first page to load", || site.hits("/") > 0)?;
             // Each page is in the trail and settled before the next is typed: a url typed over a load in progress, or
             // before the first report, reads as its redirect and the tree loses the page.

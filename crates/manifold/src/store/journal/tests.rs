@@ -1,6 +1,6 @@
 use super::*;
 use crate::store::model::{encode_field, field, FieldValue, Kind, Node, RegKey, FIELDS};
-use crate::store::testutil::{file_with_version, shown, temp_dir, XorShift};
+use crate::store::testutil::{file_with_version, set_readonly, shown, temp_dir, XorShift};
 use crate::store::tree::{Leaf, Seg, TreePath};
 
 fn create_tab(txn: &mut Txn, url: &str) -> (NodeId, OpBody) {
@@ -407,18 +407,13 @@ fn a_newer_builds_structural_fields_block_compaction() {
 fn a_failed_commit_rereads_the_file_and_keeps_it_readable() {
     let dir = temp_dir("failed");
     let path = dir.join("session.mnf");
-    let set_readonly = |readonly: bool| {
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        perms.set_readonly(readonly);
-        std::fs::set_permissions(&path, perms).unwrap();
-    };
     let mut journal = Journal::open(&path, ActorId(1)).unwrap();
-    set_readonly(true);
+    set_readonly(&path, true);
     let mut txn = journal.begin().unwrap();
     let (_, create) = create_tab(&mut txn, "https://lost.example/");
     assert!(txn.commit(vec![create]).is_err()); // the file is read-only
     assert!(matches!(journal.save_copy(&dir.join("copy.mnf"), None), Err(JournalError::Stale)));
-    set_readonly(false);
+    set_readonly(&path, false);
     let mut txn = journal.begin().unwrap();
     let (tab, create) = create_tab(&mut txn, "https://kept.example/");
     txn.commit(vec![create]).unwrap();

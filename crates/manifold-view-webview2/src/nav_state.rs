@@ -105,7 +105,7 @@ fn is_new_document(args: &ICoreWebView2SourceChangedEventArgs) -> bool {
 
 /// Registers all five nav-state event handlers on `webview`. Each handler
 /// closure is leaked into the event-registration token via `add_*` and
-/// never explicitly removed -- matches this project's other engine-hosts,
+/// never explicitly removed -- matches this project's other view hosts,
 /// which live exactly as long as the process and never unregister handlers
 /// either (nothing to clean up, the whole process exits on `Shutdown`).
 pub fn register_handlers(

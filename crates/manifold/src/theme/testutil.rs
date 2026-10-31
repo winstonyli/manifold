@@ -24,3 +24,26 @@ pub(crate) fn ctx(dark: bool) -> egui::Context {
     ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
     ctx
 }
+
+/// A press of `key` with no modifiers.
+pub(crate) fn key_event(key: egui::Key) -> egui::Event {
+    egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+}
+
+/// One frame of the graph UI on a 1024 x 768 screen; `modifiers` is the keyboard state it starts with (egui reads it
+/// off `ModifiersChanged`).
+pub(crate) fn graph_frame(
+    ctx: &egui::Context,
+    app: &mut crate::App,
+    mut events: Vec<egui::Event>,
+    modifiers: egui::Modifiers,
+) {
+    events.insert(0, egui::Event::ModifiersChanged(modifiers));
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1024.0, 768.0))),
+        events,
+        ..Default::default()
+    };
+    let mut output = ctx.run_ui(input, |ui| app.build_graph_ui(ui));
+    output.textures_delta.clear();
+}

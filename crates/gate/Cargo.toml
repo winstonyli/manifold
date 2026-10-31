@@ -16,7 +16,7 @@ sha2.workspace = true
 image.workspace = true
 
 # Windows-only: the Job Object that kills every launched instance if `gate` itself dies. Same crate, version and
-# feature set as crates/manifold's engine-host job (process_manager/job.rs).
+# feature set as crates/manifold's view-host job (process_manager/job.rs).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

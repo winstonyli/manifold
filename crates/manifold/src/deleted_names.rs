@@ -22,7 +22,7 @@ fn no_source_names_a_deleted_enum() {
 }
 
 /// Each host's layout is one row of `manifold_hosts`, read through `ViewDesc::host` (spec
-/// 2026-10-29-host-table-design.md). The per-engine host fields, `HostSource`, the `Embedded` enum and its hash
+/// 2026-10-29-host-table-design.md). The per-view host fields, `HostSource`, the `Embedded` enum and its hash
 /// variables, `CefPlatform`'s exe and runtime names and the in-place path helpers are gone. The live
 /// `host_file_names` and `Host::runtime_lib` contain two of the old names, so those needles are `host_file_name(` and
 /// `PLATFORM.runtime_lib`.

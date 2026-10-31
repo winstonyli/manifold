@@ -1546,18 +1546,18 @@ impl App {
             return CardBody { interact_rect: rect, tooltip: None };
         };
         match view.kind.ty {
-            TYPE_DOWNLOAD => self.paint_download_body(ui, pass, id, view, rect),
-            TYPE_NOTE => self.paint_note_body(ui, pass, id, view, rect),
-            TYPE_JAR => self.paint_jar_body(ui, pass, id, view, rect),
-            TYPE_IMAGE => self.paint_image_body(ui, pass, id, view, rect),
-            TYPE_PDF => self.paint_pdf_body(ui, pass, id, view, rect),
-            TYPE_JSON => self.paint_json_body(ui, pass, id, view, rect),
+            TYPE_DOWNLOAD => self.paint_download_body(ui, pass, id, rect),
+            TYPE_NOTE => self.paint_note_body(ui, pass, id, rect),
+            TYPE_JAR => self.paint_jar_body(ui, pass, id, rect),
+            TYPE_IMAGE => self.paint_image_body(ui, pass, id, rect),
+            TYPE_PDF => self.paint_pdf_body(ui, pass, id, rect),
+            TYPE_JSON => self.paint_json_body(ui, pass, id, rect),
             // Presentation matches the type, not `is_container` (see `card_style`).
             TYPE_GROUP => self.paint_group_body(ui, pass, id, view, rect),
-            TYPE_TAB if view.kind.loaded() => self.paint_tab_body(ui, pass, id, view, rect),
-            TYPE_TAB => self.paint_unloaded_tab_body(ui, pass, id, view, rect),
+            TYPE_TAB if view.kind.loaded() => self.paint_tab_body(ui, pass, id, rect),
+            TYPE_TAB => self.paint_unloaded_tab_body(ui, pass, id, rect),
             // `TYPE_UNKNOWN` (`card_kind::canonical_type`): every other row is matched above.
-            _ => self.paint_unknown_body(ui, pass, id, view, rect),
+            _ => self.paint_unknown_body(ui, pass, id, rect),
         }
     }
 
@@ -1568,7 +1568,6 @@ impl App {
         ui: &mut egui::Ui,
         pass: &mut CardPass,
         id: NodeId,
-        _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);
@@ -1603,7 +1602,6 @@ impl App {
         ui: &mut egui::Ui,
         pass: &mut CardPass,
         id: NodeId,
-        _view: &CardView,
         rect: egui::Rect,
     ) -> CardBody {
         let (inv_zoom, zoom_scale) = (pass.inv_zoom, pass.zoom_scale);

@@ -29,7 +29,7 @@ pub type RemoteTransport = MessageChannel<TcpStream>;
 /// unbounded, the engine's memory grew instead and the app never knew (wave 3b).
 pub const VIEW_INBOX: usize = 256;
 
-/// What this engine host (speaking `PROTOCOL_VERSION`) makes of manifold's number `app`: `None` when they agree,
+/// What this view host (speaking `PROTOCOL_VERSION`) makes of manifold's number `app`: `None` when they agree,
 /// else the `Skew` naming which side to rebuild.
 fn skew_with_app(app: u32) -> Option<crate::Skew> {
     crate::Skew::between(Some(crate::PROTOCOL_VERSION), app)
@@ -162,14 +162,13 @@ pub fn accept_local_pair_while(
     Ok((sender, receiver))
 }
 
-/// Called by an view-host child process on startup to connect back to
+/// Called by a view host child process on startup to connect back to
 /// the two control sockets its parent (`manifold`) already created.
 /// Returns `(receiver, sender)`: recv `HostToView` on the first, send
 /// `ViewToHost` on the second.
 ///
 /// `socket_id` must match whatever id `listen_local_pair` was called
-/// with for this tab (manifold passes it down as `VIEW_SOCKET_ID`,
-/// separate from the user-visible `VIEW_TAB_ID`).
+/// with for this tab (manifold passes it down as `VIEW_SOCKET_ID`).
 /// Writes `PROTOCOL_VERSION` on the sender; `spawn_host_reader` reads the
 /// host's from the receiver.
 pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalTransport)> {
@@ -179,7 +178,7 @@ pub fn connect_local_pair(socket_id: &str) -> io::Result<(LocalTransport, LocalT
     Ok((receiver, sender))
 }
 
-/// Bytes in the one-time token a remote engine host sends first.
+/// Bytes in the one-time token a remote view host sends first.
 pub const TOKEN_LEN: usize = 16;
 /// The secret a spawned WSL view-host must present (`VIEW_TOKEN`, as hex).
 pub type Token = [u8; TOKEN_LEN];
@@ -200,20 +199,6 @@ pub fn from_hex(hex: &str) -> Option<Vec<u8>> {
 
 pub fn token_from_hex(hex: &str) -> Option<Token> {
     from_hex(hex)?.try_into().ok()
-}
-
-/// Used only for the WSL2-hosted WebKit view-host: manifold listens on
-/// a TCP port, the WebKit host (spawned via `wsl.exe`) connects to it.
-///
-/// Bound on all interfaces (0.0.0.0), not just loopback: WSL2's NAT-mode
-/// networking does NOT forward a WSL2 process's connection to
-/// 127.0.0.1:port on the Windows side (verified directly — it comes back
-/// `ECONNREFUSED`, not a timeout). The WSL2 guest instead reaches the
-/// Windows host at its default-gateway IP (`ip route`'s `default via`
-/// address, which is the host's own `vEthernet (WSL)` adapter) — see
-/// `connect_remote`'s caller in manifold-view-webkitgtk for the matching side.
-pub fn listen_remote(port: u16) -> io::Result<TcpListener> {
-    TcpListener::bind(("0.0.0.0", port))
 }
 
 /// The `TOKEN_LEN` bytes a connecting peer sends, read within one second of now or `deadline`, whichever is first:
@@ -285,8 +270,9 @@ pub fn accept_remote(listener: &TcpListener, timeout: Duration, token: &Token) -
     }
 }
 
-/// `host` is the Windows side's address as reachable from inside WSL2 —
-/// the default-gateway IP, not 127.0.0.1 (see `listen_remote`).
+/// `host` is the Windows side's address as reachable from inside WSL2 — the default-gateway IP (`ip route`'s
+/// `default via`, the host's `vEthernet (WSL)` adapter), not 127.0.0.1: WSL2's NAT mode answers a guest connection to
+/// the Windows side's 127.0.0.1 with `ECONNREFUSED`. The listener is bound on all interfaces for that reason.
 /// Sends `token` first, which `accept_remote` checks, then `PROTOCOL_VERSION`.
 pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<RemoteTransport> {
     let mut stream = TcpStream::connect((host, port))?;
@@ -454,7 +440,7 @@ mod tests {
     fn the_host_names_which_side_to_rebuild() {
         let v = crate::PROTOCOL_VERSION;
         assert_eq!(skew_with_app(v), None);
-        assert!(skew_with_app(v + 1).unwrap().to_string().ends_with("; rebuild the engine host"));
+        assert!(skew_with_app(v + 1).unwrap().to_string().ends_with("; rebuild the view host"));
         assert!(skew_with_app(v - 1).unwrap().to_string().ends_with("; rebuild manifold"));
     }
 

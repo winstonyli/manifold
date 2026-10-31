@@ -362,7 +362,7 @@ impl App {
     /// document entry of its own and without queueing a delete of its own
     /// (`remove_remotely_deleted`: the document already lacks it; it does queue the deletes of the links naming
     /// the node), and a
-    /// tab's engine host is shut down. Groups are materialized before the
+    /// tab's view host is shut down. Groups are materialized before the
     /// nodes inside them, so a new member never names a group that doesn't
     /// exist yet. A new tab arrives asleep (`materialize`, spec "Lazy
     /// tabs"): another replica opening a big session mustn't start an

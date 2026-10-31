@@ -567,7 +567,7 @@ impl GpuState {
         format: wgpu::TextureFormat,
         rows: Option<std::ops::Range<u32>>,
     ) {
-        // The size comes from an view-host (over TCP for WebKit): a frame that isn't
+        // The size comes from a view host (over TCP for WebKit): a frame that isn't
         // `width * height * 4` bytes, or is empty or past the device limit, would panic in wgpu.
         if !frame_is_valid(pixels.len(), width, height, self.device.limits().max_texture_dimension_2d) {
             eprintln!("gpu: dropped a {width}x{height} frame of {} bytes for tab {tab_id}", pixels.len());

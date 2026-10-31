@@ -1,4 +1,4 @@
-//! Where each engine host and runtime lives on disk, and whether an engine can run here: the in-place host
+//! Where each view host and runtime lives on disk, and whether an engine can run here: the in-place host
 //! lookup, the cached on-disk check, and the availability shown in the engine lists.
 
 use super::*;
@@ -38,8 +38,8 @@ fn walks_dev_folders() -> bool {
 /// downloaded CEF host is never run from there: `prepare_cef` copies it beside the runtime's `libcef.dll`.) Without a
 /// data directory, the place beside `manifold.exe` (`Host::beside`).
 ///
-/// TODO: a dev tree's runtime files are put beside its hosts by `gate sync-runtime-deps` (README "Runtime-file
-/// placement"), not by cargo; a real install or packaging step should do that.
+/// A dev tree's runtime files are put beside its hosts by `gate sync-runtime-deps` (README "Runtime-file placement"),
+/// not by cargo; an installed host gets its runtime from `view_install`.
 pub(super) fn view_binary_path(kind: ViewKind) -> PathBuf {
     let desc = kind.desc();
     assert!(desc.link == HostLink::PipesShm, "{} is reached over TCP, not by a local path", desc.label);

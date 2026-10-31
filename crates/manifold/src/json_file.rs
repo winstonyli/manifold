@@ -167,18 +167,9 @@ mod tests {
         if cfg!(not(windows)) {
             return;
         }
-        let set_readonly = |readonly: bool| {
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            #[allow(
-                clippy::permissions_set_readonly_false,
-                reason = "the Windows read-only attribute makes the rename over it fail; on Unix this is a temp file this test owns"
-            )]
-            perms.set_readonly(readonly);
-            std::fs::set_permissions(&path, perms).unwrap();
-        };
-        set_readonly(true);
+        crate::store::testutil::set_readonly(&path, true);
         save(&[4, 5, 6], &path, "thing");
-        set_readonly(false);
+        crate::store::testutil::set_readonly(&path, false);
         assert_eq!(load::<Vec<u32>>(&path, "thing"), Ok(vec![3]), "a failed save leaves the old file");
         let names: Vec<_> =
             std::fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();

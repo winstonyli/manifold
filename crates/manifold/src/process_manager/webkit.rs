@@ -96,7 +96,7 @@ pub(super) fn spawn_webkit_tab(
     let host = webkit_host_path().ok_or_else(|| std::io::Error::other("no data directory for the WebKit host"))?;
 
     // A random secret the engine must send before it is accepted: the listener may be on every interface
-    // (`listen_remote`). It sits in the host's command line or environment, as hex, visible to the same user's
+    // (`HostRuntime::Wsl`). It sits in the host's command line or environment, as hex, visible to the same user's
     // processes only.
     let mut token = [0u8; transport::TOKEN_LEN];
     getrandom::fill(&mut token).map_err(|e| std::io::Error::other(e.to_string()))?;

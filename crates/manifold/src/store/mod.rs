@@ -58,6 +58,14 @@ pub(crate) mod testutil {
         dir
     }
 
+    /// Sets or clears the read-only attribute of `path`, which makes a write to it fail on Windows (a Unix rename
+    /// replaces a read-only file regardless); `path` is a temp file the calling test owns.
+    pub fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = std::fs::metadata(path).unwrap().permissions();
+        perms.set_readonly(readonly);
+        std::fs::set_permissions(path, perms).unwrap();
+    }
+
     /// Removes `root`'s `manifold-store-<pid>-*` directories of other
     /// processes last modified more than `older_than` ago. Returns how many.
     /// An hour is far longer than a test run, so a concurrent run's folders stay.

@@ -35,7 +35,7 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// 8: `ViewToHost::DownloadFailed` carries a `DownloadFailure` (why: a `FailureKind` and the engine's or OS's words).
 pub const PROTOCOL_VERSION: u32 = 8;
 
-/// Starts the one line an engine host writes to stderr (its per-tab log) when it cannot start at all and
+/// Starts the one line a view host writes to stderr (its per-tab log) when it cannot start at all and
 /// exits before connecting, e.g. a CEF runtime that doesn't support the host's API version. manifold shows the rest
 /// of that line as the failure (`process_manager::connect_host`) instead of the raw log tail. A host that fails
 /// to start after connecting (WebView2 creating its environment) also sends that line as an `ViewToHost::Crashed`
@@ -71,11 +71,11 @@ impl std::fmt::Display for Skew {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.host {
             None => f.write_str(
-                "the engine host carries no protocol number (built before hosts were stamped); rebuild the engine host",
+                "the view host carries no protocol number (built before hosts were stamped); rebuild the view host",
             ),
             Some(host) => {
-                let rebuild = if host < self.app { "the engine host" } else { "manifold" };
-                write!(f, "the engine host speaks protocol {host}, manifold speaks {}; rebuild {rebuild}", self.app)
+                let rebuild = if host < self.app { "the view host" } else { "manifold" };
+                write!(f, "the view host speaks protocol {host}, manifold speaks {}; rebuild {rebuild}", self.app)
             }
         }
     }
@@ -139,14 +139,14 @@ mod tests {
         assert_eq!(Skew::between(Some(5), 5), None);
         let older = Skew::between(Some(4), 5).unwrap();
         assert_eq!((older.host(), older.app()), (Some(4), 5));
-        assert_eq!(older.to_string(), "the engine host speaks protocol 4, manifold speaks 5; rebuild the engine host");
+        assert_eq!(older.to_string(), "the view host speaks protocol 4, manifold speaks 5; rebuild the view host");
         assert_eq!(
             Skew::between(Some(6), 5).unwrap().to_string(),
-            "the engine host speaks protocol 6, manifold speaks 5; rebuild manifold"
+            "the view host speaks protocol 6, manifold speaks 5; rebuild manifold"
         );
         assert_eq!(
             Skew::between(None, 5).unwrap().to_string(),
-            "the engine host carries no protocol number (built before hosts were stamped); rebuild the engine host"
+            "the view host carries no protocol number (built before hosts were stamped); rebuild the view host"
         );
     }
 }

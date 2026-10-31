@@ -152,14 +152,6 @@ fn on_off(word: &str) -> Option<bool> {
     }
 }
 
-fn true_false(word: &str) -> Option<bool> {
-    match word {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
-    }
-}
-
 fn coords(parts: &mut SplitWhitespace) -> Option<(f64, f64)> {
     Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
 }
@@ -420,7 +412,6 @@ const VERBS: &[Verb] = &[
     }),
     row("GRAPHLEFT", "Graph view: move focus left", |_| job(|app, _| app.move_graph_focus(egui::vec2(-1.0, 0.0)))),
     row("GRAPHRIGHT", "Graph view: move focus right", |_| job(|app, _| app.move_graph_focus(egui::vec2(1.0, 0.0)))),
-    row("GRAPHUP", "Graph view: move focus up", |_| job(|app, _| app.move_graph_focus(egui::vec2(0.0, -1.0)))),
     row("GRAPHDOWN", "Graph view: move focus down", |_| job(|app, _| app.move_graph_focus(egui::vec2(0.0, 1.0)))),
     row("GRAPHOPEN", "Open whichever Graph-view node is currently focused", |_| job(|app, _| app.open_focused_graph_node())),
     row("TYPE text", "Send each character to the focused tab's own page (not the address bar)", |rest| with_str(rest, |app, text| {
@@ -480,15 +471,6 @@ const VERBS: &[Verb] = &[
         app.find.text = text;
         app.send_find_start();
     })),
-    row("FINDMATCHCASE true|false", "Toggle the find bar's case-sensitivity", |rest| {
-        let match_case = true_false(rest.split_whitespace().next()?)?;
-        job(move |app, _| {
-            app.find.match_case = match_case;
-            app.send_find_start();
-        })
-    }),
-    row("FINDNEXT", "Find bar: next match", |_| job(|app, _| app.send_find_navigate(true))),
-    row("FINDPREVIOUS", "Find bar: previous match", |_| job(|app, _| app.send_find_navigate(false))),
     row("CLOSEFINDBAR", "Close the find bar", |_| job(|app, _| app.close_find_bar())),
     row("SCREENSHOT path", "Save the next frame as a PNG at `path`; later commands wait for it (30 s max)", |rest| {
         (!rest.is_empty()).then(|| Parsed::Reader(ReaderOp::Screenshot(rest.to_string())))
@@ -520,8 +502,6 @@ const VERBS: &[Verb] = &[
             app.omni_set_text(Host::Popup, &text);
         }
     })),
-    row("QUICKSWITCHDOWN", "Omnibar popup: move highlight down", |_| job(|app, _| app.omni_move(Host::Popup, 1))),
-    row("QUICKSWITCHUP", "Omnibar popup: move highlight up", |_| job(|app, _| app.omni_move(Host::Popup, -1))),
     row("QUICKSWITCHENTER", "Omnibar popup: confirm the highlighted row", |_| job(|app, _| app.omni_confirm(Host::Popup))),
     row("QUICKSWITCHESCAPE", "Close the omnibar popup", |_| job(|app, _| app.omni_close(Host::Popup))),
     row("SESSIONNAMETEXT text", "Set the \"Save Session As...\" name field", |rest| with_str(rest, |app, text| app.session_name_draft = text)),
@@ -1353,7 +1333,6 @@ mod tests {
             "UNDOKEY shift",
             "GRAPHLEFT",
             "GRAPHRIGHT",
-            "GRAPHUP",
             "GRAPHDOWN",
             "GRAPHOPEN",
             "TYPE abc",
@@ -1375,9 +1354,6 @@ mod tests {
             "PREVTAB",
             "OPENFINDBAR",
             "FINDTEXT needle",
-            "FINDMATCHCASE true",
-            "FINDNEXT",
-            "FINDPREVIOUS",
             "CLOSEFINDBAR",
             r"SCREENSHOT C:\x.png",
             "RESIZE 800 600",
@@ -1385,8 +1361,6 @@ mod tests {
             "QUIT",
             "QUICKSWITCHOPEN",
             "QUICKSWITCHTEXT abc",
-            "QUICKSWITCHDOWN",
-            "QUICKSWITCHUP",
             "QUICKSWITCHENTER",
             "QUICKSWITCHESCAPE",
             "SESSIONNAMETEXT work",

@@ -1,6 +1,6 @@
 //! Where an engine's host is built to run, and how that maps onto the machine manifold runs on.
 //!
-//! `Os` (the host table's, `manifold_hosts::Os`) is the operating systems an engine host can target, and `Other` for
+//! `Os` (the host table's, `manifold_hosts::Os`) is the operating systems a view host can target, and `Other` for
 //! every one without a host of its own; a host's row says which it is built for (`Host::os`). `HostRuntime` says how
 //! a host built for one OS runs on another: natively on its own, or a Linux host through WSL on Windows. `HostLink` is
 //! how a host reaches manifold, a property of the host, not of the runtime. A fourth compatibility layer (Wine) would

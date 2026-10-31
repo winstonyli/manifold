@@ -228,7 +228,8 @@ mod tests {
     use crate::store::journal::Journal;
     use crate::store::model::ActorId;
     use crate::store::ops::OpBody;
-    use crate::store::testutil::temp_dir;
+    use crate::store::testutil::{set_readonly, temp_dir};
+    use crate::theme::testutil::key_event as key;
 
     /// Tab `child` (live, focused, a one-page trail) opened from tab `parent` (asleep), both at the top level.
     fn opened_from(path: &std::path::Path) -> (App, NodeId, NodeId, Peer) {
@@ -340,18 +341,9 @@ mod tests {
         let (mut app, parent, child, _peer) = opened_from(&path);
         app.close_node(parent);
         assert!(!app.nodes.contains_key(&parent));
-        let set_readonly = |readonly: bool| {
-            let mut perms = std::fs::metadata(&path).unwrap().permissions();
-            #[allow(
-                clippy::permissions_set_readonly_false,
-                reason = "the Windows read-only attribute makes the append fail; a temp file this test owns"
-            )]
-            perms.set_readonly(readonly);
-            std::fs::set_permissions(&path, perms).unwrap();
-        };
-        set_readonly(true);
+        set_readonly(&path, true);
         app.navigate_history(child, Dir::Back);
-        set_readonly(false);
+        set_readonly(&path, false);
         assert!(app.toasts.save_toast_queue.iter().any(|t| t.contains("Couldn't reopen")), "toasted");
         assert!(!app.nodes.contains_key(&parent), "still closed");
         assert_eq!(app.focused, Some(child), "the press focused nothing");
@@ -887,10 +879,6 @@ mod tests {
         let cards = crate::trail_strip::trail_cards(&app, tab, egui::Pos2::ZERO);
         let camera = app.menus.trail_canvas.as_ref().unwrap().1.rect;
         assert!(camera.contains(cards.last().unwrap().rect.center()), "the cursor page is in view again");
-    }
-
-    fn key(key: egui::Key) -> egui::Event {
-        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
     }
 
     fn long_trail_popup(name: &str) -> (App, NodeId) {

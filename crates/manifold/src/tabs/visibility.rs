@@ -17,7 +17,7 @@ impl App {
     }
 
     /// Settles each live tab's first frame as of `now`, then sends it `tab_visible`'s answer; `ViewTab::set_visible`
-    /// sends only a change. Runs once per frame after the UI (and on the minimized tick), so a new engine host, which
+    /// sends only a change. Runs once per frame after the UI (and on the minimized tick), so a new view host, which
     /// starts out visible, is corrected on the frame it lands.
     pub(crate) fn sync_tab_visibility(&mut self, minimized: bool, now: std::time::Instant) {
         let ids: Vec<NodeId> = self.nodes.iter().filter(|(_, n)| n.as_tab().is_some()).map(|(&id, _)| id).collect();

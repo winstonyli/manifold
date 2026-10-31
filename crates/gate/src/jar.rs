@@ -190,7 +190,7 @@ fn jar_user(path: &Path) -> String {
     }
 }
 
-/// The `jar:` lines the engine hosts logged to `%TEMP%/manifold-<tab id>.log` since `since` (process_manager::
+/// The `jar:` lines the view hosts logged to `%TEMP%/manifold-<tab id>.log` since `since` (process_manager::
 /// per_tab_log_path), as (count, line) sorted by line.
 fn host_jar_lines(since: SystemTime) -> Vec<(usize, String)> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();

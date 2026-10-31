@@ -50,10 +50,6 @@ const CORE_MODULES: &[&str] = &[
 /// `crate::<one of these>` in a file makes it core code.
 const CORE_IMPORTS: &[&str] = &["store", "session_sync", "mirror", "session", "process_manager", "net"];
 
-/// Layer directories (view/, app/, ...) group module files without changing a module's name
-/// (`#[path = "model/jar.rs"] mod jar;`): a file in one is classified as if it sat directly under the source folder.
-const LAYERS: &[&str] = &["view", "app", "model", "network", "engine", "io"];
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Tier {
     Ui,
@@ -80,22 +76,9 @@ fn imports_core(text: &str) -> bool {
     })
 }
 
-/// `path` with a layer directory under `src` removed (`src/model/jar.rs` -> `src/jar.rs`).
-fn unlayered(path: &str, src: &str) -> String {
-    if let Some(rel) = path.strip_prefix(src).and_then(|r| r.strip_prefix('/')) {
-        if let Some((first, rest)) = rel.split_once('/') {
-            if LAYERS.contains(&first) {
-                return format!("{src}/{rest}");
-            }
-        }
-    }
-    path.to_string()
-}
-
 /// The tier of one changed path and why. `read` returns a source file's text (for the UI list's import check).
 pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) -> (Tier, String) {
-    let p = unlayered(path, src);
-    let p = p.as_str();
+    let p = path;
     let full = |why: &str| (Tier::Full, why.to_string());
     let light = |why: String| (Tier::Light, why);
     let under = |dir: &str| p.strip_prefix(dir).is_some_and(|r| r.starts_with('/'));
@@ -258,14 +241,6 @@ mod tests {
             assert_eq!(tier_of(&[p], &[]), "TIER full", "{p}");
         }
         assert_eq!(tier_of(&["src/link_gestures/tests.rs"], &[]), "TIER light");
-    }
-
-    #[test]
-    fn a_layer_directory_is_read_by_its_module_name() {
-        assert_eq!(tier_of(&["src/model/jar.rs"], &[]), "TIER full");
-        assert_eq!(tier_of(&["src/model/jar/tests.rs"], &[]), "TIER full");
-        assert_eq!(tier_of(&["src/view/theme.rs"], &[]), "TIER ui");
-        assert_eq!(tier_of(&["src/io/profile.rs"], &[]), "TIER light");
     }
 
     #[test]

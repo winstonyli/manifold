@@ -24,7 +24,7 @@ impl App {
             self.spawns.tabs_spawned_waiters.release();
         }
         // Spawned for a session that's since been replaced: dropping the
-        // `ViewTab` shuts its engine host down. See `session_generation`.
+        // `ViewTab` shuts its view host down. See `session_generation`.
         if generation != self.spawns.session_generation {
             return;
         }

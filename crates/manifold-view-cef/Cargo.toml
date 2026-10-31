@@ -16,7 +16,7 @@ manifold-view-protocol.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Only for the browser-process Job Object setup in main.rs (kills orphaned
 # CEF renderer/GPU subprocesses on exit) -- same crate/features
-# engine-host-webview2 already uses for the identical purpose.
+# manifold-view-webview2 already uses for the identical purpose.
 windows = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 # The exe keeps the name released builds, release.yml and the scripts know; it changes with a release that

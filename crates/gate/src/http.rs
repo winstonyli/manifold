@@ -2,7 +2,7 @@
 //! suggestions endpoint (suggest.rs) and the two-instance test's nonce site (nonce.rs). Each connection gets a thread;
 //! the handler turns the request line into the whole response, which is written before the connection closes.
 //! Dropping the server stops its accept loop. `SITE_HOST=<ip>` binds and addresses the site at that local address instead,
-//! for an engine host that cannot reach loopback: WebKit runs in WSL, and the Windows address it sees is the gateway
+//! for a view host that cannot reach loopback: WebKit runs in WSL, and the Windows address it sees is the gateway
 //! from `ip route` in WSL (`ip route | awk '/default/ {print $3}'`).
 
 use std::io::{self, Read, Write};

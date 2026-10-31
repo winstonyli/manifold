@@ -15,7 +15,7 @@ use super::*;
 /// Exists because engine-hosts becoming orphaned was already a known, if
 /// only ever partially worked around, problem: `spawn_tab`'s own comment
 /// above already notes "a prior run that crashed... can leave a stale
-/// view-host-*.exe still holding tab_id's named pipe indefinitely," with
+/// manifold-view-*.exe still holding tab_id's named pipe indefinitely," with
 /// a fallback-socket-id workaround for *that* one symptom. Found live to
 /// be worse than a stale pipe, though -- orphaned `manifold-view-
 /// webview2.exe` processes accumulating across several crashed/force-
@@ -105,7 +105,7 @@ pub(super) fn assign_to_view_job(child: &Child) {
         let _ = AssignProcessToJobObject(job, process_handle);
     }
 }
-/// No kill-on-exit job off Windows: an view-host sees the socket drop when manifold dies and shuts itself down
+/// No kill-on-exit job off Windows: a view host sees the socket drop when manifold dies and shuts itself down
 /// (`manifold_view_protocol::transport::spawn_host_reader`). Measured on Linux (WSL2, 2026-10-02): `kill -9` of manifold with a
 /// live CEF tab left no CEF process after 1 s, so `PR_SET_PDEATHSIG` or a process group is not needed there. Said once
 /// on stderr rather than silently, since other hosts (WebKit, through WSL) are not covered by that measurement.
@@ -113,8 +113,6 @@ pub(super) fn assign_to_view_job(child: &Child) {
 pub(super) fn assign_to_view_job(_child: &Child) {
     static WARNED: std::sync::Once = std::sync::Once::new();
     WARNED.call_once(|| {
-        eprintln!(
-            "manifold: no kill-on-exit job on this platform; engine hosts exit when their socket to manifold drops"
-        )
+        eprintln!("manifold: no kill-on-exit job on this platform; view hosts exit when their socket to manifold drops")
     });
 }

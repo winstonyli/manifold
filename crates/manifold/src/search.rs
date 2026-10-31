@@ -9,6 +9,8 @@ mod lsa;
 mod service;
 mod suggest;
 mod sync;
+#[cfg(test)]
+mod testutil;
 pub(crate) mod text_store;
 mod tokenize;
 

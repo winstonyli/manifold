@@ -1,4 +1,4 @@
-//! The engine host binaries the app downloads on demand, one list per (engine, platform).
+//! The view host binaries the app downloads on demand, one list per (engine, platform).
 //!
 //! A release carries every host next to `manifold.exe` (`release.yml` builds them first), and the exe is built with
 //! `MANIFOLD_HOST_PINS` naming a manifest of their names, sizes and SHA-256 hashes. `build.rs` embeds that manifest;

@@ -39,9 +39,7 @@ windows = { workspace = true, features = [
     "Graphics_Capture",
     "Graphics_DirectX",
     "Graphics_DirectX_Direct3D11",
-    # Real dependencies now (`composition.rs` visual-tree hosting) -- used by
-    # the engine-host to set up composition-based rendering instead of plain
-    # windowed hosting.
+    # Composition-based rendering (`composition.rs` visual-tree hosting).
     "UI_Composition",
     "UI_Composition_Desktop",
     "Win32_System_WinRT_Composition",

@@ -504,7 +504,7 @@ impl App {
     /// currently focused -- just picks a starting node so the first arrow
     /// press has something to move from next time. Shared by
     /// `handle_graph_keys`' real-keyboard arrow handling and the headless
-    /// `GRAPHLEFT`/`GRAPHRIGHT`/`GRAPHUP`/`GRAPHDOWN` debug commands (a real
+    /// `GRAPHLEFT`/`GRAPHRIGHT`/`GRAPHDOWN` debug commands (a real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
     /// code -- see `debug_control`'s own doc comment -- so headless mode
     /// calls this directly instead).

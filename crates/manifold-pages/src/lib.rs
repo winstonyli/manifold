@@ -1,4 +1,4 @@
-//! The `manifold://` pages: static HTML compiled in, and the one router every engine host calls from its own
+//! The `manifold://` pages: static HTML compiled in, and the one router every view host calls from its own
 //! custom-scheme hook (WebView2's `WebResourceRequested`, Servo's `ProtocolHandler`, CEF's scheme handler factory,
 //! WebKit's `register_uri_scheme`). Only the hook differs per engine; the page table lives here.
 //! See `docs/superpowers/specs/2026-09-19-manifold-scheme-design.md`.

@@ -483,7 +483,7 @@ impl App {
     /// Clears the running session's nodes and the state naming them, and
     /// queues a delete for every card the document holds (a jar included: it is a card;
     /// links go below). Each
-    /// tab's `ViewTab::Drop` shuts its engine host down, as `destroy_tab`
+    /// tab's `ViewTab::Drop` shuts its view host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
     /// dropped when they land (`session_generation`), and a PDF's render
     /// not yet started is skipped, as `remove_node` does.

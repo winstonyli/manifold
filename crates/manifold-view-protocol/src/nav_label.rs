@@ -1,5 +1,5 @@
 //! Whether a navigation was started by the user or by the host (manifold
-//! itself), shared by the CEF and WebView2 engine hosts. Only user-started
+//! itself), shared by the CEF and WebView2 view hosts. Only user-started
 //! navigations are shared with the tab's other instances.
 
 use std::time::{Duration, Instant};

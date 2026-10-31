@@ -39,7 +39,7 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// extra `V8Context::eval` round trip every tick.
 const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
 
-/// Same job-object setup `view-host-webview2` already uses for its own
+/// Same job-object setup `manifold-view-webview2` already uses for its own
 /// multi-process tree -- see this function's own call site for why.
 #[cfg(windows)]
 fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
@@ -125,7 +125,7 @@ fn main() {
     // job the moment this process's own job handle closes, on any exit
     // path (graceful, crashed, or force-killed), since child processes
     // created by a process already in a job join the same job
-    // automatically. Same fix `view-host-webview2` already applies for
+    // automatically. Same fix `manifold-view-webview2` already applies for
     // its own equivalent multi-process tree; `_job`'s only purpose is to
     // stay alive for the whole process lifetime. Elsewhere there is no job;
     // on Linux CEF's subprocesses exited by themselves within 5 s of a
