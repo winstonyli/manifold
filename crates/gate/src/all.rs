@@ -216,10 +216,15 @@ const STEPS: &[Step] = &[
     step("labels", Mode::Light),
     step("arrange", Mode::Light),
     Step { stage: "download", env: &[("VIEWS", "webview2")], ..step("download", Mode::Light) },
-    Step { stage: "download", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("download-cef", Mode::Light) },
     Step {
         stage: "download",
-        env: &[("VIEWS", "webkit")],
+        env: &[("VIEWS", "cef"), ("CASES", "saved refused")],
+        engine: Some("cef"),
+        ..step("download-cef", Mode::Light)
+    },
+    Step {
+        stage: "download",
+        env: &[("VIEWS", "webkit"), ("CASES", "saved refused")],
         engine: Some("webkit"),
         ..step("download-webkit", Mode::Light)
     },

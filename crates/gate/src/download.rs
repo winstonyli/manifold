@@ -1,11 +1,13 @@
 //! `gate download`: a tab restored at a URL that answers an attachment starts a download, on each of `VIEWS` (default
 //! `webview2`; `VIEWS="webview2 cef webkit"` adds CEF and WebKit, whose hosts must be built; WebKit also needs `SITE_HOST`,
-//! see `gate all`). Two cases per view, each on its own profile:
-//! the profile's own download folder, where the one card must complete and save `real.zip` with the server's bytes; and
-//! a folder that cannot be made (a path under a regular file), where the host refuses the download and the one card must
-//! show it failed as `FolderUnusable` (`downloads::refused`). It also checks that no `real*.zip*` appears in the folder the
-//! engine would save to on its own: CEF's refusal (return 0) used to leave the file in the user's Downloads, and the host
-//! now cancels it. For WebKit that folder is `~/Downloads` in WSL, and its folder reaches the host as `/mnt/<drive>/...`.
+//! see `gate all`). `CASES` (default `saved refused broken`) picks the cases, three per view, each on its own profile and server: the profile's own download folder, where
+//! the one card must complete and save `real.zip` with the server's bytes; a folder that cannot be made (a path under a
+//! regular file), where the host refuses the download and the one card must show it failed as `FolderUnusable`
+//! (`downloads::refused`); and the server dying mid-transfer (`/slow`, 300 KB of 1 MB), where the one card must show it
+//! failed as `Network`, the engine's own failure code as the host maps it. The refused case also checks that no
+//! `real*.zip*` appears in the folder the engine would save to on its own: CEF's refusal (return 0) used to leave the
+//! file in the user's Downloads, and the host now cancels it. For WebKit that folder is `~/Downloads` in WSL, and its
+//! folder reaches the host as `/mnt/<drive>/...`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -20,28 +22,34 @@ use crate::instance::{download_dir, Instance};
 use crate::probes::{finish, guarded, quit, seed, tab_node, views};
 use crate::shots_net::Downloads;
 
+/// The three cases a view runs, each on its own profile and its own server.
+#[derive(Clone, Copy, PartialEq)]
+enum Case {
+    Saved,
+    Refused,
+    Broken,
+}
+
+const CASES: [(Case, &str); 3] = [(Case::Saved, "saved"), (Case::Refused, "refused"), (Case::Broken, "broken")];
+
 pub(crate) fn download(exe: &Path, work: &Path) -> ExitCode {
-    let server = match Downloads::start() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("download server: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let url = server.url("/real.zip");
+    let cases = std::env::var("CASES").unwrap_or_else(|_| "saved refused broken".into());
     for view in views() {
-        for refused in [false, true] {
-            let name = format!("{view}-{}", if refused { "refused" } else { "saved" });
+        for (case, label) in CASES.iter().filter(|(_, label)| cases.split_whitespace().any(|c| c == *label)) {
+            let name = format!("{view}-{label}");
             let _t = Section::start(&format!("download-{name}"));
-            guarded(&name, || run_case(exe, work, &view, &name, &url, refused));
+            guarded(&name, || run_case(exe, work, &view, &name, *case));
         }
     }
     finish(work)
 }
 
-fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused: bool) -> io::Result<()> {
+fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::Result<()> {
+    let server = Downloads::start()?;
+    let url = server.url(if case == Case::Broken { "/slow" } else { "/real.zip" });
+    let refused = case == Case::Refused;
     let profile = work.join(format!("appdata-{name}"));
-    seed(exe, &profile, view, &[tab_node(Some(url), view)])?;
+    seed(exe, &profile, view, &[tab_node(Some(&url), view)])?;
     let folder = if refused {
         // A folder under a file cannot be made: the host must refuse the download rather than lose it.
         let file = work.join(format!("{name}-not-a-folder"));
@@ -55,17 +63,39 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
     let before = engine_downloads(view);
     let mut inst = Instance::launch(exe, &profile, work, &format!("download-{name}.log"))?;
     inst.send("WAITTABS")?;
-    let saved = folder.join("real.zip");
-    let done = |s: &crate::state::State| match s.downloads_from(url)[..] {
+    let saved = folder.join(if case == Case::Broken { "slow.zip" } else { "real.zip" });
+    let saved_path = saved.to_string_lossy().into_owned();
+    if case == Case::Broken {
+        // Still arriving (300 KB of 1 MB) before the server dies.
+        let started =
+            |s: &crate::state::State| matches!(s.downloads_from(&url)[..], [d] if d["path"] == saved_path.as_str());
+        let state = inst.export_until(&format!("started-{name}"), started)?;
+        if !started(&state) {
+            quit(&mut inst, name);
+            return Err(io::Error::other(format!(
+                "{view}: no card saving {url} to {saved_path}: {:?}",
+                state.downloads_from(&url)
+            )));
+        }
+        server.kill();
+    }
+    let done = |s: &crate::state::State| match s.downloads_from(&url)[..] {
         [d] if refused => d["failed"] == true && d["failure"] == "FolderUnusable",
-        [d] => d["completed"] == true && d["path"] == saved.to_string_lossy().as_ref(),
+        [d] if case == Case::Broken => {
+            d["failed"] == true && d["failure"] == "Network" && d["path"] == saved_path.as_str()
+        }
+        [d] => d["completed"] == true && d["path"] == saved_path.as_str(),
         _ => false,
     };
     let state = inst.export_until(&format!("state-{name}"), done)?;
     quit(&mut inst, name);
-    let cards = state.downloads_from(url);
+    let cards = state.downloads_from(&url);
     if !done(&state) {
-        let want = if refused { "failed as FolderUnusable" } else { "completed, saved in the folder" };
+        let want = match case {
+            Case::Refused => "failed as FolderUnusable",
+            Case::Broken => "failed as Network, saving to the folder",
+            Case::Saved => "completed, saved in the folder",
+        };
         return Err(io::Error::other(format!("{view}: the download of {url} is not one card {want}: {cards:?}")));
     }
     if refused {
@@ -76,7 +106,7 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
             &format!("{view} refused: nothing is saved in the engine's own Downloads folder {leaked:?}"),
             leaked.is_empty(),
         );
-    } else {
+    } else if case == Case::Saved {
         crate::check::check_eq(
             &format!("{view} saved: real.zip holds the server's bytes"),
             "data".to_owned(),
