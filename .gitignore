@@ -2,6 +2,6 @@
 /target-linux
 /target-servo
 *.log
-webkit_swap_test.png
+*.stackdump
 .superpowers/
 /dist

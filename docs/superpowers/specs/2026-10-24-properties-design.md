@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Card properties, labels and inline Json cards (design, 2026-10-24)

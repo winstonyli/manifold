@@ -1,7 +1,6 @@
 # Properties, tags and mutable JSON: one mechanism (2026-10-24)
 
-Status: decided in conversation, not built. A spec (`docs/superpowers/specs/`) and its measurement come next; this file is
-the record of what was chosen and what was ruled out, so the spec starts from it.
+Status: built (2026-10-24 to 10-25; spec `docs/superpowers/specs/2026-10-24-properties-design.md`, plans `docs/superpowers/plans/2026-10-24-properties-1-store.md` through `2026-10-25-properties-4b-inline-json-editing.md`). What was left out is in `PARKED.md` (group membership as a list, the compute graph, the inherited-context helper). This file is the record of what was chosen and what was ruled out.
 
 ## Decision
 

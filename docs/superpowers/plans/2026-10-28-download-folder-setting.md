@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Download Folder Setting Implementation Plan
