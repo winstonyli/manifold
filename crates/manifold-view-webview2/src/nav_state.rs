@@ -1,16 +1,12 @@
-//! Navigation state tracking -- mirrors `manifold-view-cef/src/nav_handler.rs`'s
-//! `SharedNavState`/`dirty`-flag pattern exactly, since WebView2's real
-//! native events (`NavigationStarting`/`NavigationCompleted`/
-//! `SourceChanged`/`DocumentTitleChanged`/`HistoryChanged`) play the same role CEF's
-//! `DisplayHandler`/`LoadHandler` callbacks do: each just mutates this
-//! shared cell and sets `dirty`, coalesced into one `NavigationStateChanged`
-//! message per tick by `main.rs`'s loop rather than one message per event.
+//! The WebView2 events that keep the host's `NavState` (`manifold_view_protocol::nav_state`) current: the real
+//! native events (`NavigationStarting`/`NavigationCompleted`/`SourceChanged`/`DocumentTitleChanged`/
+//! `HistoryChanged`) play the role CEF's `DisplayHandler`/`LoadHandler` callbacks do, each just mutating the shared
+//! cell and setting `dirty`, coalesced into one `NavigationStateChanged` message per tick by `main.rs`'s loop
+//! (`NavState::take_message`) rather than one message per event.
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::time::Instant;
 
-use manifold_view_protocol::nav_label::{NavLabel, GESTURE_WINDOW};
+use manifold_view_protocol::nav_state::{SharedJsonBody, SharedNavState, SharedRedirectContentType};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2NavigationStartingEventArgs, ICoreWebView2SourceChangedEventArgs,
 };
@@ -19,62 +15,6 @@ use webview2_com::{
     NavigationCompletedEventHandler, NavigationStartingEventHandler, SourceChangedEventHandler,
 };
 use windows::core::{BOOL, HSTRING, PWSTR};
-
-pub struct NavState {
-    pub url: String,
-    pub title: String,
-    pub can_go_back: bool,
-    pub can_go_forward: bool,
-    pub loading: bool,
-    /// Who started the current navigation. WebView2 has no gesture flag to
-    /// trust: `IsUserInitiated` was true even for a page's `setTimeout`
-    /// navigation in a tab that never got any input (runtime tested
-    /// 2026-09-26), so labelling rests on `last_input` (set from `main.rs`),
-    /// which a new document uses up as it starts without Chromium's
-    /// transient user activation.
-    pub label: NavLabel,
-    pub dirty: bool,
-}
-
-impl NavState {
-    /// The page got a click or key press within `GESTURE_WINDOW`; unlike
-    /// `NavLabel::label_new`, doesn't use it up (`popup.rs`).
-    pub fn had_recent_input(&self) -> bool {
-        self.label.last_input.is_some_and(|at| at.elapsed() < GESTURE_WINDOW)
-    }
-}
-
-pub type SharedNavState = Rc<RefCell<NavState>>;
-
-pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
-    Rc::new(RefCell::new(NavState {
-        url: initial_url,
-        title: String::new(),
-        can_go_back: false,
-        can_go_forward: false,
-        loading: false,
-        label: NavLabel::created_by_host(Instant::now()), // `main.rs` navigates to `initial_url` next
-        dirty: false,
-    }))
-}
-
-/// See `manifold_view_protocol::ViewToHost::JsonBody`'s own doc comment -- filled
-/// in once per navigation, from the same `NavigationCompleted` handler
-/// below that also updates `NavState`.
-pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
-
-pub fn new_shared_json_body() -> SharedJsonBody {
-    Rc::new(RefCell::new(None))
-}
-
-/// See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc comment
-/// -- same `NavigationCompleted` handler as `SharedJsonBody`, just the
-/// other branch of the same `document.contentType` check.
-pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
-
-pub fn new_shared_redirect_content_type() -> SharedRedirectContentType {
-    Rc::new(RefCell::new(None))
-}
 
 /// The raw COM binding's `CanGoBack`/`CanGoForward` are `[out, retval]
 /// BOOL` params, not idiomatic return values -- this is the shared

@@ -1,6 +1,6 @@
 //! WebView2 view-host (see the M6 plan). Structured to mirror
-//! `manifold-view-cef/src/main.rs`'s shape (fixed-tick poll loop,
-//! `SharedNavState` + `dirty` flag) since CEF is the closest existing
+//! `manifold-view-cef/src/main.rs`'s shape (fixed-tick poll loop, the
+//! shared `manifold_view_protocol::nav_state` state) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
 //! WebView2 is hosted via the Composition controller against a
 //! `Windows.UI.Composition` visual (`composition.rs`), and frames are
@@ -43,7 +43,8 @@ use windows::core::{Interface, BOOL, HSTRING};
 use windows::Win32::Foundation::RECT;
 use windows::UI::Composition::ContainerVisual;
 
-use nav_state::new_shared_nav_state;
+use manifold_view_protocol::job::{self, Job};
+use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
@@ -58,6 +59,25 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
 fn main() {
+    // WebView2 spawns its own Chromium-like multi-process tree
+    // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
+    // direct children of this process in the Windows sense (they're
+    // children of WebView2's own browser-process, a grandchild of us) --
+    // a hard-killed manifold-view-webview2.exe (e.g. an
+    // external `timeout` cutting the whole tree, or a plain force-kill)
+    // leaves those grandchildren running indefinitely, invisible to any
+    // cleanup this process's own `Shutdown` handler could do (it never
+    // gets to run). A Job Object with `KILL_ON_JOB_CLOSE`, assigned to this
+    // process at startup, fixes this generally: Windows terminates every
+    // process still in the job the moment this process's own job handle is
+    // closed, which happens automatically on ANY exit path (graceful,
+    // crashed, or force-killed) since the OS closes all of a dying
+    // process's handles regardless of how it died. `_job` is the first
+    // local so it is the last one `main` drops: closing it ends this
+    // process and everything still in the job, after the rest of `main`'s
+    // cleanup has run. A failure is said on stderr (`manifold_view_protocol::job`).
+    let _job = job::kill_on_close("view host").inspect(Job::assign_self);
+
     // Must happen before any window exists (`create_hidden_window` below is
     // the first one) -- `manifold`'s own main process is DPI-aware for free
     // via `winit` (it calls this same API internally), but this process
@@ -96,7 +116,7 @@ fn main() {
     // A plain Win32 desktop app (unlike a packaged UWP app) has no `DispatcherQueue`
     // on its thread by default, and `Windows.UI.Composition`'s interop
     // requires one to exist. `_dispatcher_queue_controller`'s only purpose
-    // is to stay alive for the whole process lifetime, same as `_job` below.
+    // is to stay alive for the whole process lifetime, same as `_job` above.
     unsafe {
         let _ = windows::Win32::System::WinRT::RoInitialize(windows::Win32::System::WinRT::RO_INIT_SINGLETHREADED);
     }
@@ -110,24 +130,6 @@ fn main() {
         )
         .expect("create DispatcherQueueController for Composition hosting")
     };
-
-    // WebView2 spawns its own Chromium-like multi-process tree
-    // (msedgewebview2.exe browser/renderer/GPU processes) that are NOT
-    // direct children of this process in the Windows sense (they're
-    // children of WebView2's own browser-process, a grandchild of us) --
-    // a hard-killed manifold-view-webview2.exe (e.g. an
-    // external `timeout` cutting the whole tree, or a plain force-kill)
-    // leaves those grandchildren running indefinitely, invisible to any
-    // cleanup this process's own `Shutdown` handler could do (it never
-    // gets to run). A Job Object with `KILL_ON_JOB_CLOSE`, assigned to this
-    // process at startup, fixes this generally: Windows terminates every
-    // process still in the job the moment this process's own job handle is
-    // closed, which happens automatically on ANY exit path (graceful,
-    // crashed, or force-killed) since the OS closes all of a dying
-    // process's handles regardless of how it died. `_job`'s only purpose
-    // is to stay alive for the whole process lifetime; never used again
-    // after this.
-    let _job = setup_kill_on_exit_job();
 
     let host_env = manifold_view_protocol::HostEnv::from_env();
     manifold_view_protocol::host_env::apply(&host_env.settings);
@@ -200,9 +202,10 @@ fn main() {
         let _ = controller.MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
 
-    let nav_state = new_shared_nav_state(initial_url.clone());
-    let pending_json_body = nav_state::new_shared_json_body();
-    let pending_redirect_content_type = nav_state::new_shared_redirect_content_type();
+    // Not dirty: the first navigation event reports it (`main.rs` navigates to `initial_url` below).
+    let nav_state = new_shared_nav_state(initial_url.clone(), false);
+    let pending_json_body = new_shared_json_body();
+    let pending_redirect_content_type = new_shared_redirect_content_type();
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
     let pending_page_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_cookies: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
@@ -422,22 +425,8 @@ fn main() {
             }
         }
 
-        {
-            let mut state = nav_state.borrow_mut();
-            if state.dirty {
-                state.dirty = false;
-                let _ = control.send(&ViewToHost::NavigationStateChanged {
-                    url: state.url.clone(),
-                    title: state.title.clone(),
-                    can_go_back: state.can_go_back,
-                    can_go_forward: state.can_go_forward,
-                    loading: state.loading,
-                    user_started: state.label.user_started,
-                });
-                if std::mem::take(&mut state.label.finished) {
-                    state.label.user_started = None;
-                }
-            }
+        if let Some(m) = nav_state.borrow_mut().take_message() {
+            let _ = control.send(&m);
         }
 
         if let Some(body) = pending_json_body.borrow_mut().take() {
@@ -520,30 +509,6 @@ fn main() {
         }
 
         std::thread::sleep(Duration::from_millis(8));
-    }
-}
-
-/// See the call site's doc comment. Returns the job handle purely to keep
-/// it alive for the process lifetime -- never queried or signaled again.
-fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows::Win32::System::Threading::GetCurrentProcess;
-
-    unsafe {
-        let job = CreateJobObjectW(None, None)?;
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const std::ffi::c_void,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )?;
-        AssignProcessToJobObject(job, GetCurrentProcess())?;
-        Ok(job)
     }
 }
 
