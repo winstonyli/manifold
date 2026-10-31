@@ -3,20 +3,15 @@
 //! (`GRAPHFILTERTEXT`) is a word from `/text`: `EXPORTSTATE`'s `omni_matches` must list that tab and not the other. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 
 use crate::check::check;
-use crate::probes::{finish, for_each_view, quit, tab_node, Site};
+use crate::probes::{for_each_view, quit, tab_node, Site};
+use crate::windows_main::Ctx;
 
-pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
-    let site = match Site::start() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("site: {e}");
-            return ExitCode::from(1);
-        }
-    };
+pub(crate) fn search(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
+    let site = Site::start().map_err(|e| io::Error::other(format!("site: {e}")))?;
     for_each_view(
         "search",
         exe,
@@ -53,5 +48,5 @@ pub(crate) fn search(exe: &Path, work: &Path) -> ExitCode {
             Ok(())
         },
     );
-    finish(work)
+    Ok(())
 }

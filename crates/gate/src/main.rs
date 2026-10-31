@@ -92,18 +92,23 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(windows)]
 mod windows_main {
+    use std::fmt::{Display, Write as _};
+    use std::io;
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
     use std::time::{Duration, SystemTime};
 
-    use crate::check::{check, check_eq, exit_code, note_failure, Section};
+    use crate::check::{check, check_eq, exit_code, failures, no_verdict_words, note_failure, Marks, Section};
     use crate::fresh::require_fresh_exe;
-    use crate::instance::{seed_settings, Instance};
+    use crate::instance::{log_tail, remove_dir_with_retries, seed_settings, take_logs, Instance};
 
-    /// How a stage takes its arguments: the manifold exe and a fresh work dir (made from the work-dir parent argument),
-    /// the work-dir parent, the rest of the command line, or nothing.
+    /// What a stage that takes `[WORKDIR_PARENT]` runs inside `run_stage`.
+    type Body = fn(&mut Ctx) -> io::Result<()>;
+
+    /// How a stage takes its arguments: a body run by `run_stage` (with the manifold exe and a fresh work dir made from
+    /// the work-dir parent argument), the work-dir parent, the rest of the command line, or nothing.
     enum Run {
-        Work(fn(&Path, &Path) -> ExitCode),
+        Work(Body),
         Parent(fn(Option<PathBuf>) -> ExitCode),
         Args(fn(&[String]) -> ExitCode),
         Bare(fn() -> ExitCode),
@@ -117,8 +122,8 @@ mod windows_main {
     }
 
     impl Stage {
-        /// A stage that takes `[WORKDIR_PARENT]` and is run with `manifold.exe` and its work dir (named after the stage).
-        const fn work(name: &'static str, f: fn(&Path, &Path) -> ExitCode) -> Self {
+        /// A stage that takes `[WORKDIR_PARENT]`; `run_stage` runs its body with `manifold.exe` and its work dir.
+        const fn work(name: &'static str, f: Body) -> Self {
             Self { name, usage: Some("[WORKDIR_PARENT]"), run: Run::Work(f) }
         }
 
@@ -213,12 +218,7 @@ mod windows_main {
         let name = args.next().unwrap_or_default();
         let rest: Vec<String> = args.collect();
         match STAGES.iter().find(|s| s.name == name) {
-            Some(Stage { name, run: Run::Work(f), .. }) => {
-                match crate::probes::setup(rest.first().map(PathBuf::from), name) {
-                    Ok((exe, work)) => f(&exe, &work),
-                    Err(code) => code,
-                }
-            }
+            Some(Stage { name, run: Run::Work(f), .. }) => run_stage(name, rest.first().map(PathBuf::from), true, *f),
             Some(Stage { run: Run::Parent(f), .. }) => f(rest.first().map(PathBuf::from)),
             Some(Stage { run: Run::Args(f), .. }) => f(&rest),
             Some(Stage { run: Run::Bare(f), .. }) => f(),
@@ -285,6 +285,105 @@ mod windows_main {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
+    }
+
+    /// What a stage body gets: `manifold.exe` (empty when the stage does not need it), its fresh work dir, and the
+    /// timing marks (empty: the first `marks.mark(name)` opens a section).
+    pub(crate) struct Ctx {
+        pub exe: PathBuf,
+        pub work: PathBuf,
+        pub marks: Marks,
+    }
+
+    /// Lines of each registered log a failed stage prints.
+    const LOG_TAIL_LINES: usize = 20;
+
+    /// The one frame of every stage that takes a work dir. Finds `manifold.exe` (when `needs_exe`) and makes the work
+    /// dir, runs `body`, prints an error it returns, prints the registered logs if anything failed, keeps the dir after
+    /// a failure (or with `KEEP` set) and deletes it otherwise, and ends with `{name}: ok` or
+    /// `{name}: failed (kept {dir})`, the line `gate all` reports.
+    pub(crate) fn run_stage(
+        name: &str,
+        parent: Option<PathBuf>,
+        needs_exe: bool,
+        body: impl FnOnce(&mut Ctx) -> io::Result<()>,
+    ) -> ExitCode {
+        let exe = if needs_exe {
+            match manifold_exe() {
+                Ok(exe) => exe,
+                Err(e) => return setup_failed(name, &e),
+            }
+        } else {
+            PathBuf::new()
+        };
+        let work = match work_dir(parent, name) {
+            Ok(w) => w,
+            Err(e) => return setup_failed(name, &format!("work dir: {e}")),
+        };
+        let mut ctx = Ctx { exe, work, marks: Marks::default() };
+        let before = failures();
+        let errored = if let Err(e) = body(&mut ctx) {
+            println!("{}", early_stop_line(name, &e));
+            note_failure();
+            true
+        } else {
+            false
+        };
+        ctx.marks.end();
+        let failed = stage_failed(errored, before, failures());
+        // Only a failed run drains the registry (one process runs one stage); a passing run, e.g. a unit test, leaves it.
+        let logs = if failed { take_logs() } else { Vec::new() };
+        if failed {
+            print!("{}", log_tails(&logs));
+        }
+        if !keep_dir(failed, std::env::var_os("KEEP").is_some()) {
+            remove_dir_with_retries(&ctx.work);
+        }
+        println!("{}", closing_line(name, failed, &ctx.work));
+        exit_code()
+    }
+
+    /// Setup failed before any dir existed: says why, then the stage's closing line.
+    fn setup_failed(name: &str, e: &str) -> ExitCode {
+        eprintln!("{e}");
+        println!("{name}: failed");
+        ExitCode::from(1)
+    }
+
+    /// Whether this stage failed: its body returned `Err`, or the process-wide failure count rose while the body ran.
+    /// Comparing before and after keeps a failure noted earlier in the process (a unit test that fails a check on
+    /// purpose) from failing every later stage; `gate`'s exit code still reads the global count.
+    fn stage_failed(errored: bool, before: u32, after: u32) -> bool {
+        errored || after > before
+    }
+
+    /// Whether the work dir stays: after a failure, or when `KEEP` is set.
+    fn keep_dir(failed: bool, keep_env: bool) -> bool {
+        failed || keep_env
+    }
+
+    /// The line for a body's error. Not a verdict line: `gate all` counts those words, and the error is counted by
+    /// `note_failure`. The error text is masked too, since it may quote a log line or a child's output.
+    fn early_stop_line(name: &str, e: &dyn Display) -> String {
+        format!("ERROR: {name} stopped early: {}", no_verdict_words(&e.to_string()))
+    }
+
+    /// A stage's last line.
+    fn closing_line(name: &str, failed: bool, work: &Path) -> String {
+        if failed {
+            format!("{name}: failed (kept {})", work.display())
+        } else {
+            format!("{name}: ok")
+        }
+    }
+
+    /// `--- <path>` and the last `LOG_TAIL_LINES` lines of each non-empty log in `logs`, the verdict words masked.
+    fn log_tails(logs: &[PathBuf]) -> String {
+        let mut out = String::new();
+        for log in logs.iter().filter(|p| std::fs::metadata(p).is_ok_and(|m| m.len() > 0)) {
+            let _ = writeln!(out, "--- {}\n{}", log.display(), no_verdict_words(&log_tail(log, LOG_TAIL_LINES)));
+        }
+        out
     }
 
     fn launch(exe: &Path, work: &Path) -> std::io::Result<Instance> {
@@ -375,6 +474,96 @@ mod windows_main {
         use std::os::windows::fs::OpenOptionsExt;
 
         use super::*;
+
+        #[test]
+        fn a_failed_run_or_keep_keeps_the_work_dir() {
+            assert!(!keep_dir(false, false));
+            assert!(keep_dir(true, false));
+            assert!(keep_dir(false, true));
+            assert!(keep_dir(true, true));
+        }
+
+        #[test]
+        fn the_early_stop_and_closing_lines_carry_no_verdict_word() {
+            let e = std::io::Error::other("export s1 never appeared");
+            assert_eq!(early_stop_line("link", &e), "ERROR: link stopped early: export s1 never appeared");
+            let work = Path::new(r"C:\t\gate-runs\link-7");
+            assert_eq!(closing_line("link", false, work), "link: ok");
+            assert_eq!(closing_line("link", true, work), r"link: failed (kept C:\t\gate-runs\link-7)");
+            let quoting = std::io::Error::other("host said FAIL: no PASS");
+            assert_eq!(early_stop_line("x", &quoting), "ERROR: x stopped early: host said F-AIL: no P-ASS");
+            for line in [early_stop_line("x", &e), early_stop_line("x", &quoting), closing_line("x", true, work)] {
+                assert!(!line.contains("PASS") && !line.contains("FAIL"), "{line}");
+            }
+        }
+
+        #[test]
+        fn log_tails_mask_the_verdict_words_and_skip_empty_and_missing_logs() {
+            let dir = std::env::temp_dir().join(format!("gate-tails-test-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (full, empty, missing) = (dir.join("full.log"), dir.join("empty.log"), dir.join("missing.log"));
+            let lines: Vec<String> = (1..=25).map(|i| format!("line {i}")).collect();
+            std::fs::write(&full, format!("{}\nPASS: x\nFAIL: y\n", lines.join("\n"))).unwrap();
+            std::fs::write(&empty, "").unwrap();
+            let text = log_tails(&[full.clone(), empty, missing]);
+            assert!(text.starts_with(&format!("--- {}\n", full.display())), "{text}");
+            assert!(!text.contains("PASS") && !text.contains("FAIL"), "{text}");
+            assert!(text.contains("P-ASS: x") && text.contains("F-AIL: y"), "{text}");
+            assert!(text.contains("line 8\n") && !text.contains("line 7\n"), "the last 20 lines only: {text}");
+            assert!(!text.contains("empty.log") && !text.contains("missing.log"), "{text}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// Under `cargo test` the exe is `target/debug/deps/gate-*.exe`, with no `manifold.exe` beside it, so
+        /// `manifold_exe()` fails: the setup-failure path, which touches no process-wide counter.
+        #[test]
+        fn a_setup_failure_runs_no_body_and_makes_no_dir() {
+            let root = std::env::temp_dir().join(format!("gate-setup-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let ran = std::cell::Cell::new(false);
+            let _ = run_stage("t", Some(root.clone()), true, |_| {
+                ran.set(true);
+                Ok(())
+            });
+            assert!(!ran.get(), "the body never runs");
+            assert!(!root.join("gate-runs").exists(), "no work dir is made");
+        }
+
+        /// A stage fails if its body errored or the failure count rose during the body; a count already above zero
+        /// (another unit test failing a check on purpose) does not matter.
+        #[test]
+        fn a_stage_fails_only_on_an_error_or_a_rise_during_its_body() {
+            assert!(!stage_failed(false, 0, 0));
+            assert!(!stage_failed(false, 3, 3), "earlier failures do not fail this stage");
+            assert!(stage_failed(false, 3, 4));
+            assert!(stage_failed(true, 3, 3));
+        }
+
+        /// The success path: the body runs with its work dir made, and the dir is gone afterwards. `needs_exe` is
+        /// false, so no `manifold.exe` is needed. `check.rs`'s `a_failed_check_is_counted` raises the process-wide
+        /// failure count in parallel, and if that lands inside `run_stage`'s before/after window the stage counts as
+        /// failed and keeps its dir. So the test reads `failures()` around the call and asserts "the dir is gone" only
+        /// when the count did not move (and `KEEP` is unset: it keeps the dir by design). The exit code is not
+        /// asserted: it reads the process-wide count (Step 6 checks that a passing stage exits 0).
+        #[test]
+        fn a_passing_body_runs_in_its_work_dir_and_leaves_none_behind() {
+            let root = std::env::temp_dir().join(format!("gate-ok-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let seen = std::cell::RefCell::new(None);
+            let before = failures();
+            let _ = run_stage("t", Some(root.clone()), false, |ctx| {
+                *seen.borrow_mut() = Some((ctx.work.clone(), ctx.work.is_dir()));
+                Ok(())
+            });
+            let after = failures();
+            let (work, existed) = seen.borrow().clone().expect("the body ran");
+            assert_eq!(work, root.join("gate-runs").join(format!("t-{}", std::process::id())));
+            assert!(existed, "the work dir exists inside the body");
+            if before == after && std::env::var_os("KEEP").is_none() {
+                assert!(!work.exists(), "a passing run deletes its work dir");
+            }
+            let _ = std::fs::remove_dir_all(&root);
+        }
 
         #[test]
         fn work_dirs_live_under_gate_runs_and_old_ones_are_pruned() {

@@ -24,10 +24,10 @@ use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
 use crate::http::{self, response};
-use crate::instance::{remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT, STEP_TIMEOUT};
+use crate::instance::{register_log, remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT, STEP_TIMEOUT};
 use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::{manifold_exe, work_dir, Ctx};
 
 const PAGE: &str = "<!doctype html><title>keys</title><textarea id=t autofocus></textarea>\n<script>\n\
 document.getElementById('t').focus();\n\
@@ -296,14 +296,9 @@ pub(crate) fn for_each_view<S>(
     }
 }
 
-pub(crate) fn page_kind(exe: &Path, work: &Path) -> ExitCode {
-    let site = match Site::start() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("site: {e}");
-            return ExitCode::from(1);
-        }
-    };
+pub(crate) fn page_kind(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
+    let site = Site::start().map_err(|e| io::Error::other(format!("site: {e}")))?;
     // path -> the card it must become (the type; `;loaded` on a live tab).
     let cases =
         [("/data.json", "application/json"), ("/pixel.png", "image/png"), ("/", "application/vnd.manifold.tab;loaded")];
@@ -333,10 +328,11 @@ pub(crate) fn page_kind(exe: &Path, work: &Path) -> ExitCode {
             });
         }
     }
-    finish(work)
+    Ok(())
 }
 
-pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn hscroll(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for_each_view(
         "hscroll",
         exe,
@@ -377,7 +373,7 @@ pub(crate) fn hscroll(exe: &Path, work: &Path) -> ExitCode {
             Ok(())
         },
     );
-    finish(work)
+    Ok(())
 }
 
 /// What the page should log for each key sent, per view kind. CEF sends no DOM `code`, and its modifier keyCode is the
@@ -404,7 +400,8 @@ fn expected_keys(view: &str) -> Vec<&'static str> {
     }
 }
 
-pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn key(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for_each_view(
         "key",
         exe,
@@ -443,11 +440,11 @@ pub(crate) fn key(exe: &Path, work: &Path) -> ExitCode {
             Ok(())
         },
     );
-    finish(work)
+    Ok(())
 }
 
 /// The host logs (`manifold-<tab>.log`) the case's own TEMP holds.
-fn host_logs(tmp: &Path) -> Vec<String> {
+fn host_logs(tmp: &Path) -> Vec<PathBuf> {
     fs::read_dir(tmp)
         .into_iter()
         .flatten()
@@ -455,7 +452,7 @@ fn host_logs(tmp: &Path) -> Vec<String> {
         .filter(|e| {
             e.file_name().to_string_lossy().starts_with("manifold-") && e.path().extension().is_some_and(|x| x == "log")
         })
-        .filter_map(|e| fs::read_to_string(e.path()).ok())
+        .map(|e| e.path())
         .collect()
 }
 
@@ -465,7 +462,8 @@ fn tab_state(s: &State) -> (usize, bool, String) {
     (tabs.len(), tabs.iter().all(|c| c["loaded"].as_bool() == Some(true)), s.focused_url().to_string())
 }
 
-pub(crate) fn bad_url(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn bad_url(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for view in views() {
         // garbage: a stored url that is not one; missing: none (the host gets VIEW_INITIAL_URL="").
         for (name, url) in [("garbage", Some("not a url")), ("missing", None)] {
@@ -504,7 +502,9 @@ pub(crate) fn bad_url(exe: &Path, work: &Path) -> ExitCode {
                     sleep(Duration::from_millis(250));
                 }
                 quit(&mut inst, &label);
-                let logs = host_logs(&tmp);
+                let paths = host_logs(&tmp);
+                paths.iter().for_each(|p| register_log(p));
+                let logs: Vec<String> = paths.iter().filter_map(|p| fs::read_to_string(p).ok()).collect();
                 check(&format!("{label}: the host wrote a log"), !logs.is_empty());
                 check(
                     &format!("{label}: the host fell back to about:blank"),
@@ -517,30 +517,15 @@ pub(crate) fn bad_url(exe: &Path, work: &Path) -> ExitCode {
                 );
                 check(&format!("{label}: the tab ends loaded (after {exports} exports)"), got.0 == 1 && got.1);
                 check_eq(&format!("{label}: the tab ends on about:blank"), "about:blank".to_string(), got.2.clone());
-                if failures() > 0 {
-                    println!("--- {label} host log");
-                    for l in &logs {
-                        println!(
-                            "{}",
-                            l.lines()
-                                .rev()
-                                .take(15)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        );
-                    }
-                }
                 Ok(())
             });
         }
     }
-    finish(work)
+    Ok(())
 }
 
-pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn failed_spawn(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("failed-spawn");
     guarded("failed-spawn", || {
         // The failure is forced by running a copy of the exe with a view host beside it that Windows refuses to
@@ -595,7 +580,7 @@ pub(crate) fn failed_spawn(exe: &Path, work: &Path) -> ExitCode {
         check_eq("Retry keeps the card id", id1, id3);
         Ok(())
     });
-    finish(work)
+    Ok(())
 }
 
 /// `host`'s bytes with its PE optional header's magic zeroed (`unloadable`), or an error naming a host that is not a

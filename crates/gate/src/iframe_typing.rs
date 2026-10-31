@@ -3,14 +3,15 @@
 //! input, `TYPE` sends characters to the tab's page, and the frame reports its value to its own site. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 use std::time::Duration;
 
 use crate::check::check;
-use crate::probes::{finish, for_each_view, quit, tab_node, Site};
+use crate::probes::{for_each_view, quit, tab_node, Site};
+use crate::windows_main::Ctx;
 
-pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn iframe_typing(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for_each_view(
         "iframe-typing",
         exe,
@@ -45,5 +46,5 @@ pub(crate) fn iframe_typing(exe: &Path, work: &Path) -> ExitCode {
             Ok(())
         },
     );
-    finish(work)
+    Ok(())
 }

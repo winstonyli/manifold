@@ -28,7 +28,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
@@ -38,9 +37,10 @@ use serde_json::{json, Value};
 use crate::check::{check, check_eq, check_is, note_failure, Section};
 use crate::http::{self, response};
 use crate::instance::{poll, seed_settings, wait_file, Instance};
-use crate::probes::{default_jar_id, default_jar_node, finish, guarded, import_session};
+use crate::probes::{default_jar_id, default_jar_node, guarded, import_session};
 use crate::state::{JAR, TAB};
 use crate::suggest::{query_param, url_query};
+use crate::windows_main::Ctx;
 
 /// How long QUIT and an export may wait behind the commands still queued in the app (a `SLEEP 30`).
 const RUN_TIMEOUT: Duration = Duration::from_secs(300);
@@ -731,25 +731,17 @@ impl Probe {
     }
 }
 
-pub(crate) fn jar(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn jar(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let log: Log = Arc::default();
-    let server = match cookie_server(log.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("cookie server: {e}");
-            return ExitCode::from(1);
-        }
-    };
+    let server = cookie_server(log.clone()).map_err(|e| io::Error::other(format!("cookie server: {e}")))?;
     let host = std::env::var("JAR_PROBE_HOST").unwrap_or_else(|_| "jar.localhost".into());
     let base = format!("http://{host}:{}", server.port());
     let profile = work.join("appdata");
     let cef = exe.with_file_name(CEF_RUNTIME_DIR).display().to_string().replace('\\', "/");
     // The home page is what NEWTAB opens: tab B of the two-tab run.
     let more = format!(", \"home_page\": \"{base}/whoami?b\", \"cef_directory\": \"{cef}\"");
-    if let Err(e) = seed_settings(&profile, "webview2", &more) {
-        eprintln!("settings: {e}");
-        return ExitCode::from(1);
-    }
+    seed_settings(&profile, "webview2", &more).map_err(|e| io::Error::other(format!("settings: {e}")))?;
     let runs = std::env::var("RUNS").unwrap_or_default().split_whitespace().map(str::to_owned).collect();
     let p = Probe { exe: exe.to_path_buf(), work: work.to_path_buf(), profile, base, host, log, runs };
     let section = |name: &str| Section::start(name);
@@ -790,5 +782,5 @@ pub(crate) fn jar(exe: &Path, work: &Path) -> ExitCode {
         let _t = section("jar-switchnow");
         guarded("switchnow", || p.switchnow());
     }
-    finish(work)
+    Ok(())
 }

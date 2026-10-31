@@ -3,12 +3,12 @@
 //! reports every mouse release's click count and the selection it holds. Build first:
 //! `cargo build -p manifold -p manifold-view-webview2`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 use std::time::Duration;
 
 use crate::check::check;
-use crate::probes::{finish, for_each_view, quit, tab_node, Site};
+use crate::probes::{for_each_view, quit, tab_node, Site};
+use crate::windows_main::Ctx;
 
 const TEXT: &str = "alpha beta gamma delta";
 
@@ -18,7 +18,8 @@ fn selection(site: &Site, d: u8) -> Option<String> {
     site.lines().iter().rev().find_map(|l| l.strip_prefix(&prefix).map(|s| s.trim().to_owned()))
 }
 
-pub(crate) fn click_count(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn click_count(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for_each_view(
         "click-count",
         exe,
@@ -54,5 +55,5 @@ pub(crate) fn click_count(exe: &Path, work: &Path) -> ExitCode {
             Ok(())
         },
     );
-    finish(work)
+    Ok(())
 }

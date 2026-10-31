@@ -52,14 +52,13 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
 use manifold_hosts::{Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
 use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
-use crate::probes::{finish, import_session, quit};
+use crate::probes::{import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{resume_body, Downloads, Proxy};
 use crate::state::{
@@ -67,6 +66,7 @@ use crate::state::{
     SPLIT_VIEW, TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
 };
 use crate::suggest;
+use crate::windows_main::Ctx;
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
@@ -107,14 +107,12 @@ fn default_out(exe: &Path, leaf: &str) -> PathBuf {
     exe.parent().and_then(Path::parent).map_or_else(|| PathBuf::from("target"), Path::to_path_buf).join(leaf)
 }
 
-/// A `chrome-shots` run from `SIZE`, `VIEWS` and `CROP_PX`, into `out`; `None` (and said) when `SIZE` isn't "W H".
-fn config(out: PathBuf) -> Option<Config> {
-    let Some(size) = parse_size(&std::env::var("SIZE").unwrap_or_else(|_| "1280 800".into())) else {
-        eprintln!("SIZE is \"W H\"");
-        return None;
-    };
+/// A `chrome-shots` run from `SIZE`, `VIEWS` and `CROP_PX`, into `out`; an error when `SIZE` isn't "W H".
+fn config(out: PathBuf) -> io::Result<Config> {
+    let size = parse_size(&std::env::var("SIZE").unwrap_or_else(|_| "1280 800".into()))
+        .ok_or_else(|| io::Error::other("SIZE is \"W H\""))?;
     let views = std::env::var("VIEWS").unwrap_or_else(|_| DEFAULT_VIEWS.into());
-    Some(Config {
+    Ok(Config {
         size,
         views: views.split_whitespace().map(str::to_owned).collect(),
         out,
@@ -122,21 +120,21 @@ fn config(out: PathBuf) -> Option<Config> {
     })
 }
 
-pub(crate) fn chrome_shots(exe: &Path, work: &Path) -> ExitCode {
-    let Some(cfg) = config(std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots"), PathBuf::from)) else {
-        return ExitCode::from(2);
-    };
+pub(crate) fn chrome_shots(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
+    let cfg = config(std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots"), PathBuf::from))?;
     run(exe, work, cfg);
-    finish(work)
+    Ok(())
 }
 
 /// `gate shots-aa`: `chrome-shots` twice, into `OUT/a` and `OUT/b` (default `target/shots-aa`, emptied first), then
 /// `shots-diff` of the two. Fails unless every shot matches pixel for pixel: a shot that depends on more than the
 /// commit (a settle's path, a clock, a port) shows up here before it confuses a comparison across commits.
-pub(crate) fn shots_aa(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn shots_aa(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let out = std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots-aa"), PathBuf::from);
     for leaf in ["a", "b"] {
-        let Some(cfg) = config(out.join(leaf)) else { return ExitCode::from(2) };
+        let cfg = config(out.join(leaf))?;
         println!("== {leaf} -> {}", cfg.out.display());
         let _ = fs::remove_dir_all(&cfg.out);
         run(exe, &work.join(leaf), cfg);
@@ -151,10 +149,11 @@ pub(crate) fn shots_aa(exe: &Path, work: &Path) -> ExitCode {
             note_failure();
         }
     }
-    finish(work)
+    Ok(())
 }
 
-pub(crate) fn chrome_shots_sizes(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn chrome_shots_sizes(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let sizes = std::env::var("SIZES").unwrap_or_else(|_| "400 300,800 600,1920 1080".into());
     let views = std::env::var("VIEWS").unwrap_or_else(|_| SIZES_VIEWS.into());
     let out = std::env::var_os("OUT").map_or_else(|| default_out(exe, "shots-sizes"), PathBuf::from);
@@ -174,7 +173,7 @@ pub(crate) fn chrome_shots_sizes(exe: &Path, work: &Path) -> ExitCode {
         };
         run(exe, &work.join(&leaf), cfg);
     }
-    finish(work)
+    Ok(())
 }
 
 /// One run: a failure is printed and counted, not returned.
@@ -182,15 +181,11 @@ fn run(exe: &Path, work: &Path, cfg: Config) {
     let _t = Section::start("chrome-shots");
     let views = cfg.views.clone();
     let (out, crop_px) = (cfg.out.clone(), cfg.crop_px);
-    let result = Shots::start(exe, work, cfg).and_then(|mut s| {
-        let result = s.run_views(exe);
-        if result.is_err() {
-            println!("--- tail of {}\n{}", s.inst.log.display(), s.inst.log_tail(30));
-        }
-        result
-    });
+    // Not a body error: the sheet below is still written. Not a verdict line either (gate all counts those words);
+    // the failure is counted here, and run_stage prints the instance's log.
+    let result = Shots::start(exe, work, cfg).and_then(|mut s| s.run_views(exe));
     if let Err(e) = result {
-        println!("FAIL: chrome-shots stopped early: {e}");
+        println!("ERROR: chrome-shots stopped early: {e}");
         note_failure();
     }
     match write_sheet(&out, crop_px, &views) {

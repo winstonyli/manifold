@@ -20,6 +20,7 @@ use crate::http::{self, response};
 use crate::instance::Instance;
 use crate::probes::{finish, guarded, quit, seed, setup, tab_node};
 use crate::state::{State, TAB};
+use crate::windows_main::Ctx;
 
 /// Runs `script` in PowerShell (a file, so no quoting) and returns its non-empty output lines.
 pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -> io::Result<Vec<String>> {
@@ -60,7 +61,8 @@ fn flags(state: &State, id: &str) -> (bool, bool) {
 /// and its queue fills. The card must then read `unresponsive` with a "Not responding" toast while the app keeps
 /// answering; `RESTARTVIEW` must bring the tab back live and responsive and end the suspended host; and with a second
 /// host suspended `QUIT` must end the app within 10 s: closing a stuck tab never waits on it.
-pub(crate) fn unresponsive(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn unresponsive(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("unresponsive");
     guarded("unresponsive", || {
         let profile = work.join("appdata");
@@ -127,7 +129,7 @@ if (Get-Process -Id $P -ErrorAction SilentlyContinue) { 'alive' } else { 'gone' 
         check("QUIT with a stuck tab ends within 10 s", status.is_ok() && took <= Duration::from_secs(10));
         Ok(())
     });
-    finish(work)
+    Ok(())
 }
 
 /// A medium page (~60 KB of text and a script that retitles it every second): a light stand-in for a real site.

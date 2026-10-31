@@ -4,14 +4,14 @@
 //! clears it, deleting a label and undoing that brings it back, and after a restart the labels are still there. No page loads, so no engine is needed. Build first:
 //! `cargo build -p manifold`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 
 use serde_json::{json, Value};
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit};
+use crate::probes::{guarded, import_session, quit};
+use crate::windows_main::Ctx;
 
 const NOTE: &str = "text/markdown";
 const TEXTS: [&str; 6] = [
@@ -28,7 +28,8 @@ fn carrying(state: &crate::state::State, name: &str) -> usize {
     state.cards().iter().filter(|c| c["labels"].as_array().is_some_and(|a| a.iter().any(|l| l == name))).count()
 }
 
-pub(crate) fn labels(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn labels(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("labels");
     guarded("labels", || {
         let profile = work.join("appdata-labels");
@@ -132,5 +133,5 @@ pub(crate) fn labels(exe: &Path, work: &Path) -> ExitCode {
         check(&format!("with nothing selected there is no right panel ({pane_none})"), pane_none.is_null());
         Ok(())
     });
-    finish(work)
+    Ok(())
 }

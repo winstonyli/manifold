@@ -3,14 +3,14 @@
 //! positions in `EXPORTSESSION`; the screen ones move with the camera), and one undo (`UNDOKEY`) puts every note back.
 //! No page loads, so no engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 
 use serde_json::{json, Value};
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit};
+use crate::probes::{guarded, import_session, quit};
+use crate::windows_main::Ctx;
 
 const NOTE: &str = "text/markdown";
 /// In position order along the row: cat, rust, cat, rust, cat, rust.
@@ -35,7 +35,8 @@ fn mean_distance(spots: &[[f64; 2]], pairs: &[(usize, usize)]) -> f64 {
     pairs.iter().map(d).sum::<f64>() / pairs.len() as f64
 }
 
-pub(crate) fn arrange(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn arrange(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("arrange");
     guarded("arrange", || {
         let profile = work.join("appdata-arrange");
@@ -73,5 +74,5 @@ pub(crate) fn arrange(exe: &Path, work: &Path) -> ExitCode {
         );
         Ok(())
     });
-    finish(work)
+    Ok(())
 }

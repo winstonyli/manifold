@@ -16,6 +16,7 @@ use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
+use std::sync::{Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -159,6 +160,22 @@ pub fn poll(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) -> io
     Ok(())
 }
 
+/// The logs a failed stage prints the tails of (`run_stage`), in the order first registered.
+static LOGS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// Adds `path` to the logs a failed stage prints; a path already there stays one entry (a later launch truncated it).
+pub fn register_log(path: &Path) {
+    let mut logs = LOGS.lock().unwrap_or_else(PoisonError::into_inner);
+    if !logs.iter().any(|p| p == path) {
+        logs.push(path.to_path_buf());
+    }
+}
+
+/// Empties the registered logs and returns them.
+pub fn take_logs() -> Vec<PathBuf> {
+    std::mem::take(&mut *LOGS.lock().unwrap_or_else(PoisonError::into_inner))
+}
+
 /// Removes a work dir, retrying while a just-killed instance still holds files in it.
 pub fn remove_dir_with_retries(dir: &Path) {
     for _ in 0..5 {
@@ -204,6 +221,7 @@ impl Instance {
         fs::create_dir_all(work)?;
         let log = work.join(log_name);
         let out = File::create(&log)?;
+        register_log(&log);
         let err = out.try_clone()?;
         let mut child = Command::new(exe)
             .arg("--headless")
@@ -398,6 +416,24 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_registers_its_log_once_and_take_empties_the_list() {
+        // One test, not two: the registry is process-wide and tests run in parallel.
+        let dir = std::env::temp_dir().join(format!("gate-register-test-{}", std::process::id()));
+        let missing_exe = dir.join("no-such-manifold.exe");
+        let log = dir.join("x.log");
+        assert!(Instance::launch(&missing_exe, &dir.join("profile"), &dir, "x.log").is_err(), "the spawn fails");
+        let taken = take_logs();
+        assert!(taken.contains(&log), "launch_env registers the log at File::create: {taken:?}");
+        // A second launch truncates the same file: still one entry.
+        assert!(Instance::launch(&missing_exe, &dir.join("profile"), &dir, "x.log").is_err());
+        assert!(Instance::launch(&missing_exe, &dir.join("profile"), &dir, "x.log").is_err());
+        let taken = take_logs();
+        assert_eq!(taken.iter().filter(|p| **p == log).count(), 1, "deduplicated: {taken:?}");
+        assert!(!take_logs().contains(&log), "take empties the list");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn file_urls_escape_spaces_and_flip_slashes() {

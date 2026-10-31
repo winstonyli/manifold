@@ -2,14 +2,14 @@
 //! of three (`EXPORTSTATE`'s `group_suggestions`), and accepting one (`ACCEPTSUGGESTION 0`) moves its three cards off
 //! the level under a new group card. No page loads, so no engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 
 use serde_json::json;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, import_session, quit};
+use crate::probes::{guarded, import_session, quit};
+use crate::windows_main::Ctx;
 
 const NOTE: &str = "text/markdown";
 const TEXTS: [&str; 6] = [
@@ -21,7 +21,8 @@ const TEXTS: [&str; 6] = [
     "compile build crate rust cargo",
 ];
 
-pub(crate) fn suggest_groups(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn suggest_groups(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("suggest");
     guarded("suggest", || {
         let profile = work.join("appdata-suggest");
@@ -52,5 +53,5 @@ pub(crate) fn suggest_groups(exe: &Path, work: &Path) -> ExitCode {
         check(&format!("the other offers go stale with the card set ({standing} standing)"), standing == 0);
         Ok(())
     });
-    finish(work)
+    Ok(())
 }

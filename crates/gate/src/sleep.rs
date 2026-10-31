@@ -21,15 +21,16 @@
 
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 
 use manifold_hosts::Os;
 
 use crate::check::{check, check_eq, Section};
 use crate::instance::{poll, Instance, STEP_TIMEOUT};
-use crate::probes::{finish, guarded, quit, seed, tab_node, views, Site};
+use crate::probes::{guarded, quit, seed, tab_node, views, Site};
 use crate::state::{State, TAB};
 use crate::stress::powershell;
+use crate::windows_main::Ctx;
 
 /// The window in which a tab that must STAY awake is given the chance to sleep (the dirty case's "idle sleep left it
 /// awake"): a negative wait, so a real sleep and never shortened. WebView2 sleeps at once, but a CEF tab's sleep waits
@@ -265,7 +266,8 @@ fn run_case(exe: &Path, work: &Path, case: &str, view: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn sleep(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn sleep(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let cases = std::env::var("CASES").unwrap_or_else(|_| "manual idle scroll dirty".into());
     for case in cases.split_whitespace() {
         for view in views() {
@@ -273,5 +275,5 @@ pub(crate) fn sleep(exe: &Path, work: &Path) -> ExitCode {
             guarded(&format!("{case} {view}"), || run_case(exe, work, case, &view));
         }
     }
-    finish(work)
+    Ok(())
 }

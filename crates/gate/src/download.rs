@@ -13,14 +13,15 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
 use crate::check::Section;
 use crate::instance::{download_dir, Instance};
-use crate::probes::{finish, guarded, quit, seed, tab_node, views};
+use crate::probes::{guarded, quit, seed, tab_node, views};
 use crate::shots_net::Downloads;
+use crate::windows_main::Ctx;
 
 /// The three cases a view runs, each on its own profile and its own server.
 #[derive(Clone, Copy, PartialEq)]
@@ -32,7 +33,8 @@ enum Case {
 
 const CASES: [(Case, &str); 3] = [(Case::Saved, "saved"), (Case::Refused, "refused"), (Case::Broken, "broken")];
 
-pub(crate) fn download(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn download(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let cases = std::env::var("CASES").unwrap_or_else(|_| "saved refused broken".into());
     for view in views() {
         for (case, label) in CASES.iter().filter(|(_, label)| cases.split_whitespace().any(|c| c == *label)) {
@@ -41,7 +43,7 @@ pub(crate) fn download(exe: &Path, work: &Path) -> ExitCode {
             guarded(&name, || run_case(exe, work, &view, &name, *case));
         }
     }
-    finish(work)
+    Ok(())
 }
 
 fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::Result<()> {

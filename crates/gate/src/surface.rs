@@ -3,14 +3,15 @@
 //! staged here); `EXPORTSTATE`'s `surface_recoveries` counts the reconfigure and the recreate, and a `SCREENSHOT`
 //! after each shows the window still draws. No engine is needed. Build first: `cargo build -p manifold`.
 
-use std::path::Path;
-use std::process::ExitCode;
+use std::io;
 
 use crate::check::{check, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed};
+use crate::probes::{guarded, quit, seed};
+use crate::windows_main::Ctx;
 
-pub(crate) fn surface(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn surface(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     let _t = Section::start("surface");
     guarded("surface", || {
         let profile = work.join("appdata");
@@ -27,5 +28,5 @@ pub(crate) fn surface(exe: &Path, work: &Path) -> ExitCode {
         quit(&mut inst, "surface");
         Ok(())
     });
-    finish(work)
+    Ok(())
 }

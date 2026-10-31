@@ -21,7 +21,7 @@
 
 use std::io;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -29,8 +29,9 @@ use serde_json::Value;
 
 use crate::check::{check_eq, Section};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed};
+use crate::probes::{guarded, quit, seed};
 use crate::state::{round_half_even, State};
+use crate::windows_main::Ctx;
 
 /// Python's `str()` of a JSON value: `None` for null.
 fn py(v: &Value) -> String {
@@ -286,12 +287,14 @@ fn case_card(exe: &Path, work: &Path, script: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn focus_loss(exe: &Path, work: &Path) -> ExitCode {
+pub(crate) fn focus_loss(ctx: &mut Ctx) -> io::Result<()> {
+    let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     // target/debug/manifold.exe -> the repo root
-    let Some(script) = exe.ancestors().nth(3).map(|root| root.join("scripts").join("foreground.ps1")) else {
-        eprintln!("cannot find the repo root from {}", exe.display());
-        return ExitCode::from(1);
-    };
+    let script = exe
+        .ancestors()
+        .nth(3)
+        .map(|root| root.join("scripts").join("foreground.ps1"))
+        .ok_or_else(|| io::Error::other(format!("cannot find the repo root from {}", exe.display())))?;
     let cases = std::env::var("CASES").unwrap_or_else(|_| "connect card".into());
     for case in cases.split_whitespace() {
         let _t = Section::start(&format!("focus-loss-{case}"));
@@ -301,5 +304,5 @@ pub(crate) fn focus_loss(exe: &Path, work: &Path) -> ExitCode {
             other => Err(io::Error::other(format!("unknown case {other}"))),
         });
     }
-    finish(work)
+    Ok(())
 }
