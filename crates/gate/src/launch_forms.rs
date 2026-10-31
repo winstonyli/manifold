@@ -21,11 +21,9 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::check::{check_eq, exit_code, failures, Section};
-use crate::instance::{job, remove_dir_with_retries};
+use crate::instance::{job, remove_dir_with_retries, BELOW_NORMAL};
 use crate::windows_main::{manifold_exe, work_dir};
 
-/// `BELOW_NORMAL_PRIORITY_CLASS`, as in `instance.rs`.
-const BELOW_NORMAL: u32 = 0x4000;
 const LIMIT: Duration = Duration::from_secs(60);
 /// `timeout`'s exit status when it kills a run, kept so a log line reads as the script's did.
 const TIMED_OUT: i32 = 124;

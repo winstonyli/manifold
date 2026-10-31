@@ -8,17 +8,13 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{check_eq, exit_code, failures, note_failure, Section};
-use crate::instance::{log_tail, seed_settings, Instance};
+use crate::check::{check_eq, exit_code, failures, no_verdict_words, note_failure, Section};
+use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
 use crate::state::{round_half_even, State};
 use crate::windows_main::{manifold_exe, work_dir};
-
-/// How long an instance may take to exit after QUIT.
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub(crate) fn bad(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
@@ -188,11 +184,6 @@ fn spread(i: &mut Instance, [a, b, c]: [&str; 3]) -> io::Result<()> {
         i.send(&format!("MOVENODE {id} 600 {}", 250 + 200 * n))?;
     }
     i.send("WAITIDLE")
-}
-
-/// Replaces the verdict words, so a log line that happens to contain one is not counted by gate all.
-pub(crate) fn no_verdict_words(text: &str) -> String {
-    text.replace("PASS", "P-ASS").replace("FAIL", "F-AIL")
 }
 
 /// The run's instances and files.
@@ -595,11 +586,5 @@ mod tests {
         assert_eq!(edge_pt(&s, "near_to", Some("c")).unwrap(), (9, 9));
         assert_eq!(clear_of_cards(&s).unwrap(), "clear");
         assert_eq!(handle_cards(&s), "False"); // b's handles are empty
-    }
-
-    #[test]
-    fn diagnostics_never_carry_the_verdict_words() {
-        let t = no_verdict_words("PASS: x\nFAIL: y");
-        assert!(!t.contains("PASS") && !t.contains("FAIL"));
     }
 }

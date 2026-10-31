@@ -53,13 +53,12 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
 
 use manifold_hosts::{Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
-use crate::instance::{seed_settings, Instance};
+use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
 use crate::probes::{finish, import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{resume_body, Downloads, Proxy};
@@ -81,7 +80,6 @@ const AWAY: &str = "CLICK 1100 300";
 /// The settings page's pickers, by the labels of their rows (`labelled_by`).
 const DEFAULT_ENGINE: &str = "Default starting engine (new tabs)";
 const SEARCH_ENGINE: &str = "Default search engine";
-const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// The most Tab presses a `tab_walk` makes before it reports that it never ended.
 const TAB_WALK_CAP: u32 = 40;
 

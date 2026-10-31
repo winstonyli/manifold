@@ -39,7 +39,8 @@ use std::time::Instant;
 
 use serde_json::{json, Value};
 
-const BELOW_NORMAL: u32 = 0x4000;
+use crate::instance::BELOW_NORMAL;
+
 /// The notes `graph-frames` adds.
 const GRAPH_NOTES: usize = 80; // the default of `GRAPH_NOTES` in the environment
 const SCENARIOS: [&str; 6] =

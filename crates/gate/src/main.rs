@@ -94,7 +94,7 @@ fn main() -> std::process::ExitCode {
 mod windows_main {
     use std::path::{Path, PathBuf};
     use std::process::ExitCode;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use crate::check::{check, check_eq, exit_code, note_failure, Section};
     use crate::fresh::require_fresh_exe;
@@ -258,11 +258,33 @@ mod windows_main {
         Ok(exe)
     }
 
-    /// A fresh work dir (log, exports, profile) under `parent`, default the temp dir.
+    /// Work dirs older than this are removed when a new one is made.
+    const RUN_DIR_MAX_AGE: Duration = Duration::from_secs(3 * 24 * 60 * 60);
+
+    /// A fresh work dir (log, exports, profile) `<parent, default the temp dir>/gate-runs/<stage>-<pid>`. Children of
+    /// `gate-runs` older than `RUN_DIR_MAX_AGE` are removed first (a failed run keeps its dir); nothing outside
+    /// `gate-runs` is touched.
     pub(crate) fn work_dir(parent: Option<PathBuf>, stage: &str) -> std::io::Result<PathBuf> {
-        let dir = parent.unwrap_or_else(std::env::temp_dir).join(format!("gate-{stage}-{}", std::process::id()));
+        let runs = parent.unwrap_or_else(std::env::temp_dir).join("gate-runs");
+        std::fs::create_dir_all(&runs)?;
+        prune(&runs, SystemTime::now());
+        let dir = runs.join(format!("{stage}-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
         Ok(dir)
+    }
+
+    /// Removes the children of `runs` last modified more than `RUN_DIR_MAX_AGE` before `now`; best effort.
+    fn prune(runs: &Path, now: SystemTime) {
+        let Ok(entries) = std::fs::read_dir(runs) else { return };
+        for e in entries.flatten() {
+            let old = e
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| now.duration_since(t).is_ok_and(|d| d > RUN_DIR_MAX_AGE));
+            if old {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
     }
 
     fn launch(exe: &Path, work: &Path) -> std::io::Result<Instance> {
@@ -350,7 +372,39 @@ mod windows_main {
 
     #[cfg(test)]
     mod tests {
+        use std::os::windows::fs::OpenOptionsExt;
+
         use super::*;
+
+        #[test]
+        fn work_dirs_live_under_gate_runs_and_old_ones_are_pruned() {
+            let root = std::env::temp_dir().join(format!("gate-prune-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            let runs = root.join("gate-runs");
+            let (old, mid) = (runs.join("old-1"), runs.join("mid-1"));
+            let sibling = root.join("gate-mine");
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::create_dir_all(&mid).unwrap();
+            std::fs::create_dir_all(&sibling).unwrap();
+            // Directories open for writing only with backup semantics (FILE_FLAG_BACKUP_SEMANTICS).
+            let backdate = |dir: &Path, age: Duration| {
+                let f = std::fs::OpenOptions::new().write(true).custom_flags(0x0200_0000).open(dir).unwrap();
+                f.set_modified(SystemTime::now() - age).unwrap();
+            };
+            backdate(&old, Duration::from_secs(4 * 24 * 60 * 60));
+            backdate(&mid, Duration::from_secs(2 * 24 * 60 * 60));
+            backdate(&sibling, Duration::from_secs(4 * 24 * 60 * 60));
+            let fresh = runs.join("fresh-1");
+            std::fs::create_dir_all(&fresh).unwrap();
+            prune(&runs, SystemTime::now());
+            assert!(!old.exists(), "a dir older than three days goes");
+            assert!(mid.is_dir() && fresh.is_dir(), "a dir two days old and a fresh one stay");
+            assert!(sibling.is_dir(), "nothing outside gate-runs is touched, however old");
+            let work = work_dir(Some(root.clone()), "t").unwrap();
+            assert_eq!(work, runs.join(format!("t-{}", std::process::id())), "the work dir lives under gate-runs");
+            assert!(work.is_dir() && mid.is_dir(), "work_dir makes its dir and keeps younger ones");
+            let _ = std::fs::remove_dir_all(&root);
+        }
 
         #[test]
         fn stage_names_are_unique_and_the_usage_lists_the_public_ones() {

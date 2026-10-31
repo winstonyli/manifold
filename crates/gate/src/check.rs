@@ -111,7 +111,13 @@ impl Drop for Section {
     }
 }
 
-/// The timing marks: opening one ends the previous (`Section::next`), `end` closes the last.
+/// Replaces the verdict words, so a log line that happens to contain one is not counted by gate all.
+pub(crate) fn no_verdict_words(text: &str) -> String {
+    text.replace("PASS", "P-ASS").replace("FAIL", "F-AIL")
+}
+
+/// The timing marks: opening one ends the previous, `end` closes the last.
+#[derive(Default)]
 pub struct Marks(Option<Section>);
 
 impl Marks {
@@ -120,7 +126,8 @@ impl Marks {
     }
 
     pub fn mark(&mut self, name: &str) {
-        self.0 = self.0.take().map(|s| s.next(name));
+        drop(self.0.take());
+        self.0 = Some(Section::start(name));
     }
 
     pub fn end(&mut self) {
@@ -149,6 +156,26 @@ mod tests {
         assert_eq!(timing_line("run1-link", Duration::from_micros(61_000_000), 5), "TIMING run1-link 61.000 5");
         assert_eq!(timing_line("x", Duration::from_micros(999), 0), "TIMING x 0.000 0");
         assert_eq!(timing_line("x", Duration::from_micros(5_000), 0), "TIMING x 0.005 0");
+    }
+
+    #[test]
+    fn a_mark_on_empty_marks_opens_a_section() {
+        let mut m = Marks::default();
+        assert!(m.0.is_none());
+        m.mark("a");
+        assert_eq!(m.0.as_ref().map(|s| s.name.as_str()), Some("a"));
+        m.mark("b");
+        assert_eq!(m.0.as_ref().map(|s| s.name.as_str()), Some("b"));
+        m.end();
+        assert!(m.0.is_none());
+        m.mark("c");
+        assert_eq!(m.0.as_ref().map(|s| s.name.as_str()), Some("c"), "a mark after end opens a section");
+    }
+
+    #[test]
+    fn diagnostics_never_carry_the_verdict_words() {
+        let t = no_verdict_words("PASS: x\nFAIL: y");
+        assert!(!t.contains("PASS") && !t.contains("FAIL"));
     }
 
     #[test]

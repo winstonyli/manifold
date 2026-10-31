@@ -18,9 +18,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::check::{check, exit_code, failures, note_failure, Marks};
-use crate::instance::{log_tail, remove_dir_with_retries, seed_settings, wait_file, Instance};
-use crate::link::no_verdict_words;
+use crate::check::{check, exit_code, failures, no_verdict_words, note_failure, Marks};
+use crate::instance::{log_tail, remove_dir_with_retries, seed_settings, wait_file, Instance, QUIT_TIMEOUT};
 use crate::nonce::{Counters, Site};
 use crate::session::{self, Field};
 use crate::windows_main::{manifold_exe, work_dir};
@@ -31,7 +30,6 @@ const WAIT_FILE: Duration = Duration::from_secs(60);
 const PAUSE: Duration = Duration::from_millis(200);
 /// A positive wait's deadline; it only matters when the check is failing.
 const POSITIVE: Duration = Duration::from_secs(90);
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Who {

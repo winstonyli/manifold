@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 use crate::state::State;
 
 /// `BELOW_NORMAL_PRIORITY_CLASS`: the instance never competes with the user's work (LONG_RUNS.md).
-const BELOW_NORMAL: u32 = 0x4000;
+pub(crate) const BELOW_NORMAL: u32 = 0x4000;
+/// How long an instance may take to exit after QUIT.
+pub(crate) const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The poll interval of every wait; the scripts use 0.25 s for files and 0.2 s for a screenshot's size.
 const POLL: Duration = Duration::from_millis(100);
 /// How long an export may take. The scripts wait 60 s (`WAIT_FILE_SECS`).

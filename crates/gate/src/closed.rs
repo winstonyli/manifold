@@ -11,18 +11,15 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{check, check_is, exit_code, failures, note_failure, Section};
-use crate::instance::{log_tail, seed_settings, Instance};
-use crate::link::{bad, no_verdict_words};
+use crate::check::{check, check_is, exit_code, failures, no_verdict_words, note_failure, Section};
+use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::link::bad;
 use crate::state::{State, GROUP, NOTE};
 use crate::windows_main::{manifold_exe, work_dir};
 
-/// How long an instance may take to exit after QUIT.
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// `store::model::TYPE_LINK`; the gate crate does not depend on the manifold crate.
 const LINK: &str = "application/vnd.manifold.link";
 /// `MAX_CLOSED` in `closed.rs`.

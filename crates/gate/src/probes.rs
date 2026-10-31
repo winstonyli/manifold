@@ -24,12 +24,10 @@ use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
 use crate::http::{self, response};
-use crate::instance::{remove_dir_with_retries, seed_settings, Instance, STEP_TIMEOUT};
+use crate::instance::{remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT, STEP_TIMEOUT};
 use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
 use crate::windows_main::{manifold_exe, work_dir};
-
-const QUIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 const PAGE: &str = "<!doctype html><title>keys</title><textarea id=t autofocus></textarea>\n<script>\n\
 document.getElementById('t').focus();\n\

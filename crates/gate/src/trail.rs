@@ -12,19 +12,15 @@ use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{check_is, exit_code, failures, note_failure, Section};
+use crate::check::{check_is, exit_code, failures, no_verdict_words, note_failure, Section};
 use crate::http::{response, Handler, Server};
-use crate::instance::{log_tail, seed_settings, Instance};
-use crate::link::{bad, no_verdict_words};
+use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::link::bad;
 use crate::state::{State, TAB};
 use crate::windows_main::{manifold_exe, work_dir};
-
-/// How long the instance may take to exit after QUIT.
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 struct Run {
     exe: PathBuf,

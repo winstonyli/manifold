@@ -21,15 +21,13 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{exit_code, fail_line, failures, note_failure, pass_line, Marks};
-use crate::instance::{file_url, log_tail, remove_dir_with_retries, seed_settings, Instance};
-use crate::link::{bad, no_verdict_words, truthy};
+use crate::check::{exit_code, fail_line, failures, no_verdict_words, note_failure, pass_line, Marks};
+use crate::instance::{file_url, log_tail, remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::link::{bad, truthy};
 use crate::state::{fmt0, round_half_even, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
 use crate::windows_main::{manifold_exe, work_dir};
 
-/// How long the instance may take to exit after QUIT (the script waits without a limit).
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The script's `sleep 0.2` / `sleep 0.3` / `sleep 0.5` polls.
 const FILE_POLL: Duration = Duration::from_millis(200);
 const SETTLE_POLL: Duration = Duration::from_millis(300);

@@ -10,18 +10,15 @@
 use std::io;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
-use crate::instance::{log_tail, seed_settings, Instance};
-use crate::link::{bad, no_verdict_words, num};
+use crate::check::{check, check_eq, exit_code, failures, no_verdict_words, note_failure, Section};
+use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::link::{bad, num};
 use crate::state::{State, GROUP, TAB};
 use crate::windows_main::{manifold_exe, work_dir};
 
-/// How long an instance may take to exit after QUIT.
-const QUIT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The seeded node's type: one no build knows.
 const FUTURE: &str = "application/x-from-the-future";
 /// The row EXPORTSTATE reports it as (`store::model::TYPE_UNKNOWN`).
