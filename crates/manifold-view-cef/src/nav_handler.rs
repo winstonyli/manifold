@@ -1,49 +1,7 @@
-use std::cell::RefCell;
 use std::time::Instant;
 
 use cef::{rc::Rc, *};
-use manifold_view_protocol::nav_label::NavLabel;
-
-/// Latest known navigation state, updated incrementally as CEF's
-/// `DisplayHandler`/`LoadHandler` callbacks fire independently of each
-/// other (address, title, and loading/can-go-back-forward each arrive on
-/// their own) — `dirty` marks that at least one of them changed since the
-/// main loop last read it, so a single `NavigationStateChanged` snapshot
-/// can be sent per tick rather than one message per individual callback.
-#[derive(Clone)]
-pub struct NavState {
-    pub url: String,
-    pub title: String,
-    pub can_go_back: bool,
-    pub can_go_forward: bool,
-    pub loading: bool,
-    /// Who started the current navigation. CEF reports Chromium's own
-    /// `user_gesture` only for a new document (`on_before_browse`); a
-    /// same-document url change (`history.pushState`, a new `#fragment`)
-    /// falls back to `last_input`, set from `main.rs`.
-    pub label: NavLabel,
-    pub dirty: bool,
-}
-
-impl NavState {
-    fn new(initial_url: String) -> Self {
-        Self {
-            url: initial_url,
-            title: String::new(),
-            can_go_back: false,
-            can_go_forward: false,
-            loading: false,
-            label: NavLabel::created_by_host(Instant::now()), // the browser is created at `initial_url`
-            dirty: true,
-        }
-    }
-}
-
-pub type SharedNavState = std::rc::Rc<RefCell<NavState>>;
-
-pub fn new_shared_nav_state(initial_url: String) -> SharedNavState {
-    std::rc::Rc::new(RefCell::new(NavState::new(initial_url)))
-}
+use manifold_view_protocol::nav_state::SharedNavState;
 
 /// The last `HostToView::SetMuted` value requested for this tab -- CEF's
 /// own mute (`main.rs`'s `SetMuted` handler) is a one-shot JS write against

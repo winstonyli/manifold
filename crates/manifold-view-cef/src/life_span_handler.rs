@@ -5,7 +5,7 @@ use cef::{rc::Rc as CefRc, *};
 
 /// Set by `on_before_popup` when the page asks to open a new tab
 /// (`target=_blank`/`window.open()`/ctrl+click) — polled and drained by
-/// the main loop each tick, same pattern as `nav_handler`'s `NavState`. A
+/// the main loop each tick, same pattern as `manifold_view_protocol::nav_state::NavState`. A
 /// queue, not a single slot -- a page opening several popups synchronously
 /// (e.g. back-to-back `window.open()` calls) fires `on_before_popup` more
 /// than once before the next drain, and a single `Option` would silently

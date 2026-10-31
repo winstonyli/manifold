@@ -12,40 +12,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use cef::{rc::Rc as CefRc, *};
+use manifold_view_protocol::nav_state::{SharedJsonBody, SharedNavState, SharedRedirectContentType};
 
 use crate::context_menu_handler::{ContextMenuHandlerBuilder, SharedContextMenuLink, ViewContextMenuHandler};
 use crate::download_handler::{DownloadHandlerBuilder, SharedDownloadPath, ViewDownloadHandler};
 use crate::find_handler::{FindHandlerBuilder, SharedFindResult, ViewFindHandler};
 use crate::life_span_handler::{LifeSpanHandlerBuilder, SharedClosed, SharedPendingOpenTab, ViewLifeSpanHandler};
 use crate::nav_handler::{
-    DisplayHandlerBuilder, LoadHandlerBuilder, RequestHandlerBuilder, SharedMuted, SharedNavState, ViewDisplayHandler,
-    ViewLoadHandler, ViewRequestHandler,
+    DisplayHandlerBuilder, LoadHandlerBuilder, RequestHandlerBuilder, SharedMuted, ViewDisplayHandler, ViewLoadHandler,
+    ViewRequestHandler,
 };
 use crate::render_handler::{RenderHandlerBuilder, ViewRenderHandler};
 use crate::render_process_handler::{
     AUDIO_PLAYING_RESULT, JSON_BODY_RESULT, PAGE_STATE_RESULT, PAGE_TEXT_RESULT, REDIRECT_RESULT,
 };
-
-/// The renderer subprocess's own answer to a `check-json-body`
-/// `ProcessMessage` (see `render_process_handler.rs`) -- `Client::
-/// on_process_message_received` below is where a reply *arrives* in the
-/// browser process; `main.rs`'s own poll loop drains it into
-/// `ViewToHost::JsonBody`, same "shared-RefCell-drained-by-the-main-loop"
-/// shape `find_handler.rs`/`download_handler.rs` already use.
-pub type SharedJsonBody = Rc<RefCell<Option<String>>>;
-
-pub fn new_shared_json_body() -> SharedJsonBody {
-    Rc::new(RefCell::new(None))
-}
-
-/// Same shape as `SharedJsonBody`, for the `redirect-content-result` reply
-/// -- see `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc
-/// comment.
-pub type SharedRedirectContentType = Rc<RefCell<Option<String>>>;
-
-pub fn new_shared_redirect_content_type() -> SharedRedirectContentType {
-    Rc::new(RefCell::new(None))
-}
 
 /// The renderer's latest `check-audio-playing` reply -- unlike
 /// `SharedJsonBody`/`SharedImagePage`, this is always overwritten with

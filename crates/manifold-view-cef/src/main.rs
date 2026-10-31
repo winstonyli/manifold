@@ -15,18 +15,18 @@ use std::time::Duration;
 
 use cef::args::Args;
 use cef::*;
+#[cfg(windows)]
+use manifold_view_protocol::job::{self, Job};
+use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
 use manifold_view_protocol::{HostToView, InputEvent, TabState, ViewToHost};
 
 use app::{AppBuilder, ViewApp};
-use client::{
-    new_shared_audio_playing, new_shared_json_body, new_shared_page_state, new_shared_page_text,
-    new_shared_redirect_content_type, ClientBuilder,
-};
+use client::{new_shared_audio_playing, new_shared_page_state, new_shared_page_text, ClientBuilder};
 use context_menu_handler::new_shared_context_menu_link;
 use download_handler::new_shared_download_path;
 use find_handler::new_shared_find_result;
 use life_span_handler::{new_shared_closed, new_shared_pending_open_tab};
-use nav_handler::{new_shared_muted, new_shared_nav_state};
+use nav_handler::new_shared_muted;
 use render_handler::ViewRenderHandler;
 use render_process_handler::{CHECK_AUDIO_PLAYING, CHECK_PAGE_STATE, CHECK_PAGE_TEXT};
 
@@ -38,31 +38,6 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// (nothing here needs sub-second precision) against the real cost of an
 /// extra `V8Context::eval` round trip every tick.
 const AUDIO_PLAYING_POLL_INTERVAL: Duration = Duration::from_millis(1000);
-
-/// Same job-object setup `manifold-view-webview2` already uses for its own
-/// multi-process tree -- see this function's own call site for why.
-#[cfg(windows)]
-fn setup_kill_on_exit_job() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    use windows::Win32::System::Threading::GetCurrentProcess;
-
-    unsafe {
-        let job = CreateJobObjectW(None, None)?;
-        let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        SetInformationJobObject(
-            job,
-            JobObjectExtendedLimitInformation,
-            &info as *const _ as *const std::ffi::c_void,
-            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-        )?;
-        AssignProcessToJobObject(job, GetCurrentProcess())?;
-        Ok(job)
-    }
-}
 
 /// Whether libcef answered `api_hash` with a hash. A runtime that doesn't support the requested API
 /// version (an older CEF, e.g. 151.3.24 for 15200: verified 2026-10-04) logs "Request for unsupported CEF API
@@ -126,13 +101,16 @@ fn main() {
     // path (graceful, crashed, or force-killed), since child processes
     // created by a process already in a job join the same job
     // automatically. Same fix `manifold-view-webview2` already applies for
-    // its own equivalent multi-process tree; `_job`'s only purpose is to
-    // stay alive for the whole process lifetime. Elsewhere there is no job;
-    // on Linux CEF's subprocesses exited by themselves within 5 s of a
-    // `kill -9` of this process (WSL2, 2026-10-02; the engine-install spec's
-    // Platforms section).
+    // its own equivalent multi-process tree (`manifold_view_protocol::job`;
+    // a failure is said on stderr). `_job` stays alive for the whole process
+    // lifetime and closes when `main` returns, after `cef::shutdown()`;
+    // closing it ends this process and its subprocesses (the locals declared
+    // above it are never dropped, which costs nothing at exit). Elsewhere
+    // there is no job; on Linux CEF's subprocesses exited by themselves
+    // within 5 s of a `kill -9` of this process (WSL2, 2026-10-02; the
+    // engine-install spec's Platforms section).
     #[cfg(windows)]
-    let _job = setup_kill_on_exit_job();
+    let _job = job::kill_on_close("view host").inspect(Job::assign_self);
 
     // Read via env vars, not argv: this process's argv is CEF's own command
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own
@@ -176,7 +154,8 @@ fn main() {
     let sink: render_handler::SharedFrameSink =
         std::rc::Rc::new(std::cell::RefCell::new(manifold_view_protocol::FrameSink::shared(&socket_id)));
     let (render_handler, size) = ViewRenderHandler::new(DEFAULT_WIDTH, DEFAULT_HEIGHT, sink.clone());
-    let nav_state = new_shared_nav_state(initial_url.clone());
+    // Dirty: the browser is created at `initial_url`, and that state is sent on the first tick.
+    let nav_state = new_shared_nav_state(initial_url.clone(), true);
     let muted_state = new_shared_muted();
     let pending_open_tab = new_shared_pending_open_tab();
     let find_result = new_shared_find_result();
@@ -424,22 +403,8 @@ fn main() {
             Some(jar_cookies::PullState::Pending) | None => {}
         }
 
-        {
-            let mut nav = nav_state.borrow_mut();
-            if nav.dirty {
-                nav.dirty = false;
-                let _ = control.send(&ViewToHost::NavigationStateChanged {
-                    url: nav.url.clone(),
-                    title: nav.title.clone(),
-                    can_go_back: nav.can_go_back,
-                    can_go_forward: nav.can_go_forward,
-                    loading: nav.loading,
-                    user_started: nav.label.user_started,
-                });
-                if std::mem::take(&mut nav.label.finished) {
-                    nav.label.user_started = None;
-                }
-            }
+        if let Some(m) = nav_state.borrow_mut().take_message() {
+            let _ = control.send(&m);
         }
 
         for (url, user_gesture) in pending_open_tab.borrow_mut().drain(..) {
