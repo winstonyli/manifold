@@ -414,16 +414,15 @@ pub(crate) fn builtin_rows() -> Vec<Row> {
     .collect()
 }
 
-/// The virtual-card tests' kinds (`virtual_source::fake`): `fake-none` is the prefix row alone, `fake-all` has every
-/// ability, and each other grants one. `caps::registry()` is a `OnceLock`, so a test cannot add a row itself.
+/// The virtual-card tests' kinds (`virtual_source::fake`): `fake-all` has every ability and each other grants one; a kind
+/// with no row (the bare prefix) has none. `caps::registry()` is a `OnceLock`, so a test cannot add a row itself.
 #[cfg(test)]
-fn test_rows() -> [Row; 5] {
+fn test_rows() -> [Row; 4] {
     let fake = |name: &str| Row::new(&format!("{}{name}", crate::store::model::TYPE_VIRTUAL_PREFIX));
     [
         fake("fake-all").selectable(true).drag_source(true).drop_target(true).menu(true).stored_controls(true),
         fake("fake-selectable").selectable(true),
         fake("fake-drag").drag_source(true),
-        fake("fake-drop").drop_target(true),
         fake("fake-menu").menu(true),
     ]
 }

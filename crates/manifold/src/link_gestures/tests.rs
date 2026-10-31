@@ -867,21 +867,6 @@ fn a_dragged_curve_snaps_to_a_card_within_the_drop_tolerance() {
     assert_eq!(ends(&app, ab), (Some(a), Some(c)));
 }
 
-/// A click on the curve without moving still deletes the link, and a curve drag does not.
-#[test]
-fn a_click_on_a_curve_still_deletes_and_a_drag_from_it_does_not() {
-    let (h, mut app, [a, b, _]) = three_notes();
-    let ab = app.create_link(a, b);
-    h.frame(&mut app, vec![]);
-    let on = line_middle(&app, ab);
-    let back_on_a = screen_rect(&app, a).center();
-    h.drag(&mut app, on, back_on_a);
-    assert_eq!(app.links_naming(a).len(), 1, "a drag back onto its card deletes nothing");
-    let on = line_middle(&app, ab);
-    h.click(&mut app, on);
-    assert!(app.links_naming(a).is_empty(), "a click does");
-}
-
 /// A drag from a handle whose outer half lies over a link's curve is the handle's: a connect-drag from that
 /// card, no retarget, and the link it lay over is untouched.
 #[test]

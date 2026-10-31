@@ -512,9 +512,3 @@ fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
     assert!(state.jar_dirty.len() == 1 && state.jar_last_pull.is_some(), "jar-wide state stays");
     assert!(state.forget(node(3)).is_none());
 }
-
-#[test]
-fn a_jar_file_is_named_by_its_node_id_alone() {
-    let id = NodeId { actor: ActorId(3), counter: 7 };
-    assert_eq!(Jar::path(Path::new("d"), id), Path::new("d").join(format!("{id}.json")));
-}

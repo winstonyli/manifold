@@ -1330,22 +1330,7 @@ fn a_writer_killed_mid_commit_loses_at_most_that_commit() {
 
 // --- Save-path costs (Plan B measures these before wiring saves) ---
 
-/// Best and median of `n` timings of `f`.
-fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
-    let mut times: Vec<Duration> = (0..n)
-        .map(|_| {
-            let start = Instant::now();
-            f();
-            start.elapsed()
-        })
-        .collect();
-    times.sort();
-    (times[0], times[n / 2])
-}
-
-fn report(what: &str, (best, median): (Duration, Duration)) {
-    println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
-}
+use crate::bench::{report, timed};
 
 /// What each save costs at realistic session sizes, with the file at
 /// its largest (just below compaction): `begin` reads the header and

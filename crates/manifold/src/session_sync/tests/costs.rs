@@ -27,21 +27,7 @@ fn a_large_note_edit_does_not_clone_per_frame() {
 #[test]
 #[ignore]
 fn app_save_costs() {
-    use std::time::{Duration, Instant};
-    fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
-        let mut times: Vec<Duration> = (0..n)
-            .map(|_| {
-                let start = Instant::now();
-                f();
-                start.elapsed()
-            })
-            .collect();
-        times.sort();
-        (times[0], times[n / 2])
-    }
-    fn report(what: &str, (best, median): (Duration, Duration)) {
-        println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
-    }
+    use crate::bench::{report, timed};
     const N: usize = 40;
     for tabs in [300usize, 2000, 3000] {
         let dir = temp_dir(&format!("app-cost-{tabs}"));

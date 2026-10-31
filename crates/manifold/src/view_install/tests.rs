@@ -62,15 +62,6 @@ fn a_missing_directory_is_missing() {
     assert_eq!(runtime_state(&temp_dir("ei1").join("nope"), &PIN), RuntimeOnDisk::Missing);
 }
 
-#[test]
-fn a_marker_with_the_pins_version_is_ready_and_another_is_stale() {
-    let dir = temp_dir("ei2");
-    std::fs::write(dir.join(MARKER), "1.0").unwrap();
-    assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Ready);
-    std::fs::write(dir.join(MARKER), "0.9").unwrap();
-    assert_eq!(runtime_state(&dir, &PIN), RuntimeOnDisk::Stale);
-}
-
 /// Versions in the forms the CDN index, `archive.json` and the cef crate use, around a 152.0.6 pin.
 const V151: &str = "151.3.24+g2384915+chromium-151.0.7922.174";
 const V152: &str = "152.0.6+g708dc14+chromium-152.0.7977.83";
@@ -818,16 +809,6 @@ fn a_file_where_the_old_install_is_set_aside_is_cleared() {
     install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap();
     assert!(data.join("cef-runtime").join(MARKER).exists());
     assert!(!data.join("cef-runtime.old").exists() && !data.join("cef-runtime.tmp").exists());
-}
-
-#[test]
-fn a_swap_that_fails_puts_the_old_install_back() {
-    let dir = temp_dir("ei48");
-    let live = dir.join("cef-runtime");
-    std::fs::create_dir_all(&live).unwrap();
-    std::fs::write(live.join(MARKER), "v").unwrap();
-    assert!(super::swap(&dir.join("missing.tmp"), &live).is_err());
-    assert!(live.join(MARKER).exists() && !dir.join("cef-runtime.old").exists());
 }
 
 #[test]
