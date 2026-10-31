@@ -3,6 +3,8 @@ pub mod downloads;
 pub mod frame_buffer;
 pub mod frame_sink;
 pub mod host_env;
+#[cfg(windows)]
+pub mod job;
 pub mod messages;
 pub mod nav_label;
 pub mod render;

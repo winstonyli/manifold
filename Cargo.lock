@@ -5068,6 +5068,7 @@ dependencies = [
  "memmap2",
  "postcard",
  "serde",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
