@@ -13,16 +13,16 @@
 //! stalling.
 
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use crate::check::{check_eq, exit_code, failures, Section};
-use crate::instance::{job, remove_dir_with_retries, BELOW_NORMAL};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::check::check_eq;
+use crate::instance::{job, register_log, BELOW_NORMAL};
+use crate::windows_main::Ctx;
 
 const LIMIT: Duration = Duration::from_secs(60);
 /// `timeout`'s exit status when it kills a run, kept so a log line reads as the script's did.
@@ -31,10 +31,12 @@ const TIMED_OUT: i32 = 124;
 /// Runs `cmd` with its output in `WORK/NAME.out` and `.err`, `stdin_text` (if any) on its stdin, and checks that it
 /// exits `want`. Returns whether it did.
 fn run(work: &Path, name: &str, want: i32, mut cmd: Command, stdin_text: Option<&str>) -> bool {
-    let open = |ext: &str| File::create(work.join(format!("{name}.{ext}")));
-    let (Ok(out), Ok(err)) = (open("out"), open("err")) else {
+    let path = |ext: &str| work.join(format!("{name}.{ext}"));
+    let (Ok(out), Ok(err)) = (File::create(path("out")), File::create(path("err"))) else {
         return check_eq(&format!("{name} exits {want}"), want, -1);
     };
+    register_log(&path("out"));
+    register_log(&path("err"));
     cmd.stdin(if stdin_text.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(out)
         .stderr(err)
@@ -66,41 +68,18 @@ fn run(work: &Path, name: &str, want: i32, mut cmd: Command, stdin_text: Option<
     check_eq(&format!("{name} exits {want}"), want, rc)
 }
 
-fn tail(path: &Path) -> String {
-    let text = fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(20)..].join("\n")
-}
-
-pub(crate) fn launch_forms(parent: Option<PathBuf>) -> ExitCode {
-    let setup = Section::start("setup");
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-    };
-    let work = match work_dir(parent, "launch-forms") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
+pub(crate) fn launch_forms(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
+    let (exe, work) = (&ctx.exe, &ctx.work);
     let session = work.join("session.json");
     let quit = work.join("quit.txt");
     let mnf = work.join("s.mnf");
-    let seeded = fs::write(&session, r#"{"nodes":[{"id":"g","type":"application/vnd.manifold.group","name":"G"}]}"#)
-        .and_then(|()| fs::write(&quit, "QUIT\n"))
-        .and_then(|()| fs::create_dir_all(work.join("p")))
-        .and_then(|()| fs::create_dir_all(work.join("bad")))
-        .and_then(|()| fs::create_dir_all(work.join("drive").join("appdata").join("manifold")));
-    if let Err(e) = seeded {
-        eprintln!("seed: {e}");
-        return ExitCode::from(1);
-    }
-    let manifold = || Command::new(&exe);
+    fs::write(&session, r#"{"nodes":[{"id":"g","type":"application/vnd.manifold.group","name":"G"}]}"#)?;
+    fs::write(&quit, "QUIT\n")?;
+    fs::create_dir_all(work.join("p"))?;
+    fs::create_dir_all(work.join("bad"))?;
+    fs::create_dir_all(work.join("drive").join("appdata").join("manifold"))?;
+    let manifold = || Command::new(exe);
 
     let drive_appdata = work.join("drive").join("appdata");
     let mut import_for_drive = manifold();
@@ -109,46 +88,31 @@ pub(crate) fn launch_forms(parent: Option<PathBuf>) -> ExitCode {
         .arg(&session)
         .arg("--out")
         .arg(drive_appdata.join("manifold").join("session.mnf"));
-    run(&work, "drive-import", 0, import_for_drive, None);
-    let drive = setup.next("drive");
+    run(work, "drive-import", 0, import_for_drive, None);
+    ctx.marks.mark("drive");
     let mut headless = manifold();
     headless.arg("--headless").env("APPDATA", &drive_appdata);
-    run(&work, "drive", 0, headless, Some("QUIT\n"));
-    drop(drive);
+    run(work, "drive", 0, headless, Some("QUIT\n"));
 
-    let script = Section::start("script");
+    ctx.marks.mark("script");
     let mut c = manifold();
     c.arg("--headless").arg("--profile-dir").arg(work.join("p")).arg("--script").arg(&quit);
-    run(&work, "script", 0, c, None);
-    let tools = script.next("tools");
+    run(work, "script", 0, c, None);
+    ctx.marks.mark("tools");
     let mut c = manifold();
     c.arg("--import-json").arg(&session).arg("--out").arg(&mnf);
-    run(&work, "import", 0, c, None);
+    run(work, "import", 0, c, None);
     for tool in ["dump", "check"] {
         let mut c = manifold();
         c.arg(format!("--{tool}")).arg(&mnf);
-        run(&work, tool, 0, c, None);
+        run(work, tool, 0, c, None);
     }
-    let refused = tools.next("refused");
+    ctx.marks.mark("refused");
     let mut c = manifold();
     c.arg("--headless").arg("--profile-dir").arg(work.join("bad")).arg("--hedless");
-    run(&work, "refused", 2, c, None);
+    run(work, "refused", 2, c, None);
     let named =
         fs::read_to_string(work.join("refused.err")).unwrap_or_default().contains(r#"unknown argument "--hedless""#);
     check_eq("refused names the argument", 1, i32::from(named));
-    drop(refused);
-
-    if failures() > 0 {
-        for name in ["drive-import", "drive", "script", "import", "dump", "check", "refused"] {
-            for ext in ["out", "err"] {
-                let p = work.join(format!("{name}.{ext}"));
-                if fs::metadata(&p).is_ok_and(|m| m.len() > 0) {
-                    println!("--- {name}.{ext}\n{}", tail(&p));
-                }
-            }
-        }
-    } else if std::env::var_os("KEEP").is_none() {
-        remove_dir_with_retries(&work);
-    }
-    exit_code()
+    Ok(())
 }

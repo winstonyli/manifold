@@ -16,15 +16,14 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{check, exit_code, failures, note_failure, Section};
+use crate::check::{check, Section};
 use crate::instance::{seed_settings, Instance};
 use crate::state::{State, GROUP, NOTE, TAB};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 /// Window sizes in points: the common case, a small window, a large one.
 const SIZES: [(u32, u32); 3] = [(800, 600), (480, 360), (1280, 800)];
@@ -359,14 +358,7 @@ fn run_group(inst: &mut Instance, (width, height): (u32, u32), scenarios: &[&'st
                 shot.over_cards.display(),
                 bare.display()
             );
-            // Kept for a look: the run's work dir is deleted unless KEEP is set.
-            if let Some(keep) = std::env::var_os("LAYOUT_KEEP") {
-                let dir = PathBuf::from(keep);
-                let _ = std::fs::create_dir_all(&dir);
-                let stem = format!("{width}x{height}-{}", sc.name);
-                let _ = std::fs::copy(&shot.over_cards, dir.join(format!("{stem}-cards.png")));
-                let _ = std::fs::copy(&bare, dir.join(format!("{stem}-bare.png")));
-            }
+            // Both PNGs stay in the work dir, which a failed run keeps.
         }
         inst.send(sc.close)?;
         settle(inst)?;
@@ -392,14 +384,6 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
                 batch.iter().map(|sc| sc.name).collect::<Vec<_>>().join(", ")
             );
             let result = run_group(&mut inst, size, &batch);
-            if failures() > 0 {
-                println!(
-                    "--- tail of {}
-{}",
-                    inst.log.display(),
-                    inst.log_tail(30)
-                );
-            }
             let status = inst.quit(Duration::from_secs(30))?;
             check(&format!("layout {size:?}: the app exits with 0 after QUIT"), status.success());
             result?;
@@ -408,28 +392,8 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn layout(parent: Option<PathBuf>) -> ExitCode {
-    let setup = Section::start("setup");
-    let (exe, work) = match (manifold_exe(), work_dir(parent, "layout")) {
-        (Ok(exe), Ok(work)) => (exe, work),
-        (Err(e), _) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-        (_, Err(e)) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let steps = setup.next("layout");
-    let result = run(&exe, &work);
-    if let Err(e) = result {
-        println!("ERROR: layout stopped early: {e}");
-        note_failure();
-    }
-    drop(steps);
-    if std::env::var_os("KEEP").is_none() {
-        let _ = std::fs::remove_dir_all(&work);
-    }
-    exit_code()
+pub(crate) fn layout(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
+    ctx.marks.mark("layout");
+    run(&ctx.exe, &ctx.work)
 }

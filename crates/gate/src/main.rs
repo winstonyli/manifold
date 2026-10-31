@@ -147,8 +147,8 @@ mod windows_main {
     const STAGES: &[Stage] = &[
         Stage::args("all", "LOG [full|light|ui]", |a| crate::all::all(a.first().map(PathBuf::from), a.get(1).cloned())),
         Stage::parent("hello", hello),
-        Stage::parent("launch-forms", crate::launch_forms::launch_forms),
-        Stage::parent("layout", crate::layout::layout),
+        Stage::work("launch-forms", crate::launch_forms::launch_forms),
+        Stage::work("layout", crate::layout::layout),
         Stage::parent("link", crate::link::link),
         Stage::parent("smoke", crate::smoke::smoke),
         Stage::parent("two", crate::two::two),
