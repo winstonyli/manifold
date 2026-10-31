@@ -32,7 +32,10 @@ const POPUP_WINDOW_MARGIN: f32 = 8.0;
 /// `App::anchored_popup_fade`) sets the whole popup's opacity, so it fades
 /// in/out instead of popping instantly. `interactable` is whether the popup
 /// is open: while fading out it is click-through, so the rest of a
-/// double-click on an item can't run it twice.
+/// double-click on an item can't run it twice. `page` names the page the popup shows (`None` for a popup with one): when
+/// it changes, the popup counts as just opened, so `list_row_nav` focuses its first (or `nav_row_opens_on`) row, and the
+/// rest starts afresh too: the popup is measured again and its scroll state is the page's own. Else the new page keeps
+/// the room the old one needed (a scroll bar's), by an amount that depends on how many frames drew the old page.
 #[allow(clippy::too_many_arguments, reason = "egui builder: each is a plain knob")]
 pub(crate) fn build_list_popup_frame(
     ctx: &egui::Context,
@@ -42,9 +45,16 @@ pub(crate) fn build_list_popup_frame(
     max_width: f32,
     fade: f32,
     interactable: bool,
+    page: Option<egui::Id>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> egui::Rect {
-    let area = egui::Area::new(egui::Id::new(id)).fixed_pos(anchor_rect.left_bottom()).interactable(interactable);
+    let page_key = egui::Id::new(id).with("last_page");
+    let page_changed = ctx.data(|d| d.get_temp::<Option<egui::Id>>(page_key)).is_some_and(|last| last != page);
+    ctx.data_mut(|d| d.insert_temp(page_key, page));
+    let area = egui::Area::new(egui::Id::new(id))
+        .fixed_pos(anchor_rect.left_bottom())
+        .interactable(interactable)
+        .sizing_pass(page_changed);
     menu_popup(ctx, area, fade, |ui| {
         ui.set_min_width(min_width);
         // An infinite cap makes egui lay out NaN rects; no cap
@@ -59,7 +69,10 @@ pub(crate) fn build_list_popup_frame(
         ui.set_max_height(fit.max(120.0));
         // A solid scrollbar, not the floating one that hides until hovered: it says there is more below.
         ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
-        egui::ScrollArea::vertical().max_height(fit.max(120.0)).show(ui, add_contents);
+        if let Some(page) = page {
+            nav_page(ui, page);
+        }
+        egui::ScrollArea::vertical().id_salt(page).max_height(fit.max(120.0)).show(ui, add_contents);
         list_row_nav(ui, interactable);
     })
     .rect
@@ -110,8 +123,17 @@ pub(crate) fn list_popup(
     fade: f32,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) -> bool {
-    let area_rect =
-        build_list_popup_frame(ui.ctx(), id, anchor_rect, 220.0, 320.0, fade, open_popup == Some(which), add_contents);
+    let area_rect = build_list_popup_frame(
+        ui.ctx(),
+        id,
+        anchor_rect,
+        220.0,
+        320.0,
+        fade,
+        open_popup == Some(which),
+        None,
+        add_contents,
+    );
     clicked_outside_popup(ui, area_rect, Some(anchor_rect))
 }
 
@@ -163,9 +185,8 @@ pub(crate) fn nav_stop(ui: &egui::Ui, ids: &[egui::Id]) {
     ui.data_mut(|d| d.get_temp_mut_or_default::<Vec<Vec<egui::Id>>>(key).push(ids.to_vec()));
 }
 
-/// Names the page the popup shows now (call it before the rows): when it changes, the popup counts as just opened, so
-/// `list_row_nav` focuses its first (or `nav_row_opens_on`) row. The row that had focus went away with the old page.
-pub(crate) fn nav_page(ui: &egui::Ui, page: egui::Id) {
+/// `build_list_popup_frame`'s `page`, for `list_row_nav`: the row that had focus went away with the old page.
+fn nav_page(ui: &egui::Ui, page: egui::Id) {
     ui.data_mut(|d| d.insert_temp(list_rows_key(ui).with("page"), Some(page)));
 }
 

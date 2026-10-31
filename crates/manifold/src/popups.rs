@@ -198,7 +198,7 @@ mod view_picker_tests {
         let mut clicked = None;
         let mut output = ctx.run_ui(input, |ui| {
             let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-            build_list_popup_frame(ui.ctx(), "test_list", anchor, 100.0, 300.0, 1.0, true, |ui| {
+            build_list_popup_frame(ui.ctx(), "test_list", anchor, 100.0, 300.0, 1.0, true, None, |ui| {
                 for row in 0..3 {
                     if list_row(ui, format!("row {row}")).clicked() {
                         clicked = Some(row);
@@ -224,7 +224,7 @@ mod view_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-                build_list_popup_frame(ui.ctx(), "test_stop", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                build_list_popup_frame(ui.ctx(), "test_stop", anchor, 100.0, 300.0, 1.0, true, None, |ui| {
                     stops.clear();
                     stops.push(vec![list_row(ui, "first").id]);
                     let ids: Vec<egui::Id> = ui
@@ -281,14 +281,23 @@ mod view_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-                build_list_popup_frame(ui.ctx(), "test_page", anchor, 100.0, 300.0, 1.0, true, |ui| {
-                    nav_page(ui, egui::Id::new(page));
-                    first.clear();
-                    for label in ["a", "b", "c"] {
-                        // Each page's rows have their own ids.
-                        first.push(ui.push_id(page, |ui| list_row(ui, label).id).inner);
-                    }
-                });
+                build_list_popup_frame(
+                    ui.ctx(),
+                    "test_page",
+                    anchor,
+                    100.0,
+                    300.0,
+                    1.0,
+                    true,
+                    Some(egui::Id::new(page)),
+                    |ui| {
+                        first.clear();
+                        for label in ["a", "b", "c"] {
+                            // Each page's rows have their own ids.
+                            first.push(ui.push_id(page, |ui| list_row(ui, label).id).inner);
+                        }
+                    },
+                );
             });
             output.textures_delta.clear();
             first
@@ -339,7 +348,7 @@ mod view_picker_tests {
             };
             let mut output = ctx.run_ui(input, |ui| {
                 let anchor = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(60.0, 20.0));
-                build_list_popup_frame(ui.ctx(), "test_two", anchor, 100.0, 300.0, 1.0, true, |ui| {
+                build_list_popup_frame(ui.ctx(), "test_two", anchor, 100.0, 300.0, 1.0, true, None, |ui| {
                     rows.clear();
                     for label in ["a", "b", "c", "d"] {
                         rows.push(list_row(ui, label).id);

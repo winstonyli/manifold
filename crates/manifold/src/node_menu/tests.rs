@@ -529,6 +529,42 @@ fn menu_sections_share_one_left_margin() {
     }
 }
 
+/// A menu that changes page keeps no width from the page it left: the tab menu's root page overflows a short window,
+/// its scroll bar takes room, and the jar page that replaces it must be as wide as when opened on its own, however
+/// many frames the root page was drawn for (`gate layout` at 480x360 failed on it when a loaded machine drew more).
+#[test]
+fn a_page_change_resets_the_menu_width() {
+    let view = NodeMenuView {
+        jars: Some(JarMenu {
+            rows: vec![JarRow { id: None, name: built_in(), color: None, ticked: true }],
+            will_switch: false,
+        }),
+        ..view_of(loaded_tab())
+    };
+    // The width of the jar page after `root_frames` frames of the root page; a short window, so the root page scrolls.
+    let jar_width = |root_frames: usize| {
+        let ctx = crate::theme::testutil::ctx(true);
+        let area = egui::Id::new(node_menu_config(&view, false).area_id);
+        for (n, page) in
+            std::iter::repeat_n(None, root_frames).chain(std::iter::repeat_n(Some(MenuPage::Jar), 4)).enumerate()
+        {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 200.0))),
+                time: Some(n as f64 * 0.05),
+                ..Default::default()
+            };
+            let config = NodeMenuConfig { page, ..node_menu_config(&view, false) };
+            let mut output = ctx.run_ui(input, |ui| {
+                build_node_context_menu(ui, egui::pos2(100.0, 20.0), 1.0, true, &config, None);
+            });
+            output.textures_delta.clear();
+        }
+        ctx.memory(|m| m.area_rect(area)).expect("the menu is drawn").width()
+    };
+    let (alone, after_one, after_five) = (jar_width(0), jar_width(1), jar_width(5));
+    assert_eq!((after_one, after_five), (alone, alone), "the jar page's width after 0, 1 and 5 root frames");
+}
+
 /// One frame of `build_node_menu` in an 800x600 window.
 fn menu_frame(ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>) {
     let input = egui::RawInput {
