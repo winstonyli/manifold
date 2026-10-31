@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use dpi::PhysicalSize;
+use manifold_view_protocol::nav_state::NavState;
 use manifold_view_protocol::{
     modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ViewToHost,
 };
@@ -31,16 +32,6 @@ impl EventLoopWaker for NoopWaker {
         Box::new(self.clone())
     }
     fn wake(&self) {}
-}
-
-#[derive(Default)]
-struct NavState {
-    url: String,
-    title: String,
-    can_go_back: bool,
-    can_go_forward: bool,
-    loading: bool,
-    dirty: bool,
 }
 
 struct Delegate {
@@ -333,20 +324,10 @@ fn main() {
             }
         }
 
-        {
-            let mut nav = delegate.nav.borrow_mut();
-            if nav.dirty {
-                nav.dirty = false;
-                let _ = control.send(&ViewToHost::NavigationStateChanged {
-                    url: nav.url.clone(),
-                    title: nav.title.clone(),
-                    can_go_back: nav.can_go_back,
-                    can_go_forward: nav.can_go_forward,
-                    loading: nav.loading,
-                    // Servo's `NavigationRequest` carries only the url.
-                    user_started: None,
-                });
-            }
+        // Servo's `NavigationRequest` carries only the url, so `nav.label` stays at its default and every message
+        // says `user_started: None`.
+        if let Some(m) = delegate.nav.borrow_mut().take_message() {
+            let _ = control.send(&m);
         }
 
         if let Some((x, y, href)) = delegate.context_menu_link.borrow_mut().take() {
