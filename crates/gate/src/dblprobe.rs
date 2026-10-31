@@ -5,39 +5,29 @@
 //! `ROUNDS` (default 100) counts all kinds together; prints one line per kind. Not part of `all`.
 
 use std::io;
-use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::path::Path;
 use std::time::Duration;
 
-use crate::check::{check, exit_code, failures, note_failure, Section};
-use crate::instance::{seed_settings, Instance};
+use serde_json::json;
+
+use crate::check::check;
+use crate::instance::Instance;
 use crate::link::bad;
+use crate::probes::seed;
 use crate::state::{GROUP, NOTE};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 /// The round kinds' names.
 const NAMES: [&str; 3] = ["straight", "hover first", "after Reset View"];
 
 fn drive(exe: &Path, work: &Path) -> io::Result<()> {
     let profile = work.join("profile");
-    seed_settings(&profile, "webview2", "")?;
-    let seed = profile.join("seed.json");
-    let nodes = serde_json::json!([
-        {"id": "g", "type": GROUP, "name": "G", "pos": [0.0, 0.0]},
-        {"id": "in", "type": NOTE, "name": "inside", "text": "inside", "group": "g", "pos": [0.0, 0.0]},
-        {"id": "n", "type": NOTE, "name": "n", "text": "outside", "pos": [400.0, 0.0]},
-    ]);
-    std::fs::write(&seed, serde_json::json!({ "nodes": nodes }).to_string())?;
-    let status = Command::new(exe)
-        .arg("--import-json")
-        .arg(&seed)
-        .arg("--out")
-        .arg(profile.join("session.mnf"))
-        .stdout(Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err(bad(format!("--import-json exited with {status}")));
-    }
+    let nodes = [
+        json!({"id": "g", "type": GROUP, "name": "G", "pos": [0.0, 0.0]}),
+        json!({"id": "in", "type": NOTE, "name": "inside", "text": "inside", "group": "g", "pos": [0.0, 0.0]}),
+        json!({"id": "n", "type": NOTE, "name": "n", "text": "outside", "pos": [400.0, 0.0]}),
+    ];
+    seed(exe, &profile, "webview2", &nodes)?;
     let mut a = Instance::launch(exe, &profile, work, "a.log")?;
     a.settle()?;
     let rounds: usize = std::env::var("ROUNDS").ok().and_then(|r| r.parse().ok()).unwrap_or(100);
@@ -93,26 +83,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
     a.quit(Duration::from_secs(60)).map(|_| ())
 }
 
-pub fn dblprobe(parent: Option<PathBuf>) -> ExitCode {
-    let _sec = Section::start("dblprobe");
-    let (exe, work) = match (manifold_exe(), work_dir(parent, "dblprobe")) {
-        (Ok(e), Ok(w)) => (e, w),
-        (Err(e), _) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-        (_, Err(e)) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    if let Err(e) = drive(&exe, &work) {
-        println!("ERROR: dblprobe stopped early: {e}");
-        note_failure();
-    }
-    if std::env::var_os("KEEP").is_none() {
-        let _ = std::fs::remove_dir_all(&work);
-    }
-    let _ = failures();
-    exit_code()
+pub fn dblprobe(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("dblprobe");
+    drive(&ctx.exe, &ctx.work)
 }

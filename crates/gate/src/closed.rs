@@ -10,15 +10,15 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::Value;
 
-use crate::check::{check, check_is, exit_code, failures, no_verdict_words, note_failure, Section};
-use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::check::{check, check_is, Marks};
+use crate::instance::{Instance, QUIT_TIMEOUT};
 use crate::link::bad;
+use crate::probes::seed;
 use crate::state::{State, GROUP, NOTE};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 /// `store::model::TYPE_LINK`; the gate crate does not depend on the manifold crate.
 const LINK: &str = "application/vnd.manifold.link";
@@ -44,11 +44,9 @@ impl Run {
         inst.quit(QUIT_TIMEOUT).map(|_| ())
     }
 
-    /// The profile's settings and the session built from the seed (`--import-json`, which gives fresh ids; a
+    /// The profile's settings and the session built from the seed (`probes::seed`, which gives fresh ids; a
     /// cross-level link is fine there, `import` does not check scope).
     fn setup(&self) -> io::Result<()> {
-        seed_settings(&self.profile, "webview2", "")?;
-        let seed = self.profile.join("seed.json");
         let mut nodes = vec![
             serde_json::json!({"id": "g", "type": GROUP, "name": "G", "pos": [0.0, 0.0]}),
             serde_json::json!({"id": "in", "type": NOTE, "name": "inside", "text": "inside", "group": "g", "pos": [0.0, 0.0]}),
@@ -59,19 +57,7 @@ impl Run {
             serde_json::json!({"id": format!("n{n}"), "type": NOTE, "name": format!("n{n}"), "text": format!("note {n}"),
                 "pos": [n as f64 * 50.0, 300.0]})
         }));
-        std::fs::write(&seed, serde_json::json!({ "nodes": nodes }).to_string())?;
-        let status = Command::new(&self.exe)
-            .arg("--import-json")
-            .arg(&seed)
-            .arg("--out")
-            .arg(self.profile.join("session.mnf"))
-            .stdout(Stdio::null())
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!("--import-json exited with {status}")))
-        }
+        seed(&self.exe, &self.profile, "webview2", &nodes)
     }
 }
 
@@ -103,8 +89,8 @@ fn link_of(s: &State, a: &str, b: &str) -> Option<String> {
     l["id"].as_str().map(str::to_owned)
 }
 
-fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
-    let mut next = |name: &str| *sec = sec.take().map(|s| s.next(name));
+fn drive(run: &Run, m: &mut Marks) -> io::Result<()> {
+    let mut next = |name: &str| m.mark(name);
 
     next("close-reopen");
     let mut a = run.start("a.log")?;
@@ -180,35 +166,9 @@ fn py(v: &Value) -> String {
     v.as_str().map_or_else(|| v.to_string(), str::to_string)
 }
 
-pub fn closed(parent: Option<PathBuf>) -> ExitCode {
-    let mut sec = Some(Section::start("setup"));
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-    };
-    let work = match work_dir(parent, "closed") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let run = Run { exe, profile: work.join("profile"), work };
-    if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {
-        println!("ERROR: closed stopped early: {e}");
-        note_failure();
-    }
-    if failures() > 0 {
-        for l in ["a.log", "b.log"] {
-            println!("--- {l}\n{}", no_verdict_words(&log_tail(&run.work.join(l), 20)));
-        }
-    }
-    drop(sec);
-    if std::env::var_os("KEEP").is_none() {
-        let _ = std::fs::remove_dir_all(&run.work);
-    }
-    exit_code()
+pub fn closed(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
+    let run = Run { exe: ctx.exe.clone(), profile: ctx.work.join("profile"), work: ctx.work.clone() };
+    run.setup()?;
+    drive(&run, &mut ctx.marks)
 }
