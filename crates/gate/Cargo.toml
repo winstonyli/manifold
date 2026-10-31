@@ -9,6 +9,8 @@ workspace = true
 
 [dependencies]
 manifold-hosts.workspace = true
+# The kill-on-close job every instance joins (`instance::job`).
+manifold-view-protocol.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha1.workspace = true
 sha2.workspace = true

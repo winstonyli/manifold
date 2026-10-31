@@ -2,15 +2,16 @@
 
 use super::*;
 
-/// A Windows Job Object every view-host child (`spawn_tab`/
+/// The Windows Job Object every view-host child (`spawn_tab`/
 /// `spawn_webkit_tab`, both call `assign_to_view_job` right after
 /// spawning) gets assigned to, configured with `JOB_OBJECT_LIMIT_KILL_ON_
-/// JOB_CLOSE` -- Windows itself then guarantees every process in the job
+/// JOB_CLOSE` (`manifold_view_protocol::job`) -- Windows itself then guarantees every process in the job
 /// dies the instant this job's last handle closes, which happens
 /// automatically when *this* manifold.exe process terminates for *any*
 /// reason (a clean exit, a crash, a Task Manager "End Task," anything
 /// short of the whole OS going down) since Windows closes all of a
-/// terminated process's own handles as part of teardown.
+/// terminated process's own handles as part of teardown. `None` when the job could not be created
+/// (said once on stderr). A static is never dropped, so the handle stays open until the process ends.
 ///
 /// Exists because engine-hosts becoming orphaned was already a known, if
 /// only ever partially worked around, problem: `spawn_tab`'s own comment
@@ -40,69 +41,16 @@ use super::*;
 /// by a session that ran before this existed; those still need a one-time
 /// manual Task Manager cleanup.
 #[cfg(target_os = "windows")]
-struct ViewJobHandle(windows_sys::Win32::Foundation::HANDLE);
-// Safety: a Win32 `HANDLE` is a plain kernel object reference, valid to
-// use from any thread -- Rust's blanket `!Send`/`!Sync` on raw pointers is
-// only being overly cautious here, not flagging a real hazard.
-#[cfg(target_os = "windows")]
-unsafe impl Send for ViewJobHandle {}
-#[cfg(target_os = "windows")]
-unsafe impl Sync for ViewJobHandle {}
+static VIEW_JOB: std::sync::OnceLock<Option<manifold_view_protocol::job::Job>> = std::sync::OnceLock::new();
 
-#[cfg(target_os = "windows")]
-static VIEW_JOB: std::sync::OnceLock<ViewJobHandle> = std::sync::OnceLock::new();
-
-/// Creates (once) and returns the Job Object every view-host child gets
-/// assigned to -- see `ViewJobHandle`'s own doc comment. A null handle
-/// (creation failed) is a silent no-op everywhere it's used, and a job whose
-/// kill-on-close setup failed is logged once and used anyway: this is a
-/// crash-safety net, not a feature any spawn should fail over losing.
-#[cfg(target_os = "windows")]
-fn view_job() -> windows_sys::Win32::Foundation::HANDLE {
-    use windows_sys::Win32::Foundation::HANDLE;
-    use windows_sys::Win32::System::JobObjects::{
-        JobObjectExtendedLimitInformation, SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    };
-    VIEW_JOB
-        .get_or_init(|| unsafe {
-            let job = windows_sys::Win32::System::JobObjects::CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if !job.is_null() {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                let set = SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const core::ffi::c_void,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                if set == 0 {
-                    // Engines then outlive a crashed manifold: say so once.
-                    eprintln!("engine job: kill-on-close not set: {}", std::io::Error::last_os_error());
-                }
-            }
-            ViewJobHandle(job as HANDLE)
-        })
-        .0
-}
-
-/// Adds a just-spawned view-host child to `view_job()` -- called right
-/// after every successful `Command::spawn()` in this module. A no-op (not
-/// an error) if the job itself failed to create/configure, or if this one
-/// assignment fails (e.g. the child already exited) -- either way, the
-/// worst case is falling back to this app's prior behavior (no automatic
-/// cleanup), not a spawn failure over a crash-safety extra.
+/// Adds a just-spawned view-host child to `VIEW_JOB`, creating the job at the first call -- called right
+/// after every successful `Command::spawn()` in this module. A job that failed to create or configure, or an
+/// assignment that fails (e.g. the child already exited), is said on stderr and the spawn goes on: the worst case is
+/// falling back to this app's prior behavior (no automatic cleanup), not a spawn failure over a crash-safety extra.
 #[cfg(target_os = "windows")]
 pub(super) fn assign_to_view_job(child: &Child) {
-    use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-    let job = view_job();
-    if job.is_null() {
-        return;
-    }
-    let process_handle = child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE;
-    unsafe {
-        let _ = AssignProcessToJobObject(job, process_handle);
+    if let Some(job) = VIEW_JOB.get_or_init(|| manifold_view_protocol::job::kill_on_close("engine job")) {
+        job.assign_child(child);
     }
 }
 /// No kill-on-exit job off Windows: a view host sees the socket drop when manifold dies and shuts itself down

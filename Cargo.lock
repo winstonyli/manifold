@@ -3092,6 +3092,7 @@ version = "0.10.0"
 dependencies = [
  "image",
  "manifold-hosts",
+ "manifold-view-protocol",
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",

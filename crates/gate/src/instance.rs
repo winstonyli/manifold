@@ -33,63 +33,22 @@ const EXPORT_TIMEOUT: Duration = Duration::from_secs(60);
 /// The app gives a SCREENSHOT up to 30 s for its next drawn frame; wait that plus a margin.
 const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(35);
 
-/// The Job Object every instance is assigned to; same construction as crates/manifold `process_manager/job.rs`.
+/// The Job Object every instance is assigned to (`manifold_view_protocol::job`, as crates/manifold's view-host job).
 pub(crate) mod job {
     use std::process::Child;
     use std::sync::OnceLock;
 
-    use windows_sys::Win32::Foundation::HANDLE;
+    use manifold_view_protocol::job::{kill_on_close, Job};
 
-    struct JobHandle(HANDLE);
-    // Safety: a Win32 `HANDLE` is a kernel object reference, valid to use from any thread.
-    unsafe impl Send for JobHandle {}
-    unsafe impl Sync for JobHandle {}
-
-    static JOB: OnceLock<JobHandle> = OnceLock::new();
-
-    /// Creates (once) the job with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: Windows kills every process in it when the
-    /// last handle closes, which happens when `gate` exits for any reason. A null handle (creation failed) is a
-    /// no-op below; a failed limit setup is said once.
-    fn job() -> HANDLE {
-        use windows_sys::Win32::System::JobObjects::{
-            CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        };
-        JOB.get_or_init(|| unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                eprintln!("gate job: not created: {}", std::io::Error::last_os_error());
-            } else {
-                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-                let set = SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    &info as *const _ as *const core::ffi::c_void,
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                );
-                if set == 0 {
-                    eprintln!("gate job: kill-on-close not set: {}", std::io::Error::last_os_error());
-                }
-            }
-            JobHandle(job as HANDLE)
-        })
-        .0
-    }
+    /// Created at the first instance, with kill-on-close: Windows kills every process in it when `gate` exits for any
+    /// reason. `None` when it could not be created (said on stderr); a static, so it is never closed early.
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
 
     /// Adds a just-spawned instance to the job; a failure (say the child already exited) is said on stderr and the
     /// run goes on with `Drop` as the only cleanup.
     pub fn assign(child: &Child) {
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-        let job = job();
-        if job.is_null() {
-            return;
-        }
-        let process = child.as_raw_handle() as HANDLE;
-        // Safety: both handles are live; the job outlives the process (a static).
-        if unsafe { AssignProcessToJobObject(job, process) } == 0 {
-            eprintln!("gate job: instance {} not assigned: {}", child.id(), std::io::Error::last_os_error());
+        if let Some(job) = JOB.get_or_init(|| kill_on_close("gate job")) {
+            job.assign_child(child);
         }
     }
 }
