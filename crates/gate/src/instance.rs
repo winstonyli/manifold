@@ -187,7 +187,7 @@ pub fn remove_dir_with_retries(dir: &Path) {
     }
 }
 
-/// The last `n` lines of a log file (empty if unreadable): `Instance::log_tail` for an instance already gone.
+/// The last `n` lines of a log file (empty if unreadable).
 pub fn log_tail(log: &Path, n: usize) -> String {
     let text = fs::read_to_string(log).unwrap_or_default();
     let lines: Vec<&str> = text.lines().collect();
@@ -371,11 +371,6 @@ impl Instance {
             prev = Some(now);
             sleep(Duration::from_millis(200));
         }
-    }
-
-    /// The last `n` lines of the instance's log, for the diagnostics printed after a failure.
-    pub fn log_tail(&self, n: usize) -> String {
-        log_tail(&self.log, n)
     }
 
     /// `QUIT`, then waits for the process to exit (up to `timeout`, after which it is killed and an error returned).

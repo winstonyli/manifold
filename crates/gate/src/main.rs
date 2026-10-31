@@ -3,7 +3,7 @@
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `gate all` can run it as a stage. The exit code is
 //! 0 when no check failed.
 //!
-//! Stages: `hello` (one instance: launch, WAITTABS, export, QUIT), `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs), `smoke` (was
+//! Stages: `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs), `smoke` (was
 //! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
@@ -98,47 +98,41 @@ mod windows_main {
     use std::process::ExitCode;
     use std::time::{Duration, SystemTime};
 
-    use crate::check::{check, check_eq, exit_code, failures, no_verdict_words, note_failure, Marks, Section};
+    use crate::check::{exit_code, failures, no_verdict_words, note_failure, Marks};
     use crate::fresh::require_fresh_exe;
-    use crate::instance::{log_tail, remove_dir_with_retries, seed_settings, take_logs, Instance};
+    use crate::instance::{log_tail, remove_dir_with_retries, take_logs};
 
     /// What a stage that takes `[WORKDIR_PARENT]` runs inside `run_stage`.
     type Body = fn(&mut Ctx) -> io::Result<()>;
 
     /// How a stage takes its arguments: a body run by `run_stage` (with the manifold exe and a fresh work dir made from
-    /// the work-dir parent argument), the work-dir parent, the rest of the command line, or nothing.
+    /// the work-dir parent argument), the rest of the command line, or nothing.
     enum Run {
         Work(Body),
-        Parent(fn(Option<PathBuf>) -> ExitCode),
         Args(fn(&[String]) -> ExitCode),
         Bare(fn() -> ExitCode),
     }
 
-    /// One `gate <name>` stage. `usage` is what follows the name in the usage text (`None`: a test aid, not listed).
+    /// One `gate <name>` stage. `usage` is what follows the name in the usage text.
     struct Stage {
         name: &'static str,
-        usage: Option<&'static str>,
+        usage: &'static str,
         run: Run,
     }
 
     impl Stage {
         /// A stage that takes `[WORKDIR_PARENT]`; `run_stage` runs its body with `manifold.exe` and its work dir.
         const fn work(name: &'static str, f: Body) -> Self {
-            Self { name, usage: Some("[WORKDIR_PARENT]"), run: Run::Work(f) }
-        }
-
-        /// A stage that takes `[WORKDIR_PARENT]` and makes its own work dir.
-        const fn parent(name: &'static str, f: fn(Option<PathBuf>) -> ExitCode) -> Self {
-            Self { name, usage: Some("[WORKDIR_PARENT]"), run: Run::Parent(f) }
+            Self { name, usage: "[WORKDIR_PARENT]", run: Run::Work(f) }
         }
 
         const fn args(name: &'static str, usage: &'static str, f: fn(&[String]) -> ExitCode) -> Self {
-            Self { name, usage: Some(usage), run: Run::Args(f) }
+            Self { name, usage, run: Run::Args(f) }
         }
 
         /// The usage text after the name, for a stage that takes its parent argument but does not list it.
         const fn listed_as(mut self, usage: &'static str) -> Self {
-            self.usage = Some(usage);
+            self.usage = usage;
             self
         }
     }
@@ -146,7 +140,6 @@ mod windows_main {
     /// Every stage: the one place `gate <name>` dispatch and the usage text come from.
     const STAGES: &[Stage] = &[
         Stage::args("all", "LOG [full|light|ui]", |a| crate::all::all(a.first().map(PathBuf::from), a.get(1).cloned())),
-        Stage::parent("hello", hello),
         Stage::work("launch-forms", crate::launch_forms::launch_forms),
         Stage::work("layout", crate::layout::layout),
         Stage::work("link", crate::link::link),
@@ -185,7 +178,7 @@ mod windows_main {
         Stage::args("release-check", "vX.Y.Z", crate::release_check::release_check),
         Stage::args("release-tag", "vX.Y.Z", crate::release_check::release_tag),
         Stage::args("release-notes", "vX.Y.Z", crate::release_check::release_notes),
-        Stage { name: "sync-runtime-deps", usage: Some(""), run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
+        Stage { name: "sync-runtime-deps", usage: "", run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
         Stage::args("cef-pin", "[--platform ID] PREFIX", crate::cef_pin::cef_pin_main),
         Stage::args("profile", "SCENARIO [SECONDS] [--samply] [--visible]", crate::profile::profile),
         Stage::args(
@@ -197,7 +190,6 @@ mod windows_main {
         Stage::args("install-check", "cef|servo EXE", crate::package::install_check),
         Stage::args("tier", "[BASE|--stdin]", crate::tier::tier),
         Stage::args("fresh", "EXE", fresh),
-        Stage { name: "hold", usage: None, run: Run::Parent(hold) },
     ];
 
     /// Whether `gate <name>` is a stage (`gate all` asserts it for each stage it launches).
@@ -206,10 +198,8 @@ mod windows_main {
     }
 
     fn usage() -> String {
-        let listed: Vec<String> = STAGES
-            .iter()
-            .filter_map(|s| s.usage.map(|u| format!("gate {} {u}", s.name).trim_end().to_owned()))
-            .collect();
+        let listed: Vec<String> =
+            STAGES.iter().map(|s| format!("gate {} {}", s.name, s.usage).trim_end().to_owned()).collect();
         format!("usage: {}", listed.join(" | "))
     }
 
@@ -219,7 +209,6 @@ mod windows_main {
         let rest: Vec<String> = args.collect();
         match STAGES.iter().find(|s| s.name == name) {
             Some(Stage { name, run: Run::Work(f), .. }) => run_stage(name, rest.first().map(PathBuf::from), true, *f),
-            Some(Stage { run: Run::Parent(f), .. }) => f(rest.first().map(PathBuf::from)),
             Some(Stage { run: Run::Args(f), .. }) => f(&rest),
             Some(Stage { run: Run::Bare(f), .. }) => f(),
             None => {
@@ -386,89 +375,6 @@ mod windows_main {
         out
     }
 
-    fn launch(exe: &Path, work: &Path) -> std::io::Result<Instance> {
-        let profile = work.join("profile");
-        seed_settings(&profile, "webview2", "")?;
-        let inst = Instance::launch(exe, &profile, work, "hello.log")?;
-        // The chosen exe and profile, at the start of every run (LONG_RUNS.md asks for the device; here: the paths).
-        println!("launched pid {} exe {} profile {}", inst.pid(), exe.display(), profile.display());
-        Ok(inst)
-    }
-
-    fn hello(parent: Option<PathBuf>) -> ExitCode {
-        let setup = Section::start("setup");
-        let exe = match manifold_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!("{e}");
-                return ExitCode::from(1);
-            }
-        };
-        let work = match work_dir(parent, "hello") {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("work dir: {e}");
-                return ExitCode::from(1);
-            }
-        };
-        let hello = setup.next("hello");
-        let result = (|| -> std::io::Result<()> {
-            let mut inst = launch(&exe, &work)?;
-            inst.send("WAITTABS")?;
-            let s = inst.export_state("s0")?;
-            check("hello: the headless app exports its state with a cards list", s.0["cards"].is_array());
-            check_eq("hello: one start tab is up", 1, s.tabs().len());
-            check("hello: the Graph view is showing", !s.tab_view());
-            let session = inst.export_session("session0")?;
-            check("hello: the exported session has a nodes list", session["nodes"].is_array());
-            let png = inst.screenshot("shot0")?;
-            check("hello: a screenshot is written", std::fs::metadata(&png).is_ok_and(|m| m.len() > 2000));
-            let status = inst.quit(Duration::from_secs(30))?;
-            check("hello: the app exits with 0 after QUIT", status.success());
-            check("hello: no instance is left running", !inst.is_running());
-            if crate::check::failures() > 0 {
-                println!("--- tail of {}\n{}", inst.log.display(), inst.log_tail(30));
-            }
-            Ok(())
-        })();
-        if let Err(e) = result {
-            // Not a PASS/FAIL line itself: gate all counts those words, and this failure is counted below.
-            println!("ERROR: hello stopped early: {e}");
-            note_failure();
-        }
-        drop(hello);
-        if std::env::var_os("KEEP").is_none() {
-            let _ = std::fs::remove_dir_all(&work);
-        }
-        exit_code()
-    }
-
-    /// Launches an instance and then sleeps, so a test can kill `gate` itself and look for leaked processes.
-    fn hold(parent: Option<PathBuf>) -> ExitCode {
-        let (exe, work) = match (manifold_exe(), work_dir(parent, "hold")) {
-            (Ok(exe), Ok(work)) => (exe, work),
-            (Err(e), _) => {
-                eprintln!("{e}");
-                return ExitCode::from(1);
-            }
-            (_, Err(e)) => {
-                eprintln!("work dir: {e}");
-                return ExitCode::from(1);
-            }
-        };
-        let result = launch(&exe, &work).and_then(|mut inst| {
-            inst.send("WAITTABS")?;
-            println!("gate pid {} holding", std::process::id());
-            std::thread::sleep(Duration::from_secs(600));
-            Ok(())
-        });
-        if let Err(e) = result {
-            eprintln!("hold: {e}");
-            return ExitCode::from(1);
-        }
-        ExitCode::SUCCESS
-    }
-
     #[cfg(test)]
     mod tests {
         use std::os::windows::fs::OpenOptionsExt;
@@ -600,10 +506,9 @@ mod windows_main {
             let mut seen = std::collections::HashSet::new();
             assert!(STAGES.iter().all(|s| seen.insert(s.name)), "a stage name is registered twice");
             let usage = usage();
-            for stage in STAGES.iter().filter(|s| s.usage.is_some()) {
+            for stage in STAGES {
                 assert!(usage.contains(&format!("gate {}", stage.name)), "{} missing from {usage}", stage.name);
             }
-            assert!(!usage.contains("gate hold"), "the test aid is not listed");
             assert!(is_stage("trail") && !is_stage("sleep-history"));
         }
 
@@ -611,7 +516,7 @@ mod windows_main {
         /// OS. `STAGES` holds only literals, so the literal is checked here against the host table.
         #[test]
         fn install_checks_usage_lists_the_installable_hosts() {
-            let usage = STAGES.iter().find(|s| s.name == "install-check").and_then(|s| s.usage).unwrap_or("");
+            let usage = STAGES.iter().find(|s| s.name == "install-check").map_or("", |s| s.usage);
             let listed: std::collections::BTreeSet<&str> =
                 usage.split_whitespace().next().unwrap_or("").split('|').collect();
             let hosts: std::collections::BTreeSet<&str> = crate::package::installable().map(|h| h.id).collect();

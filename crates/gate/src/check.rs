@@ -83,7 +83,7 @@ pub fn timing_line(name: &str, elapsed: Duration, start_epoch: u64) -> String {
 }
 
 /// A timed step: prints its `TIMING` line when dropped (also on a panic or an early return, like the old
-/// scripts' EXIT trap). `Section::start("a")` then `.next("b")` ends "a" and opens "b".
+/// scripts' EXIT trap). `Marks` opens one after another.
 pub struct Section {
     name: String,
     t0: Instant,
@@ -96,12 +96,6 @@ impl Section {
         debug_assert!(!name.contains("PASS") && !name.contains("FAIL") && !name.contains(char::is_whitespace));
         let epoch = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
         Section { name: name.to_string(), t0: Instant::now(), epoch }
-    }
-
-    /// Ends this step (printing it) and opens `name`.
-    pub fn next(self, name: &str) -> Section {
-        drop(self);
-        Section::start(name)
     }
 }
 
