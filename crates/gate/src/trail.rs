@@ -10,17 +10,17 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::check::{check_is, exit_code, failures, no_verdict_words, note_failure, Section};
-use crate::http::{response, Handler, Server};
-use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::check::{check_is, Marks};
+use crate::http::{response, Server};
+use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
 use crate::link::bad;
+use crate::probes::import_session;
 use crate::state::{State, TAB};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 struct Run {
     exe: PathBuf,
@@ -44,22 +44,9 @@ impl Run {
     /// Settings (home page /b1, so NEWTAB opens B there) and a session holding tab A at /a.
     fn setup(&self) -> io::Result<()> {
         seed_settings(&self.profile, &self.engine, &format!(", \"home_page\": \"{}/b1\"", self.base))?;
-        let seed = self.profile.join("seed.json");
         let tab = serde_json::json!({"id": "a", "type": TAB, "url": format!("{}/a", self.base), "view_kind": self.engine,
             "pos": [0.0, 0.0]});
-        std::fs::write(&seed, serde_json::json!({ "nodes": [tab] }).to_string())?;
-        let status = Command::new(&self.exe)
-            .arg("--import-json")
-            .arg(&seed)
-            .arg("--out")
-            .arg(self.profile.join("session.mnf"))
-            .stdout(Stdio::null())
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!("--import-json exited with {status}")))
-        }
+        import_session(&self.exe, &self.profile, &[tab])
     }
 
     /// Types `path` on the site into the focused tab's address bar and goes there.
@@ -237,8 +224,8 @@ fn drag_over_strip(inst: &mut Instance) -> io::Result<()> {
     inst.send("WAITIDLE")
 }
 
-fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
-    let mut next = |name: &str| *sec = sec.take().map(|s| s.next(name));
+fn drive(run: &Run, m: &mut Marks) -> io::Result<()> {
+    let mut next = |name: &str| m.mark(name);
     let at = |s: &State, path: &str| s.focused_url().ends_with(path);
 
     next("open");
@@ -429,69 +416,35 @@ fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<()> {
     inst.quit(QUIT_TIMEOUT).map(|_| ())
 }
 
-pub fn trail(parent: Option<PathBuf>) -> ExitCode {
-    let mut sec = Some(Section::start("setup"));
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-    };
-    let work = match work_dir(parent, "trail") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
+pub fn trail(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
     fn page(line: &str) -> String {
         let path = line.split(' ').nth(1).unwrap_or("/").to_owned();
         let script = if path == "/back" { "<script>setTimeout(() => history.back(), 500)</script>" } else { "" };
         format!("<!doctype html><title>{path}</title><p>{path}</p>{script}")
     }
-    let start = |h: Arc<Handler>| match Server::start(h) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("site: {e}");
-            None
-        }
-    };
-    let Some(server) = start(Arc::new(move |line: &str| response("200 OK", &[], "text/html", page(line).as_bytes())))
-    else {
-        return ExitCode::from(1);
-    };
+    let site = |e: io::Error| io::Error::other(format!("site: {e}"));
+    let server = Server::start(Arc::new(move |line: &str| response("200 OK", &[], "text/html", page(line).as_bytes())))
+        .map_err(site)?;
     // A second origin (another port) whose `/favicon.ico` is a red 16x16 PNG; the first origin's pages keep their tiles.
     let mut png = Vec::new();
     let red = image::RgbaImage::from_pixel(16, 16, image::Rgba([220, 40, 40, 255]));
-    red.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).expect("encode the favicon");
-    let Some(fav_server) = start(Arc::new(move |line: &str| {
+    red.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(io::Error::other)?;
+    let fav_server = Server::start(Arc::new(move |line: &str| {
         if line.split(' ').nth(1) == Some("/favicon.ico") {
             return response("200 OK", &[], "image/png", &png);
         }
         response("200 OK", &[], "text/html", page(line).as_bytes())
-    })) else {
-        return ExitCode::from(1);
-    };
+    }))
+    .map_err(site)?;
     let run = Run {
-        exe,
-        profile: work.join("profile"),
-        work,
+        exe: ctx.exe.clone(),
+        profile: ctx.work.join("profile"),
+        work: ctx.work.clone(),
         base: server.base(),
         alias: fav_server.base(),
         engine: crate::probes::engine(),
     };
-    if let Err(e) = run.setup().and_then(|()| drive(&run, &mut sec)) {
-        println!("ERROR: trail stopped early: {e}");
-        note_failure();
-    }
-    if failures() > 0 {
-        println!("--- trail.log\n{}", no_verdict_words(&log_tail(&run.work.join("trail.log"), 30)));
-    }
-    drop(sec);
-    drop(server);
-    if std::env::var_os("KEEP").is_none() {
-        let _ = std::fs::remove_dir_all(&run.work);
-    }
-    exit_code()
+    run.setup()?;
+    drive(&run, &mut ctx.marks)
 }
