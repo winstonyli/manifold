@@ -19,7 +19,7 @@ status: active
 
 **Spec:** `docs/superpowers/specs/2026-10-31-shared-host-code-design.md` (status draft, reviewed; decisions f1, a1 "d2", e1 by the user). The cleanup items are CODE5 and CODE6 in `docs/superpowers/plans/2026-10-30-cleanup.md`.
 
-**Base commit:** 7e6010d5 ("cleanup plan: mark GATE1/2/4/15 and CODE5/6 own plan, ..."). Every line number below was read at 7e6010d5. Another session may commit in this tree (the gate stage-skeleton spec of the same day also edits `crates/gate/src/instance.rs`), so find each edit by the code quoted with it, not by its line number. Task 1 Step 1 records the commit the work actually starts from, as B.
+**Base commit:** Started at 55580dfc (2026-10-31). Plan written against 7e6010d5 ("cleanup plan: mark GATE1/2/4/15 and CODE5/6 own plan, ..."). Every line number below was read at 7e6010d5. Another session may commit in this tree (the gate stage-skeleton spec of the same day also edits `crates/gate/src/instance.rs`), so find each edit by the code quoted with it, not by its line number. Task 1 Step 1 records the commit the work actually starts from, as B.
 
 ## Global Constraints
 
