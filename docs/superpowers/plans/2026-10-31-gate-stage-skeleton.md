@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Gate stage skeleton Implementation Plan
