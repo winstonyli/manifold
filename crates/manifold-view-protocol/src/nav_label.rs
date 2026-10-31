@@ -1,5 +1,6 @@
 //! Whether a navigation was started by the user or by the host (manifold
-//! itself), shared by the CEF and WebView2 view hosts. Only user-started
+//! itself), set by the CEF and WebView2 view hosts and left at its default
+//! by Servo's, all through `nav_state::NavState::label`. Only user-started
 //! navigations are shared with the tab's other instances.
 
 use std::time::{Duration, Instant};
@@ -57,6 +58,12 @@ impl NavLabel {
         self.user_started.is_some() && !self.finished
     }
 
+    /// The page got a click or key press within `GESTURE_WINDOW`. Unlike `label_new`, it doesn't use it up
+    /// (WebView2's `popup.rs` asks it for each `NewWindowRequested`).
+    pub fn had_recent_input(&self) -> bool {
+        self.last_input.is_some_and(|at| at.elapsed() < GESTURE_WINDOW)
+    }
+
     /// Labels a navigation starting at `now`: the host's label if it just
     /// asked for one, else `gesture` (CEF's `user_gesture`) if the engine
     /// has one, else the user's if they just clicked or typed.
@@ -112,5 +119,16 @@ mod tests {
         let mut l = NavLabel::created_by_host(t0);
         l.label_new(None, t0);
         assert_eq!(l.user_started, Some(false));
+    }
+
+    #[test]
+    fn recent_input_is_seen_without_being_used_up() {
+        let now = Instant::now();
+        let l = NavLabel { last_input: Some(now), ..NavLabel::default() };
+        assert!(l.had_recent_input());
+        assert!(l.last_input.is_some(), "asking doesn't use it up");
+        let old = now.checked_sub(GESTURE_WINDOW).expect("the clock has run longer than GESTURE_WINDOW");
+        assert!(!NavLabel { last_input: Some(old), ..NavLabel::default() }.had_recent_input());
+        assert!(!NavLabel::default().had_recent_input());
     }
 }

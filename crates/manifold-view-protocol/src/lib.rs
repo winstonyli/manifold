@@ -7,6 +7,7 @@ pub mod host_env;
 pub mod job;
 pub mod messages;
 pub mod nav_label;
+pub mod nav_state;
 pub mod render;
 mod stamp;
 pub mod transport;
