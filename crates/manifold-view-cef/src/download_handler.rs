@@ -87,6 +87,14 @@ wrap_download_handler! {
             let (Some(item), Some(callback)) = (download_item, callback) else { return true as _ };
             let suggested = suggested_name.map(|s| s.to_string()).unwrap_or_default();
             let mut results = self.handler.result.borrow_mut();
+            // Chromium asks again for a download it restarts after an interruption (the same item id): it keeps the
+            // path it was given, or the restart would name itself `x (1).zip` beside its own partial file and every
+            // later message would carry a path no card has (`gate download` `broken`).
+            if let Some(path) = results.assigned.get(&item.id()).cloned() {
+                drop(results);
+                callback.cont(Some(&path.to_string_lossy().as_ref().into()), false as _);
+                return true as _;
+            }
             let decided = manifold_view_protocol::downloads::destination(
                 manifold_view_protocol::downloads::folder().as_deref(),
                 &suggested,

@@ -31,6 +31,13 @@ fn failure_kind(error: &gtk::glib::Error) -> FailureKind {
     }
 }
 
+/// Whether a download that `finished` without a `failed` ended short of the length the response promised
+/// (`gate download` `broken`: WebKit reports a body cut off by a dying server as finished). No promised length,
+/// no verdict.
+fn ended_short(promised: Option<u64>, received: u64) -> bool {
+    promised.is_some_and(|total| received < total)
+}
+
 fn main() {
     manifold_view_protocol::host_env::apply(&manifold_view_protocol::host_env::settings_from_env());
     // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
@@ -179,7 +186,7 @@ fn main() {
 
             let pending_for_finished = pending_for_started.clone();
             let reserved_for_finished = reserved.clone();
-            download.connect_finished(move |_download| {
+            download.connect_finished(move |download| {
                 // `finished` follows either outcome, so the name is freed here.
                 let dest = dest_for_events.borrow().clone();
                 if let Some(path) = &dest {
@@ -189,7 +196,13 @@ fn main() {
                     return;
                 }
                 if let Some(path) = dest {
-                    pending_for_finished.borrow_mut().push(ViewToHost::DownloadCompleted { path });
+                    let promised = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
+                    let event = if ended_short(promised, download.received_data_length()) {
+                        ViewToHost::DownloadFailed { path, failure: DownloadFailure::new(FailureKind::Network, "") }
+                    } else {
+                        ViewToHost::DownloadCompleted { path }
+                    };
+                    pending_for_finished.borrow_mut().push(event);
                 }
             });
         });
@@ -660,5 +673,12 @@ mod tests {
         assert_eq!(failure_kind(&Error::new(E::Destination, "x")), FailureKind::FolderUnusable);
         assert_eq!(failure_kind(&Error::new(E::CancelledByUser, "x")), FailureKind::Other);
         assert_eq!(failure_kind(&Error::new(FileError::Nospc, "x")), FailureKind::Other, "another error domain");
+    }
+
+    #[test]
+    fn a_download_shorter_than_its_promised_length_ended_short() {
+        assert!(ended_short(Some(1_000_000), 300_000));
+        assert!(!ended_short(Some(4), 4));
+        assert!(!ended_short(None, 300_000), "no promised length, no verdict");
     }
 }
