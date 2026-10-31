@@ -3,14 +3,14 @@
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `download`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `shots-aa`. For any change to sync, the store, the
+//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `arrange`, `download`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `kill-check`, `shots-aa`. For any change to sync, the store, the
 //!   mirror, session save/restore or the view hosts.
 //! - `light`: the same with `two` once and no `shots-aa`. For UI code that writes the store or reaches a view, and scripts. The repeats in
 //!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
 //! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
 //!   that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
-//! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode, (after `sleep-history`, except `cef`). `cef` adds `download-cef` (right after `download`, in `light` and up) and needs the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"). `servo` adds `trail-servo`
+//! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode, (after `sleep-history`, except `cef`). `cef` adds `download-cef` (right after `download`, in `light` and up) and `kill-check-cef` (after `layout`, in `full`) and needs the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"). `servo` adds `trail-servo`
 //! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built in `target-servo` with its DLLs
 //! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `download-webkit` (right after
 //! `download-cef`, in `light` and up), `trail-webkit` and `sleep-webkit`, needs the WebKit host built in WSL, and takes
@@ -20,7 +20,7 @@
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
 //! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .labels.log, .arrange.log, .download.log, .download-cef.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
-//! .sleep-history.log, .layout.log, .shots-aa.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
+//! .sleep-history.log, .layout.log, .kill-check.log, .kill-check-cef.log, .shots-aa.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
 //! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 
@@ -243,6 +243,8 @@ const STEPS: &[Step] = &[
         ..step("sleep-servo", Mode::Ui)
     },
     step("layout", Mode::Ui),
+    step("kill-check", Mode::Full),
+    Step { stage: "kill-check", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("kill-check-cef", Mode::Full) },
     step("shots-aa", Mode::Full),
 ];
 
@@ -379,14 +381,14 @@ mod tests {
         }
     }
 
-    /// Each mode runs its own steps and every smaller mode's: `light` adds the store's, `full` the A/A of the shots.
+    /// Each mode runs its own steps and every smaller mode's: `light` adds the store's, `full` the kill check and the A/A of the shots.
     #[test]
     fn a_mode_runs_the_steps_from_it_and_below() {
         let runs = |mode: Mode| STEPS.iter().filter(|s| s.from <= mode).count();
         let only = |mode: Mode| STEPS.iter().filter(|s| s.from == mode).map(|s| s.name).collect::<Vec<_>>();
-        assert_eq!(only(Mode::Full), ["shots-aa"]);
+        assert_eq!(only(Mode::Full), ["kill-check", "kill-check-cef", "shots-aa"]);
         assert_eq!(runs(Mode::Full), STEPS.len());
-        assert_eq!(runs(Mode::Light), STEPS.len() - 1);
+        assert_eq!(runs(Mode::Light), STEPS.len() - 3);
         assert_eq!(runs(Mode::Ui), only(Mode::Ui).len());
         assert_eq!(Mode::parse("light"), Some(Mode::Light));
         assert_eq!(Mode::parse("most"), None);

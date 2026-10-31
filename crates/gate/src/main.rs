@@ -32,6 +32,8 @@ mod iframe_typing;
 mod instance;
 #[cfg(windows)]
 mod jar;
+#[cfg(windows)]
+mod kill_check;
 mod labels;
 #[cfg(windows)]
 mod launch_forms;
@@ -171,6 +173,7 @@ mod windows_main {
         Stage::work("arrange", crate::arrange::arrange),
         Stage::work("sleep", crate::sleep::sleep).listed_as(""),
         Stage::work("jar", crate::jar::jar).listed_as(""),
+        Stage::work("kill-check", crate::kill_check::kill_check).listed_as(""),
         Stage::args("scale", "TABS...", crate::stress::scale),
         Stage::args("release-pins", "vX.Y.Z DIST FOREIGN", crate::release_hosts::release_pins),
         Stage::args("release-embedded", "vX.Y.Z DIST", crate::release_hosts::release_embedded),
