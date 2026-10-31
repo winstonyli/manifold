@@ -44,7 +44,6 @@ type Body = fn(&mut Ctx) -> io::Result<()>;
 pub(crate) struct Ctx {
     pub exe: PathBuf,          // empty when the stage does not need manifold.exe
     pub work: PathBuf,
-    pub args: Vec<String>,     // the command line after the stage name, minus WORKDIR_PARENT when the stage takes one
     pub marks: Marks,          // empty: a stage that wants TIMING lines calls `marks.mark("name")`
 }
 ```
@@ -54,18 +53,22 @@ pub(crate) struct Ctx {
 `Run::Work`; `Stage::parent` and `Run::Parent` go. Three stages that today call `probes::setup`/`work_dir` and
 `finish` from a `Run::Args` stage keep their argument parsing and usage errors (exit 2, before any dir exists) and then
 call `run_stage` themselves: `scale` (needs the exe, args are `TABS...`) and `package`/`install-check` (no
-`manifold.exe`; args in `ctx.args`). So `run_stage(name, parent, needs_exe, args, body)` is a plain function and
-`Run::Work` is one caller of it. `probes::setup` (22 callers) and `probes::finish` (24) are replaced by it.
+`manifold.exe`; each keeps its parsed arguments in the closure it passes as `body`, so `Ctx` has no `args`). So
+`run_stage(name, parent, needs_exe, body)` is a plain function (`body` is any `impl FnOnce(&mut Ctx) -> io::Result<()>`;
+the `Body` fn pointer is what `Run::Work` stores) and `Run::Work` is one caller of it. `probes::setup` (22 callers) and
+`probes::finish` (24) are replaced by it.
 
-`run_stage(name, parent, needs_exe, args, body)`:
+`run_stage(name, parent, needs_exe, body)`:
 
 1. `manifold_exe()` if the stage needs it, then `work_dir(parent, name)`; an error prints as `probes::setup`
    does today (`{e}`, `work dir: {e}`) and returns exit 1 after printing `{name}: failed`. Nothing exists yet to clean up.
-2. Run `body(&mut ctx)`. `Err(e)` prints `ERROR: {name} stopped early: {e}` (not a verdict word) and calls
+2. Read `before = failures()`, then run `body(&mut ctx)`. `Err(e)` prints `ERROR: {name} stopped early: {e}` (not a verdict word) and calls
    `note_failure()`.
 3. `ctx.marks.end()`. Everything the body owned (instances, servers, sections) is dropped when it returns.
-4. If `failures() > 0`: print the registered logs (below).
-5. `cleanup(&work)`: `keep_dir(failures() > 0, KEEP set)` decides; if not kept, `remove_dir_with_retries`.
+4. The stage failed if the body returned `Err` or `failures()` rose during the body (compared with `before`, so a
+   failure noted earlier in the process does not fail this stage; `gate`'s exit code still reads the global count).
+   If it failed: take the registry and print the registered logs (below); a passing run leaves the registry alone.
+5. `cleanup(&work)`: `keep_dir(failed, KEEP set)` decides; if not kept, `remove_dir_with_retries`.
 6. Print the closing line `{name}: ok`, or `{name}: failed (kept {work})` when the dir was kept after a failure,
    as the last line (`gate all` takes a stage's last non-`TIMING` line as its headline; today `smoke` and `two`
    print their own closing line, which become redundant and are deleted). Return `exit_code()`.
@@ -103,8 +106,8 @@ greps to confirm).
 ### Smaller unifications that land with it
 
 - `Marks` becomes the one timing type: `Marks::default()` is empty and `mark(name)` on an empty `Marks` starts a
-  section. `link`, `closed`, `trail`, `unknown-type`, `smoke` and `two` use `ctx.marks` (`two` holds
-  `&mut Marks` instead of owning one). Stages that open a `Section` per view or per case keep doing so.
+  section. `link`, `closed`, `trail`, `unknown-type`, `smoke` and `two` use `ctx.marks` (`two` takes
+  them with `std::mem::take(&mut ctx.marks)` and keeps owning them, so `Two` needs no lifetime). Stages that open a `Section` per view or per case keep doing so.
 - Every stage that seeds a profile uses `probes::seed`/`import_session`. The copies in `link`, `closed`,
   `unknown_type`, `trail` and `dblprobe` are deleted. `launch-forms` keeps its two `--import-json` calls: the import is
   what it checks.
@@ -149,13 +152,14 @@ it is not a body `Err`: it prints `ERROR: chrome-shots stopped early` (was `FAIL
 6. `hello`, `hold` and `gate hello` no longer exist.
 7. Exit codes: a failed stage exits 1. Config errors that exited 2 (`shots.rs:129`, `:141`) become body errors and exit
    1; usage errors of `scale`, `package` and `install-check` stay exit 2 (checked before `run_stage`); `gate all` only tests `rc != 0` (`all.rs:165`) and logs the code.
+8. A config error in `chrome-shots` or `shots-aa` (a bad `SIZE`) now happens inside the body, after `run_stage` made the work dir, so an empty work dir is created and kept (it was exit 2 before any dir existed).
 
 ## Testing
 
 - Unit tests: `keep_dir` over its four inputs; the log printer over a list of paths; the early-stop line text; the log printer on a temp dir with a non-empty
   registered log containing `PASS`/`FAIL` (masked), an empty registered log (skipped) and a missing one (skipped);
-  `Marks::mark` on an empty `Marks` starts a section; `work_dir` pruning removes an old `gate-*` dir and keeps a fresh
-  one and a non-`gate-` dir.
+  `Marks::mark` on an empty `Marks` starts a section; `work_dir` pruning removes an old dir in `gate-runs` and keeps a fresh
+  one, and leaves a sibling dir beside `gate-runs` untouched (only `gate-runs` is ever pruned).
 - The README step-name test and `stage_names_are_unique_and_the_usage_lists_the_public_ones` stay (the `gate hold`
   assertion goes).
 - Behavioural proof: for each converted stage, its PASS/FAIL verdict lines before and after the change are identical
@@ -173,4 +177,5 @@ it is not a body `Err`: it prints `ERROR: chrome-shots stopped early` (was `FAIL
 
 - Whether `gate-runs` should live under `target/` instead of `%TEMP%` (outside the repo is current behaviour; the
   plan keeps it).
-- `README.md` also documents `KEEP`; the plan adds the "a failed run keeps its dir" sentence there.
+- README documents no `KEEP` today (`git grep -n KEEP README.md` finds only `LAYOUT_KEEP`); the plan adds the first
+  description of `KEEP` and of the kept dir.
