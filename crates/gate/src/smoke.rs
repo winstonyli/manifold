@@ -15,18 +15,17 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::check::{exit_code, fail_line, failures, no_verdict_words, note_failure, pass_line, Marks};
-use crate::instance::{file_url, log_tail, remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::check::{fail_line, failures, note_failure, pass_line, Marks};
+use crate::instance::{file_url, seed_settings, Instance, QUIT_TIMEOUT};
 use crate::link::{bad, truthy};
 use crate::state::{fmt0, round_half_even, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 /// The script's `sleep 0.2` / `sleep 0.3` / `sleep 0.5` polls.
 const FILE_POLL: Duration = Duration::from_millis(200);
@@ -1265,70 +1264,40 @@ fn repo_root(exe: &Path) -> Option<PathBuf> {
     exe.ancestors().find(|d| d.join(r"crates\manifold\assets\icon\icon-64.png").is_file()).map(Path::to_path_buf)
 }
 
-pub fn smoke(parent: Option<PathBuf>) -> ExitCode {
-    let mut marks = Marks::start("setup");
-    let fatal = |e: String| {
-        eprintln!("{e}");
-        ExitCode::from(1)
-    };
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => return fatal(e),
-    };
-    let Some(repo) = repo_root(&exe) else { return fatal(format!("no checkout found above {}", exe.display())) };
+pub fn smoke(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
+    let repo = repo_root(&ctx.exe).ok_or_else(|| bad(format!("no checkout found above {}", ctx.exe.display())))?;
     let out =
         std::env::var_os("HEADLESS_TEST_OUT").map_or_else(|| repo.join(r"target\headless-test-output"), PathBuf::from);
-    let setup = fs::create_dir_all(&out).and_then(|()| {
-        for e in fs::read_dir(&out)?.flatten() {
-            if e.path().extension().is_some_and(|x| x == "png" || x == "json") {
-                fs::remove_file(e.path())?;
+    fs::create_dir_all(&out)
+        .and_then(|()| {
+            for e in fs::read_dir(&out)?.flatten() {
+                if e.path().extension().is_some_and(|x| x == "png" || x == "json") {
+                    fs::remove_file(e.path())?;
+                }
             }
-        }
-        Ok(())
-    });
-    if let Err(e) = setup {
-        return fatal(format!("{}: {e}", out.display()));
-    }
+            Ok(())
+        })
+        .map_err(|e| bad(format!("{}: {e}", out.display())))?;
     // A fresh profile of its own, so the real %APPDATA%\manifold is never read or written. `has_shown_first_launch_demo`
     // skips the demo scene, so the app starts with just the root tab.
-    let work = match work_dir(parent, "smoke") {
-        Ok(w) => w,
-        Err(e) => return fatal(format!("work dir: {e}")),
-    };
-    let profile = work.join("profile");
+    let profile = ctx.work.join("profile");
+    seed_settings(&profile, "webview2", "")?;
     // Address-bar suggestions come from a local server, not DuckDuckGo, so those checks don't depend on the network.
-    let started = seed_settings(&profile, "webview2", "").and_then(|()| Server::start()).and_then(|server| {
-        let url = server.url();
-        let inst = Instance::launch_env(&exe, &profile, &out, "smoke.log", &[("MANIFOLD_SUGGESTIONS_URL", &url)])?;
-        Ok((server, inst))
-    });
-    let (server, inst) = match started {
-        Ok(x) => x,
-        Err(e) => return fatal(format!("launch: {e}")),
-    };
-    let log = inst.log.clone();
+    let server = Server::start()?;
+    let url = server.url();
+    let inst = Instance::launch_env(&ctx.exe, &profile, &out, "smoke.log", &[("MANIFOLD_SUGGESTIONS_URL", &url)])?;
     let mut sm = Smoke { inst, out: out.clone(), repo };
-    if let Err(e) = drive(&mut sm, &mut marks) {
-        // Not a verdict line: gate all counts those words, and this failure is counted here.
-        println!("ERROR: smoke stopped early: {e}");
-        note_failure();
-    }
-    marks.end();
+    drive(&mut sm, &mut ctx.marks)?;
     drop(sm); // kills the instance if it is still up
     drop(server);
-    if failures() > 0 {
-        println!("--- tail of {}\n{}", log.display(), no_verdict_words(&log_tail(&log, 30)));
-    }
     println!();
     if failures() == 0 {
         println!("All checks passed. Screenshots in {}", out.display());
     } else {
         println!("Some checks failed. Screenshots in {}", out.display());
     }
-    if std::env::var_os("KEEP").is_none() {
-        remove_dir_with_retries(&work);
-    }
-    exit_code()
+    Ok(())
 }
 
 #[cfg(test)]

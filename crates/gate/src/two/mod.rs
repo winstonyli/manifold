@@ -12,17 +12,16 @@ mod web;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::check::{check, exit_code, failures, no_verdict_words, note_failure, Marks};
-use crate::instance::{log_tail, remove_dir_with_retries, seed_settings, wait_file, Instance, QUIT_TIMEOUT};
+use crate::check::{check, failures, no_verdict_words, Marks};
+use crate::instance::{register_log, seed_settings, wait_file, Instance, QUIT_TIMEOUT};
 use crate::nonce::{Counters, Site};
 use crate::session::{self, Field};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 /// An export the app never writes (the script's `wait_file`: 300 x 0.2 s).
 const WAIT_FILE: Duration = Duration::from_secs(60);
@@ -318,50 +317,29 @@ fn run(t: &mut Two) -> Step {
     restart::s7(t)
 }
 
-pub fn two(parent: Option<PathBuf>) -> ExitCode {
-    let fatal = |e: String| {
-        eprintln!("{e}");
-        ExitCode::from(1)
-    };
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => return fatal(e),
-    };
-    // The script's first mark comes after its freshness check.
-    let marks = Marks::start("setup");
-    let work = match work_dir(parent, "two") {
-        Ok(w) => w,
-        Err(e) => return fatal(format!("work dir: {e}")),
-    };
-    let (out, profile) = (work.join("out"), work.join("profile"));
+pub fn two(ctx: &mut Ctx) -> io::Result<()> {
+    // The script's first mark comes after its freshness check (run_stage's).
+    ctx.marks.mark("setup");
+    let (out, profile) = (ctx.work.join("out"), ctx.work.join("profile"));
     let view_kind = std::env::var("ENGINE").unwrap_or_else(|_| "webview2".to_string());
-    if let Err(e) = fs::create_dir_all(&out).and_then(|()| seed_settings(&profile, &view_kind, "")) {
-        return fatal(format!("setup: {e}"));
-    }
-    println!("two-instance test: exe {} profile {} engine {view_kind}", exe.display(), profile.display());
-    let mut t = Two { exe, profile, out, insts: [None, None, None, None], site: None, marks };
-    if let Err(Halt::Error(e)) = run(&mut t) {
-        // Not a verdict line: gate all counts those words, and this failure is counted here.
-        println!("ERROR: two stopped early: {e}");
-        note_failure();
-    }
-    t.marks.end();
-    let logs: Vec<PathBuf> = t.insts.iter().flatten().map(|i| i.log.clone()).collect();
-    let site = t.site.as_ref().map(|s| s.counters().report());
-    drop(t); // kills any instance still up and stops the site
-    if failures() > 0 {
-        for log in &logs {
-            println!("--- tail of {}\n{}", log.display(), no_verdict_words(&log_tail(log, 30)));
-        }
-        if let Some(s) = site {
-            println!("--- nonce site requests\n{}", no_verdict_words(&s));
+    fs::create_dir_all(&out)?;
+    seed_settings(&profile, &view_kind, "")?;
+    println!("two-instance test: exe {} profile {} engine {view_kind}", ctx.exe.display(), profile.display());
+    // `Two` owns the marks for the run; the last section ends when it is dropped below.
+    let marks = std::mem::take(&mut ctx.marks);
+    let mut t = Two { exe: ctx.exe.clone(), profile, out, insts: [None, None, None, None], site: None, marks };
+    let result = run(&mut t);
+    // The nonce site's request counters, shown with the logs if the run failed.
+    if let Some(site) = &t.site {
+        let report = ctx.work.join("nonce-site.txt");
+        if fs::write(&report, site.counters().report()).is_ok() {
+            register_log(&report);
         }
     }
-    if std::env::var_os("KEEP").is_none() {
-        remove_dir_with_retries(&work);
-    } else {
-        println!("kept {}", work.display());
+    drop(t); // ends the last mark, kills any instance still up and stops the site
+    match result {
+        // A check already failed and was counted.
+        Ok(()) | Err(Halt::Failed) => Ok(()),
+        Err(Halt::Error(e)) => Err(e),
     }
-    println!("two-instance test: {}", if failures() == 0 { "ok" } else { "failed" });
-    exit_code()
 }

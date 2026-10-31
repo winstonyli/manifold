@@ -121,10 +121,6 @@ pub(crate) fn no_verdict_words(text: &str) -> String {
 pub struct Marks(Option<Section>);
 
 impl Marks {
-    pub fn start(name: &str) -> Marks {
-        Marks(Some(Section::start(name)))
-    }
-
     pub fn mark(&mut self, name: &str) {
         drop(self.0.take());
         self.0 = Some(Section::start(name));
