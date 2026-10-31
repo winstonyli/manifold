@@ -17,13 +17,11 @@ sha2.workspace = true
 # The border checks read the screenshot PNG; PNG decoding only (the workspace default).
 image.workspace = true
 
-# Windows-only: the Job Object that kills every launched instance if `gate` itself dies. Same crate, version and
-# feature set as crates/manifold's view-host job (process_manager/job.rs).
+# Windows-only: DPAPI for the jar probe (`jar.rs`; `Win32_Security_Cryptography` enables `Win32_Security` itself),
+# and the CPU-time sample and local time (`all.rs`). The instance job is `manifold_view_protocol::job`.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
-    "Win32_System_JobObjects",
-    "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_System_Threading",
     "Win32_System_SystemInformation",
