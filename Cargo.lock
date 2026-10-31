@@ -3088,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "gate"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "image",
  "manifold-hosts",
@@ -4996,7 +4996,7 @@ dependencies = [
 
 [[package]]
 name = "manifold"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "bzip2",
  "egui",
@@ -5033,15 +5033,15 @@ dependencies = [
 
 [[package]]
 name = "manifold-hosts"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "manifold-pages"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "manifold-view-cef"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cef",
  "manifold-pages",
@@ -5052,7 +5052,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-view-pdfium"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "manifold-view-protocol",
  "pdfium-auto",
@@ -5061,7 +5061,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-view-protocol"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "interprocess",
  "manifold-pages",
@@ -5072,7 +5072,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-view-servo"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "dpi",
  "euclid",
@@ -5087,7 +5087,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-view-webkitgtk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "gtk",
  "javascriptcore-rs",
@@ -5098,7 +5098,7 @@ dependencies = [
 
 [[package]]
 name = "manifold-view-webview2"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "manifold-pages",
  "manifold-view-protocol",

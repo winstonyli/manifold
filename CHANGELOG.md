@@ -2,6 +2,44 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
+## 0.10.0 - 2026-10-30
+
+*View protocol 6 -> 8: a 0.9.0 host does not start with this build (the app names which side to rebuild); the hosts in the release match. Session store format unchanged (journal 4).*
+
+### Changed
+
+- **Breaking:** View protocol 6 -> 8: every host takes one `HostSettings` (theme and download folder) at spawn and live, and `DownloadFailed` carries a `DownloadFailure` ([947a1c8f](https://github.com/winstonyli/manifold/commit/947a1c8f), [15a6761e](https://github.com/winstonyli/manifold/commit/15a6761e)).
+- Stamp every host exe with its protocol number; a host speaking another protocol is Unavailable and names the side to rebuild ([73ca6dea](https://github.com/winstonyli/manifold/commit/73ca6dea), [dc0e5481](https://github.com/winstonyli/manifold/commit/dc0e5481), [436c4253](https://github.com/winstonyli/manifold/commit/436c4253)).
+- Move labels into a card pane, one right panel shared with the JSON outline (name, place, jar, links, text); the Label popup and its bar button are gone ([b3bee239](https://github.com/winstonyli/manifold/commit/b3bee239), [bd7dd204](https://github.com/winstonyli/manifold/commit/bd7dd204), [7b866a44](https://github.com/winstonyli/manifold/commit/7b866a44)).
+- Describe every engine host by one row in a zero-dependency table, read by the app, the gate and the release ([31651fef](https://github.com/winstonyli/manifold/commit/31651fef), [330d89ee](https://github.com/winstonyli/manifold/commit/330d89ee)).
+- Never run a host from a dev build folder in a release ([b649ed23](https://github.com/winstonyli/manifold/commit/b649ed23)).
+- Lay the graph out from the document positions and card sizes alone, so it repeats between runs ([4969b539](https://github.com/winstonyli/manifold/commit/4969b539), [dc20e365](https://github.com/winstonyli/manifold/commit/dc20e365)).
+
+### Added
+
+- Inline JSON cards: New JSON, Detach to inline (one undo step), Export JSON, and `Ref` chips that jump to a card ([85f18e80](https://github.com/winstonyli/manifold/commit/85f18e80), [188fec76](https://github.com/winstonyli/manifold/commit/188fec76), [42f0a59f](https://github.com/winstonyli/manifold/commit/42f0a59f), [08b5b2f8](https://github.com/winstonyli/manifold/commit/08b5b2f8)).
+- Edit an inline JSON card's values, keys and structure in place, with undo, and search its scalar text ([0d0a6781](https://github.com/winstonyli/manifold/commit/0d0a6781), [7110385b](https://github.com/winstonyli/manifold/commit/7110385b), [bd946910](https://github.com/winstonyli/manifold/commit/bd946910)).
+- Add rows for notes, groups, downloads, images, PDFs and JSON cards to the omnibar ([5897e4e6](https://github.com/winstonyli/manifold/commit/5897e4e6)).
+- Set the Download folder in Settings (default: your Downloads folder); WebView2, CEF and WebKit save there under one naming rule, and a folder that can't be made says so ([44456fbe](https://github.com/winstonyli/manifold/commit/44456fbe), [deaa73ba](https://github.com/winstonyli/manifold/commit/deaa73ba), [5a134e1c](https://github.com/winstonyli/manifold/commit/5a134e1c), [b64deb11](https://github.com/winstonyli/manifold/commit/b64deb11)).
+- Say why a download failed (network, server, folder unusable, disk full, blocked) on the card and in its tooltip, on every engine ([15375d2a](https://github.com/winstonyli/manifold/commit/15375d2a), [773daa55](https://github.com/winstonyli/manifold/commit/773daa55), [8f546254](https://github.com/winstonyli/manifold/commit/8f546254), [e1d38e0e](https://github.com/winstonyli/manifold/commit/e1d38e0e)).
+- Carry labels through a group export and Import Group, read same-name labels as one, and undo a label delete in one step ([e92ae801](https://github.com/winstonyli/manifold/commit/e92ae801), [25dbf242](https://github.com/winstonyli/manifold/commit/25dbf242), [f211e760](https://github.com/winstonyli/manifold/commit/f211e760)).
+- Keep a pin on every card kind, so a pinned note or group stays pinned after a restart and on other devices ([35edc1c7](https://github.com/winstonyli/manifold/commit/35edc1c7)).
+
+### Fixed
+
+- Show a background tab's card once its page has loaded, instead of spinning forever (a tab opened in the background was hidden before it painted) ([24b9d7e2](https://github.com/winstonyli/manifold/commit/24b9d7e2), [aa526e4f](https://github.com/winstonyli/manifold/commit/aa526e4f)).
+- Keep the jar menu's width after a page change at small window sizes ([50950ee7](https://github.com/winstonyli/manifold/commit/50950ee7)).
+- Report a WebView2 download whose transfer broke as failed, keep a retry's path, and restart the tab's card instead of adding a second ([e1b52c73](https://github.com/winstonyli/manifold/commit/e1b52c73), [925949de](https://github.com/winstonyli/manifold/commit/925949de)).
+- Cancel a refused CEF download instead of saving it in your Downloads folder ([ae6bf81d](https://github.com/winstonyli/manifold/commit/ae6bf81d)).
+- Fail a WebKit download that ends short of its promised length, and keep a CEF download's path when Chromium restarts it, so a cut-off transfer shows as failed ([37b55b6e](https://github.com/winstonyli/manifold/commit/37b55b6e)).
+- Keep a card at the origin where it is, and re-settle a level when a card changes size ([41ae0a6b](https://github.com/winstonyli/manifold/commit/41ae0a6b), [dc20e365](https://github.com/winstonyli/manifold/commit/dc20e365)).
+- Arm the page-text timer on any settled state with no text, so a missed loading edge no longer loses a page's text ([9985cc88](https://github.com/winstonyli/manifold/commit/9985cc88)).
+- Read `NETWORK_INVALID_REQUEST` as a failed download, not a network error ([8f3f0727](https://github.com/winstonyli/manifold/commit/8f3f0727)).
+
+### Internal
+
+- Run `download` on WebView2, CEF and WebKit (saved, refused and broken cases), add `shots-aa` (chrome shots repeat pixel for pixel), `layout` width checks and a card-pane `labels` stage to `gate all`, and refactor `App`, the graph, the store and the gate into smaller named parts ([6c95f1e9](https://github.com/winstonyli/manifold/commit/6c95f1e9), [58ed660b](https://github.com/winstonyli/manifold/commit/58ed660b), [fb3fa157](https://github.com/winstonyli/manifold/commit/fb3fa157), [7747af19](https://github.com/winstonyli/manifold/commit/7747af19), [5114d51f](https://github.com/winstonyli/manifold/commit/5114d51f)).
+
 ## 0.9.0 - 2026-10-25
 
 *Session store format 3 -> 4 (journal), view protocol 5 -> 6: older sessions may not load. Export a 0.8.0 session with that build first; `--import-json` brings it back.*
