@@ -7,14 +7,14 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::Value;
 
-use crate::check::{check_eq, exit_code, failures, no_verdict_words, note_failure, Section};
-use crate::instance::{log_tail, seed_settings, Instance, QUIT_TIMEOUT};
+use crate::check::{check_eq, Marks};
+use crate::instance::{Instance, QUIT_TIMEOUT};
+use crate::probes::seed;
 use crate::state::{round_half_even, State};
-use crate::windows_main::{manifold_exe, work_dir};
+use crate::windows_main::Ctx;
 
 pub(crate) fn bad(msg: String) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg)
@@ -219,28 +219,13 @@ impl Run {
         inst.quit(QUIT_TIMEOUT).map(|_| ())
     }
 
-    /// The setup: the profile's settings and the session built from the seed (`--import-json`).
+    /// The setup: the profile's settings and the session built from three tabs (`probes::seed`).
     fn setup(&self) -> io::Result<()> {
-        seed_settings(&self.profile, "webview2", "")?;
-        let seed = self.profile.join("seed.json");
         let tab = |id: &str, x: f64, y: f64| {
             serde_json::json!({"id": id, "type": "application/vnd.manifold.tab", "url": "about:blank",
                 "view_kind": "webview2", "pos": [x, y]})
         };
-        let doc = serde_json::json!({"nodes": [tab("t1", 0.0, 0.0), tab("t2", 400.0, 0.0), tab("t3", 0.0, 400.0)]});
-        std::fs::write(&seed, doc.to_string())?;
-        let status = Command::new(&self.exe)
-            .arg("--import-json")
-            .arg(&seed)
-            .arg("--out")
-            .arg(self.profile.join("session.mnf"))
-            .stdout(Stdio::null())
-            .status()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!("--import-json exited with {status}")))
-        }
+        seed(&self.exe, &self.profile, "webview2", &[tab("t1", 0.0, 0.0), tab("t2", 400.0, 0.0), tab("t3", 0.0, 400.0)])
     }
 }
 
@@ -274,8 +259,8 @@ struct Exports {
 }
 
 /// The five runs; returns the states the verdicts read. The sections' TIMING lines are printed from here.
-fn drive(run: &Run, sec: &mut Option<Section>) -> io::Result<Exports> {
-    let mut next = |name: &str| *sec = sec.take().map(|s| s.next(name));
+fn drive(run: &Run, m: &mut Marks) -> io::Result<Exports> {
+    let mut next = |name: &str| m.mark(name);
     next("run1-link");
     let mut i = run.start("log1", 0)?;
     let s0 = i.export_state("s0")?;
@@ -500,48 +485,13 @@ fn verdicts(e: &Exports) -> io::Result<()> {
     Ok(())
 }
 
-pub fn link(parent: Option<PathBuf>) -> ExitCode {
-    let mut sec = Some(Section::start("setup"));
-    let exe = match manifold_exe() {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("{e}");
-            return ExitCode::from(1);
-        }
-    };
-    let work = match work_dir(parent, "link") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let run = Run { exe, profile: work.join("profile"), work };
-    let result = run.setup().and_then(|()| drive(&run, &mut sec));
-    match result {
-        Ok(exports) => {
-            sec = sec.take().map(|s| s.next("verdicts"));
-            if let Err(e) = verdicts(&exports) {
-                // Not a verdict line: gate all counts those words, and this failure is counted below.
-                println!("ERROR: link verdicts stopped early: {e}");
-                note_failure();
-            }
-        }
-        Err(e) => {
-            println!("ERROR: link stopped early: {e}");
-            note_failure();
-        }
-    }
-    if failures() > 0 {
-        for l in ["log1", "log2", "log3", "log4", "log5"] {
-            println!("--- {l}\n{}", no_verdict_words(&log_tail(&run.work.join(l), 20)));
-        }
-    }
-    drop(sec);
-    if std::env::var_os("KEEP").is_none() {
-        let _ = std::fs::remove_dir_all(&run.work);
-    }
-    exit_code()
+pub fn link(ctx: &mut Ctx) -> io::Result<()> {
+    ctx.marks.mark("setup");
+    let run = Run { exe: ctx.exe.clone(), profile: ctx.work.join("profile"), work: ctx.work.clone() };
+    run.setup()?;
+    let exports = drive(&run, &mut ctx.marks)?;
+    ctx.marks.mark("verdicts");
+    verdicts(&exports)
 }
 
 #[cfg(test)]
