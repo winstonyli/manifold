@@ -16,12 +16,11 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde_json::Value;
 
 use crate::check::{check, Section};
-use crate::instance::{seed_settings, Instance};
+use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
 use crate::state::{State, GROUP, NOTE, TAB};
 use crate::windows_main::Ctx;
 
@@ -384,7 +383,7 @@ fn run(exe: &Path, work: &Path) -> io::Result<()> {
                 batch.iter().map(|sc| sc.name).collect::<Vec<_>>().join(", ")
             );
             let result = run_group(&mut inst, size, &batch);
-            let status = inst.quit(Duration::from_secs(30))?;
+            let status = inst.quit(QUIT_TIMEOUT)?;
             check(&format!("layout {size:?}: the app exits with 0 after QUIT"), status.success());
             result?;
         }

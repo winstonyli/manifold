@@ -6,12 +6,11 @@
 
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use serde_json::json;
 
 use crate::check::check;
-use crate::instance::Instance;
+use crate::instance::{Instance, QUIT_TIMEOUT};
 use crate::link::bad;
 use crate::probes::seed;
 use crate::state::{GROUP, NOTE};
@@ -80,7 +79,7 @@ fn drive(exe: &Path, work: &Path) -> io::Result<()> {
         println!("{name}: {} missed of {}", missed[i], tried[i]);
     }
     check("the probe ran", true);
-    a.quit(Duration::from_secs(60)).map(|_| ())
+    a.quit(QUIT_TIMEOUT).map(|_| ())
 }
 
 pub fn dblprobe(ctx: &mut Ctx) -> io::Result<()> {
