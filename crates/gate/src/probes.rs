@@ -14,7 +14,7 @@
 use std::fs;
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -22,12 +22,12 @@ use std::time::{Duration, Instant};
 use manifold_hosts::{Os, WEBVIEW2};
 use serde_json::{json, Value};
 
-use crate::check::{check, check_eq, exit_code, failures, note_failure, Section};
+use crate::check::{check, check_eq, note_failure, Section};
 use crate::http::{self, response};
-use crate::instance::{register_log, remove_dir_with_retries, seed_settings, Instance, QUIT_TIMEOUT, STEP_TIMEOUT};
+use crate::instance::{register_log, seed_settings, Instance, QUIT_TIMEOUT, STEP_TIMEOUT};
 use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
-use crate::windows_main::{manifold_exe, work_dir, Ctx};
+use crate::windows_main::Ctx;
 
 const PAGE: &str = "<!doctype html><title>keys</title><textarea id=t autofocus></textarea>\n<script>\n\
 document.getElementById('t').focus();\n\
@@ -162,26 +162,6 @@ impl Site {
             sleep(Duration::from_millis(100));
         }
     }
-}
-
-/// `manifold.exe` and a fresh work dir, or the exit code to stop with.
-pub(crate) fn setup(parent: Option<PathBuf>, name: &str) -> Result<(PathBuf, PathBuf), ExitCode> {
-    let exe = manifold_exe().map_err(|e| {
-        eprintln!("{e}");
-        ExitCode::from(1)
-    })?;
-    let work = work_dir(parent, name).map_err(|e| {
-        eprintln!("work dir: {e}");
-        ExitCode::from(1)
-    })?;
-    Ok((exe, work))
-}
-
-pub(crate) fn finish(work: &Path) -> ExitCode {
-    if failures() == 0 && std::env::var_os("KEEP").is_none() {
-        remove_dir_with_retries(work);
-    }
-    exit_code()
 }
 
 /// The view kinds to run: `VIEWS` (space separated), else `ENGINE`, default `webview2`.

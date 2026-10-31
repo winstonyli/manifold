@@ -22,8 +22,8 @@ use manifold_hosts::{Delivery, Host, Os, HOSTS_DIR};
 
 use crate::check::{check, Section};
 use crate::instance::{log_tail, Instance};
-use crate::probes::{finish, guarded, quit, seed, tab_node, Site};
-use crate::windows_main::work_dir;
+use crate::probes::{guarded, quit, seed, tab_node, Site};
+use crate::windows_main::run_stage;
 
 const FIXTURE: &str = "crates/manifold-view-pdfium/tests/fixture.pdf";
 const PDF_WAIT: Duration = Duration::from_secs(180);
@@ -95,16 +95,11 @@ pub(crate) fn package(args: &[String]) -> ExitCode {
         eprintln!("no release exe: pass one, or download a draft release's exe");
         return ExitCode::from(1);
     };
-    let work = match work_dir(None, "package") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let _t = Section::start("package");
-    guarded("package", || run(&repo, &exe_src, &work));
-    finish(&work)
+    run_stage("package", None, false, |ctx| {
+        let _t = Section::start("package");
+        guarded("package", || run(&repo, &exe_src, &ctx.work));
+        Ok(())
+    })
 }
 
 /// `gate install-check ENGINE EXE`: the exe alone in a temp folder with APPDATA redirected, asked to install the
@@ -123,16 +118,11 @@ pub(crate) fn install_check(args: &[String]) -> ExitCode {
         eprintln!("install-check knows {}, not {engine:?}", ids.join(" and "));
         return ExitCode::from(2);
     };
-    let work = match work_dir(None, "install-check") {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("work dir: {e}");
-            return ExitCode::from(1);
-        }
-    };
-    let _t = Section::start("install-check");
-    guarded("install-check", || install(engine, &files, Path::new(exe_src), &work));
-    finish(&work)
+    run_stage("install-check", None, false, |ctx| {
+        let _t = Section::start("install-check");
+        guarded("install-check", || install(engine, &files, Path::new(exe_src), &ctx.work));
+        Ok(())
+    })
 }
 
 /// The hosts `gate install-check` installs and `gate package` reads the state of, in `ALL`'s order: the downloaded

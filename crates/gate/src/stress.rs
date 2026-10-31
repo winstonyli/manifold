@@ -18,9 +18,9 @@ use serde_json::{json, Value};
 use crate::check::{check, check_eq, Section};
 use crate::http::{self, response};
 use crate::instance::Instance;
-use crate::probes::{finish, guarded, quit, seed, setup, tab_node};
+use crate::probes::{guarded, quit, seed, tab_node};
 use crate::state::{State, TAB};
-use crate::windows_main::Ctx;
+use crate::windows_main::{run_stage, Ctx};
 
 /// Runs `script` in PowerShell (a file, so no quoting) and returns its non-empty output lines.
 pub(crate) fn powershell(work: &Path, name: &str, script: &str, args: &[&str]) -> io::Result<Vec<String>> {
@@ -162,51 +162,45 @@ pub(crate) fn scale(counts: &[String]) -> ExitCode {
         eprintln!("usage: [ENGINE=cef] gate scale <tabs>...");
         return ExitCode::from(2);
     }
-    let (exe, work) = match setup(None, "scale") {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
-    let engine = crate::probes::engine();
-    let page = medium_page();
-    let server =
-        match http::Server::start(Arc::new(move |_: &str| response("200 OK", &[], "text/html", page.as_bytes()))) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("site: {e}");
-                return ExitCode::from(1);
-            }
-        };
-    for n in counts {
-        let _t = Section::start(&format!("scale-{n}"));
-        guarded(&format!("{n} tabs"), || {
-            let nodes: Vec<Value> = (1..=n)
-                .map(|i| {
-                    json!({"id": format!("t{i}"), "type": TAB, "url": format!("{}/p?i={i}", server.base()),
-                           "view_kind": engine, "pos": [(i % 10 * 300) as f64, (i / 10 * 200) as f64]})
-                })
-                .collect();
-            let profile = work.join(format!("appdata-{n}"));
-            seed(&exe, &profile, &engine, &nodes)?;
-            let start = Instant::now();
-            let mut inst = Instance::launch(&exe, &profile, &work, &format!("scale-{n}.log"))?;
-            inst.send("WAITTABS")?;
-            let spawned = inst.export_state(&format!("spawned-{n}"))?;
-            let elapsed = start.elapsed().as_secs_f64();
-            let count = |loaded| spawned.cards().iter().filter(|c| State::card_is(c, TAB, Some(loaded))).count();
-            let (live, asleep) = (count(true), count(false));
-            let want = format!("{n} tabs: {live} live and {asleep} asleep, expected 1 and {}", n - 1);
-            if !check(&want, live == 1 && live + asleep == n) {
-                return Ok(());
-            }
-            println!("{engine}, {n} tabs: restored in {elapsed:.1}s, 1 live and {asleep} asleep");
-            inst.send("SLEEP 15")?;
-            inst.export_state(&format!("settled-{n}"))?;
-            for line in powershell(&work, "memory", MEMORY, &["-Root", &inst.pid().to_string()])? {
-                println!("{line}");
-            }
-            quit(&mut inst, &format!("{n} tabs"));
-            Ok(())
-        });
-    }
-    finish(&work)
+    run_stage("scale", None, true, |ctx| {
+        let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
+        let engine = crate::probes::engine();
+        let page = medium_page();
+        let server =
+            http::Server::start(Arc::new(move |_: &str| response("200 OK", &[], "text/html", page.as_bytes())))
+                .map_err(|e| io::Error::other(format!("site: {e}")))?;
+        for n in counts {
+            let _t = Section::start(&format!("scale-{n}"));
+            guarded(&format!("{n} tabs"), || {
+                let nodes: Vec<Value> = (1..=n)
+                    .map(|i| {
+                        json!({"id": format!("t{i}"), "type": TAB, "url": format!("{}/p?i={i}", server.base()),
+                               "view_kind": engine, "pos": [(i % 10 * 300) as f64, (i / 10 * 200) as f64]})
+                    })
+                    .collect();
+                let profile = work.join(format!("appdata-{n}"));
+                seed(exe, &profile, &engine, &nodes)?;
+                let start = Instant::now();
+                let mut inst = Instance::launch(exe, &profile, work, &format!("scale-{n}.log"))?;
+                inst.send("WAITTABS")?;
+                let spawned = inst.export_state(&format!("spawned-{n}"))?;
+                let elapsed = start.elapsed().as_secs_f64();
+                let count = |loaded| spawned.cards().iter().filter(|c| State::card_is(c, TAB, Some(loaded))).count();
+                let (live, asleep) = (count(true), count(false));
+                let want = format!("{n} tabs: {live} live and {asleep} asleep, expected 1 and {}", n - 1);
+                if !check(&want, live == 1 && live + asleep == n) {
+                    return Ok(());
+                }
+                println!("{engine}, {n} tabs: restored in {elapsed:.1}s, 1 live and {asleep} asleep");
+                inst.send("SLEEP 15")?;
+                inst.export_state(&format!("settled-{n}"))?;
+                for line in powershell(work, "memory", MEMORY, &["-Root", &inst.pid().to_string()])? {
+                    println!("{line}");
+                }
+                quit(&mut inst, &format!("{n} tabs"));
+                Ok(())
+            });
+        }
+        Ok(())
+    })
 }
