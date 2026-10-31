@@ -12,10 +12,10 @@
 //!
 //! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode, (after `sleep-history`, except `cef`). `cef` adds `download-cef` (right after `download`, in `light` and up) and needs the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"). `servo` adds `trail-servo`
 //! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built in `target-servo` with its DLLs
-//! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `trail-webkit` and
-//! `sleep-webkit`, needs the WebKit host built in WSL, and takes `SITE_HOST=<ip>`, the WSL gateway as Windows sees it
-//! (`wsl.exe -d Ubuntu -- ip route`, the default route's `via`; README "WebKit under the gate"), for those two steps
-//! only; without it they fail.
+//! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `download-webkit` (right after
+//! `download-cef`, in `light` and up), `trail-webkit` and `sleep-webkit`, needs the WebKit host built in WSL, and takes
+//! `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default route's `via`;
+//! README "WebKit under the gate"), for those steps only; without it they fail.
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
@@ -217,6 +217,12 @@ const STEPS: &[Step] = &[
     step("arrange", Mode::Light),
     Step { stage: "download", env: &[("VIEWS", "webview2")], ..step("download", Mode::Light) },
     Step { stage: "download", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("download-cef", Mode::Light) },
+    Step {
+        stage: "download",
+        env: &[("VIEWS", "webkit")],
+        engine: Some("webkit"),
+        ..step("download-webkit", Mode::Light)
+    },
     step("link", Mode::Ui),
     step("unknown-type", Mode::Ui),
     step("closed", Mode::Ui),

@@ -1,16 +1,17 @@
 //! `gate download`: a tab restored at a URL that answers an attachment starts a download, on each of `VIEWS` (default
-//! `webview2`; `VIEWS="webview2 cef"` adds CEF, whose host must be built). Two cases per view, each on its own profile:
+//! `webview2`; `VIEWS="webview2 cef webkit"` adds CEF and WebKit, whose hosts must be built; WebKit also needs `SITE_HOST`,
+//! see `gate all`). Two cases per view, each on its own profile:
 //! the profile's own download folder, where the one card must complete and save `real.zip` with the server's bytes; and
 //! a folder that cannot be made (a path under a regular file), where the host refuses the download and the one card must
-//! show it failed as `FolderUnusable` (`downloads::refused`). It also checks that no `real*.zip*` appears in the user's own
-//! Downloads folder: CEF's refusal (return 0) used to leave the file there, and the host now cancels it. WebKit has no
-//! gate stage (it runs under WSL), so its `/mnt/<drive>/...` folder stays unexercised (PARKED).
+//! show it failed as `FolderUnusable` (`downloads::refused`). It also checks that no `real*.zip*` appears in the folder the
+//! engine would save to on its own: CEF's refusal (return 0) used to leave the file in the user's Downloads, and the host
+//! now cancels it. For WebKit that folder is `~/Downloads` in WSL, and its folder reaches the host as `/mnt/<drive>/...`.
 
 use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::Path;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 
 use serde_json::Value;
 
@@ -51,7 +52,7 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
     } else {
         download_dir(&profile)?
     };
-    let before = users_downloads();
+    let before = engine_downloads(view);
     let mut inst = Instance::launch(exe, &profile, work, &format!("download-{name}.log"))?;
     inst.send("WAITTABS")?;
     let saved = folder.join("real.zip");
@@ -69,10 +70,10 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, url: &str, refused:
     }
     if refused {
         crate::check::check(&format!("{view} refused: nothing is saved in the folder"), !folder.exists());
-        // A refusal that only failed the card would still let the engine save the file in the user's own folder.
-        let leaked: Vec<_> = users_downloads().difference(&before).cloned().collect();
+        // A refusal that only failed the card would still let the engine save the file in its own folder.
+        let leaked: Vec<_> = engine_downloads(view).difference(&before).cloned().collect();
         crate::check::check(
-            &format!("{view} refused: nothing is saved in the user's Downloads folder {leaked:?}"),
+            &format!("{view} refused: nothing is saved in the engine's own Downloads folder {leaked:?}"),
             leaked.is_empty(),
         );
     } else {
@@ -93,14 +94,20 @@ fn set_download_folder(profile: &Path, folder: &Path) -> io::Result<()> {
     fs::write(path, settings.to_string())
 }
 
-/// The names `real*.zip*` (also a partial `.crdownload`) in the user's own Downloads folder (where the server's file would be saved if an engine ignored
-/// the app's folder); empty if there is no such folder. Only these names, so another program's downloads don't count.
-fn users_downloads() -> BTreeSet<String> {
-    let Some(home) = std::env::var_os("USERPROFILE") else { return BTreeSet::new() };
-    let Ok(entries) = fs::read_dir(Path::new(&home).join("Downloads")) else { return BTreeSet::new() };
-    entries
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.starts_with("real") && n.contains(".zip"))
-        .collect()
+/// The names `real*.zip*` (also a partial `.crdownload`) in the folder `view`'s engine saves to when it ignores the app's
+/// folder: WebKit's `~/Downloads` in WSL, the user's Downloads folder for the others; empty if there is no such folder.
+/// Only these names, so another program's downloads don't count.
+fn engine_downloads(view: &str) -> BTreeSet<String> {
+    let names: Vec<String> = if view == "webkit" {
+        let listed = Command::new("wsl.exe")
+            .args(["-d", "Ubuntu", "--", "sh", "-c", "ls \"$HOME/Downloads\" 2>/dev/null"])
+            .stdin(Stdio::null())
+            .output();
+        listed.map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_owned).collect()).unwrap_or_default()
+    } else {
+        let Some(home) = std::env::var_os("USERPROFILE") else { return BTreeSet::new() };
+        let Ok(entries) = fs::read_dir(Path::new(&home).join("Downloads")) else { return BTreeSet::new() };
+        entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+    };
+    names.into_iter().filter(|n| n.starts_with("real") && n.contains(".zip")).collect()
 }
