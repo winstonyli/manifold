@@ -166,6 +166,27 @@ impl App {
         self.edit_field(id, field::POS, pos.map_or(FieldValue::Pos(None), pos_value));
     }
 
+    /// The one writer of a node's anchor (spec Slice 1): Pin, a drop (`drop_at`), a release (`clear_anchors`) and
+    /// undo replay come here. A non-finite point writes the absent value, as `edit_pos` does.
+    pub(crate) fn edit_anchor(&mut self, id: NodeId, anchor: Option<Anchor>) {
+        let anchor = anchor.filter(|a| a.pos.iter().all(|c| c.is_finite()));
+        self.edit_field(id, field::ANCHOR, FieldValue::Anchor(anchor));
+    }
+
+    /// Releases the anchor of each of `ids` whose explicit bit is `explicit`, and returns what it released, for an
+    /// undo record. The three ways a hold is let go share it: Unpin (`explicit`), Tidy and Arrange (not), and a local
+    /// move or fold (not; `edit_group`, `fold_group`).
+    pub(crate) fn clear_anchors(&mut self, ids: &[NodeId], explicit: bool) -> Vec<(NodeId, Anchor)> {
+        let mut cleared = Vec::new();
+        for &id in ids {
+            if let Some(a) = self.doc.mirror.anchor(id).filter(|a| a.explicit == explicit) {
+                self.edit_anchor(id, None);
+                cleared.push((id, a));
+            }
+        }
+        cleared
+    }
+
     /// The one writer of a tab's engine: called when a switch starts (`start_swap_to`, a wake into
     /// another engine), and with the old engine when a switch fails and falls back. Compared as decoded, so asking for
     /// the engine the mirror already shows queues nothing and keeps a code this build doesn't know.

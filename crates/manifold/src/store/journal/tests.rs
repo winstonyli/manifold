@@ -496,7 +496,7 @@ fn rich_file(path: &Path) -> Vec<u8> {
         create,
         OpBody::create(note, Kind::Note.type_str().unwrap(), note_fields),
         set(tab, field::VIEW_KIND, FieldValue::ViewCode(2)),
-        set(tab, field::PINNED, FieldValue::Bool(true)),
+        set(tab, field::ANCHOR, FieldValue::Anchor(Some(Anchor { pos: [0.0, 0.0], group: None, explicit: true }))),
         OpBody::Move { node: tab, group: Some(group) },
     ];
     txn.commit(bodies).unwrap();

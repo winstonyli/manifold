@@ -450,7 +450,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     let tab = {
         let mut app = app_on(&path, 1);
         let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
-        app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
+        app.edit_field(tab, field::ANCHOR, a_pin());
         assert!(app.save_session());
         app.close_store();
         tab
@@ -464,7 +464,7 @@ fn a_sleeping_tab_saves_as_its_tab() {
     fail_spawns(&mut app);
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://s/".into()));
-    assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
+    assert_eq!(stored(&app, tab, field::ANCHOR), a_pin());
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind);
 }
 
@@ -592,7 +592,7 @@ fn the_mirror_matches_the_store_after_every_save() {
     // Another replica pins the tab and deletes the inner group, so the
     // tab's effective group becomes `outer` with no op naming the tab.
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
+    remote_set(&mut other, tab, field::ANCHOR, a_pin());
     other.begin().unwrap().commit(vec![OpBody::Delete { node: inner }]).unwrap();
     assert!(app.save_session());
     check(&app, "remote set and delete");
@@ -851,7 +851,7 @@ fn an_unknown_view_code_survives_a_save() {
     remote_set(&mut other, tab, field::VIEW_KIND, FieldValue::ViewCode(99));
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Servo);
-    app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
+    app.edit_field(tab, field::ANCHOR, a_pin());
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::VIEW_KIND), FieldValue::ViewCode(99), "not overwritten by a save");
     app.focus_tab(tab);
@@ -876,7 +876,7 @@ fn an_unknown_view_code_survives_a_tab_landing_live() {
     app.focus_tab(tab);
     let _peers = land_spawns(&mut app);
     assert_eq!(app.nodes[&tab].as_tab().expect("landed live").tab.kind, ViewKind::Servo);
-    app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
+    app.edit_field(tab, field::ANCHOR, a_pin());
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::VIEW_KIND), FieldValue::ViewCode(99), "not overwritten by a live tab's save");
 }

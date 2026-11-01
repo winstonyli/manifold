@@ -180,14 +180,14 @@ pub enum Kind {
 pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
     use field::*;
     [
-        (Kind::Tab, TYPE_TAB, &[POS, PARENT, URL, VIEW_KIND, PINNED, JAR, NAME, CLOSED]),
-        (Kind::Group, TYPE_GROUP, &[POS, PINNED, NAME, JAR, CLOSED, HELD]),
-        (Kind::Note, TYPE_NOTE, &[POS, PINNED, PARENT, URL, TEXT, NAME, CLOSED]),
-        (Kind::Image, TYPE_IMAGE, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Pdf, TYPE_PDF, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Json, TYPE_JSON, &[POS, PINNED, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
-        (Kind::Download, TYPE_DOWNLOAD, &[POS, PINNED, PARENT, URL, PATH, NAME, CLOSED]),
-        (Kind::Jar, TYPE_JAR, &[POS, PINNED, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
+        (Kind::Tab, TYPE_TAB, &[POS, PARENT, URL, VIEW_KIND, ANCHOR, JAR, NAME, CLOSED]),
+        (Kind::Group, TYPE_GROUP, &[POS, ANCHOR, NAME, JAR, CLOSED, HELD]),
+        (Kind::Note, TYPE_NOTE, &[POS, ANCHOR, PARENT, URL, TEXT, NAME, CLOSED]),
+        (Kind::Image, TYPE_IMAGE, &[POS, ANCHOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Pdf, TYPE_PDF, &[POS, ANCHOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Json, TYPE_JSON, &[POS, ANCHOR, PARENT, URL, PATH, VIEW, NAME, CLOSED]),
+        (Kind::Download, TYPE_DOWNLOAD, &[POS, ANCHOR, PARENT, URL, PATH, NAME, CLOSED]),
+        (Kind::Jar, TYPE_JAR, &[POS, ANCHOR, COLOR, NAME, EPHEMERAL, IS_DEFAULT, CLOSED]),
         (Kind::Link, TYPE_LINK, &[NAME, FROM, TO, CLOSED]),
         (Kind::Label, TYPE_LABEL, &[NAME, COLOR, CLOSED]),
     ]
@@ -195,7 +195,7 @@ pub(crate) const TYPES: [(Kind, &str, &[u32]); 10] = {
 
 /// The fields every card carries whatever its type: all the app reads, mirrors and copies of a node of a type this
 /// build doesn't know (`Kind::Unknown`, spec decision 3). Its other fields stay raw in the document.
-pub(crate) const GENERIC: &[u32] = &[field::POS, field::PINNED, field::PARENT, field::NAME, field::CLOSED];
+pub(crate) const GENERIC: &[u32] = &[field::POS, field::ANCHOR, field::PARENT, field::NAME, field::CLOSED];
 
 impl Kind {
     /// The type string a created node of this kind is stored under.
@@ -277,7 +277,7 @@ pub mod field {
     pub const PARENT: u32 = 4;
     pub const URL: u32 = 5;
     pub const VIEW_KIND: u32 = 6;
-    pub const PINNED: u32 = 7;
+    // Never reuse 7 (the retired `pinned` bool, replaced by `ANCHOR`).
     pub const NAME: u32 = 8;
     // Never reuse 9, 12 and 13 (the retired JSON leaf's `from_json`, `key` and `value`). A document that still holds
     // them keeps them raw, like any field a type does not list.
@@ -314,14 +314,13 @@ pub mod field {
     pub const ANCHOR: u32 = 27;
 }
 
-pub static FIELDS: [FieldDef; 20] = [
+pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
     FieldDef { no: field::PARENT, name: "parent", ty: FieldType::Id },
     FieldDef { no: field::URL, name: "url", ty: FieldType::Str },
     FieldDef { no: field::VIEW_KIND, name: "view_kind", ty: FieldType::ViewCode },
-    FieldDef { no: field::PINNED, name: "pinned", ty: FieldType::Bool },
     FieldDef { no: field::NAME, name: "name", ty: FieldType::Str },
     FieldDef { no: field::TEXT, name: "text", ty: FieldType::Str },
     // Machine-local: a replica that refetches a missing file saves it under
@@ -339,10 +338,10 @@ pub static FIELDS: [FieldDef; 20] = [
     FieldDef { no: field::ANCHOR, name: "anchor", ty: FieldType::Anchor },
 ];
 
-/// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
-/// reused; old documents keep them raw (checked by a test).
+/// Retired: 7, the `pinned` bool (replaced by `ANCHOR`); 16 and 17, a tab's `jar_set` and a group's `default_jar`
+/// (replaced by the `jar` edge). Never reused; old documents keep them raw (checked by a test).
 #[cfg(test)]
-pub const RESERVED: [u32; 2] = [16, 17];
+pub const RESERVED: [u32; 3] = [7, 16, 17];
 
 pub fn field_def(no: u32) -> Option<&'static FieldDef> {
     FIELDS.iter().find(|f| f.no == no)
@@ -425,7 +424,6 @@ impl FieldValue {
     }
 
     /// A set `Anchor`; `None` for none or any other variant.
-    #[allow(dead_code, reason = "first consumer lands with the anchor register's mirror task; remove then")]
     pub fn as_anchor(&self) -> Option<Anchor> {
         match self {
             FieldValue::Anchor(anchor) => *anchor,
@@ -880,6 +878,7 @@ mod tests {
             assert!(seen.insert(def.no), "field {} twice", def.no);
             assert!(!RESERVED.contains(&def.no), "field {} is reserved", def.no);
         }
+        assert!(field_def(7).is_none() && field_by_name("pinned").is_none(), "pinned is retired");
         assert_eq!(field::VIEW, 14);
         let view = field_by_name("view").unwrap();
         assert_eq!(view.ty, FieldType::Str);
@@ -907,7 +906,7 @@ mod tests {
             (field::COLOR, FieldValue::Color(Some(0x12_34_56))),
             (field::PARENT, FieldValue::Id(Some(id))),
             (field::URL, FieldValue::Str("https://example.com/".into())),
-            (field::PINNED, FieldValue::Bool(true)),
+            (field::ANCHOR, FieldValue::Anchor(Some(Anchor { pos: [1.0, 2.0], group: Some(id), explicit: true }))),
             (field::VIEW_KIND, FieldValue::ViewCode(4)),
             (field::JAR, FieldValue::Id(Some(id))),
             (field::EPHEMERAL, FieldValue::Bool(true)),
@@ -998,12 +997,13 @@ mod tests {
         assert!(node.has_type() && !node.is_live(), "an empty type is no type");
     }
 
-    /// Any card can be pinned, so every card kind stores the pin (a kind that didn't lost it on restart and in sync).
+    /// Any card can be pinned or dropped, so every card kind stores the anchor (a kind that didn't lost it on restart
+    /// and in sync).
     #[test]
-    fn every_card_kind_carries_the_pin() {
+    fn every_card_kind_carries_the_anchor() {
         let kinds = TYPES.iter().map(|t| t.0).chain([Kind::Unknown]);
         for kind in kinds.filter(|k| k.card()) {
-            assert!(kind.fields().contains(&field::PINNED), "{kind:?}");
+            assert!(kind.fields().contains(&field::ANCHOR), "{kind:?}");
         }
     }
 
@@ -1012,7 +1012,7 @@ mod tests {
     #[test]
     fn an_unknown_kind_carries_the_generic_fields() {
         use field::*;
-        assert_eq!(Kind::Unknown.fields(), &[POS, PINNED, PARENT, NAME, CLOSED]);
+        assert_eq!(Kind::Unknown.fields(), &[POS, ANCHOR, PARENT, NAME, CLOSED]);
         assert_eq!(Node::with_type("application/x-from-the-future").ty(), "application/x-from-the-future");
         assert_eq!(Node::with_type("Text/Markdown").ty(), "Text/Markdown", "kept as written, case and all");
         assert_eq!(Node::placeholder().ty(), "");

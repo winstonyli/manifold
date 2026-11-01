@@ -457,7 +457,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
     app.edit_field(tab, field::NAME, FieldValue::Str("one".into()));
-    app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
+    app.edit_field(tab, field::ANCHOR, a_pin());
     assert!(app.save_session());
     // What `finish_swap` and the crash path do: carry from the mirror, remove the node, respawn.
     app.nodes.remove(&tab).unwrap();
@@ -469,7 +469,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
         SpawnPurpose::Respawn,
         1.0,
     );
-    spawn.carry.pinned = app.doc.mirror.pinned(tab);
+    spawn.carry.anchor = app.doc.mirror.anchor(tab);
     app.respawn_tab(spawn);
     assert!(app.save_session());
     assert!(app.doc.mirror.pinned(tab) && app.doc.mirror.name(tab) == "one", "kept while parked");
@@ -479,7 +479,7 @@ fn a_save_during_a_respawn_keeps_the_mirror_entry() {
     assert_eq!(app.doc.mirror.name(tab), "two");
     assert!(app.doc.mirror.pinned(tab));
     assert_eq!(stored(&app, tab, field::NAME), FieldValue::Str("two".into()));
-    assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
+    assert_eq!(stored(&app, tab, field::ANCHOR), a_pin());
 }
 
 /// Remote: another replica deletes G while T respawns here. The cascade reaches T in the mirror

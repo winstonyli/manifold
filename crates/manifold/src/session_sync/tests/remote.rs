@@ -250,7 +250,7 @@ fn a_remote_edit_to_one_field_keeps_an_unsaved_local_edit_to_another() {
         t.url = "https://u1/".into();
     }
     remote_set(&mut other, note, field::NAME, one());
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
+    remote_set(&mut other, tab, field::ANCHOR, a_pin());
 
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
@@ -583,7 +583,7 @@ fn mirror_remote_reports_the_changed_fields_but_not_the_held_ones() {
     fields.insert(field::URL, FieldValue::Str("https://b/".into()));
     let (held, changed) = app.mirror_remote(tab, &fields, &Default::default(), None);
     assert_eq!(held, [field::POS], "a pending edit holds the field");
-    assert_eq!(changed, [field::URL], "the url changed; pinned, engine and the rest did not");
+    assert_eq!(changed, [field::URL], "the url changed; the anchor, engine and the rest did not");
     assert_eq!(app.doc.mirror.url(tab), "https://b/");
     assert_eq!(app.doc.mirror.pos(tab), Some(egui::vec2(5.0, 5.0)), "held: the local edit stands");
     let (held, changed) = app.mirror_remote(tab, &fields, &Default::default(), None);
@@ -1021,7 +1021,7 @@ fn a_local_url_edit_wins_over_a_remote_one() {
     app.edit_url(tab, "https://mine/");
     set_live_url(&mut app, tab, "https://mine/");
     remote_set(&mut other, tab, field::URL, FieldValue::Str("https://theirs/".into()));
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
+    remote_set(&mut other, tab, field::ANCHOR, a_pin());
     // The remote round applies, then the next round commits.
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.url(tab), "https://mine/");
@@ -1062,7 +1062,7 @@ fn a_local_jar_pick_wins_over_a_remote_one() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.set_jar_edge(tab, Some(mine));
     remote_set(&mut other, tab, field::JAR, FieldValue::Id(Some(theirs)));
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
+    remote_set(&mut other, tab, field::ANCHOR, a_pin());
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.jar(tab), Some(mine));
     assert_eq!(stored(&app, tab, field::JAR), FieldValue::Id(Some(mine)));
@@ -1097,7 +1097,7 @@ fn a_local_swap_in_flight_wins_over_a_remote_view_kind() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.start_swap_to(tab, ViewKind::Cef);
     remote_set(&mut other, tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(true));
+    remote_set(&mut other, tab, field::ANCHOR, a_pin());
     assert!(app.save_session());
     assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Cef);
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Cef));

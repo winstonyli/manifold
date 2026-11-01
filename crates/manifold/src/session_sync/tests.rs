@@ -148,6 +148,11 @@ pub(crate) fn stored(app: &App, node: NodeId, no: u32) -> FieldValue {
     app.doc.journal.as_ref().unwrap().doc().nodes[&node].get(no)
 }
 
+/// An explicit pin at the top-level origin, as a test or another replica writes one directly.
+pub(crate) fn a_pin() -> FieldValue {
+    FieldValue::Anchor(Some(crate::store::model::Anchor { pos: [0.0, 0.0], group: None, explicit: true }))
+}
+
 pub(crate) fn add_note(app: &mut App, text: &str) -> NodeId {
     add(app, Kind::Note, Runtime::Note(NotePayload { text: text.into(), editing: false }))
 }
@@ -335,7 +340,7 @@ fn start_respawn(app: &mut App, tab: NodeId) {
         SpawnPurpose::Respawn,
         1.0,
     );
-    spawn.carry.pinned = carried.pinned();
+    spawn.carry.anchor = carried.anchor();
     (spawn.jar, spawn.parent, spawn.group) = (carried.jar(), carried.parent, carried.group);
     app.respawn_tab(spawn);
     assert!(app.spawns.spawning.contains_key(&tab) && !app.nodes.contains_key(&tab), "respawning");

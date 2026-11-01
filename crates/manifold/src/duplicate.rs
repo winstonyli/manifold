@@ -246,6 +246,24 @@ mod tests {
         assert!(app.nodes.contains_key(&note) && app.nodes.contains_key(&inner));
     }
 
+    /// A pinned card's copy keeps where it was drawn but arrives unpinned: the export drops anchors (spec, Behaviour
+    /// changes).
+    #[test]
+    fn a_duplicated_pinned_note_keeps_its_place_but_not_its_pin() {
+        let path = store::testutil::temp_dir("duplicate-pinned").join("session.mnf");
+        let mut app = app_on(&path, 1);
+        let note =
+            add(&mut app, Kind::Note, Runtime::Note(crate::node::NotePayload { text: "n".into(), editing: false }));
+        app.snap_layout(note, egui::vec2(10.0, 20.0));
+        app.toggle_pin(note);
+        assert!(app.save_session());
+        app.duplicate_nodes(&[note]);
+        let copy = *app.nodes.keys().find(|&&id| id != note).unwrap();
+        assert_eq!(app.doc.mirror.pos(copy), Some(egui::vec2(10.0 + DUPLICATE_OFFSET, 20.0 + DUPLICATE_OFFSET)));
+        assert!(!app.doc.mirror.pinned(copy) && app.doc.mirror.anchor(copy).is_none());
+        assert!(app.doc.mirror.pinned(note), "the original stays pinned");
+    }
+
     #[test]
     fn duplicating_a_group_copies_an_unknown_member_as_a_shell_a_jar_and_inside_links_only() {
         use crate::node::NotePayload;

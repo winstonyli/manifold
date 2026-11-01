@@ -1,6 +1,7 @@
 //! Session-sync tests: local edit operations and what they commit.
 
 use super::*;
+use crate::store::model::Anchor;
 
 #[test]
 fn a_json_nodes_view_round_trips_through_the_store() {
@@ -145,6 +146,72 @@ fn a_pinned_card_stays_where_it_was_shown() {
     assert_eq!(app.doc.mirror.pos(note), Some(shown));
 }
 
+/// Pin writes the drawn position and an explicit anchor there in one step; Unpin clears the anchor and leaves `POS`.
+#[test]
+fn pin_writes_pos_and_an_explicit_anchor_and_unpin_leaves_pos() {
+    let mut app = App::default();
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    a_note_at(&mut app, egui::vec2(52.0, 10.0));
+    app.settle_current_level();
+    let shown = app.layout_pos(note);
+    app.toggle_pin(note);
+    assert_eq!(app.doc.mirror.pos(note), Some(shown));
+    assert_eq!(app.doc.mirror.anchor(note), Some(Anchor { pos: [shown.x, shown.y], group: None, explicit: true }));
+    app.toggle_pin(note);
+    assert_eq!(app.doc.mirror.anchor(note), None, "Unpin clears the pin");
+    assert_eq!(app.doc.mirror.pos(note), Some(shown), "and leaves the card where it is");
+}
+
+/// Pinning a card held by a drop at its drawn point only sets the bit; an inert drop (written in another group) is
+/// replaced by the drawn point in the current group, never promoted.
+#[test]
+fn pin_keeps_a_held_drop_and_replaces_an_inert_one() {
+    let mut app = App::default();
+    let g = add_group(&mut app, "g");
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    app.snap_layout(note, egui::vec2(40.0, 20.0));
+    app.edit_anchor(note, Some(Anchor { pos: [40.0, 20.0], group: None, explicit: false }));
+    app.toggle_pin(note);
+    assert_eq!(app.doc.mirror.anchor(note), Some(Anchor { pos: [40.0, 20.0], group: None, explicit: true }));
+    app.toggle_pin(note);
+    // An inert drop: written in `g`, while the mirror shows the card at the top level (a remote move that raced it,
+    // applied to the mirror without the local release, as `remote.rs` does).
+    app.edit_anchor(note, Some(Anchor { pos: [999.0, 999.0], group: Some(g), explicit: false }));
+    assert_eq!(app.doc.mirror.held(note), None);
+    app.toggle_pin(note);
+    assert_eq!(app.doc.mirror.anchor(note), Some(Anchor { pos: [40.0, 20.0], group: None, explicit: true }));
+}
+
+/// Unpin All clears pins only: a tab held by a drop stays held.
+#[test]
+fn unpin_all_keeps_a_drop_anchor() {
+    let mut app = App::default();
+    let (dropped, pinned) = (
+        add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0)),
+        add(&mut app, Kind::Tab, failed_tab("https://u1/", 1.0)),
+    );
+    let drop = Anchor { pos: [7.0, 8.0], group: None, explicit: false };
+    app.edit_anchor(dropped, Some(drop));
+    app.toggle_pin(pinned);
+    app.set_all_pinned(false);
+    assert_eq!(app.doc.mirror.anchor(dropped), Some(drop));
+    assert_eq!(app.doc.mirror.anchor(pinned), None);
+}
+
+/// A document from an older build: its `pinned` (field 7) is ignored, so the card is unpinned (spec, **Breaking:**).
+#[test]
+fn an_old_pinned_value_is_ignored() {
+    let path = temp_dir("old-pinned").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let tab = add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    other.begin().unwrap().commit(vec![OpBody::set(tab, 7, encode_field(7, &FieldValue::Bool(true)))]).unwrap();
+    assert!(app.save_session());
+    assert!(!app.doc.mirror.pinned(tab));
+    assert_eq!(app.doc.mirror.anchor(tab), None);
+}
+
 /// Closing a tab while its wake is in flight deletes it from the store
 /// once the (now-moot) spawn result lands -- the landing's "closed
 /// while waking" branch must save, since a save while the wake was in
@@ -219,13 +286,13 @@ fn a_tab_pin_is_committed_and_a_remote_pin_reaches_the_mirror() {
     let mut app = app_on(&path, 1);
     let tab = add(&mut app, Kind::Tab, failed_tab("https://u0/", 1.0));
     assert!(app.save_session());
-    app.edit_field(tab, field::PINNED, FieldValue::Bool(true));
+    app.edit_field(tab, field::ANCHOR, a_pin());
     assert!(app.doc.mirror.pinned(tab));
     assert!(app.save_session());
-    assert_eq!(stored(&app, tab, field::PINNED), FieldValue::Bool(true));
+    assert_eq!(stored(&app, tab, field::ANCHOR), a_pin());
 
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
-    remote_set(&mut other, tab, field::PINNED, FieldValue::Bool(false));
+    remote_set(&mut other, tab, field::ANCHOR, FieldValue::Anchor(None));
     assert!(app.save_session());
     assert!(!app.doc.mirror.pinned(tab));
 }

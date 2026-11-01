@@ -1,7 +1,7 @@
 //! Global keyboard shortcuts (and their headless equivalents) as App methods.
 
 use super::*;
-use crate::store::model::NodeId;
+use crate::store::model::{Anchor, NodeId};
 
 /// What a global shortcut does (`App::handle_global_shortcuts`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,7 +253,7 @@ impl App {
         self.toggle_pin(id);
     }
 
-    /// Pins or unpins node `id` of any kind: a pinned card is left out of the graph layout.
+    /// Pins or unpins node `id` of any kind: a pinned card is held where it is drawn (`set_pinned`).
     pub(crate) fn toggle_pin(&mut self, id: NodeId) {
         if self.nodes.contains_key(&id) {
             let on = !self.doc.mirror.pinned(id);
@@ -261,14 +261,24 @@ impl App {
         }
     }
 
-    /// Every pin and unpin goes through here. A settle holds a pinned card at its document pos and starts the others
-    /// from theirs (`settle_current_level`), so pinning first saves where the card is drawn: it stays put.
+    /// Every pin and unpin goes through here. Pin holds the card where it is drawn: `POS` and an explicit anchor at
+    /// the drawn point in its current group, except that a card already held there (a drop) only gains the bit. An
+    /// inert anchor (written in another group) is replaced, never promoted. Unpin releases a pin only, so a drop's
+    /// anchor stays (Unpin All), and leaves `POS`: the card stays until the next settle seeds from it.
     pub(crate) fn set_pinned(&mut self, id: NodeId, on: bool) {
-        let shown = self.layout_pos(id);
-        if on && self.doc.mirror.pos(id) != Some(shown) {
-            self.edit_pos(id, Some(shown));
+        if !on {
+            self.clear_anchors(&[id], true);
+            return;
         }
-        self.edit_field(id, field::PINNED, FieldValue::Bool(on));
+        let shown = self.layout_pos(id);
+        let anchor = match self.doc.mirror.anchor(id) {
+            Some(a) if self.doc.mirror.held(id) == Some(shown) => Anchor { explicit: true, ..a },
+            _ => {
+                self.edit_pos(id, Some(shown));
+                Anchor { pos: [shown.x, shown.y], group: self.doc.mirror.group(id), explicit: true }
+            }
+        };
+        self.edit_anchor(id, Some(anchor));
     }
 
     /// `Ctrl+R`/`F5` / headless `RELOAD` — reloads the focused tab. Every

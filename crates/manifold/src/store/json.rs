@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(tab2.get(field::PARENT), FieldValue::Id(Some(t1)));
         assert_eq!(tab1.get(field::POS), FieldValue::Pos(Some((10.5, -3.0))));
         assert_eq!(tab1.get(field::VIEW_KIND), FieldValue::ViewCode(2));
-        assert_eq!(tab1.get(field::PINNED), FieldValue::Bool(true));
+        assert_eq!(tab1.get(field::ANCHOR), FieldValue::Anchor(None), "an old export's pinned is dropped");
     }
 
     #[test]
@@ -612,12 +612,12 @@ mod tests {
     fn node_json_matches_a_document_nodes_json() {
         let mut fields = BTreeMap::new();
         fields.insert(field::URL, FieldValue::Str("https://a.example/".into()));
-        fields.insert(field::PINNED, FieldValue::Bool(true));
+        fields.insert(field::NAME, FieldValue::Str("Mine".into()));
         fields.insert(field::COLOR, FieldValue::Color(None));
         let json = node_json("n1", crate::store::model::TYPE_TAB, &fields, &Trees::new(), None);
         assert_eq!(json.kind(), Some(Kind::Tab));
         assert_eq!(json.fields.get("url"), Some(&Value::String("https://a.example/".into())));
-        assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
+        assert_eq!(json.fields.get("name"), Some(&Value::String("Mine".into())));
         assert!(!json.fields.contains_key("color"), "defaults are left out");
         assert!(!json.fields.contains_key("group"));
     }

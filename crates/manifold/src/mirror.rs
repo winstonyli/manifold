@@ -13,7 +13,7 @@ use crate::json_view::JsonView;
 use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;
 use crate::session_sync::{color_of, pos_in, pos_value, view_kind_of, Fields};
-use crate::store::model::{field, field_def, FieldValue, Kind, NodeId};
+use crate::store::model::{field, field_def, Anchor, FieldValue, Kind, NodeId};
 use crate::store::tree::{self, Leaf, Seg, Tree, TreePath, Trees, TREE_FIELDS};
 
 /// Every field of a node's type (`Kind::fields`) but the two links, `parent` and `group`, which are
@@ -355,10 +355,23 @@ impl Mirror {
         self.nodes.get(&id).and_then(color_in)
     }
 
-    /// Graph view's pin toggle, on any card: the force-directed layout never moves a pinned card, as it never moves
-    /// a dragged node (`graph_layout::step`); it still pushes its neighbours.
+    /// The node's anchor (`field::ANCHOR`), held or not.
+    pub(crate) fn anchor(&self, id: NodeId) -> Option<Anchor> {
+        self.nodes.get(&id).and_then(anchor_in)
+    }
+
+    /// Where a settle holds card `id`, if it does: its anchor point when the anchor is a pin (any group) or was
+    /// written in the group the card is in now. Every reader of a hold reads this one predicate (spec Slice 1,
+    /// "Meaning"); an implicit anchor from another group is inert. It reads the document only, so replicas agree.
+    pub(crate) fn held(&self, id: NodeId) -> Option<egui::Vec2> {
+        let a = self.anchor(id)?;
+        (a.explicit || a.group == self.group(id)).then_some(egui::vec2(a.pos[0], a.pos[1]))
+    }
+
+    /// The user's pin: an explicit anchor, in any group. The pin mark, the menu rows, Pin All and the idle-sleep
+    /// exemption read it; a drop's anchor never counts.
     pub(crate) fn pinned(&self, id: NodeId) -> bool {
-        self.nodes.get(&id).is_some_and(pinned_in)
+        self.anchor(id).is_some_and(|a| a.explicit)
     }
 
     /// A tab's shared url: the document's, or the one a local edit is about to write. Its live url, which
@@ -434,8 +447,8 @@ fn color_in(fields: &Fields) -> Option<egui::Color32> {
     color_of(fields.get(&field::COLOR)?)
 }
 
-fn pinned_in(fields: &Fields) -> bool {
-    fields.get(&field::PINNED).is_some_and(FieldValue::as_bool)
+fn anchor_in(fields: &Fields) -> Option<Anchor> {
+    fields.get(&field::ANCHOR).and_then(FieldValue::as_anchor)
 }
 
 fn jar_in(fields: &Fields) -> Option<NodeId> {
@@ -444,7 +457,7 @@ fn jar_in(fields: &Fields) -> Option<NodeId> {
 
 /// What a tab carries across a respawn or lands with: the mirror's values for it, as a field map (no absent value
 /// is held) and the two links. `place_node` seeds a new node's links, pos, type and stored path with it too. Read
-/// the fields a respawn needs through `pos`, `pinned` and `jar`.
+/// the fields a respawn needs through `pos`, `anchor` and `jar`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Carried {
     fields: Fields,
@@ -484,7 +497,7 @@ impl Carried {
     /// A tab landing or respawning: where it sits, what it keeps, the url it opens and its engine's stored code.
     pub(crate) fn tab(
         pos: Option<egui::Vec2>,
-        pinned: bool,
+        anchor: Option<Anchor>,
         (parent, group): (Option<NodeId>, Option<NodeId>),
         url: String,
         view_kind: u64,
@@ -493,7 +506,7 @@ impl Carried {
         let carried = Carried { parent, group, ..Carried::default() };
         let carried = pos.map_or(carried.clone(), |pos| carried.with(field::POS, pos_value(pos)));
         carried
-            .with(field::PINNED, FieldValue::Bool(pinned))
+            .with(field::ANCHOR, FieldValue::Anchor(anchor))
             .with_str(field::URL, url)
             .with(field::VIEW_KIND, FieldValue::ViewCode(view_kind))
             .with(field::JAR, FieldValue::Id(jar))
@@ -503,8 +516,8 @@ impl Carried {
         pos_in(&self.fields)
     }
 
-    pub(crate) fn pinned(&self) -> bool {
-        pinned_in(&self.fields)
+    pub(crate) fn anchor(&self) -> Option<Anchor> {
+        anchor_in(&self.fields)
     }
 
     pub(crate) fn jar(&self) -> Option<NodeId> {
@@ -582,7 +595,14 @@ mod tests {
         let first = Carried { parent: Some(node(3)), group: Some(node(4)), ..Carried::default() }
             .with(field::POS, pos_value(egui::vec2(3.0, -4.0)))
             .with(field::COLOR, color_value(Some(egui::Color32::RED)))
-            .with(field::PINNED, FieldValue::Bool(true))
+            .with(
+                field::ANCHOR,
+                FieldValue::Anchor(Some(crate::store::model::Anchor {
+                    pos: [3.0, -4.0],
+                    group: Some(node(4)),
+                    explicit: true,
+                })),
+            )
             .with_str(field::URL, "https://a/")
             .with_str(field::TEXT, "note")
             .with(field::VIEW_KIND, FieldValue::ViewCode(99))
@@ -757,10 +777,22 @@ mod tests {
     }
 
     #[test]
-    fn pinned_reads_a_bool_and_defaults_to_false() {
+    fn pinned_is_the_explicit_bit_and_held_is_group_scoped() {
+        use crate::store::model::Anchor;
         let mut mirror = Mirror::default();
-        assert!(!mirror.pinned(node(7)));
-        mirror.set(node(7), field::PINNED, FieldValue::Bool(true));
+        assert!(!mirror.pinned(node(7)) && mirror.held(node(7)).is_none(), "no anchor: neither");
+        let drop_in = |group| FieldValue::Anchor(Some(Anchor { pos: [5.0, 6.0], group, explicit: false }));
+        mirror.set(node(7), field::ANCHOR, drop_in(None));
+        assert_eq!(mirror.held(node(7)), Some(egui::vec2(5.0, 6.0)), "a drop holds in the group it was written in");
+        assert!(!mirror.pinned(node(7)), "a drop is not a pin");
+        mirror.set_group(node(7), Some(node(4)));
+        assert_eq!(mirror.held(node(7)), None, "inert in another group");
+        mirror.set(
+            node(7),
+            field::ANCHOR,
+            FieldValue::Anchor(Some(Anchor { pos: [5.0, 6.0], group: None, explicit: true })),
+        );
+        assert_eq!(mirror.held(node(7)), Some(egui::vec2(5.0, 6.0)), "a pin holds in any group");
         assert!(mirror.pinned(node(7)));
     }
 

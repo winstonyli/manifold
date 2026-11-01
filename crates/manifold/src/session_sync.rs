@@ -14,7 +14,7 @@ use crate::node::{DownloadPayload, JsonPayload, NotePayload, Runtime, UnloadedSt
 use crate::process_manager::ViewKind;
 use crate::store::journal::{JournalError, Recovery};
 use crate::store::model::{
-    decode_field, encode_field, field, field_def, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_TAB,
+    decode_field, encode_field, field, field_def, Anchor, Doc, FieldType, FieldValue, Kind, Node, NodeId, TYPE_TAB,
 };
 use crate::store::ops::OpBody;
 use crate::store::tree::{self, Leaf, TreePath, Trees, TREE_FIELDS};
@@ -267,7 +267,7 @@ pub(crate) fn spawn_snapshot(
         (field::POS, pos.map_or(FieldValue::Pos(None), pos_value)),
         (field::URL, FieldValue::Str(url.to_owned())),
         (field::VIEW_KIND, FieldValue::ViewCode(view_kind)),
-        (field::PINNED, FieldValue::Bool(spawn.carry.pinned)),
+        (field::ANCHOR, FieldValue::Anchor(spawn.carry.anchor)),
         (field::PARENT, FieldValue::Id(spawn.parent)),
         (field::JAR, FieldValue::Id(jar)),
     ]);
