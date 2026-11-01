@@ -271,6 +271,15 @@ pub(super) fn s12(t: &mut Two) -> Step {
             pos == Some(json!([321.0, -123.0])),
             &format!("{n} is at {}, not where A dropped it", shown(&pos)),
         );
+        let (a, _) =
+            t.wait_field(Field::Anchor, "scenario 12: A and B agree on the anchor after A's move", "s12a", &[&n])?;
+        let group = session::field_of(&a, Field::Group, &n).unwrap_or(Value::Null);
+        let anchor = session::field_of(&a, Field::Anchor, &n);
+        observe(
+            "scenario 12: the note is held where A dropped it, as a drop, not a pin",
+            anchor == Some(json!({"pos": [321.0, -123.0], "group": group, "explicit": false})),
+            &format!("{n} is anchored at {}", shown(&anchor)),
+        );
         Ok(format!(" ({n} holds {})", shown(&got)))
     })
 }

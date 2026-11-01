@@ -101,6 +101,8 @@ pub enum Field {
     Name,
     Text,
     Pos,
+    /// The drop or pin anchor: in both mirrors, never in the document JSON.
+    Anchor,
 }
 
 impl Field {
@@ -111,16 +113,23 @@ impl Field {
             Field::Name => "mirror_names",
             Field::Text => "mirror_texts",
             Field::Pos => "mirror_pos",
+            Field::Anchor => "mirror_anchor",
         }
     }
-    /// The EXPORTSESSION node key, and the word in messages.
-    pub fn doc_key(self) -> &'static str {
+    /// The word in messages.
+    pub fn word(self) -> &'static str {
         match self {
             Field::Group => "group",
             Field::Name => "name",
             Field::Text => "text",
             Field::Pos => "pos",
+            Field::Anchor => "anchor",
         }
+    }
+    /// The EXPORTSESSION node key; `None` for a field the document JSON drops (the anchor), which then agrees when
+    /// A and B do.
+    pub fn doc_key(self) -> Option<&'static str> {
+        (self != Field::Anchor).then_some(self.word())
     }
 }
 
@@ -145,31 +154,35 @@ fn show(v: Option<&Value>) -> String {
 }
 
 /// session_asserts.py field_agree: each id's field is present and the same in A's and B's EXPORTSTATE map and in the
-/// document (a node without the key counts as null there). Ok or Err carries one line per id:
+/// document (a node without the key counts as null there; a field with no document key, the anchor, is compared
+/// between A and B only). Ok or Err carries one line per id:
 /// "<id> <field>: A shows <json>, B shows <json>, document <json>".
 pub fn field_agree(field: Field, a: &Value, b: &Value, doc: &Value, ids: &[&str]) -> Result<Vec<String>, Vec<String>> {
     let map = |s: &Value| s.get(field.state_key()).and_then(Value::as_object).cloned().unwrap_or_default();
     let (ma, mb) = (map(a), map(b));
     let null = Value::Null;
     let mut d: HashMap<&str, &Value> = HashMap::new();
-    for n in nodes(doc) {
-        if let Some(i) = id(n) {
-            d.insert(i, n.get(field.doc_key()).unwrap_or(&null));
+    if let Some(key) = field.doc_key() {
+        for n in nodes(doc) {
+            if let Some(i) = id(n) {
+                d.insert(i, n.get(key).unwrap_or(&null));
+            }
         }
     }
     let mut ok = true;
     let mut lines = Vec::new();
     for i in ids {
         let seen = [ma.get(*i), mb.get(*i), d.get(i).copied()];
+        let document = if field.doc_key().is_some() { show(seen[2]) } else { "not exported".to_string() };
         lines.push(format!(
-            "{i} {}: A shows {}, B shows {}, document {}",
-            field.doc_key(),
+            "{i} {}: A shows {}, B shows {}, document {document}",
+            field.word(),
             show(seen[0]),
             show(seen[1]),
-            show(seen[2])
         ));
         match seen {
             [Some(x), Some(y), Some(z)] if same_value(&[x, y, z]) => {}
+            [Some(x), Some(y), None] if field.doc_key().is_none() && same_value(&[x, y]) => {}
             _ => ok = false,
         }
     }
@@ -303,6 +316,20 @@ mod tests {
         assert!(field_agree(f, &a, &b(json!([1.0005, 2.0])), &d(json!([1.0, 2.0])), &["n"]).is_ok());
         assert!(field_agree(f, &a, &b(json!([1.002, 2.0])), &d(json!([1.0, 2.0])), &["n"]).is_err());
         assert!(field_agree(f, &a, &b(Value::Null), &d(json!([1.0, 2.0])), &["n"]).is_err());
+    }
+
+    /// The document JSON drops anchors, so an anchor agrees when A and B show the same one, whatever the document.
+    #[test]
+    fn field_agree_anchor_compares_the_two_mirrors_only() {
+        let f = Field::Anchor;
+        let held = json!({"pos": [321.0, -123.0], "group": null, "explicit": false});
+        let a = state(f, json!({"n": held}));
+        let d = doc(json!([{"id": "n"}]));
+        let lines = field_agree(f, &a, &a, &d, &["n"]).unwrap();
+        assert!(lines[0].starts_with("n anchor: A shows"), "{lines:?}");
+        let other = state(f, json!({"n": {"pos": [1.0, 2.0], "group": null, "explicit": false}}));
+        assert!(field_agree(f, &a, &other, &d, &["n"]).is_err());
+        assert!(field_agree(f, &a, &state(f, json!({})), &d, &["n"]).is_err(), "B shows none");
     }
 
     #[test]
