@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Anchor Register (Slice 1) Implementation Plan
