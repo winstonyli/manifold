@@ -301,8 +301,9 @@ fn xy(s: &State, id: &str) -> io::Result<String> {
     s.xy(id).ok_or_else(|| bad(format!("no card {id:?} to aim at")))
 }
 
-/// A point on card `id` that no other card covers, as "x y": the centre of the first 10px grid cell of its rect
-/// (inset 8px) outside every other rect. Cards overlap after a drop, and a click lands on the topmost.
+/// A point on card `id` that no other card covers, as "x y": the centre of the first free cell of its rect, on a 10px
+/// grid inset 8px, else (a card drawn small after a zoomed-out camera, which a level's saved view keeps) on a 2px grid
+/// inset 1px. Cards overlap after a drop, and a click lands on the topmost.
 fn uncovered_xy(s: &State, id: &str) -> io::Result<String> {
     let rect = rect_of(s, id).ok_or_else(|| bad(format!("no card {id:?} to aim at")))?;
     let others: Vec<[f64; 4]> = s
@@ -313,16 +314,18 @@ fn uncovered_xy(s: &State, id: &str) -> io::Result<String> {
         .filter_map(|other| rect_of(s, other))
         .collect();
     let covered = |x: f64, y: f64| others.iter().any(|r| x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3]);
-    let mut y = rect[1] + 8.0;
-    while y < rect[3] - 8.0 {
-        let mut x = rect[0] + 8.0;
-        while x < rect[2] - 8.0 {
-            if !covered(x, y) {
-                return Ok(format!("{x} {y}"));
+    for (inset, step) in [(8.0, 10.0), (1.0, 2.0)] {
+        let mut y = rect[1] + inset;
+        while y < rect[3] - inset {
+            let mut x = rect[0] + inset;
+            while x < rect[2] - inset {
+                if !covered(x, y) {
+                    return Ok(format!("{x} {y}"));
+                }
+                x += step;
             }
-            x += 10.0;
+            y += step;
         }
-        y += 10.0;
     }
     Err(bad(format!("every part of card {id:?} is covered")))
 }
@@ -1315,6 +1318,18 @@ mod tests {
         assert_eq!(v.q, "sourdough bread two");
         let s = state(r#"{"focused_url":null}"#);
         assert_eq!((View::new(&s).url, View::new(&s).q.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn uncovered_xy_finds_a_point_on_a_card_drawn_small() {
+        // A 33x12 card (a zoomed-out camera) has no cell inside the 8px inset; a neighbour covers its left part.
+        let s = state(
+            r#"{"cards":[{"id":"a","rect":[100.0,100.0,133.0,112.0]},{"id":"b","rect":[90.0,95.0,110.0,120.0]}]}"#,
+        );
+        let (x, y) = pair(&uncovered_xy(&s, "a").unwrap()).map(|(x, y)| (x as f64, y as f64)).unwrap_or((0.0, 0.0));
+        assert!(x > 110.0 && x < 133.0 && y > 100.0 && y < 112.0, "{x} {y}");
+        let s = state(r#"{"cards":[{"id":"a","rect":[0.0,0.0,10.0,10.0]},{"id":"b","rect":[-5.0,-5.0,15.0,15.0]}]}"#);
+        assert!(uncovered_xy(&s, "a").is_err(), "a card wholly covered is still an error");
     }
 
     #[test]
