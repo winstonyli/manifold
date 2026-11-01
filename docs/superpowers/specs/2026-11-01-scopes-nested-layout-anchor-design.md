@@ -264,4 +264,4 @@ entry (no bump, one-predicate semantics) and the pin-dot entry; CHANGELOG (the `
 
 - `PAD` is 40 px; whether a box shows a header strip inside the padding (the nested-twice test depends on it).
 - The Tidy label, and whether a faint cue marks drag-anchored cards (no evidence yet).
-- Whether Slice 3 ships before Slice 4 (interactive members) or waits for it.
+- Decided 2026-11-01 (b2): Slice 3 does not ship alone. It waits for Slice 4 (interactive members) and ships with it; Slice 4 needs its own spec. Slices 1 and 2 plan and ship now.
