@@ -739,6 +739,9 @@ const VERBS: &[Verb] = &[
     row("ARRANGE", "Toolbar's Arrange by topic: lay this level's cards out by page text (one undo step)", |_| {
         job(|app, _| app.arrange_by_topic())
     }),
+    row("TIDY", "Toolbar's Tidy: release this level's drop anchors, pins stay (one undo step)", |_| {
+        job(|app, _| app.tidy_level())
+    }),
     row("ACCEPTSUGGESTION n", "Accept the n-th (from 0) suggested group", |rest| {
         let index: usize = rest.parse().ok()?;
         job(move |app, _| app.accept_suggestion(index))
@@ -1411,6 +1414,7 @@ mod tests {
             "WAITINDEX 5",
             "SUGGEST",
             "ARRANGE",
+            "TIDY",
             "ACCEPTSUGGESTION 0",
             "ACCEPTSUGGESTIONLABEL 0",
             "SLEEP 0.5",

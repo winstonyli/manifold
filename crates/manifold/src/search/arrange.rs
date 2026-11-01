@@ -44,7 +44,8 @@ impl App {
         edges
     }
 
-    /// Lays the current level out by topic (see the module comment). A pinned card stays, and so does a group.
+    /// Lays the current level out by topic (see the module comment). A pinned card stays, and so does a group; a card it moves loses its drop anchor
+    /// (one undo step).
     /// Refused with a toast above `ARRANGE_MAX_CARDS` cards.
     pub(crate) fn arrange_by_topic(&mut self) {
         let cards = self.suggestion_candidates();
@@ -89,13 +90,14 @@ impl App {
             }
             let after = positions[&id];
             let (group, parent) = (self.doc.mirror.group(id), self.doc.mirror.parent(id));
-            let held = self.doc.mirror.anchor(id);
+            // A drop's anchor would pull the card back to its drop point at the next settle; a pin never moves here.
+            let released = self.clear_anchors(&[id], false).first().map(|&(_, a)| a);
             moved.push(Moved {
                 id,
                 group: (group, group),
                 parent: (parent, parent),
                 pos: (Some(self.layout_pos(id)), Some(after)),
-                anchor: (held, held),
+                anchor: (released, None),
             });
             self.edit_pos(id, Some(after));
             self.snap_layout(id, after);
@@ -105,12 +107,50 @@ impl App {
             self.save_session();
         }
     }
+
+    /// Tidy (toolbar, omnibar, `TIDY`): Arrange without the move. Releases every drop anchor of the level's cards,
+    /// inert ones included (so a stale one can't revive when a card is moved back), so the next settle moves dropped
+    /// cards again; pins stay. One undo step; nothing to release records nothing.
+    pub(crate) fn tidy_level(&mut self) {
+        let mut level: Vec<NodeId> = self.nodes.keys().copied().filter(|&id| self.in_level(id)).collect();
+        level.sort();
+        let released = self.clear_anchors(&level, false);
+        if released.is_empty() {
+            return;
+        }
+        let message = match released.len() {
+            1 => "Tidied 1 card".to_owned(),
+            n => format!("Tidied {n} cards"),
+        };
+        let moved = released
+            .into_iter()
+            .map(|(id, anchor)| {
+                let (group, parent, pos) =
+                    (self.doc.mirror.group(id), self.doc.mirror.parent(id), self.doc.mirror.pos(id));
+                Moved {
+                    id,
+                    group: (group, group),
+                    parent: (parent, parent),
+                    pos: (pos, pos),
+                    anchor: (Some(anchor), None),
+                }
+            })
+            .collect();
+        self.record_undo(message, UndoKind::Revert { moved, created: None });
+        self.save_session();
+    }
+
+    /// Whether any card at the level shown has a drop anchor (held or inert): when the toolbar offers Tidy.
+    pub(crate) fn level_has_drops(&self) -> bool {
+        self.nodes.keys().any(|&id| self.in_level(id) && self.doc.mirror.anchor(id).is_some_and(|a| !a.explicit))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::session_sync::tests::add_note;
+    use crate::session_sync::tests::{add_group, add_note};
+    use crate::store::model::Anchor;
 
     const CATS: [&str; 3] = ["cat milk fur purr cat", "cat fur kitten milk", "kitten purr milk cat fur"];
     const RUST: [&str; 3] =
@@ -212,6 +252,61 @@ mod tests {
         app.step_history(serial, false);
         assert_eq!(app.doc.mirror.pos(cats[2]), Some(dragged), "the card moved since keeps its place");
         assert_eq!(app.doc.mirror.pos(cats[1]), original, "the others return");
+    }
+
+    #[test]
+    fn tidy_releases_drops_and_keeps_pins_in_one_undo_step() {
+        let (mut app, cats, _) = spread_app();
+        app.drop_at(cats[0]);
+        app.toggle_pin(cats[1]);
+        let (dropped, pos) = (app.doc.mirror.anchor(cats[0]), app.doc.mirror.pos(cats[0]));
+        assert!(app.level_has_drops());
+        app.tidy_level();
+        assert_eq!(app.doc.mirror.anchor(cats[0]), None, "the drop is released");
+        assert_eq!(app.doc.mirror.pos(cats[0]), pos, "and the card is not moved");
+        assert!(app.doc.mirror.pinned(cats[1]), "a pin stays");
+        assert!(!app.level_has_drops());
+        let serial = app.toasts.undo.as_ref().map(|u| u.1);
+        app.step_history(serial, false);
+        assert_eq!(app.doc.mirror.anchor(cats[0]), dropped, "Undo holds it again");
+        app.step_history(None, true);
+        assert_eq!(app.doc.mirror.anchor(cats[0]), None);
+    }
+
+    #[test]
+    fn tidy_with_nothing_to_release_records_nothing() {
+        let (mut app, cats, _) = spread_app();
+        app.toggle_pin(cats[1]);
+        app.tidy_level();
+        assert!(app.toasts.undo.is_none(), "no undo step");
+        assert!(app.doc.mirror.pinned(cats[1]), "the pin is untouched");
+    }
+
+    /// Tidy releases an inert drop too (written in another group, left by a remote move), so moving the card back
+    /// does not revive it.
+    #[test]
+    fn tidy_releases_an_inert_drop_so_moving_back_does_not_revive_it() {
+        let mut app = App::default();
+        let g = add_group(&mut app, "g");
+        let note = add_note(&mut app, "n");
+        app.edit_anchor(note, Some(Anchor { pos: [5.0, 5.0], group: Some(g), explicit: false }));
+        assert_eq!(app.doc.mirror.held(note), None, "inert at the top level");
+        app.tidy_level();
+        assert_eq!(app.doc.mirror.anchor(note), None);
+        app.doc.mirror.set_group(note, Some(g)); // a remote move back, mirror only
+        assert_eq!(app.doc.mirror.held(note), None, "nothing to revive");
+    }
+
+    #[test]
+    fn arrange_releases_the_drops_of_the_cards_it_moves_and_undo_restores_them() {
+        let (mut app, cats, _) = spread_app();
+        app.drop_at(cats[0]);
+        let dropped = app.doc.mirror.anchor(cats[0]);
+        app.arrange_by_topic();
+        assert_eq!(app.doc.mirror.anchor(cats[0]), None, "else a later settle pulls it back to its drop point");
+        let serial = app.toasts.undo.as_ref().map(|u| u.1);
+        app.step_history(serial, false);
+        assert_eq!(app.doc.mirror.anchor(cats[0]), dropped);
     }
 
     #[test]

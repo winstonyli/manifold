@@ -59,7 +59,9 @@ pub(crate) static ARRANGE: Command = Command {
     phrases: &["arrange by topic", "lay out by topic"],
     run: App::arrange_by_topic,
 };
-pub(crate) static COMMANDS: [&Command; 2] = [&SUGGEST_GROUPS, &ARRANGE];
+pub(crate) static TIDY: Command =
+    Command { title: "Tidy", phrases: &["tidy", "tidy dropped cards"], run: App::tidy_level };
+pub(crate) static COMMANDS: [&Command; 3] = [&SUGGEST_GROUPS, &ARRANGE, &TIDY];
 
 /// One open card the omnibar may offer.
 pub(crate) struct CardInfo {
@@ -311,6 +313,8 @@ mod tests {
         assert!(!offered(&Fake::default(), "suggest"), "the address bar offers none");
         let arrange = |text| rows(&on, text, &[]).contains(&Row::Command(&ARRANGE));
         assert!(arrange("arrange by") && arrange("ARR") && !arrange("su"));
+        let tidy = |text| rows(&on, text, &[]).contains(&Row::Command(&TIDY));
+        assert!(tidy("tidy") && tidy("TID") && !tidy("arr"));
     }
 
     #[test]

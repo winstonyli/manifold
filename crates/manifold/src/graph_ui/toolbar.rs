@@ -241,6 +241,14 @@ impl App {
             if response.clicked() {
                 self.arrange_by_topic();
             }
+            if self.level_has_drops() {
+                let response = chip_icon_button(ui, egui::Id::new("icon_btn_tidy"), egui_phosphor::light::BROOM)
+                    .named_tip("Tidy: let dropped cards move again; pins stay");
+                grow(response.rect);
+                if response.clicked() {
+                    self.tidy_level();
+                }
+            }
             if !groups_at_level.is_empty() {
                 let response =
                     chip_icon_button(ui, egui::Id::new("icon_btn_ungroup_all"), egui_phosphor::light::FOLDER_MINUS)
