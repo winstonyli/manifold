@@ -107,7 +107,7 @@ use node_menu::*;
 use session::sanitize_session_name;
 use tabs::{SpawnPurpose, SpawnTracker, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;
-use undo::{Moved, UndoKind};
+use undo::{Folded, Moved, UndoKind};
 use view_modes::*;
 use zoom_chip::*;
 

@@ -1,7 +1,7 @@
 //! Group methods of `App`: naming, insertion, dissolving and destroying.
 
 use super::*;
-use crate::store::model::{FieldType, NodeId};
+use crate::store::model::{Anchor, FieldType, NodeId};
 
 impl App {
     /// A fresh group's default display name: "Group N" for the smallest N
@@ -41,16 +41,19 @@ impl App {
     /// Folds each (group, destination) with `fold_group` and records them as one undo step. The one way a user-facing
     /// fold happens: `ungroup` and `merge_groups` both come here.
     pub(crate) fn fold_groups(&mut self, folds: Vec<(NodeId, Option<NodeId>)>, message: String) {
-        for &(id, dest) in &folds {
-            self.fold_group(id, dest);
-        }
+        let folds = folds
+            .into_iter()
+            .map(|(group, dest)| Folded { group, dest, anchors: self.fold_group(group, dest) })
+            .collect();
         self.record_undo(message, UndoKind::Fold(folds));
     }
 
     /// Moves group `id`'s members into `dest` (`None`: the top level) and closes the emptied group, recording where
     /// they went and who they were in `field::HELD` so `regroup_held` can put them back. Records no undo step itself (redo of a fold calls it too): go through `fold_groups`.
-    pub(crate) fn fold_group(&mut self, id: NodeId, dest: Option<NodeId>) {
+    /// Returns the drop anchors it released (`Folded::anchors`).
+    pub(crate) fn fold_group(&mut self, id: NodeId, dest: Option<NodeId>) -> Vec<(NodeId, Anchor)> {
         let members: Vec<NodeId> = self.members_of(id).collect();
+        let released = self.clear_anchors(&members, false);
         for &member in &members {
             self.edit_group(member, dest);
         }
@@ -59,6 +62,7 @@ impl App {
         for &member in &members {
             self.recheck_edge_scope(member);
         }
+        released
     }
 
     /// A reopened group puts back the members `fold_group` took out of it that are still where it left them (one

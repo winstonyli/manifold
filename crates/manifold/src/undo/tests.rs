@@ -6,7 +6,7 @@ use crate::store::model::{field, FieldType, FieldValue};
 use crate::store::tree::{self, Leaf, TreePath};
 
 fn fold(tag: NodeId) -> UndoKind {
-    UndoKind::Fold(vec![(tag, None)])
+    UndoKind::Fold(vec![Folded { group: tag, dest: None, anchors: Vec::new() }])
 }
 
 /// A new record empties `redo`; undoing and redoing only move an entry between the lists.
@@ -147,7 +147,7 @@ fn a_join_is_undone_and_redone() {
     let (g, _) = group_with_note(&mut app);
     let n = add_note(&mut app, "loose");
     app.edit_pos(n, Some(egui::vec2(40.0, 50.0)));
-    app.interaction.drag_origin = vec![(CardId::from(n), app.doc.mirror.pos(n))];
+    app.interaction.drag_origin = vec![(CardId::from(n), app.doc.mirror.pos(n), None)];
     app.edit_pos(n, Some(egui::vec2(300.0, 300.0)));
     app.snap_layout(n, egui::vec2(300.0, 300.0));
     app.apply_drop(CardId::from(n), Some((DropEffect::Join, Some(CardId::from(g)))));
@@ -160,6 +160,75 @@ fn a_join_is_undone_and_redone() {
     assert_eq!(app.doc.mirror.group(n), Some(g));
     assert_eq!(app.doc.mirror.pos(n), Some(egui::vec2(300.0, 300.0)));
     assert_eq!(app.layout_pos(n), egui::vec2(300.0, 300.0));
+}
+
+/// What a drag does to `n` (the layout follows the pointer), then its release.
+fn drag_and_release(app: &mut App, n: NodeId, to: egui::Vec2) {
+    app.interaction.dragging = Some(CardId::from(n));
+    app.interaction.drag_moved = vec![CardId::from(n)];
+    app.snap_layout(n, to);
+    app.release_drag();
+}
+
+/// A card dropped earlier, dragged again and released into a group: Undo puts back its pre-drag position and its
+/// earlier drop anchor (not the one the release wrote), Redo the Join, whose move released the anchor.
+#[test]
+fn undo_of_a_drag_then_join_restores_the_pre_drag_anchor() {
+    let path = store::testutil::temp_dir("join-anchor-undo").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (g, _) = group_with_note(&mut app);
+    let n = add_note(&mut app, "loose");
+    app.snap_layout(n, egui::vec2(40.0, 50.0));
+    app.drop_at(n);
+    let earlier = app.doc.mirror.anchor(n);
+    assert!(earlier.is_some());
+    drag_and_release(&mut app, n, egui::vec2(300.0, 300.0));
+    app.apply_drop(CardId::from(n), Some((DropEffect::Join, Some(CardId::from(g)))));
+    assert_eq!((app.doc.mirror.group(n), app.doc.mirror.anchor(n)), (Some(g), None), "the move released the drop");
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.group(n), None);
+    assert_eq!(app.doc.mirror.pos(n), Some(egui::vec2(40.0, 50.0)));
+    assert_eq!(app.doc.mirror.anchor(n), earlier, "the earlier drop, not the release's");
+    app.step_history(None, true);
+    assert_eq!((app.doc.mirror.group(n), app.doc.mirror.anchor(n)), (Some(g), None));
+}
+
+/// Undo skips a card dropped again since the step: its anchor is no longer the one the step left.
+#[test]
+fn an_undo_skips_a_card_dropped_again_since() {
+    let path = store::testutil::temp_dir("join-anchor-skip").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (g, _) = group_with_note(&mut app);
+    let n = add_note(&mut app, "loose");
+    drag_and_release(&mut app, n, egui::vec2(300.0, 300.0));
+    app.apply_drop(CardId::from(n), Some((DropEffect::Join, Some(CardId::from(g)))));
+    let pos = app.doc.mirror.pos(n);
+    app.drop_at(n); // dropped again inside the group, at the same point
+    assert_eq!(app.doc.mirror.pos(n), pos, "only the anchor differs");
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.group(n), Some(g), "left where the user put it");
+}
+
+/// Dissolve releases the members' drop anchors; Undo reopens the group and puts each back, Redo releases them again
+/// (and the record keeps what it released), a second Undo puts them back again.
+#[test]
+fn a_fold_is_undone_with_its_members_anchors() {
+    let path = store::testutil::temp_dir("fold-anchor-undo").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (g, inner) = group_with_note(&mut app);
+    app.snap_layout(inner, egui::vec2(70.0, 80.0));
+    app.drop_at(inner);
+    let dropped = app.doc.mirror.anchor(inner);
+    assert_eq!(dropped.map(|a| a.group), Some(Some(g)));
+    app.ungroup(&[g]);
+    assert_eq!((app.doc.mirror.group(inner), app.doc.mirror.anchor(inner)), (None, None));
+    app.step_history(None, false);
+    assert_eq!(app.doc.mirror.group(inner), Some(g));
+    assert_eq!(app.doc.mirror.anchor(inner), dropped, "the drop is back with the card");
+    app.step_history(None, true);
+    assert_eq!((app.doc.mirror.group(inner), app.doc.mirror.anchor(inner)), (None, None));
+    app.step_history(None, false); // a second undo restores what the redo's fold released
+    assert_eq!((app.doc.mirror.group(inner), app.doc.mirror.anchor(inner)), (Some(g), dropped));
 }
 
 /// Undo never writes a card into a group that is closed: it would vanish from every level.
@@ -215,7 +284,7 @@ fn a_selection_join_reverts_each_card_and_skips_one_that_moved_on() {
     let (g, _) = group_with_note(&mut app);
     let (a, b) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
     app.interaction.selected = [CardId::from(a), CardId::from(b)].into_iter().collect();
-    app.interaction.drag_origin = vec![(CardId::from(a), None), (CardId::from(b), None)];
+    app.interaction.drag_origin = vec![(CardId::from(a), None, None), (CardId::from(b), None, None)];
     app.apply_drop(CardId::from(a), Some((DropEffect::Join, Some(CardId::from(g)))));
     assert_eq!(app.doc.mirror.group(b), Some(g));
     let elsewhere = add_group(&mut app, "Elsewhere");

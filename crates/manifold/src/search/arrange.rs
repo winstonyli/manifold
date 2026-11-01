@@ -89,11 +89,13 @@ impl App {
             }
             let after = positions[&id];
             let (group, parent) = (self.doc.mirror.group(id), self.doc.mirror.parent(id));
+            let held = self.doc.mirror.anchor(id);
             moved.push(Moved {
                 id,
                 group: (group, group),
                 parent: (parent, parent),
                 pos: (Some(self.layout_pos(id)), Some(after)),
+                anchor: (held, held),
             });
             self.edit_pos(id, Some(after));
             self.snap_layout(id, after);

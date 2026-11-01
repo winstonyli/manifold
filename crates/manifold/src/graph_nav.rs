@@ -3,6 +3,9 @@
 use super::*;
 use crate::store::model::{Anchor, NodeId};
 
+/// One card's group, parent and anchor, as `membership_snapshot` records them.
+pub(crate) type Membership = (NodeId, Option<NodeId>, Option<NodeId>, Option<Anchor>);
+
 /// The Graph view's pointer-driven state (`App::interaction`): drag, hover, selection and the pending new-card choice.
 #[derive(Default)]
 pub(crate) struct GraphInteraction {
@@ -24,7 +27,7 @@ pub(crate) struct GraphInteraction {
     pub(crate) drag_moved: Vec<CardId>,
     /// Where each card of the drag released last stood in the document before `release_drag` wrote its new pos, for
     /// the drop's undo (`apply_drop` takes it; a drop with no effect discards it).
-    pub(crate) drag_origin: Vec<(CardId, Option<egui::Vec2>)>,
+    pub(crate) drag_origin: Vec<(CardId, Option<egui::Vec2>, Option<Anchor>)>,
     pub(crate) hovered: Option<CardId>,
     /// Set to `hovered` by an Escape press while a hover-peek preview
     /// is showing, so that preview can be dismissed early without needing
@@ -215,7 +218,7 @@ impl App {
         for moved_id in moved {
             let Some(key) = moved_id.node() else { continue };
             if self.nodes.contains_key(&key) {
-                self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(key)));
+                self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(key), self.doc.mirror.anchor(key)));
                 self.drop_at(key);
             }
         }
@@ -301,27 +304,40 @@ impl App {
         group
     }
 
-    /// Every shown card's group and parent, for `moved_since`.
-    pub(crate) fn membership_snapshot(&self) -> Vec<(NodeId, Option<NodeId>, Option<NodeId>)> {
-        self.nodes.keys().map(|&w| (w, self.doc.mirror.group(w), self.doc.mirror.parent(w))).collect()
+    /// Every shown card's group, parent and anchor, for `moved_since`.
+    pub(crate) fn membership_snapshot(&self) -> Vec<Membership> {
+        self.nodes
+            .keys()
+            .map(|&w| (w, self.doc.mirror.group(w), self.doc.mirror.parent(w), self.doc.mirror.anchor(w)))
+            .collect()
     }
 
     /// The cards whose group or parent differs from `before`, each with its before and after values. `origin` says
-    /// where dragged cards started (a card not in it did not move).
+    /// where dragged cards started, pos and anchor (a card not in it did not move; its anchor before is the
+    /// snapshot's, since the release that wrote a new one came first).
     pub(crate) fn moved_since(
         &self,
-        before: Vec<(NodeId, Option<NodeId>, Option<NodeId>)>,
-        origin: &[(CardId, Option<egui::Vec2>)],
+        before: Vec<Membership>,
+        origin: &[(CardId, Option<egui::Vec2>, Option<Anchor>)],
     ) -> Vec<Moved> {
         before
             .into_iter()
-            .filter_map(|(w, group, parent)| {
+            .filter_map(|(w, group, parent, anchor)| {
                 let now_group = self.doc.mirror.group(w);
                 let now_parent = self.doc.mirror.parent(w);
                 (group != now_group || parent != now_parent).then(|| {
-                    let pos_now = self.doc.mirror.pos(w);
-                    let pos_before = origin.iter().find(|(o, _)| *o == CardId::from(w)).map_or(pos_now, |(_, p)| *p);
-                    Moved { id: w, group: (group, now_group), parent: (parent, now_parent), pos: (pos_before, pos_now) }
+                    let (pos_now, anchor_now) = (self.doc.mirror.pos(w), self.doc.mirror.anchor(w));
+                    let (pos_before, anchor_before) = origin
+                        .iter()
+                        .find(|(o, ..)| *o == CardId::from(w))
+                        .map_or((pos_now, anchor), |&(_, p, a)| (p, a));
+                    Moved {
+                        id: w,
+                        group: (group, now_group),
+                        parent: (parent, now_parent),
+                        pos: (pos_before, pos_now),
+                        anchor: (anchor_before, anchor_now),
+                    }
                 })
             })
             .collect()

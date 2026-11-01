@@ -1,9 +1,9 @@
 //! Session-local undo and redo of drops, folds and property edits. Docs: `docs/superpowers/specs/2026-10-19-move-undo-design.md`.
-//! In memory only: not saved, not synced. A revert is an ordinary edit through `edit_group`, `edit_parent` and
-//! `edit_pos`, so other devices see it as one.
+//! In memory only: not saved, not synced. A revert is an ordinary edit through `edit_group`, `edit_parent`,
+//! `edit_pos` and `edit_anchor`, so other devices see it as one.
 
 use super::*;
-use crate::store::model::NodeId;
+use crate::store::model::{Anchor, NodeId};
 use crate::store::tree::{self, Leaf, TreePath};
 
 /// How many steps the history keeps, each way.
@@ -16,6 +16,16 @@ pub(crate) struct Moved {
     pub(crate) group: (Option<NodeId>, Option<NodeId>),
     pub(crate) parent: (Option<NodeId>, Option<NodeId>),
     pub(crate) pos: (Option<egui::Vec2>, Option<egui::Vec2>),
+    pub(crate) anchor: (Option<Anchor>, Option<Anchor>),
+}
+
+/// One group a fold closed (`App::fold_group`): where its members went, and the drop anchors the move released, so
+/// Undo can put them back with the members.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Folded {
+    pub(crate) group: NodeId,
+    pub(crate) dest: Option<NodeId>,
+    pub(crate) anchors: Vec<(NodeId, Anchor)>,
 }
 
 /// One write to a tree field (`App::edit_prop`): `path` held `before` (every leaf at or under it) and now holds
@@ -36,9 +46,9 @@ pub(crate) enum UndoKind {
     LabelDelete { label: Option<NodeId>, name: String, color: Option<egui::Color32>, carriers: Vec<(NodeId, i64)> },
     /// A drop with an effect (Join, GroupWith, Eject, Reparent). `created` is the group a GroupWith made.
     Revert { moved: Vec<Moved>, created: Option<NodeId> },
-    /// Dissolve, Ungroup All, Merge: each group and where `fold_group` sent its members. Undo reopens the groups,
-    /// redo folds them again.
-    Fold(Vec<(NodeId, Option<NodeId>)>),
+    /// Dissolve, Ungroup All, Merge: each group, where `fold_group` sent its members and the drop anchors it released.
+    /// Undo reopens the groups and restores those anchors, redo folds them again.
+    Fold(Vec<Folded>),
     /// Tree edits (`App::edit_prop`): labels, properties, Json. Each part changed the leaves at `path` and under it
     /// from `before` to `after`; undo reverses them newest first, redo repeats them.
     Props(Vec<PropEdit>),
@@ -124,7 +134,7 @@ impl App {
     /// Applies `kind` one way; returns how many of its parts took effect and how many there were.
     fn replay(&mut self, kind: &mut UndoKind, redo: bool) -> (usize, usize) {
         match kind {
-            UndoKind::Fold(groups) => self.replay_fold(groups, redo),
+            UndoKind::Fold(folds) => self.replay_fold(folds, redo),
             UndoKind::Revert { moved, created } => self.replay_revert(moved, *created, redo),
             UndoKind::Props(edits) => self.replay_props(edits, redo),
             UndoKind::LabelDelete { label, name, color, carriers } => {
@@ -240,7 +250,8 @@ impl App {
         for m in moved {
             let holds = self.card_in_group(m.id, side(&m.group, leaving_after))
                 && self.doc.mirror.parent(m.id) == side(&m.parent, leaving_after)
-                && self.doc.mirror.pos(m.id) == if leaving_after { m.pos.1 } else { m.pos.0 };
+                && self.doc.mirror.pos(m.id) == if leaving_after { m.pos.1 } else { m.pos.0 }
+                && self.doc.mirror.anchor(m.id) == if leaving_after { m.anchor.1 } else { m.anchor.0 };
             if !holds {
                 continue;
             }
@@ -257,6 +268,8 @@ impl App {
             if m.parent.0 != m.parent.1 {
                 self.edit_parent(m.id, parent);
             }
+            // After the group: `edit_group` releases a drop's anchor, and the arriving one is written over it.
+            self.edit_anchor(m.id, if arriving_after { m.anchor.1 } else { m.anchor.0 });
             if m.pos.0 != m.pos.1 {
                 let pos = if arriving_after { m.pos.1 } else { m.pos.0 };
                 self.edit_pos(m.id, pos);
@@ -276,23 +289,31 @@ impl App {
         (done, moved.len())
     }
 
-    /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them); redo
-    /// folds each again as the group is now, if it and its destination are shown.
-    fn replay_fold(&mut self, groups: &[(NodeId, Option<NodeId>)], redo: bool) -> (usize, usize) {
+    /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them) and
+    /// restores the drop anchors the fold released to members back in it with none since; redo folds each again as
+    /// the group is now, if it and its destination are shown, and stores the anchors that fold releases back in the
+    /// record, so a second undo restores what the redo released, not what the first fold did.
+    fn replay_fold(&mut self, folds: &mut [Folded], redo: bool) -> (usize, usize) {
         let mut done = 0;
-        for &(group, dest) in groups {
+        for f in folds.iter_mut() {
             if redo {
-                if self.nodes.contains_key(&group) && dest.as_ref().is_none_or(|d| self.nodes.contains_key(d)) {
-                    self.fold_group(group, dest);
+                if self.nodes.contains_key(&f.group) && f.dest.as_ref().is_none_or(|d| self.nodes.contains_key(d)) {
+                    f.anchors = self.fold_group(f.group, f.dest);
                     done += 1;
                 }
-            } else if !self.nodes.contains_key(&group) {
+            } else if !self.nodes.contains_key(&f.group) {
                 // A group shown again already (reopened from Recently Closed) has nothing to undo.
-                self.reopen_node(group);
+                self.reopen_node(f.group);
+                for &(member, anchor) in &f.anchors {
+                    if self.card_in_group(member, Some(f.group)) && self.doc.mirror.anchor(member).is_none() {
+                        self.edit_anchor(member, Some(anchor));
+                        self.snap_layout(member, egui::vec2(anchor.pos[0], anchor.pos[1]));
+                    }
+                }
                 done += 1;
             }
         }
-        (done, groups.len())
+        (done, folds.len())
     }
 }
 
