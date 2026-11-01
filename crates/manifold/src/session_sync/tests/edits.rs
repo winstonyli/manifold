@@ -130,6 +130,30 @@ fn a_settle_ends_where_the_document_says_whatever_came_before() {
     assert_eq!((app.layout_pos(note), app.layout_pos(other)), once);
 }
 
+/// A held card is seeded from its anchor point, not its `POS` (they differ after a remote write), and stays there.
+#[test]
+fn a_held_card_is_placed_at_its_anchor_not_its_pos() {
+    let mut app = App::default();
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    a_note_at(&mut app, egui::vec2(52.0, 10.0));
+    app.edit_anchor(note, Some(Anchor { pos: [200.0, 0.0], group: None, explicit: false }));
+    app.settle_current_level();
+    assert_eq!(app.layout_pos(note), egui::vec2(200.0, 0.0));
+    assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(10.0, 10.0)), "the settle writes no document pos");
+}
+
+/// An inert anchor (written in another group) holds nothing: the settle moves the card as if it had none.
+#[test]
+fn an_inert_anchor_holds_nothing_in_the_settle() {
+    let mut app = App::default();
+    let g = add_group(&mut app, "g");
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    a_note_at(&mut app, egui::vec2(12.0, 10.0));
+    app.edit_anchor(note, Some(Anchor { pos: [10.0, 10.0], group: Some(g), explicit: false }));
+    app.settle_current_level();
+    assert_ne!(app.layout_pos(note), egui::vec2(10.0, 10.0), "pushed apart from its overlapping neighbour");
+}
+
 /// Pinning keeps a card where it is drawn: the pin saves its shown position, which a settle then holds.
 #[test]
 fn a_pinned_card_stays_where_it_was_shown() {

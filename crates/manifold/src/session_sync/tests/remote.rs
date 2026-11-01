@@ -1,6 +1,7 @@
 //! Session-sync tests: applying other actors' changes to the mirror and the live app.
 
 use super::*;
+use crate::store::model::Anchor;
 
 /// Another replica's delete removes the node here and queues nothing: the document already lacks it.
 #[test]
@@ -436,6 +437,45 @@ fn a_remote_pos_snaps_the_layout() {
     assert_eq!(app.layout_pos(note), egui::vec2(5.0, 6.0));
     assert!(app.save_session());
     assert_eq!(pos_stamp(app.doc.journal.as_ref().unwrap().doc()), theirs, "nothing written back");
+}
+
+/// Another replica's anchor reaches the mirror and snaps the layout to its point; a later remote clear snaps the card
+/// back to its `POS`.
+#[test]
+fn a_remote_anchor_snaps_the_layout_and_a_remote_clear_falls_back_to_pos() {
+    let path = temp_dir("anchor-remote").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    let theirs = Anchor { pos: [5.0, 6.0], group: None, explicit: false };
+    remote_set(&mut other, note, field::ANCHOR, FieldValue::Anchor(Some(theirs)));
+    assert!(app.save_session());
+    assert_eq!(app.doc.mirror.anchor(note), Some(theirs));
+    assert_eq!(app.layout_pos(note), egui::vec2(5.0, 6.0));
+    assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(10.0, 20.0)));
+    remote_set(&mut other, note, field::ANCHOR, FieldValue::Anchor(None));
+    assert!(app.save_session());
+    assert_eq!(app.layout_pos(note), egui::vec2(10.0, 20.0), "no hold: drawn at its document pos");
+}
+
+/// A card the user is dragging is not snapped by a remote anchor either.
+#[test]
+fn a_remote_anchor_does_not_snap_a_card_being_dragged() {
+    let path = temp_dir("anchor-remote-drag").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let note = a_note_at(&mut app, egui::vec2(10.0, 20.0));
+    assert!(app.save_session());
+    let mut other = Journal::open(&path, ActorId(2)).unwrap();
+    drag(&mut app, &[note], egui::vec2(0.0, 50.0));
+    remote_set(
+        &mut other,
+        note,
+        field::ANCHOR,
+        FieldValue::Anchor(Some(Anchor { pos: [5.0, 6.0], group: None, explicit: false })),
+    );
+    assert!(app.save_session());
+    assert_eq!(app.layout_pos(note), egui::vec2(10.0, 70.0), "the dragged card stays under the pointer");
 }
 
 /// Two replicas of one session settle a level to the same places, and a card pinned on one stays on the other where

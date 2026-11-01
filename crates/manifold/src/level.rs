@@ -94,12 +94,15 @@ pub(crate) struct LevelEdge {
 
 /// What a level's layout was computed from, besides its group (`GraphUi::settled_key`): how many of its cards are
 /// not virtual (a source's entry count can change with each navigation, and that must not re-settle (move) the
-/// stored cards), and the stored cards' sizes, the layout's other input, so a card that changes size (an image
-/// decoding) re-lays-out the level as a new card does. Sizes are summed, so drawing order doesn't change the key.
+/// stored cards), the stored cards' sizes, the layout's other input, so a card that changes size (an image
+/// decoding) re-lays-out the level as a new card does, and the held cards with their anchor points
+/// (`Mirror::held`), so a drop, a Pin or an Unpin, local or remote, re-lays-out the level around them. Sizes and
+/// holds are summed, so drawing order doesn't change the key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SettleKey {
     pub(crate) count: usize,
     sizes: u64,
+    holds: u64,
 }
 
 impl App {
@@ -114,9 +117,19 @@ impl App {
             .filter_map(|item| self.nodes.get(&item.id.node()?))
             .map(|node| node_card_size(&node.runtime))
             .map(|size| hasher.hash_one((size.x.to_bits(), size.y.to_bits())));
+        let holds = items
+            .iter()
+            .filter(|item| item.origin == Origin::Stored)
+            .filter_map(|item| {
+                let id = item.id.node()?;
+                let at = self.doc.mirror.held(id)?;
+                Some(hasher.hash_one((id, at.x.to_bits(), at.y.to_bits())))
+            })
+            .fold(0, u64::wrapping_add);
         SettleKey {
             count: items.iter().filter(|item| !matches!(item.origin, Origin::Virtual(_))).count(),
             sizes: sizes.fold(0, u64::wrapping_add),
+            holds,
         }
     }
 }
@@ -379,6 +392,31 @@ mod tests {
         for x in (0..20_000).map(|i| i as f32 * 0.731 - 7000.0) {
             assert_eq!(app.settle_key(&[entry(x)]), first, "the card at x {x}");
         }
+    }
+
+    /// The held set with its anchor points is part of the key: an anchor write (a drop, a remote Pin) re-settles the
+    /// level, a `POS` write alone does not, and an inert anchor counts as no hold.
+    #[test]
+    fn an_anchor_write_changes_the_settle_key_and_a_pos_write_does_not() {
+        use crate::store::model::Anchor;
+        let mut app = App::default();
+        app.insert_placeholder_node(D1, egui::Vec2::ZERO, Kind::Download, download("d.bin"));
+        let entry = CardEntry {
+            id: CardId::from(D1),
+            kind: crate::card_kind::fixtures::plain(crate::store::model::TYPE_DOWNLOAD),
+            origin: Origin::Stored,
+            rect: node_card_rect(egui::Vec2::ZERO, &download("d.bin")),
+        };
+        let first = app.settle_key(std::slice::from_ref(&entry));
+        app.edit_pos(D1, Some(egui::vec2(30.0, 40.0)));
+        assert_eq!(app.settle_key(std::slice::from_ref(&entry)), first, "a pos write");
+        app.edit_anchor(D1, Some(Anchor { pos: [30.0, 40.0], group: Some(OTHER), explicit: false }));
+        assert_eq!(app.settle_key(std::slice::from_ref(&entry)), first, "an inert anchor holds nothing");
+        app.edit_anchor(D1, Some(Anchor { pos: [30.0, 40.0], group: None, explicit: false }));
+        let held = app.settle_key(std::slice::from_ref(&entry));
+        assert_ne!(held, first, "a drop");
+        app.edit_anchor(D1, Some(Anchor { pos: [31.0, 40.0], group: None, explicit: false }));
+        assert_ne!(app.settle_key(std::slice::from_ref(&entry)), held, "the anchor point moved");
     }
 
     #[test]

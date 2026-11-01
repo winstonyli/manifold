@@ -562,20 +562,19 @@ impl App {
 
         // Each level node is collected once: `edges` is a plain `Vec`, so a duplicated pass would feed every spring
         // edge to `graph_layout::step` twice and double the spring strength.
-        // Starts from the document pos, at rest, so the result depends only on the document and the cards' sizes,
-        // not on earlier settles (one at a placeholder size, say); an unplaced node starts where it is drawn. Writes
-        // the layout only (`App::layout`): physics never writes the document pos.
+        // Starts from the document, at rest: a held card from its anchor point (`Mirror::held`), any other from its
+        // document pos, so the result depends only on the document and the cards' sizes, not on earlier settles; an
+        // unplaced node starts where it is drawn. Writes the layout only (`App::layout`): physics never writes the
+        // document.
         let at_level = || self.nodes.keys().filter(|id| self.in_level(**id));
-        let start = |id: NodeId| self.doc.mirror.pos(id).unwrap_or_else(|| self.layout_pos(id));
+        let start = |id: NodeId| {
+            self.doc.mirror.held(id).or_else(|| self.doc.mirror.pos(id)).unwrap_or_else(|| self.layout_pos(id))
+        };
         let mut positions: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, start(*id))).collect();
         let mut velocities: HashMap<NodeId, egui::Vec2> = at_level().map(|id| (*id, egui::Vec2::ZERO)).collect();
         let edges = self.spring_edges();
-        let pinned: HashSet<NodeId> = self
-            .nodes
-            .iter()
-            .filter(|(id, _)| self.in_level(**id) && self.doc.mirror.pinned(**id))
-            .map(|(id, _)| *id)
-            .collect();
+        // Held cards stay where they start and still repel.
+        let held: HashSet<NodeId> = at_level().filter(|id| self.doc.mirror.held(**id).is_some()).copied().collect();
 
         let sizes: HashMap<NodeId, egui::Vec2> = self
             .nodes
@@ -589,7 +588,7 @@ impl App {
                 &mut positions,
                 &mut velocities,
                 &edges,
-                &pinned,
+                &held,
                 &sizes,
                 graph_layout::GRAPH_WORLD_CENTER,
                 SETTLE_DT,

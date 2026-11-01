@@ -93,8 +93,8 @@ impl App {
     /// Applies `fields` to the live node `id` in the fields `mirror_remote` found changed (`changed`); the ones it
     /// held at a local edit (`held`) are left out: their live effects follow the mirror's verdict,
     /// so a tab whose url edit is pending is not navigated away from it, and a card whose pos edit is pending is not
-    /// moved. A new pos snaps the layout to `pos`, at rest, except for a card being dragged: the drag keeps it under
-    /// the pointer, and its release then wins. False when there is no such node.
+    /// moved. A new pos or anchor snaps the layout to where the card is held, else to `pos`, at rest, except for a card
+    /// being dragged: the drag keeps it under the pointer, and its release then wins. False when there is no such node.
     pub(super) fn update_live_node(
         &mut self,
         id: NodeId,
@@ -108,8 +108,11 @@ impl App {
         if !self.nodes.contains_key(&id) {
             return false;
         }
-        if changed(field::POS) && !self.is_being_dragged(CardId::from(id)) {
-            self.snap_layout(id, pos);
+        // A held card is drawn at its anchor point, any other at its document pos (`settle_current_level` seeds the
+        // same way), so a remote anchor write or clear snaps it like a remote pos.
+        if (changed(field::POS) || changed(field::ANCHOR)) && !self.is_being_dragged(CardId::from(id)) {
+            let at = self.doc.mirror.held(id).unwrap_or(pos);
+            self.snap_layout(id, at);
         }
         // Only a jar has `ephemeral`. The mirror already holds the new flag (`mirror_remote`), so this applies its
         // effects without comparing (`after_jar_ephemeral_changed`).
