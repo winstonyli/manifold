@@ -16,7 +16,7 @@ use std::time::Duration;
 use cef::args::Args;
 use cef::*;
 #[cfg(windows)]
-use manifold_view_protocol::job::{self, Job};
+use manifold_view_protocol::job;
 use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
 use manifold_view_protocol::{HostToView, InputEvent, TabState, ViewToHost};
 
@@ -97,20 +97,21 @@ fn main() {
     // itself, not tracked by anything else in this process -- a Job Object
     // with KILL_ON_JOB_CLOSE, assigned to this (browser) process only,
     // fixes that generally: Windows terminates every process still in the
-    // job the moment this process's own job handle closes, on any exit
-    // path (graceful, crashed, or force-killed), since child processes
-    // created by a process already in a job join the same job
-    // automatically. Same fix `manifold-view-webview2` already applies for
-    // its own equivalent multi-process tree (`manifold_view_protocol::job`;
-    // a failure is said on stderr). `_job` stays alive for the whole process
-    // lifetime and closes when `main` returns, after `cef::shutdown()`;
-    // closing it ends this process and its subprocesses (the locals declared
-    // above it are never dropped, which costs nothing at exit). Elsewhere
-    // there is no job; on Linux CEF's subprocesses exited by themselves
-    // within 5 s of a `kill -9` of this process (WSL2, 2026-10-02; the
-    // engine-install spec's Platforms section).
+    // job the moment its handle closes, which the OS does when this process
+    // ends on any exit path (graceful, crashed, or force-killed), since child
+    // processes created by a process already in a job join the same job
+    // automatically. `assign_self` keeps the job open until then: closing it
+    // at the end of `main` would end this process with exit code 0 and lose
+    // how it really ended (a panic's 101). Same fix `manifold-view-webview2`
+    // applies for its own multi-process tree (`manifold_view_protocol::job`;
+    // a failure is said on stderr). Elsewhere there is no job; on Linux
+    // CEF's subprocesses exited by themselves within 5 s of a `kill -9` of
+    // this process (WSL2, 2026-10-02; the engine-install spec's Platforms
+    // section).
     #[cfg(windows)]
-    let _job = job::kill_on_close("view host").inspect(Job::assign_self);
+    if let Some(job) = job::kill_on_close("view host") {
+        job.assign_self();
+    }
 
     // Read via env vars, not argv: this process's argv is CEF's own command
     // line (parsed above via Args::new()/as_cmd_line()) — mixing in our own

@@ -43,7 +43,7 @@ use windows::core::{Interface, BOOL, HSTRING};
 use windows::Win32::Foundation::RECT;
 use windows::UI::Composition::ContainerVisual;
 
-use manifold_view_protocol::job::{self, Job};
+use manifold_view_protocol::job;
 use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -69,14 +69,16 @@ fn main() {
     // cleanup this process's own `Shutdown` handler could do (it never
     // gets to run). A Job Object with `KILL_ON_JOB_CLOSE`, assigned to this
     // process at startup, fixes this generally: Windows terminates every
-    // process still in the job the moment this process's own job handle is
-    // closed, which happens automatically on ANY exit path (graceful,
-    // crashed, or force-killed) since the OS closes all of a dying
-    // process's handles regardless of how it died. `_job` is the first
-    // local so it is the last one `main` drops: closing it ends this
-    // process and everything still in the job, after the rest of `main`'s
-    // cleanup has run. A failure is said on stderr (`manifold_view_protocol::job`).
-    let _job = job::kill_on_close("view host").inspect(Job::assign_self);
+    // process still in the job the moment its handle closes, which the OS does
+    // when this process ends on ANY exit path (graceful, crashed, or
+    // force-killed), since it closes all of a dying process's handles.
+    // `assign_self` keeps the job open until then: closing it at the end of
+    // `main` would end this process with exit code 0 and lose how it really
+    // ended (a panic's 101). A failure is said on stderr
+    // (`manifold_view_protocol::job`).
+    if let Some(job) = job::kill_on_close("view host") {
+        job.assign_self();
+    }
 
     // Must happen before any window exists (`create_hidden_window` below is
     // the first one) -- `manifold`'s own main process is DPI-aware for free

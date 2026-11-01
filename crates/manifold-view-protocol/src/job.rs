@@ -2,8 +2,8 @@
 //! process in it, however the holder ended (a clean exit, a crash, a force-kill), since the OS closes a dying
 //! process's handles. manifold and the gate put each child they spawn in one (`assign_child`), so a view host or a
 //! gate instance dies with its parent; the CEF and WebView2 hosts put themselves in one (`assign_self`), so the
-//! browser processes their engine starts, which join the job as they are created, die with the host. A process in
-//! its own job also ends when it closes the job's last handle (a host's `_job` dropping at the end of `main`).
+//! browser processes their engine starts, which join the job as they are created, die with the host. `assign_self`
+//! keeps its job open until the process ends, so the host's own exit code survives.
 
 use std::os::windows::io::AsRawHandle;
 use std::process::Child;
@@ -65,11 +65,15 @@ impl Job {
         self.assign(child.as_raw_handle() as HANDLE, &who);
     }
 
-    /// Puts this process in the job, and with it every process it starts from then on. A failure is said on stderr.
-    pub fn assign_self(&self) {
+    /// Puts this process in the job, and with it every process it starts from then on, and keeps the job open until
+    /// this process ends: the OS closes the handle then, which ends whatever is still in the job. The handle is leaked
+    /// on purpose: dropping it earlier (at the end of `main`, or while a panic unwinds) would end this process at once
+    /// with exit code 0 and lose how it really ended. A failure is said on stderr.
+    pub fn assign_self(self) {
         // SAFETY: returns the current process's pseudo-handle, which needs no closing.
         let process = unsafe { GetCurrentProcess() };
         self.assign(process, "this process");
+        std::mem::forget(self);
     }
 
     fn assign(&self, process: HANDLE, who: &str) {
@@ -96,6 +100,32 @@ mod tests {
     #[test]
     fn a_job_is_created() {
         assert!(kill_on_close("test job").is_some());
+    }
+
+    /// The child half of `a_job_holder_keeps_its_exit_code`: only when the parent asks for it, put this process in a
+    /// job and fail, as a host does when it panics. Run on its own it does nothing.
+    #[test]
+    fn panic_in_a_job_holder() {
+        if std::env::var_os("JOB_TEST_PANIC").is_none() {
+            return;
+        }
+        let job = kill_on_close("test job").expect("job created");
+        job.assign_self();
+        panic!("a host panics");
+    }
+
+    /// A host that holds its own job must still report how it ended: a panic is exit code 101, not the 0 that
+    /// Windows gives a process its job's closing ended.
+    #[test]
+    fn a_job_holder_keeps_its_exit_code() {
+        let status = Command::new(std::env::current_exe().expect("test exe"))
+            .args(["--exact", "job::tests::panic_in_a_job_holder", "--nocapture"])
+            .env("JOB_TEST_PANIC", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("run the test exe");
+        assert_eq!(status.code(), Some(101), "the panic's exit code was lost");
     }
 
     /// The property the job exists for. No test calls `assign_self`: it would put the test runner in the job.
