@@ -28,7 +28,7 @@ use crate::render_process_handler::{
 };
 
 /// The renderer's latest `check-audio-playing` reply -- unlike
-/// `SharedJsonBody`/`SharedImagePage`, this is always overwritten with
+/// `manifold_view_protocol::nav_state::SharedJsonBody`, this is always overwritten with
 /// every reply (never cleared to `None` in between), since `nav_handler.rs`'s
 /// polling timer sends a request continuously rather than once per
 /// navigation; `main.rs`'s own drain loop is what dedupes against the
