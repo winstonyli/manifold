@@ -40,7 +40,7 @@ A node's identity is its MIME type, a common field replacing `kind`. Manifold's 
 | images | real `image/*` |
 | other files | sniffed MIME (existing `content.rs` table), else `application/octet-stream` |
 
-- Common data fields, on every node: `type`, `pos`, `name`, `pinned`, `closed`. (*`color` is no longer common: a card has none of its own, labels give it one; Label and jar nodes keep it, 2026-10-24.*) (*Superseded by `2026-10-14-closed-field-design.md` where it differs: a closed node stays in `live()`; display and export read `Doc::shown`.*) (The per-kind carve-outs
+- Common data fields, on every node: `type`, `pos`, `name`, `pinned` (*replaced 2026-11-01 by the `anchor` register, field 27; see `2026-11-01-scopes-nested-layout-anchor-design.md` Slice 1*), `closed`. (*`color` is no longer common: a card has none of its own, labels give it one; Label and jar nodes keep it, 2026-10-24.*) (*Superseded by `2026-10-14-closed-field-design.md` where it differs: a closed node stays in `live()`; display and export read `Doc::shown`.*) (The per-kind carve-outs
   today, `pinned` only on tabs and `name` only on groups and jars, go away.) Lifecycle is live, closed, deleted: `closed` is a
   reversible boolean (section 5); `deleted` is the store's final tombstone (`store/ops.rs`: fields cleared, later Sets
   and re-Creates ignored). Only `closed` is writable by a verb; history eviction turns closed into deleted. The single
@@ -118,7 +118,7 @@ Built-in rows:
 
 - **Selection** is UI state, a set of node ids of any mix of kinds. It replaces the separate tab and group selection
   paths.
-- **Pinning** is the common `pinned` boolean on any `pinnable` row. Effect, identical for all kinds: sorts first in its
+- **Pinning** is the common `pinned` (*replaced 2026-11-01 by the `anchor` register, field 27; see `2026-11-01-scopes-nested-layout-anchor-design.md` Slice 1*) boolean on any `pinnable` row. Effect, identical for all kinds: sorts first in its
   container and is skipped by "close others" and bulk close. If pinning today also does something else, that effect
   goes in the row's `pinnable` entry, not in the verb (check during planning).
 - **Verbs**, one implementation each, gated by a flag and (end state, section 6 item 10) written only through store
@@ -184,7 +184,7 @@ The journal and session code shrink as a result of sections 1-5. No compatibilit
 2. **Field lists are row data.** `kind_fields` (`session_sync.rs`) gives nine kinds near-identical lists. The row `fields`
    list appends by layer: `*/*` carries the common fields, file-backed rows add `url` and `path`, `text/markdown` adds
    `text`, and so on. `fields_of` and `imported_fields` read the merged list (`diff` is gone: verbs emit ops directly).
-3. **Common fields on every node** (section 1: `type`, `pos`, `color`, `name`, `pinned`, `closed`), so the common part
+3. **Common fields on every node** (section 1: `type`, `pos`, `color`, `name`, `pinned` (*replaced 2026-11-01 by the `anchor` register, field 27; see `2026-11-01-scopes-nested-layout-anchor-design.md` Slice 1*), `closed`), so the common part
    of every `fields` list is written once, on `*/*`.
 4. **Edge validity is one rule.** (`diff` is gone; this was written against it.) The old `diff` hard-coded `PARENT` (`valid(...)` on the create and set paths). The rule it
    applies, "a target that is neither live nor new reads as none", is the same as section 3's `Clear` read rule, so it
@@ -259,7 +259,7 @@ leaves the app working:
      accessor reads. Rejected: reading the journal's `Doc` per read (register decoding per read, awkward with no
      journal in tests), and regenerating `NodePayload` from the type table (keeps the translation layer).
      2b-1 done: 25746d9 (Mirror), 0939028 and 3c57942 (writer, commit path, colour), b082af3 (pin), 7b630d8 (final-review fixes: parked remote values patched on commit, spawning ids kept by the sweep). The mirror,
-     `App::edit_field` and `App::pending` exist; `color` and `pinned` read through `Mirror`; `diff` skips `MIRRORED`
+     `App::edit_field` and `App::pending` exist; `color` and `pinned` (*replaced 2026-11-01 by the `anchor` register, field 27; see `2026-11-01-scopes-nested-layout-anchor-design.md` Slice 1*) read through `Mirror`; `diff` skips `MIRRORED`
      fields on existing non-jar nodes (jars keep their colour in `jar_defs` until sub-project C). Known leftovers: no
      end-to-end test of `SetColor`/`CycleColor`, and no test that colour/pin survive a crash, swap or wake respawn
      across a save.
