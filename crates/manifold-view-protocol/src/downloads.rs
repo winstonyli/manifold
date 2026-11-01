@@ -2,8 +2,10 @@
 //! engine (`destination`), so a download's `path` (the host's key for it) is the same string in every message about
 //! it.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use crate::{DownloadFailure, FailureKind, ViewToHost};
 
@@ -224,10 +226,118 @@ pub fn coalesce_progress(msgs: Vec<ViewToHost>) -> Vec<ViewToHost> {
         .collect()
 }
 
+/// How long a download may go without a new byte before its host ends it as failed (`StallWatch`).
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The failure a host reports for a download it ended because no byte arrived for `timeout`. The detail says so
+/// plainly, since a server that is only slow ends the same way.
+pub fn stalled(timeout: Duration) -> DownloadFailure {
+    DownloadFailure::new(
+        FailureKind::Network,
+        format!("No data for {} s. The server may just be slow; open the page again to retry.", timeout.as_secs()),
+    )
+}
+
+/// Which downloads have gone quiet. A host calls `progress` with each byte count its engine reports and `finish` when
+/// a download ends, and asks `expired` on a tick; for each path it returns, the host cancels its engine's download and
+/// reports `stalled`. The clock restarts only when the count rises, so an engine that repeats a count does not hide a
+/// stall. `finish` says whether the path was still tracked, so a host skips the engine's own report of the cancel
+/// (an expired path is no longer tracked). `DOWNLOAD_STALL_SECS` overrides `STALL_TIMEOUT` (the gate's `stalled` case).
+pub struct StallWatch {
+    timeout: Duration,
+    seen: HashMap<String, (u64, Instant)>,
+}
+
+impl StallWatch {
+    pub fn new() -> Self {
+        let secs = std::env::var("DOWNLOAD_STALL_SECS").ok().and_then(|s| s.parse::<u64>().ok());
+        Self::with_timeout(secs.map_or(STALL_TIMEOUT, Duration::from_secs))
+    }
+
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self { timeout, seen: HashMap::new() }
+    }
+
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// `path` has `bytes` so far, as of `now`.
+    pub fn progress(&mut self, path: &str, bytes: u64, now: Instant) {
+        match self.seen.get_mut(path) {
+            Some((last, at)) if bytes > *last => (*last, *at) = (bytes, now),
+            Some(_) => {}
+            None => {
+                self.seen.insert(path.to_owned(), (bytes, now));
+            }
+        }
+    }
+
+    /// `path` ended; whether it was still tracked.
+    pub fn finish(&mut self, path: &str) -> bool {
+        self.seen.remove(path).is_some()
+    }
+
+    /// The downloads with no new byte for the timeout as of `now`, no longer tracked.
+    pub fn expired(&mut self, now: Instant) -> Vec<String> {
+        let timeout = self.timeout;
+        let stale: Vec<String> = self
+            .seen
+            .iter()
+            .filter(|(_, (_, at))| now.duration_since(*at) >= timeout)
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in &stale {
+            self.seen.remove(path);
+        }
+        stale
+    }
+}
+
+impl Default for StallWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn a_download_stalls_when_no_byte_arrives_for_the_timeout() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut watch = StallWatch::with_timeout(s(60));
+        watch.progress("a.zip", 0, t0);
+        assert!(watch.expired(t0 + s(59)).is_empty(), "inside the timeout");
+        watch.progress("a.zip", 0, t0 + s(59));
+        watch.progress("a.zip", 10, t0 + s(59));
+        assert!(watch.expired(t0 + s(118)).is_empty(), "a new byte restarts the clock, a repeated count does not");
+        assert_eq!(watch.expired(t0 + s(120)), ["a.zip"]);
+        assert!(watch.expired(t0 + s(500)).is_empty(), "an expired download is reported once");
+        assert!(!watch.finish("a.zip"), "and no longer tracked, so its engine's cancel report is skipped");
+    }
+
+    #[test]
+    fn a_finished_download_is_forgotten_and_downloads_are_timed_apart() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let mut watch = StallWatch::with_timeout(s(60));
+        watch.progress("a.zip", 5, t0);
+        watch.progress("b.zip", 5, t0 + s(30));
+        assert!(watch.finish("a.zip"));
+        assert!(!watch.finish("a.zip"), "finished once");
+        assert_eq!(watch.expired(t0 + s(95)), ["b.zip"]);
+    }
+
+    #[test]
+    fn the_stall_says_how_long_and_that_the_server_may_be_slow() {
+        let failure = stalled(Duration::from_secs(60));
+        assert_eq!(failure.kind, FailureKind::Network);
+        assert!(failure.detail.contains("60 s") && failure.detail.contains("may just be slow"), "{}", failure.detail);
+    }
 
     /// Review Focus 3 (download-folder plan) and 2 (this plan): a folder that can't be had refuses the download, and
     /// nothing is saved anywhere else; the refusal says why, in the OS's words, which name no path.

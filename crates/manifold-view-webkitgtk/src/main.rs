@@ -115,14 +115,21 @@ fn main() {
     // same ~16ms tick would otherwise silently clobber each other.
     let pending_download: Rc<RefCell<Vec<ViewToHost>>> = Rc::new(RefCell::new(Vec::new()));
     let reserved: Rc<RefCell<std::collections::HashSet<std::path::PathBuf>>> = Rc::default();
+    // A download that stops receiving bytes is cancelled and reported failed (`downloads::StallWatch`, checked each
+    // tick below); `live` holds each download's handle by path for that cancel.
+    let stall_watch = Rc::new(RefCell::new(manifold_view_protocol::downloads::StallWatch::new()));
+    let live: Rc<RefCell<std::collections::HashMap<String, webkit2gtk::Download>>> = Rc::default();
     if let Some(context) = &web_context {
         pages::register(context);
         let pending_for_started = pending_download.clone();
+        let (watch_for_started, live_for_started) = (stall_watch.clone(), live.clone());
         context.connect_download_started(move |_context, download| {
+            let (watch, live) = (watch_for_started.clone(), live_for_started.clone());
             let dest_for_events: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
             let pending_for_destination = pending_for_started.clone();
             let dest_for_destination = dest_for_events.clone();
             let reserved_for_destination = reserved.clone();
+            let (watch_for_destination, live_for_destination) = (watch.clone(), live.clone());
             download.connect_decide_destination(move |download, suggested_filename| {
                 let url = download.request().and_then(|r| r.uri()).map(|u| u.to_string());
                 let decided = manifold_view_protocol::downloads::destination(
@@ -154,6 +161,8 @@ fn main() {
                 reserved_for_destination.borrow_mut().insert(dest.clone());
                 let path = dest.to_string_lossy().to_string();
                 *dest_for_destination.borrow_mut() = Some(path.clone());
+                watch_for_destination.borrow_mut().progress(&path, 0, std::time::Instant::now());
+                live_for_destination.borrow_mut().insert(path.clone(), download.clone());
                 let total_bytes = download.response().map(|r| r.content_length()).filter(|&n| n > 0);
                 pending_for_destination.borrow_mut().push(ViewToHost::DownloadStarted { path, total_bytes, url });
                 true
@@ -161,9 +170,11 @@ fn main() {
 
             let pending_for_progress = pending_for_started.clone();
             let dest_for_progress = dest_for_events.clone();
+            let watch_for_progress = watch.clone();
             download.connect_received_data(move |download, _data_length_delta| {
                 if let Some(path) = dest_for_progress.borrow().clone() {
                     let bytes_received = download.received_data_length();
+                    watch_for_progress.borrow_mut().progress(&path, bytes_received, std::time::Instant::now());
                     pending_for_progress.borrow_mut().push(ViewToHost::DownloadProgress { path, bytes_received });
                 }
             });
@@ -173,12 +184,16 @@ fn main() {
             let pending_for_failed = pending_for_started.clone();
             let failed_for_handler = failed.clone();
             let dest_for_failed = dest_for_events.clone();
+            let (watch_for_failed, live_for_failed) = (watch.clone(), live.clone());
             download.connect_failed(move |_download, error| {
                 failed_for_handler.set(true);
                 // GLib's words can hold a Linux path, and only `path` is mapped into the app's terms: they go to this
                 // host's log, and the card gets the kind alone.
                 eprintln!("download failed: {}", error.message());
-                if let Some(path) = dest_for_failed.borrow().clone() {
+                // A stall the tick cancelled was reported by `StallWatch::expired` already, so it is no longer tracked.
+                if let Some(path) = dest_for_failed.borrow().clone().filter(|p| watch_for_failed.borrow_mut().finish(p))
+                {
+                    live_for_failed.borrow_mut().remove(&path);
                     let failure = DownloadFailure::new(failure_kind(error), "");
                     pending_for_failed.borrow_mut().push(ViewToHost::DownloadFailed { path, failure });
                 }
@@ -186,10 +201,13 @@ fn main() {
 
             let pending_for_finished = pending_for_started.clone();
             let reserved_for_finished = reserved.clone();
+            let (watch_for_finished, live_for_finished) = (watch.clone(), live.clone());
             download.connect_finished(move |download| {
                 // `finished` follows either outcome, so the name is freed here.
                 let dest = dest_for_events.borrow().clone();
                 if let Some(path) = &dest {
+                    watch_for_finished.borrow_mut().finish(path);
+                    live_for_finished.borrow_mut().remove(path);
                     reserved_for_finished.borrow_mut().remove(std::path::Path::new(path));
                 }
                 if failed.get() {
@@ -580,6 +598,17 @@ fn main() {
             let _ = to_host.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
+        let stalled = stall_watch.borrow_mut().expired(std::time::Instant::now());
+        if !stalled.is_empty() {
+            let timeout = stall_watch.borrow().timeout();
+            for path in stalled {
+                if let Some(download) = live.borrow_mut().remove(&path) {
+                    download.cancel();
+                }
+                let failure = manifold_view_protocol::downloads::stalled(timeout);
+                pending_download.borrow_mut().push(ViewToHost::DownloadFailed { path, failure });
+            }
+        }
         let download_msgs = std::mem::take(&mut *pending_download.borrow_mut());
         for msg in manifold_view_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = to_host.send(&msg);

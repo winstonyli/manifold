@@ -224,7 +224,10 @@ fn main() {
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
     let drag_state: input::DragState = Default::default();
-    let pending_download = download::register(&webview).ok();
+    let (pending_download, stall_check) = match download::register(&webview) {
+        Ok((pending, check)) => (Some(pending), Some(check)),
+        Err(_) => (None, None),
+    };
     let _ = scheme::register(&environment, &webview);
 
     // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
@@ -473,6 +476,9 @@ fn main() {
             let _ = control.send(&ViewToHost::ContextMenuLink { x, y, href });
         }
 
+        if let Some(check) = &stall_check {
+            check();
+        }
         if let Some(pending) = &pending_download {
             let msgs = std::mem::take(&mut *pending.borrow_mut());
             for msg in manifold_view_protocol::downloads::coalesce_progress(msgs) {

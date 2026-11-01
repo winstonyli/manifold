@@ -21,6 +21,11 @@
 //! `FolderUnusable`; its HRESULT's message can name the path, so it goes to this host's log, not the card). A
 //! download Edge ends `INTERRUPTED` says why by its `InterruptReason` (`failure_kind`).
 //!
+//! A download that stops receiving bytes is cancelled and reported failed (`downloads::StallWatch`, checked by the
+//! `StallCheck` `register` returns, once per loop tick; the clock restarts only when the byte count rises). The card says
+//! how long it waited and that the server may just be slow. The host's own cancel makes Edge send a `StateChanged`,
+//! which `StallWatch::finish` suppresses.
+//!
 //! A transfer that breaks is retried by the engine as a second `DownloadStarting`, whose operation starts with the
 //! first one's `InterruptReason` rather than none (runs 2026-10-28-dldir-result2, -result-etag2). The retry takes the
 //! broken download's path (`retry_path`): restarted from 0 it overwrites that file; resumed from the bytes the engine
@@ -36,6 +41,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::Instant;
 
 use manifold_view_protocol::{downloads, DownloadFailure, FailureKind, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -159,7 +165,10 @@ fn release<T>(held: &mut Vec<T>, path: &Path, path_of: impl Fn(&T) -> &Path) {
 /// `ICoreWebView2_4`-less Runtime just means downloads on this tab proceed
 /// with WebView2's own default UI/behavior instead of being silently
 /// tracked, rather than failing to download at all.
-pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownload> {
+/// Called each turn of the host loop: ends the downloads that have gone quiet (see the module doc).
+pub type StallCheck = Rc<dyn Fn()>;
+
+pub fn register(webview: &ICoreWebView2) -> windows::core::Result<(PendingDownload, StallCheck)> {
     let webview4: ICoreWebView2_4 = webview.cast()?;
     if let Err(e) = set_naming_folder(webview) {
         eprintln!("download: naming folder not set ({e}); Edge numbers its proposals against its own folder");
@@ -171,6 +180,10 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
     let pending_for_handler = pending.clone();
     // Every download that hasn't finished or failed yet, and each broken one whose retry hasn't (see the module doc).
     let held_for_handler: Rc<RefCell<Vec<Held>>> = Rc::default();
+    let watch = Rc::new(RefCell::new(downloads::StallWatch::new()));
+    let watch_for_handler = watch.clone();
+    let held_for_check = held_for_handler.clone();
+    let pending_for_check = pending.clone();
     let handler = DownloadStartingEventHandler::create(Box::new(move |_sender, args| {
         let Some(args) = args else { return Ok(()) };
         unsafe {
@@ -234,14 +247,17 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                 .push(ViewToHost::DownloadProgress { path: path_text.clone(), bytes_received: bytes_received as u64 });
         }
         held_for_handler.borrow_mut().push(Held { operation: operation.clone(), path, uri });
+        watch_for_handler.borrow_mut().progress(&path_text, bytes_received.max(0) as u64, Instant::now());
 
         let pending_for_bytes = pending_for_handler.clone();
+        let watch_for_bytes = watch_for_handler.clone();
         let path_for_bytes = path_text.clone();
         let mut bytes_token = Default::default();
         let bytes_handler = BytesReceivedChangedEventHandler::create(Box::new(move |sender, _args| {
             if let Some(sender) = &sender {
                 let mut bytes_received: i64 = 0;
                 if unsafe { sender.BytesReceived(&mut bytes_received) }.is_ok() && bytes_received >= 0 {
+                    watch_for_bytes.borrow_mut().progress(&path_for_bytes, bytes_received as u64, Instant::now());
                     pending_for_bytes.borrow_mut().push(ViewToHost::DownloadProgress {
                         path: path_for_bytes.clone(),
                         bytes_received: bytes_received as u64,
@@ -256,6 +272,7 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
 
         let pending_for_state = pending_for_handler.clone();
         let held_for_state = held_for_handler.clone();
+        let watch_for_state = watch_for_handler.clone();
         let mut state_token = Default::default();
         let state_handler = StateChangedEventHandler::create(Box::new(move |sender, _args| {
             if let Some(sender) = &sender {
@@ -271,7 +288,11 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
                         None
                     };
                     if let Some(message) = message {
-                        pending_for_state.borrow_mut().push(message);
+                        // A download this host ended for a stall is no longer tracked: the engine's own report of the
+                        // cancel (an interrupt) is not told twice.
+                        if watch_for_state.borrow_mut().finish(&path_text) {
+                            pending_for_state.borrow_mut().push(message);
+                        }
                         // Over: nothing more will come from it, nor from a broken download it retried.
                         release(&mut *held_for_state.borrow_mut(), Path::new(&path_text), |h| h.path.as_path());
                     }
@@ -288,7 +309,21 @@ pub fn register(webview: &ICoreWebView2) -> windows::core::Result<PendingDownloa
         let _ = webview4.add_DownloadStarting(&handler, &mut token);
     }
 
-    Ok(pending)
+    let check: StallCheck = Rc::new(move || {
+        let timeout = watch.borrow().timeout();
+        for path in watch.borrow_mut().expired(Instant::now()) {
+            for h in held_for_check.borrow().iter().filter(|h| downloads::same_download_path(&h.path, Path::new(&path)))
+            {
+                // SAFETY: a live operation this host holds.
+                let _ = unsafe { h.operation.Cancel() };
+            }
+            release(&mut held_for_check.borrow_mut(), Path::new(&path), |h| h.path.as_path());
+            pending_for_check
+                .borrow_mut()
+                .push(ViewToHost::DownloadFailed { path, failure: downloads::stalled(timeout) });
+        }
+    });
+    Ok((pending, check))
 }
 
 #[cfg(test)]

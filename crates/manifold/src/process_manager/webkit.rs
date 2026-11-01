@@ -42,12 +42,20 @@ pub(super) fn webkit_env(
             "the download folder's path is too long to start a WebKit tab with",
         ));
     }
-    Ok(vec![
+    let mut env = vec![
         (host_env::ENV_SETTINGS, settings_hex),
         ("VIEW_INITIAL_URL_HEX", url_hex),
         ("VIEW_TCP_PORT", port.to_string()),
         ("VIEW_TOKEN", transport::to_hex(token)),
-    ])
+    ];
+    // The tests' shortened stall timeout (`downloads::StallWatch`) crosses into WSL like the rest; digits only, since
+    // it lands in a shell string.
+    if let Some(secs) =
+        std::env::var("DOWNLOAD_STALL_SECS").ok().filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
+    {
+        env.push(("DOWNLOAD_STALL_SECS", secs));
+    }
+    Ok(env)
 }
 
 /// The `bash -c` string `spawn_webkit_tab` hands to `wsl.exe -d <WSL_DISTRO> -- bash -c`. It crosses two

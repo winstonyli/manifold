@@ -1,10 +1,10 @@
 //! `gate download`: a tab restored at a URL that answers an attachment starts a download, on each of `VIEWS` (default
 //! `webview2`; `VIEWS="webview2 cef webkit"` adds CEF and WebKit, whose hosts must be built; WebKit also needs `SITE_HOST`,
-//! see `gate all`). `CASES` (default `saved refused broken`) picks the cases, three per view, each on its own profile and server: the profile's own download folder, where
+//! see `gate all`). `CASES` (default `saved refused broken stalled`) picks the cases, four per view, each on its own profile and server: the profile's own download folder, where
 //! the one card must complete and save `real.zip` with the server's bytes; a folder that cannot be made (a path under a
 //! regular file), where the host refuses the download and the one card must show it failed as `FolderUnusable`
 //! (`downloads::refused`); and the server dying mid-transfer (`/slow`, 300 KB of 1 MB), where the one card must show it
-//! failed as `Network`, the engine's own failure code as the host maps it. The refused case also checks that no
+//! failed as `Network`, the engine's own failure code as the host maps it. The stalled case (`/slow` again, the server holding the connection open; `DOWNLOAD_STALL_SECS=3` shortens the hosts' 60 s timeout) must end the same way, failed as `Network` by the host's own stall watch, with no `slow.zip` left in the folder. The refused case also checks that no
 //! `real*.zip*` appears in the folder the engine would save to on its own: CEF's refusal (return 0) used to leave the
 //! file in the user's Downloads, and the host now cancels it. For WebKit that folder is `~/Downloads` in WSL, and its
 //! folder reaches the host as `/mnt/<drive>/...`.
@@ -29,13 +29,15 @@ enum Case {
     Saved,
     Refused,
     Broken,
+    Stalled,
 }
 
-const CASES: [(Case, &str); 3] = [(Case::Saved, "saved"), (Case::Refused, "refused"), (Case::Broken, "broken")];
+const CASES: [(Case, &str); 4] =
+    [(Case::Saved, "saved"), (Case::Refused, "refused"), (Case::Broken, "broken"), (Case::Stalled, "stalled")];
 
 pub(crate) fn download(ctx: &mut Ctx) -> io::Result<()> {
     let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
-    let cases = std::env::var("CASES").unwrap_or_else(|_| "saved refused broken".into());
+    let cases = std::env::var("CASES").unwrap_or_else(|_| "saved refused broken stalled".into());
     for view in views() {
         for (case, label) in CASES.iter().filter(|(_, label)| cases.split_whitespace().any(|c| c == *label)) {
             let name = format!("{view}-{label}");
@@ -48,7 +50,7 @@ pub(crate) fn download(ctx: &mut Ctx) -> io::Result<()> {
 
 fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::Result<()> {
     let server = Downloads::start()?;
-    let url = server.url(if case == Case::Broken { "/slow" } else { "/real.zip" });
+    let url = server.url(if matches!(case, Case::Broken | Case::Stalled) { "/slow" } else { "/real.zip" });
     let refused = case == Case::Refused;
     let profile = work.join(format!("appdata-{name}"));
     seed(exe, &profile, view, &[tab_node(Some(&url), view)])?;
@@ -63,9 +65,11 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::
         download_dir(&profile)?
     };
     let before = engine_downloads(view);
-    let mut inst = Instance::launch(exe, &profile, work, &format!("download-{name}.log"))?;
+    // The stalled case shortens the hosts' 60 s stall timeout (`DOWNLOAD_STALL_SECS`, read by `StallWatch`).
+    let envs: &[(&str, &str)] = if case == Case::Stalled { &[("DOWNLOAD_STALL_SECS", "3")] } else { &[] };
+    let mut inst = Instance::launch_env(exe, &profile, work, &format!("download-{name}.log"), envs)?;
     inst.send("WAITTABS")?;
-    let saved = folder.join(if case == Case::Broken { "slow.zip" } else { "real.zip" });
+    let saved = folder.join(if matches!(case, Case::Broken | Case::Stalled) { "slow.zip" } else { "real.zip" });
     let saved_path = saved.to_string_lossy().into_owned();
     if case == Case::Broken {
         // Still arriving (300 KB of 1 MB) before the server dies.
@@ -83,6 +87,9 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::
     }
     let done = |s: &crate::state::State| match s.downloads_from(&url)[..] {
         [d] if refused => d["failed"] == true && d["failure"] == "FolderUnusable",
+        [d] if case == Case::Stalled => {
+            d["failed"] == true && d["failure"] == "Network" && d["path"] == saved_path.as_str()
+        }
         [d] if case == Case::Broken => {
             d["failed"] == true && d["failure"] == "Network" && d["path"] == saved_path.as_str()
         }
@@ -96,6 +103,7 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::
         let want = match case {
             Case::Refused => "failed as FolderUnusable",
             Case::Broken => "failed as Network, saving to the folder",
+            Case::Stalled => "failed as Network after the stall timeout, saving to the folder",
             Case::Saved => "completed, saved in the folder",
         };
         return Err(io::Error::other(format!("{view}: the download of {url} is not one card {want}: {cards:?}")));
@@ -107,6 +115,11 @@ fn run_case(exe: &Path, work: &Path, view: &str, name: &str, case: Case) -> io::
         crate::check::check(
             &format!("{view} refused: nothing is saved in the engine's own Downloads folder {leaked:?}"),
             leaked.is_empty(),
+        );
+    } else if case == Case::Stalled {
+        crate::check::check(
+            &format!("{view} stalled: the cancelled download leaves no slow.zip behind"),
+            !saved.exists(),
         );
     } else if case == Case::Saved {
         crate::check::check_eq(

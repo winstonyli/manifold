@@ -464,6 +464,7 @@ fn main() {
             }
         }
 
+        download_path.borrow_mut().check_stalls(std::time::Instant::now());
         let download_msgs = std::mem::take(&mut download_path.borrow_mut().queue);
         for msg in manifold_view_protocol::downloads::coalesce_progress(download_msgs) {
             let _ = control.send(&msg);

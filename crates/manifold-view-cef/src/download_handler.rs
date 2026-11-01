@@ -2,8 +2,10 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Instant;
 
 use cef::{rc::Rc as CefRc, *};
+use manifold_view_protocol::downloads::{self, StallWatch};
 use manifold_view_protocol::{DownloadFailure, FailureKind, ViewToHost};
 
 /// Download messages for the host, queued rather than a single slot -- two downloads
@@ -27,6 +29,31 @@ pub struct DownloadResults {
     /// cancels each, because handing one back to CEF (return 0) does not cancel it -- the engine saves the file in
     /// the user's own Downloads folder (`gate download`, `VIEWS=cef`).
     refused: HashSet<u32>,
+    /// Times each download's bytes; `check_stalls` cancels what stopped receiving.
+    watch: StallWatch,
+    /// The engine hands a download's cancel handle only inside an update, so the latest one is kept per item id for
+    /// `check_stalls` to cancel with between updates.
+    cancels: HashMap<u32, DownloadItemCallback>,
+}
+
+impl DownloadResults {
+    /// Cancels each download that received no byte for the stall timeout and reports it failed
+    /// (`downloads::stalled`). The item leaves `assigned`, so the engine's own update for the cancel reports nothing.
+    pub fn check_stalls(&mut self, now: Instant) {
+        let timeout = self.watch.timeout();
+        for path in self.watch.expired(now) {
+            let Some(id) = self.assigned.iter().find(|(_, p)| p.to_string_lossy() == path.as_str()).map(|(id, _)| *id)
+            else {
+                continue;
+            };
+            if let Some(cancel) = self.cancels.remove(&id) {
+                cancel.cancel();
+            }
+            self.assigned.remove(&id);
+            self.started.remove(&id);
+            self.queue.push(ViewToHost::DownloadFailed { path, failure: downloads::stalled(timeout) });
+        }
+    }
 }
 
 pub type SharedDownloadPath = Rc<RefCell<DownloadResults>>;
@@ -37,6 +64,8 @@ pub fn new_shared_download_path() -> SharedDownloadPath {
         started: HashSet::new(),
         assigned: HashMap::new(),
         refused: HashSet::new(),
+        watch: StallWatch::new(),
+        cancels: HashMap::new(),
     }))
 }
 
@@ -157,6 +186,8 @@ wrap_download_handler! {
                 if complete || item.is_canceled() != 0 || item.is_interrupted() != 0 {
                     results.assigned.remove(&id);
                     results.started.remove(&id);
+                    results.cancels.remove(&id);
+                    results.watch.finish(&path);
                     let event = if complete {
                         ViewToHost::DownloadCompleted { path }
                     } else {
@@ -167,6 +198,10 @@ wrap_download_handler! {
                     results.queue.push(event);
                 } else {
                     let received = item.received_bytes();
+                    if let Some(callback) = callback {
+                        results.cancels.insert(id, callback.clone());
+                    }
+                    results.watch.progress(&path, received.max(0) as u64, Instant::now());
                     if received >= 0 {
                         results.queue.push(ViewToHost::DownloadProgress { path, bytes_received: received as u64 });
                     }
