@@ -768,7 +768,7 @@ mod tests {
     /// field added to `TYPES` but not to `Carried` fails here, rather than going unseeded on a new spawn's `Create`.
     #[test]
     fn carried_holds_every_tab_field() {
-        use crate::store::model::{ActorId, FieldType};
+        use crate::store::model::{ActorId, Anchor, FieldType};
         let sample = |ty: FieldType| match ty {
             FieldType::Pos => FieldValue::Pos(Some((1.5, -2.0))),
             FieldType::Color => FieldValue::Color(Some(0x123456)),
@@ -778,6 +778,7 @@ mod tests {
             FieldType::ViewCode => FieldValue::ViewCode(3),
             FieldType::Replica => FieldValue::Replica(3),
             FieldType::Held => FieldValue::Held { dest: None, members: vec![NodeId { actor: ActorId(1), counter: 2 }] },
+            FieldType::Anchor => FieldValue::Anchor(Some(Anchor { pos: [1.5, -2.0], group: None, explicit: true })),
         };
         let fields: Vec<u32> =
             Kind::Tab.fields().iter().copied().filter(|&no| no != field::PARENT && no != field::CLOSED).collect();

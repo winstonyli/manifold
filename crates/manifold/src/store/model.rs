@@ -247,6 +247,8 @@ pub enum FieldType {
     /// `field::HELD`: the group a fold sent its members to and the members, `{1: dest id, 2: member id*}`; absent
     /// is the top level and no members.
     Held,
+    /// `field::ANCHOR`: a card held at a point, `{1: x, 2: y, 3: group id, 4: explicit}` (`Anchor`); absent is none.
+    Anchor,
 }
 
 #[derive(Debug)]
@@ -254,6 +256,16 @@ pub struct FieldDef {
     pub no: u32,
     pub name: &'static str,
     pub ty: FieldType,
+}
+
+/// `field::ANCHOR`'s value: a card held at `pos`, in its group's local coordinates (as `POS`), written while the card
+/// was in `group`. `explicit` is a user Pin, which only Unpin releases; otherwise it is a drop, which Tidy, Arrange
+/// and a local move release, and which holds only while the card is still in `group` (`Mirror::held`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Anchor {
+    pub pos: [f32; 2],
+    pub group: Option<NodeId>,
+    pub explicit: bool,
 }
 
 /// Field numbers. Never reuse one; retired numbers go in `RESERVED`.
@@ -298,9 +310,11 @@ pub mod field {
     /// inline Json card's document.
     pub const PROPS: u32 = 25;
     pub const BODY: u32 = 26;
+    /// A card's hold (`Anchor`): an explicit Pin or a drop. Replaces the retired `pinned` bool (7).
+    pub const ANCHOR: u32 = 27;
 }
 
-pub static FIELDS: [FieldDef; 19] = [
+pub static FIELDS: [FieldDef; 20] = [
     FieldDef { no: field::POS, name: "pos", ty: FieldType::Pos },
     FieldDef { no: field::COLOR, name: "color", ty: FieldType::Color },
     FieldDef { no: field::GROUP, name: "group", ty: FieldType::Id },
@@ -322,6 +336,7 @@ pub static FIELDS: [FieldDef; 19] = [
     FieldDef { no: field::IS_DEFAULT, name: "is_default", ty: FieldType::Bool },
     FieldDef { no: field::CLOSED, name: "closed", ty: FieldType::Replica },
     FieldDef { no: field::HELD, name: "held", ty: FieldType::Held },
+    FieldDef { no: field::ANCHOR, name: "anchor", ty: FieldType::Anchor },
 ];
 
 /// Retired: a tab's `jar_set` and a group's `default_jar`, replaced by the `jar` edge (jars-as-cards spec). Never
@@ -352,6 +367,8 @@ pub enum FieldValue {
         dest: Option<NodeId>,
         members: Vec<NodeId>,
     },
+    /// A card's hold; `None`: not held.
+    Anchor(Option<Anchor>),
 }
 
 impl FieldValue {
@@ -366,6 +383,7 @@ impl FieldValue {
             FieldType::ViewCode => FieldValue::ViewCode(0),
             FieldType::Replica => FieldValue::Replica(0),
             FieldType::Held => FieldValue::Held { dest: None, members: Vec::new() },
+            FieldType::Anchor => FieldValue::Anchor(None),
         }
     }
 
@@ -403,6 +421,15 @@ impl FieldValue {
         match self {
             FieldValue::ViewCode(code) => *code,
             _ => 0,
+        }
+    }
+
+    /// A set `Anchor`; `None` for none or any other variant.
+    #[allow(dead_code, reason = "first consumer lands with the anchor register's mirror task; remove then")]
+    pub fn as_anchor(&self) -> Option<Anchor> {
+        match self {
+            FieldValue::Anchor(anchor) => *anchor,
+            _ => None,
         }
     }
 }
@@ -446,6 +473,24 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
             }
             w.message(no, &m);
         }
+        // A set anchor is written even at the top-level origin with no bit (an empty message), so it never reads as
+        // absent.
+        FieldValue::Anchor(Some(a)) => {
+            let mut m = Writer::new();
+            if a.pos[0] != 0.0 {
+                m.f32(1, a.pos[0]);
+            }
+            if a.pos[1] != 0.0 {
+                m.f32(2, a.pos[1]);
+            }
+            if let Some(group) = a.group {
+                m.message(3, &id_message(group));
+            }
+            if a.explicit {
+                m.varint(4, 1);
+            }
+            w.message(no, &m);
+        }
         // The empty or zero value of each type is "absent": nothing is written.
         FieldValue::Pos(None)
         | FieldValue::Color(None)
@@ -454,7 +499,8 @@ pub fn encode_field_into(out: &mut Vec<u8>, no: u32, value: &FieldValue) {
         | FieldValue::Bool(false)
         | FieldValue::ViewCode(_)
         | FieldValue::Replica(_)
-        | FieldValue::Held { .. } => {}
+        | FieldValue::Held { .. }
+        | FieldValue::Anchor(None) => {}
     }
     *out = w.into_bytes();
 }
@@ -484,7 +530,7 @@ pub(super) fn decode_id(buf: &[u8]) -> Result<NodeId, TlvError> {
 }
 
 /// Decodes `encode_field`'s output (or any encoding of field `def`; the
-/// last occurrence wins). A non-finite position is not a position: it
+/// last occurrence wins). A non-finite position or anchor point is not one: it
 /// decodes as absent.
 pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvError> {
     let mut value = FieldValue::absent(def.ty);
@@ -520,6 +566,20 @@ pub fn decode_field(def: &FieldDef, encoded: &[u8]) -> Result<FieldValue, TlvErr
                     }
                 }
                 FieldValue::Held { dest, members }
+            }
+            FieldType::Anchor => {
+                let (mut x, mut y, mut group, mut explicit) = (0.0f32, 0.0f32, None, false);
+                for f in Reader::new(v.bytes()?) {
+                    let f = f?;
+                    match f.no {
+                        1 => x = f.value.f32()?,
+                        2 => y = f.value.f32()?,
+                        3 => group = Some(decode_id(f.value.bytes()?)?),
+                        4 => explicit = f.value.bool()?,
+                        _ => {}
+                    }
+                }
+                FieldValue::Anchor((x.is_finite() && y.is_finite()).then_some(Anchor { pos: [x, y], group, explicit }))
             }
         };
     }
@@ -1062,6 +1122,36 @@ mod tests {
         let none = FieldValue::absent(FieldType::Held);
         assert!(encode_field(field::HELD, &none).is_empty(), "the top level with no members writes nothing");
         assert_eq!(decode_field(def, &[]).unwrap(), none);
+    }
+
+    #[test]
+    fn anchor_round_trips_and_a_non_finite_point_is_absent() {
+        let def = field_def(field::ANCHOR).unwrap();
+        assert_eq!((def.name, def.ty), ("anchor", FieldType::Anchor));
+        let id = NodeId { actor: ActorId(7), counter: 3 };
+        for anchor in [
+            Anchor { pos: [1.5, -2.0], group: Some(id), explicit: true },
+            Anchor { pos: [0.0, 4.0], group: None, explicit: false },
+            // The top-level origin with no bit is still a set anchor: never the empty encoding.
+            Anchor { pos: [0.0, 0.0], group: None, explicit: false },
+        ] {
+            let enc = encode_field(field::ANCHOR, &FieldValue::Anchor(Some(anchor)));
+            assert!(!enc.is_empty(), "{anchor:?}");
+            assert_eq!(decode_field(def, &enc), Ok(FieldValue::Anchor(Some(anchor))));
+            assert_eq!(FieldValue::Anchor(Some(anchor)).as_anchor(), Some(anchor));
+        }
+        assert!(encode_field(field::ANCHOR, &FieldValue::Anchor(None)).is_empty(), "a clear writes nothing");
+        assert_eq!(FieldValue::absent(FieldType::Anchor), FieldValue::Anchor(None));
+        for bad in [f32::NAN, f32::INFINITY] {
+            // Hand-built: `Writer::f32` refuses NaN, and a file from elsewhere may hold one.
+            let mut m = Writer::new();
+            m.fixed32(1, bad.to_bits());
+            m.f32(2, 1.0);
+            m.varint(4, 1);
+            let mut enc = Writer::new();
+            enc.message(field::ANCHOR, &m);
+            assert_eq!(decode_field(def, &enc.into_bytes()), Ok(FieldValue::Anchor(None)), "{bad} is no point");
+        }
     }
 
     #[test]

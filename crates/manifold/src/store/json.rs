@@ -59,7 +59,8 @@ fn value_to_json(value: &FieldValue) -> Option<Value> {
         | FieldValue::Bool(false)
         | FieldValue::ViewCode(_)
         | FieldValue::Replica(_)
-        | FieldValue::Held { .. } => return None,
+        | FieldValue::Held { .. }
+        | FieldValue::Anchor(_) => return None,
     })
 }
 
@@ -266,9 +267,10 @@ pub fn import_with(
         let mut fields = BTreeMap::new();
         for (name, value) in &node.fields {
             // The type is carried separately; `creates` writes it. `closed` is the document's history, never a
-            // file's: an import always arrives shown. `held` names this document's nodes.
-            let Some(def) =
-                field_by_name(name).filter(|def| !matches!(def.no, field::TYPE | field::CLOSED | field::HELD))
+            // file's: an import always arrives shown. `held` names this document's nodes. `anchor` is this
+            // document's layout hold, never a file's (spec Slice 1, Export).
+            let Some(def) = field_by_name(name)
+                .filter(|def| !matches!(def.no, field::TYPE | field::CLOSED | field::HELD | field::ANCHOR))
             else {
                 continue;
             };
@@ -618,6 +620,23 @@ mod tests {
         assert_eq!(json.fields.get("pinned"), Some(&Value::Bool(true)));
         assert!(!json.fields.contains_key("color"), "defaults are left out");
         assert!(!json.fields.contains_key("group"));
+    }
+
+    #[test]
+    fn an_anchor_is_neither_exported_nor_imported() {
+        use crate::store::model::Anchor;
+        let mut fields = BTreeMap::new();
+        fields.insert(field::URL, FieldValue::Str("https://a.example/".into()));
+        fields.insert(field::ANCHOR, FieldValue::Anchor(Some(Anchor { pos: [1.0, 2.0], group: None, explicit: true })));
+        let json = node_json("n1", crate::store::model::TYPE_TAB, &fields, &Trees::new(), None);
+        assert!(!json.fields.contains_key("anchor"), "the hold is not exported");
+        let doc = doc_from(
+            r##"{"nodes": [{"id": "t", "type": "application/vnd.manifold.tab", "url": "https://a.example/", "pos": [1, 2], "anchor": {"pos": [1, 2]}}]}"##,
+            1,
+        );
+        let (_, tab) = doc.live().next().unwrap();
+        assert_eq!(tab.get(field::POS), FieldValue::Pos(Some((1.0, 2.0))), "the position is kept");
+        assert_eq!(tab.get(field::ANCHOR), FieldValue::Anchor(None), "an anchor key is skipped, not an error");
     }
 
     #[test]

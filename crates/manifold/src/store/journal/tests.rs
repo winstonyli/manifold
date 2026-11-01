@@ -1,5 +1,5 @@
 use super::*;
-use crate::store::model::{encode_field, field, FieldValue, Kind, Node, RegKey, FIELDS};
+use crate::store::model::{encode_field, field, Anchor, FieldValue, Kind, Node, RegKey, FIELDS};
 use crate::store::testutil::{file_with_version, set_readonly, shown, temp_dir, XorShift};
 use crate::store::tree::{Leaf, Seg, TreePath};
 
@@ -260,6 +260,33 @@ fn a_newer_builds_frames_and_fields_survive() {
     let bytes = std::fs::read(&path).unwrap();
     let header = read_header(&bytes).unwrap();
     assert!(scan(&bytes[header.len..], header.len).frames.iter().any(|f| f.ty == 50));
+}
+
+/// A `Create` carrying a field this build doesn't list survives a snapshot and a compaction: what an older build does
+/// with a newer build's `ANCHOR` (field 27) in a new node's `Create` (spec Slice 1, "No FORMAT_VERSION bump"). The
+/// anchor itself round-trips through the same path in this build.
+#[test]
+fn a_creates_unlisted_field_and_its_anchor_survive_compaction() {
+    let dir = temp_dir("create-unlisted");
+    let path = dir.join("session.mnf");
+    let mut journal = Journal::open(&path, ActorId(1)).unwrap();
+    let mut txn = journal.begin().unwrap();
+    let node = txn.next_id();
+    let mut future = Writer::new();
+    future.str(99, "from the future");
+    let future = future.into_bytes();
+    let anchor = FieldValue::Anchor(Some(Anchor { pos: [3.0, -4.0], group: None, explicit: true }));
+    let mut fields = encode_field(field::URL, &FieldValue::Str("https://e.example/".into()));
+    fields.extend(&future);
+    fields.extend(encode_field(field::ANCHOR, &anchor));
+    txn.commit(vec![OpBody::create(node, Kind::Tab.type_str().unwrap(), fields)]).unwrap();
+    journal.close().unwrap(); // a snapshot, compacted
+    let mut journal = Journal::open(&path, ActorId(2)).unwrap();
+    journal.close().unwrap(); // reopened and closed by another actor
+
+    let doc = Journal::read(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(doc.nodes[&node].fields[&RegKey::of(99)].enc, future, "the unlisted field is written back");
+    assert_eq!(doc.nodes[&node].get(field::ANCHOR), anchor);
 }
 
 #[test]
