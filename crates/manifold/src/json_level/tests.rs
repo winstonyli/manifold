@@ -763,3 +763,39 @@ fn a_file_level_cannot_open_an_edit() {
     assert!(app.json_level.as_ref().unwrap().edit.is_none());
     assert_eq!(app.json_level_state()["editable"], serde_json::json!(false));
 }
+
+/// A JSON level keeps its own camera entry, keyed by its Json node's id, like a group's.
+#[test]
+fn a_json_level_keeps_its_own_camera() {
+    let (mut app, j) = app_with_json("level-camera", r#"{"a": {"b": 1}, "c": 2}"#);
+    app.switch_group_level(Some(OUTER));
+    app.switch_group_level(Some(j));
+    let view = app.fit_all_nodes_scene_rect().translate(egui::vec2(20.0, 10.0));
+    app.camera.jump_to(view);
+    app.switch_group_level(Some(OUTER));
+    assert_eq!(app.local_state().levels[&Some(j)].camera_rect(), Some(view));
+    app.switch_group_level(Some(j));
+    assert_eq!(app.camera.tween.map(|t| t.to), Some(view));
+}
+
+/// Entering a JSON level that can't be entered bounces to its group inside the same switch: the level never shown
+/// gets no view, and the level actually left is saved once, under its own id.
+#[test]
+fn leaving_an_unenterable_json_level_saves_no_view_for_it() {
+    let dir = crate::store::testutil::temp_dir("json_level-unenterable-view");
+    let mut app = App::default();
+    app.place_group(Some(OUTER), "outer", Placement { group: None, pos: egui::Vec2::ZERO });
+    let payload =
+        JsonPayload::file(dir.join("not-fetched-yet.json").to_string_lossy().into_owned(), Default::default(), None);
+    app.insert_placeholder_node(J, egui::Vec2::ZERO, Kind::Json, Runtime::Json(payload));
+    app.edit_group(J, Some(OUTER));
+    assert!(!app.nodes[&J].as_json().unwrap().enterable());
+    app.switch_group_level(Some(OUTER));
+    let outer = app.fit_all_nodes_scene_rect().translate(egui::vec2(20.0, 0.0));
+    app.camera.jump_to(outer);
+    app.switch_group_level(Some(J));
+    assert_eq!(app.current_group, Some(OUTER), "bounced to the group");
+    assert!(!app.level_views.contains_key(&Some(J)), "a level never shown keeps no view");
+    assert_eq!(app.level_views[&Some(OUTER)].camera_rect(), Some(outer));
+    assert_eq!(app.camera.tween.map(|t| t.to), Some(outer), "and the camera comes straight back");
+}

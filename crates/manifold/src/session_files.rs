@@ -528,6 +528,9 @@ impl App {
         self.viewed_image = None;
         self.split_tab = None;
         self.current_group = None;
+        // Not a switch: nothing is saved, and the replaced session's level views and toggle go with it.
+        self.level_views.clear();
+        self.groups_collapsed = false;
         self.interaction.dragging = None;
         self.interaction.drag_moved.clear();
         self.link.end();

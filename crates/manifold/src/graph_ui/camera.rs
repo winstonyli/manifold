@@ -237,7 +237,7 @@ impl App {
         // See `GraphCamera::frame_restored`.
         if self.camera.frame_restored && self.spawns.tab_spawns_in_flight == 0 {
             self.camera.frame_restored = false;
-            // Settled first, as in `switch_group_level`: fitting the
+            // Settled first, as in `enter_level`: fitting the
             // pre-settle positions would leave spread-out nodes off screen.
             self.layout_current_level();
             self.graph.settled_key = Some(self.current_level_settle_key());

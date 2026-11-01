@@ -102,13 +102,25 @@ impl App {
         }
     }
 
-    /// Shows `group`'s level (`None` for the top), easing the camera to fit
-    /// it, and drops everything tied to the old level: the rectangle
-    /// selection (the toolbar's "Group Selected"/"Close Selected" would
-    /// otherwise act on tabs no longer visible), the empty-canvas card,
-    /// any open node menu, a drag whose card is no longer shown, and pick-target mode (its targets were the old
-    /// level's).
+    /// Shows `group`'s level (`None` for the top), first saving the view of the level being left (`App::level_views`,
+    /// `live_level_view`) so coming back returns to it (`enter_level`). A level no longer shown saves nothing:
+    /// `take_out` has already removed the group it switches out of, so no entry is made for a deleted id.
     pub(crate) fn switch_group_level(&mut self, group: Option<NodeId>) {
+        if self.current_group.is_none_or(|g| self.nodes.contains_key(&g)) {
+            let view = self.live_level_view();
+            self.level_views.insert(self.current_group, view);
+        }
+        self.enter_level(group);
+    }
+
+    /// Shows `group`'s level without saving the one left (`switch_group_level` saves it): eases the camera to the view
+    /// this level was left at, or fits it when none is saved or the saved one misses its cards (`LevelView::camera_or`),
+    /// brings back its Collapse Groups toggle, and drops everything tied to the old level: the rectangle selection (the
+    /// toolbar's "Group Selected"/"Close Selected" would otherwise act on tabs no longer visible), the empty-canvas
+    /// card, any open node menu, a drag whose card is no longer shown, and pick-target mode (its targets were the old
+    /// level's). `sync_json_level` leaves a JSON level it never showed (an unenterable one) through this, so that level
+    /// gets no saved view.
+    pub(crate) fn enter_level(&mut self, group: Option<NodeId>) {
         self.end_note_edits();
         self.current_group = group;
         self.camera.reveal = None;
@@ -118,7 +130,10 @@ impl App {
         self.sync_json_level();
         self.layout_current_level();
         self.graph.settled_key = Some(self.current_level_settle_key());
-        self.camera.ease_to(self.fit_all_nodes_scene_rect());
+        // Read after `sync_json_level`, which may have left an unenterable JSON level for its group.
+        let view = self.level_views.get(&self.current_group).copied().unwrap_or_default();
+        self.groups_collapsed = view.collapsed;
+        self.camera.ease_to(view.camera_or(self.fit_all_nodes_scene_rect()));
         self.interaction.selected.clear();
         self.interaction.rect_select_start = None;
         self.interaction.pending_new_node = None;

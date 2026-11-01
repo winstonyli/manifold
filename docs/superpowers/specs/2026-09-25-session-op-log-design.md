@@ -164,7 +164,7 @@ journal (see "Personal-state file"):
 
 - view: `focused`, view mode, `current_group`, `viewed_image`,
   `split_tab`, `groups_collapsed`, and the camera rect with the level it
-  was saved at (the app has one camera; per-level cameras are later);
+  was saved at (the app has one camera; per-level cameras are later) [superseded 2026-11-01: `LocalState::levels` keeps a camera and Collapse Groups toggle per level];
 - per node: a note's `editing`; a tab's `muted`, `zoom` and `title`.
   A tab's `live_url` is its current url when the page moved on from the
   shared `url` without sharing (a redirect, a script's navigation),

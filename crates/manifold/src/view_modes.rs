@@ -65,8 +65,8 @@ pub(crate) fn transition_eased_rect(
 }
 
 /// An in-progress eased pan/zoom from one `camera.rect` to another --
-/// entering/leaving a group moves the camera to the new level's
-/// `fit_all_nodes_scene_rect()` over
+/// entering/leaving a group moves the camera to the view the new level was
+/// left at, or its `fit_all_nodes_scene_rect()` (`App::enter_level`), over
 /// `TRANSITION_DURATION` rather than instantly, with the same smoothstep easing as `Transition`
 /// above (see `GraphCamera::advance`). Deliberately a separate,
 /// simpler mechanism rather than reusing `Transition` itself: `Transition`

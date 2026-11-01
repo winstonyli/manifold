@@ -373,3 +373,123 @@ fn an_unmarked_live_url_is_never_saved() {
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::URL), FieldValue::Str("https://s/".into()));
 }
+
+/// Where the camera is easing to after a switch.
+fn eased_to(app: &App) -> Option<egui::Rect> {
+    app.camera.tween.map(|t| t.to)
+}
+
+/// A switch saves the view of the level it leaves and brings back the view of the one it enters: its camera (fit-all
+/// the first time) and its own Collapse Groups toggle.
+#[test]
+fn switching_levels_returns_to_each_levels_view() {
+    let mut app = app_on(&temp_dir("level-views-switch").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    let top = app.fit_all_nodes_scene_rect().translate(egui::vec2(25.0, 0.0));
+    app.camera.jump_to(top);
+    app.groups_collapsed = true;
+    app.switch_group_level(Some(g));
+    assert_eq!(eased_to(&app), Some(app.fit_all_nodes_scene_rect()), "a level never left before fits all");
+    assert!(!app.groups_collapsed, "a level's toggle is its own");
+    let inside = app.fit_all_nodes_scene_rect().translate(egui::vec2(0.0, 15.0));
+    app.camera.jump_to(inside);
+    app.switch_group_level(None);
+    assert_eq!(eased_to(&app), Some(top));
+    assert!(app.groups_collapsed);
+    app.switch_group_level(Some(g));
+    assert_eq!(eased_to(&app), Some(inside));
+}
+
+#[test]
+fn leaving_mid_ease_saves_where_the_ease_was_going() {
+    let mut app = app_on(&temp_dir("level-views-mid-ease").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.switch_group_level(Some(g));
+    let fit = app.fit_all_nodes_scene_rect();
+    assert!(app.camera.tween.is_some(), "still easing: no frame has run");
+    app.switch_group_level(None);
+    assert_eq!(app.level_views[&Some(g)].camera_rect(), Some(fit));
+}
+
+#[test]
+fn a_saved_view_that_misses_the_level_falls_back_to_fit_all() {
+    let mut app = app_on(&temp_dir("level-views-miss").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    let far = world_rect(1.0e6, 1.0e6, 1.0e6 + 100.0, 1.0e6 + 100.0);
+    app.level_views.insert(Some(g), LevelView::new(far, true));
+    app.switch_group_level(Some(g));
+    assert_eq!(eased_to(&app), Some(app.fit_all_nodes_scene_rect()));
+    assert!(app.groups_collapsed, "the toggle still comes back");
+}
+
+/// `take_out` removes the group, then switches out of it: the switch must not save a view for the deleted id.
+#[test]
+fn deleting_the_level_in_view_leaves_no_view_for_it() {
+    let mut app = app_on(&temp_dir("level-views-delete").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.switch_group_level(Some(g));
+    app.take_out(g, crate::node_store::Removal::Local);
+    assert_eq!(app.current_group, None);
+    assert!(!app.level_views.contains_key(&Some(g)));
+    assert!(app.level_views.contains_key(&None), "the top level's view was saved on the way in");
+}
+
+/// Teardown saves nothing, and the replaced session's level views and toggle go with it.
+#[test]
+fn opening_a_session_drops_the_old_sessions_level_views() {
+    let mut app = app_on(&temp_dir("level-views-teardown").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.camera.jump_to(world_rect(7.0, 7.0, 77.0, 77.0));
+    app.switch_group_level(Some(g));
+    app.groups_collapsed = true;
+    assert!(app.level_views.contains_key(&None), "the top level's view was saved on the way in");
+    let json =
+        JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
+    app.replace_running_session(&json, crate::store::json::Trust::Own);
+    assert!(app.level_views.is_empty(), "no level of the old session survives, the top level's included");
+    assert!(!app.groups_collapsed);
+    assert_eq!(
+        app.local_state().levels.keys().copied().collect::<Vec<_>>(),
+        [None],
+        "only the level in view is written"
+    );
+}
+
+/// `show_level_of` no longer fits the level, so a caller that selects a card must bring it into view itself.
+#[test]
+fn opening_a_ref_reveals_its_card() {
+    let mut app = app_on(&temp_dir("level-views-open-ref").join("session.mnf"), 1);
+    let (g, note) = group_with_note(&mut app);
+    app.switch_group_level(Some(g));
+    app.switch_group_level(None);
+    app.open_ref(note);
+    assert_eq!(app.current_group, Some(g));
+    assert_eq!(app.camera.reveal, Some(note));
+}
+
+/// Each level's view goes through `session.mnf.local` and comes back: the level in view at once, the others on the
+/// switch back.
+#[test]
+fn each_levels_view_survives_a_restart() {
+    let path = temp_dir("level-views-restart").join("session.mnf");
+    let (g, top, inside) = {
+        let mut app = app_on(&path, 1);
+        let (g, _) = group_with_note(&mut app);
+        let top = app.fit_all_nodes_scene_rect().translate(egui::vec2(25.0, 0.0));
+        app.camera.jump_to(top);
+        app.groups_collapsed = true;
+        app.switch_group_level(Some(g));
+        let inside = app.fit_all_nodes_scene_rect().translate(egui::vec2(0.0, 15.0));
+        app.camera.jump_to(inside);
+        app.close_store();
+        (g, top, inside)
+    };
+    let mut app = app_on(&path, 2);
+    assert!(app.restore_session());
+    assert_eq!(app.current_group, Some(g));
+    assert_eq!(app.camera.rect, inside);
+    assert!(!app.groups_collapsed, "g's own toggle");
+    app.switch_group_level(None);
+    assert_eq!(eased_to(&app), Some(top), "the top level's view came back with the file");
+    assert!(app.groups_collapsed);
+}

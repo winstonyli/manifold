@@ -98,6 +98,12 @@ impl LevelView {
     pub(crate) fn camera_rect(&self) -> Option<egui::Rect> {
         self.camera.map(|[x0, y0, x1, y1]| egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)))
     }
+
+    /// Where the camera goes on entering this level: the saved rect while it is a usable rect that still meets `fit`
+    /// (the level's fit-all rect, `App::fit_all_nodes_scene_rect`), else `fit`.
+    pub(crate) fn camera_or(&self, fit: egui::Rect) -> egui::Rect {
+        self.camera_rect().filter(|r| r.is_finite() && r.is_positive() && r.intersects(fit)).unwrap_or(fit)
+    }
 }
 
 /// The key the top level's view is written under in `LocalState::levels`; a group's is its id text.
@@ -593,6 +599,17 @@ mod tests {
 
     fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> egui::Rect {
         egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    }
+
+    #[test]
+    fn a_saved_camera_is_used_only_while_it_meets_the_level() {
+        let fit = rect(0.0, 0.0, 100.0, 100.0);
+        let near = rect(50.0, 50.0, 150.0, 150.0);
+        assert_eq!(LevelView::new(near, false).camera_or(fit), near);
+        let far = rect(1.0e6, 1.0e6, 1.0e6 + 1.0, 1.0e6 + 1.0);
+        assert_eq!(LevelView::new(far, false).camera_or(fit), fit, "it misses the level's cards");
+        assert_eq!(LevelView::default().camera_or(fit), fit, "none saved");
+        assert_eq!(LevelView::new(rect(10.0, 10.0, 10.0, 20.0), false).camera_or(fit), fit, "an empty rect");
     }
 
     #[test]

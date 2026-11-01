@@ -250,7 +250,7 @@ impl App {
 
     /// Makes `json_level` match `current_group`: built on entering a Json
     /// node, relaid out when marked stale, dropped on leaving. Runs at the
-    /// start of `build_graph_ui` and in `switch_group_level`.
+    /// start of `build_graph_ui` and in `enter_level`.
     pub(crate) fn sync_json_level(&mut self) {
         let Some(json) = self.current_json_node() else {
             self.json_level = None;
@@ -263,7 +263,8 @@ impl App {
         // Retry. Its group is never a Json node, so this recurses once.
         if !json.enterable() {
             let group = self.group_of(self.current_group);
-            self.switch_group_level(group);
+            // Not `switch_group_level`: this level was never shown (or can no longer be), so it saves no view.
+            self.enter_level(group);
             return;
         }
         // Looked up again through the field, not `current_json_node`, so
@@ -295,6 +296,7 @@ impl App {
             return;
         }
         self.show_level_of(target);
+        self.camera.reveal = Some(target);
         self.interaction.selected.clear();
         self.interaction.selected.insert(CardId::from(target));
     }

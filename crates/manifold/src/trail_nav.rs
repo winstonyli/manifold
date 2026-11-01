@@ -199,6 +199,7 @@ impl App {
             self.leave_to_graph();
         }
         self.show_level_of(id);
+        self.camera.reveal = Some(id);
         self.interaction.selected.clear();
         self.interaction.selected.insert(CardId::from(id));
     }
