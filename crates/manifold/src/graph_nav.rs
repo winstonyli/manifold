@@ -1,7 +1,7 @@
 //! Graph navigation: fit and bounds, settle, focus movement, group lookup, drops and merges.
 
 use super::*;
-use crate::store::model::NodeId;
+use crate::store::model::{Anchor, NodeId};
 
 /// The Graph view's pointer-driven state (`App::interaction`): drag, hover, selection and the pending new-card choice.
 #[derive(Default)]
@@ -198,7 +198,7 @@ impl App {
         }
     }
 
-    /// A drag ends: each card it moved (`drag_moved`) is saved where it was dropped (`edit_pos`).
+    /// A drag ends: each card it moved (`drag_moved`) is dropped where it is drawn (`drop_at`: its pos and anchor).
     /// Written once, here, not every dragged frame: saves fire independently of the gesture (`poll_store`, a url
     /// change batched through `drain_tab_events`), so writing every frame would commit intermediate positions. A
     /// card removed mid-drag (closed, crashed, swapped) leaves its id in `drag_moved`; it is skipped here rather than
@@ -216,9 +216,19 @@ impl App {
             let Some(key) = moved_id.node() else { continue };
             if self.nodes.contains_key(&key) {
                 self.interaction.drag_origin.push((moved_id, self.doc.mirror.pos(key)));
-                self.edit_pos(key, Some(self.layout_pos(key)));
+                self.drop_at(key);
             }
         }
+    }
+
+    /// Card `id` released where it is drawn: its document pos and an anchor there, in the group it is in, keeping
+    /// its pin bit (so dragging a pin keeps it a pin, in any group). A drag release and headless `MOVENODE` both come
+    /// here.
+    pub(crate) fn drop_at(&mut self, id: NodeId) {
+        let at = self.layout_pos(id);
+        self.edit_pos(id, Some(at));
+        let explicit = self.doc.mirror.pinned(id);
+        self.edit_anchor(id, Some(Anchor { pos: [at.x, at.y], group: self.doc.mirror.group(id), explicit }));
     }
 
     /// A card released after a drag (`GraphAction::Drop`), with where it

@@ -205,7 +205,7 @@ impl App {
         self.doc.mirror.set_parent(id, parent);
     }
 
-    /// The one writer of a node's group: shown at once, committed as a `Move` by the next save.
+    /// The one writer of a node's group: shown at once, committed as a `Move` by the next save; releases an implicit anchor.
     pub(crate) fn edit_group(&mut self, id: NodeId, group: Option<NodeId>) {
         if self.doc.mirror.group(id) == group {
             return;
@@ -216,6 +216,10 @@ impl App {
         }
         self.doc.writes.queue_move(id, group);
         self.doc.mirror.set_group(id, group);
+        // A drop's anchor holds only in the group it was written in: a local move releases it, a pin stays (spec
+        // Slice 1). Move, Join, GroupWith, Eject, fold, put-back and undo replay all come through here; a remote move
+        // writes the mirror directly, which is how an inert anchor arises.
+        self.clear_anchors(&[id], false);
     }
 
     /// Whether node `id` is shown at the level being viewed.

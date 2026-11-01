@@ -86,7 +86,8 @@ fn a_json_view_edit_saves_and_a_remote_one_refreshes_the_decoded_cache() {
     assert!(view.get("/users").is_none(), "and only theirs");
 }
 
-/// A drag release writes the document pos; physics (a settle) moves only the layout.
+/// A drag release writes the document pos and a drop anchor there; the next settle holds the card where it was
+/// dropped and moves its neighbour around it. Physics never writes the document.
 #[test]
 fn a_drag_release_saves_the_dropped_position() {
     let path = temp_dir("pos-drag").join("session.mnf");
@@ -99,21 +100,71 @@ fn a_drag_release_saves_the_dropped_position() {
     assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((10.0, 10.0))), "a drag in progress is not saved");
     app.release_drag();
     assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(50.0, 10.0)), "shown at once");
+    assert_eq!(app.doc.mirror.anchor(note), Some(Anchor { pos: [50.0, 10.0], group: None, explicit: false }));
+    assert!(!app.doc.mirror.pinned(note), "a drop is not a pin");
     assert!(app.save_session());
     assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((50.0, 10.0))));
 
     app.settle_current_level();
-    assert_ne!(app.layout_pos(note), egui::vec2(50.0, 10.0), "the overlapping cards were pushed apart");
-    assert_ne!(app.layout_pos(other), egui::vec2(52.0, 10.0));
+    assert_eq!(app.layout_pos(note), egui::vec2(50.0, 10.0), "the dropped card stays where it was dropped");
+    assert_ne!(app.layout_pos(other), egui::vec2(52.0, 10.0), "its overlapping neighbour moved around it");
     assert!(app.save_session());
     assert!(!app.doc.writes.has_fields());
     assert_eq!(
-        stored(&app, note, field::POS),
-        FieldValue::Pos(Some((50.0, 10.0))),
+        stored(&app, other, field::POS),
+        FieldValue::Pos(Some((52.0, 10.0))),
         "physics never writes the document"
     );
-    assert_eq!(stored(&app, other, field::POS), FieldValue::Pos(Some((52.0, 10.0))));
-    assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(50.0, 10.0)));
+}
+
+/// A local move releases a drop's anchor and keeps a pin, which then holds at the same (x, y) in the new group; a
+/// fold (Dissolve) and its put-back keep the pin too.
+#[test]
+fn a_move_releases_a_drop_and_keeps_a_pin() {
+    let path = temp_dir("anchor-move").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let g = add_group(&mut app, "g");
+    let (dropped, pinned) = (a_note_at(&mut app, egui::vec2(10.0, 10.0)), a_note_at(&mut app, egui::vec2(90.0, 10.0)));
+    app.snap_layout(dropped, egui::vec2(30.0, 30.0));
+    app.drop_at(dropped);
+    app.snap_layout(pinned, egui::vec2(70.0, 70.0));
+    app.toggle_pin(pinned);
+    app.edit_group(dropped, Some(g));
+    app.edit_group(pinned, Some(g));
+    assert_eq!(app.doc.mirror.anchor(dropped), None, "a move releases a drop");
+    assert_eq!(app.doc.mirror.held(pinned), Some(egui::vec2(70.0, 70.0)), "a pin holds at its (x, y) in the new group");
+    app.ungroup(&[g]);
+    assert_eq!(app.doc.mirror.group(pinned), None);
+    assert!(app.doc.mirror.pinned(pinned), "a fold keeps a pin");
+    app.reopen_node(g);
+    assert_eq!(app.doc.mirror.group(pinned), Some(g), "put back");
+    assert_eq!(app.doc.mirror.held(pinned), Some(egui::vec2(70.0, 70.0)), "a put-back keeps a pin");
+}
+
+/// Dropping a pinned card keeps the bit, in any group: the drop rewrites the pin at the new point and group.
+#[test]
+fn a_drop_of_a_pin_in_another_group_keeps_the_bit() {
+    let mut app = App::default();
+    let g = add_group(&mut app, "g");
+    let note = a_note_at(&mut app, egui::vec2(10.0, 10.0));
+    app.toggle_pin(note);
+    app.edit_group(note, Some(g));
+    app.snap_layout(note, egui::vec2(-20.0, 5.0));
+    app.drop_at(note);
+    assert_eq!(app.doc.mirror.anchor(note), Some(Anchor { pos: [-20.0, 5.0], group: Some(g), explicit: true }));
+    assert_eq!(app.doc.mirror.pos(note), Some(egui::vec2(-20.0, 5.0)));
+}
+
+/// A drop on a tab holds it without pinning it, so the idle-sleep exemption (which reads `pinned`,
+/// `tabs/sleep.rs:136`) does not apply. A live tab can't be built in a unit test (no fake `ViewTab`), so this checks
+/// the predicate the exemption reads.
+#[test]
+fn a_drop_does_not_pin_a_tab() {
+    let mut app = App::default();
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://s/", ""));
+    app.snap_layout(tab, egui::vec2(4.0, 4.0));
+    app.drop_at(tab);
+    assert!(app.doc.mirror.held(tab).is_some() && !app.doc.mirror.pinned(tab));
 }
 
 /// A settle starts from the document positions, so where the layout was before (an earlier settle, at a card's

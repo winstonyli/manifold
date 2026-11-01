@@ -864,7 +864,7 @@ const VERBS: &[Verb] = &[
             }
         })
     }),
-    row("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there, which saves", |rest| {
+    row("MOVENODE id x y", "Drag card `id` to world point (x, y) and release it there: its document pos and drop anchor are written as a drag release writes them, and saved", |rest| {
         let (id, x, y) = parse_move_node(rest)?;
         job(move |app, _| {
             if !app.debug_move_node(id, egui::vec2(x, y)) {
@@ -1205,14 +1205,14 @@ impl App {
     }
 
     /// `MOVENODE`: card `id` dragged to world point `pos` and released. The drag moves the layout (`card.rs`), the
-    /// release writes the document pos (`release_drag`: `edit_pos` with the layout pos), and the drop saves
-    /// (`apply_drop` with no target). `false` when there is no such node.
+    /// release drops it there (`drop_at`: its document pos and anchor, as `release_drag` writes them), and the drop
+    /// saves (`apply_drop` with no target). `false` when there is no such node.
     fn debug_move_node(&mut self, id: NodeId, pos: egui::Vec2) -> bool {
         if !self.nodes.contains_key(&id) {
             return false;
         }
         self.snap_layout(id, pos);
-        self.edit_pos(id, Some(self.layout_pos(id)));
+        self.drop_at(id);
         self.save_session();
         true
     }
@@ -1571,6 +1571,9 @@ mod tests {
         assert!(app.debug_move_node(note, egui::vec2(12.0, -34.0)));
         assert_eq!(stored(&app, note, field::POS), FieldValue::Pos(Some((12.0, -34.0))));
         assert_eq!(app.layout_pos(note), egui::vec2(12.0, -34.0), "the card is where it was dropped");
+        let anchor =
+            crate::store::model::Anchor { pos: [12.0, -34.0], group: app.doc.mirror.group(note), explicit: false };
+        assert_eq!(app.doc.mirror.anchor(note), Some(anchor), "MOVENODE drops as a drag release does");
         assert!(!app.debug_move_node(node(9999), egui::vec2(1.0, 1.0)), "no such node");
     }
 
