@@ -2,7 +2,7 @@
 
 One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries the same text. Releases before v0.4.0 have no entry: see `git log --first-parent --decorate`.
 
-## 0.10.0 - 2026-10-30
+## 0.10.0 - 2026-10-31
 
 *View protocol 6 -> 8: a 0.9.0 host does not start with this build (the app names which side to rebuild); the hosts in the release match. Session store format unchanged (journal 4).*
 
@@ -39,6 +39,9 @@ One entry per tagged release, newest first. The annotated tag `vX.Y.Z` carries t
 ### Internal
 
 - Run `download` on WebView2, CEF and WebKit (saved, refused and broken cases), add `shots-aa` (chrome shots repeat pixel for pixel), `layout` width checks and a card-pane `labels` stage to `gate all`, and refactor `App`, the graph, the store and the gate into smaller named parts ([6c95f1e9](https://github.com/winstonyli/manifold/commit/6c95f1e9), [58ed660b](https://github.com/winstonyli/manifold/commit/58ed660b), [fb3fa157](https://github.com/winstonyli/manifold/commit/fb3fa157), [7747af19](https://github.com/winstonyli/manifold/commit/7747af19), [5114d51f](https://github.com/winstonyli/manifold/commit/5114d51f)).
+- Share one kill-on-close job module and one `NavState` across the view hosts and the gate, replacing four job copies and three `NavState` copies ([75a12d25](https://github.com/winstonyli/manifold/commit/75a12d25), [f1aedd1c](https://github.com/winstonyli/manifold/commit/f1aedd1c)).
+- Frame the gate's work stages in one `run_stage` (logs registered at launch and tailed on failure, failed runs keep their dir) and add `gate kill-check`, which proves a killed manifold or host leaves no process behind ([d3af37ae](https://github.com/winstonyli/manifold/commit/d3af37ae), [b0d6982f](https://github.com/winstonyli/manifold/commit/b0d6982f)).
+- Drop dead code (`listen_remote`, `VIEW_TAB_ID`, unused debug rows) and six redundant tests ([8491a372](https://github.com/winstonyli/manifold/commit/8491a372), [c6f6b983](https://github.com/winstonyli/manifold/commit/c6f6b983)).
 
 ## 0.9.0 - 2026-10-25
 
