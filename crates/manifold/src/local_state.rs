@@ -389,6 +389,10 @@ impl App {
     /// the user asked for, not a frame of the animation) and its Collapse Groups toggle. `switch_group_level` saves it
     /// for the level it leaves; personal state writes it for the level in view.
     pub(crate) fn live_level_view(&self) -> LevelView {
+        // A camera still waiting for its session's framing is a placeholder, not a place the user chose.
+        if self.camera.frame_restored {
+            return LevelView { camera: None, collapsed: self.groups_collapsed };
+        }
         LevelView::new(self.camera.target(), self.groups_collapsed)
     }
 
@@ -515,7 +519,7 @@ impl App {
         let view = self.level_views.get(&self.current_group).copied().unwrap_or_default();
         self.groups_collapsed = view.collapsed;
         if let Some(rect) = view.camera_rect() {
-            self.camera.rect = rect;
+            self.camera.jump_to(rect);
             self.camera.frame_restored = false;
         }
     }

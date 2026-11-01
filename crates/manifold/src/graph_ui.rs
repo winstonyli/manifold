@@ -311,12 +311,14 @@ impl App {
                     }
                 }
             }
-            // Entering/leaving a group eases the camera to the same target
-            // "Reset View" would jump to instantly -- keeping whatever pan/zoom
-            // the old level happened to be at would likely frame empty space
-            // rather than the new level's own nodes. `current_group` is updated
-            // first so `fit_all_nodes_scene_rect` bounds the level actually
-            // being switched *to*, not the one just left. Settling *before*
+            // Entering/leaving a group saves the view of the level left and eases
+            // the camera to the one the new level was left at, or to the target
+            // "Reset View" would jump to instantly when it has none (see
+            // `App::switch_group_level`) -- keeping whatever pan/zoom the old
+            // level happened to be at would likely frame empty space rather than
+            // the new level's own nodes. `current_group` is updated first so
+            // `fit_all_nodes_scene_rect` bounds the level actually being
+            // switched *to*, not the one just left. Settling *before*
             // fitting matters: the new level's members may never have been
             // settled before (every group created via drag-and-drop starts with
             // its members wherever the drop happened, often nearly overlapping)

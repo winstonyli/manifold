@@ -493,3 +493,28 @@ fn each_levels_view_survives_a_restart() {
     assert_eq!(eased_to(&app), Some(top), "the top level's view came back with the file");
     assert!(app.groups_collapsed);
 }
+
+/// A camera still waiting for its session's framing (`GraphCamera::frame_restored`) is a placeholder, not a place the
+/// user chose: leaving the level saves its toggle but no camera, so coming back fits it.
+#[test]
+fn leaving_a_level_before_its_framing_settled_saves_no_camera() {
+    let mut app = app_on(&temp_dir("level-views-unsettled").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.camera.jump_to(world_rect(7.0, 7.0, 77.0, 77.0));
+    app.camera.frame_restored = true;
+    app.groups_collapsed = true;
+    app.switch_group_level(Some(g));
+    assert_eq!(app.level_views[&None], LevelView { camera: None, collapsed: true });
+}
+
+/// Closing the level in view (`leave_hidden`, then `hide_node`) keeps no view for it: a reopen fits it.
+#[test]
+fn closing_the_level_in_view_leaves_no_view_for_it() {
+    let mut app = app_on(&temp_dir("level-views-close").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.switch_group_level(Some(g));
+    app.leave_hidden(g);
+    assert!(app.level_views.contains_key(&Some(g)), "saved on the way out");
+    app.hide_node(g);
+    assert!(!app.level_views.contains_key(&Some(g)));
+}
