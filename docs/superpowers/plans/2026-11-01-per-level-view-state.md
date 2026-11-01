@@ -33,9 +33,12 @@ status: draft
 - Opening or importing another session (`replace_running_session` -> `teardown_running_session`): the old session's level views and its Collapse Groups toggle must not leak into the new one. Pinned in Task 2 (`opening_a_session_drops_the_old_sessions_level_views`).
 - A `.local` file with an unreadable level entry, a non-finite camera, or the old single `camera`/`groups_collapsed` fields: the rest of the file must still read, and a non-finite value must neither break the file nor rewrite it every 30 s. Pinned in Task 1 (`an_unreadable_id_costs_only_itself`, `a_non_finite_value_costs_only_itself`, `a_non_finite_camera_is_no_change`, `an_old_files_camera_and_collapsed_are_ignored`).
 
+- Callers of `show_level_of` that select a card and rely on the camera showing it (`finish_trail_focus`, `open_ref`): fit-all used to guarantee it, a restored view does not, so they set `camera.reveal` as `omnibar.rs` already does. The other callers are covered: `omni_activate` and `omnibar.rs:351` set `reveal` or open the Item view, `shortcuts.rs:354` opens the Item view (`focus_tab`), `json_level.rs:297` is `open_ref`. Pinned in Task 2 (`opening_a_ref_reveals_its_card`).
+- A JSON level that was shown and then becomes unenterable (a failed Refresh) bounces without saving, so it loses its saved view (R3). Deliberately untested: reaching the state needs a failed fetch in a test, and the cost is accepted in R3.
+
 ## Rulings on spec gaps (made by this plan)
 
-- **R1 Ease target.** The view saved for a level (and the one personal state writes for the level in view) is the running ease's target when an ease is running (`camera.tween.to`), else `camera.rect`. The spec says only "saves the outgoing level's camera rect"; a mid-ease rect is a frame of animation, not a place the user chose.
+- **R1 Ease target.** The view saved for a level (and the one personal state writes for the level in view) is the running ease's target when an ease is running (`camera.tween.to`), else `camera.rect`. The spec says only "saves the outgoing level's camera rect"; a mid-ease rect is a frame of animation, not a place the user chose. The rule lives in one accessor, `GraphCamera::target()`, which `live_level_view` and the JSON level's reveal check (`json_level.rs:562`, the same expression) share.
 - **R2 One guard instead of two evictions.** The spec says the switches the user did not make (`remote.rs:476`, `node_store.rs:127`) "evict a deleted level's entry after the switch". This plan gets the same end state with one rule in `switch_group_level`: it saves the level it leaves only while that level is still shown (`current_group` is `None` or in `self.nodes`). `take_out` has already run `unshow` (so `forget_id`) before its switch, so nothing is re-created; `leave_hidden` (`remote.rs:469-477`) switches before `hide_node`, which then evicts through `unshow` -> `forget_id`. Neither call site changes.
 - **R3 Non-saving entry.** `switch_group_level` becomes "save, then `enter_level`". `sync_json_level` (`json_level.rs:264-267`) bounces out of an unenterable JSON level through `enter_level`, so a level never shown gets no entry. Cost: a JSON level that becomes unenterable while in view (a failed Refresh) loses its saved view.
 - **R4 Teardown clears.** `teardown_running_session` saves nothing (spec) and also clears `level_views` and resets `groups_collapsed`: both belong to the replaced session's levels.
@@ -45,6 +48,8 @@ status: draft
 - **R8 Closed levels.** A closed (hidden) group's level loses its entry: `hide_node` -> `unshow` -> `forget_id`, which the spec says evicts. Reopening it fits all.
 - **R9 Export Group.** Nothing to implement; the PARKED scope entry already says "Export Group carries no local state (`session_files.rs:250-261`), so it is unchanged" (checked 2026-11-01).
 - **R10 README :217.** The Ungroup All entry has the same stale "top level only" as `:233` (the toolbar shows both at every level with groups, `graph_ui/toolbar.rs:244-264`); Task 2 fixes both.
+- **R11 Reveal after a level show.** `enter_level` clears `camera.reveal` and eases to the saved view, so a caller that selects a card with `show_level_of` and wants it seen sets `camera.reveal` itself after the call (`finish_trail_focus`'s Graph branch, `open_ref`).
+- **R12 Stale docs.** The 2026-09-25 session-op-log spec says "the app has one camera; per-level cameras are later" (`:167`): Task 2 annotates it. PARKED's "Nested bottom-up settle" trigger (`PARKED.md:52`, "the anchor register and per-level view state have landed") is unchanged: it also waits on Slice 1.
 
 ## File Structure
 
@@ -54,9 +59,10 @@ status: draft
 - `crates/manifold/src/graph_ui/scene.rs` — `switch_group_level` (save) and new `enter_level` (restore).
 - `crates/manifold/src/json_level.rs` — `sync_json_level` bounces through `enter_level`.
 - `crates/manifold/src/session_files.rs` — `teardown_running_session` clears the map.
-- `crates/manifold/src/graph_ui/camera.rs`, `crates/manifold/src/view_modes.rs` — doc comments only.
+- `crates/manifold/src/graph_ui/camera.rs` — `GraphCamera::target`, and a doc comment; `crates/manifold/src/view_modes.rs` — doc comment only.
+- `crates/manifold/src/trail_nav.rs`, `crates/manifold/src/json_level.rs` — `finish_trail_focus` and `open_ref` set `camera.reveal` (Task 2).
 - Tests: `crates/manifold/src/session_sync/tests/local_state.rs`, `crates/manifold/src/json_level/tests.rs`, `crates/manifold/src/main/tests.rs`.
-- Docs: `README.md` (`:217`, `:233`, `:364`), `PARKED.md` (scope entry status).
+- Docs: `README.md` (`:217`, `:233`, `:364`), `PARKED.md` (scope entry), `docs/superpowers/specs/2026-09-25-session-op-log-design.md` (`:167`).
 
 ---
 
@@ -66,7 +72,8 @@ status: draft
 - Modify: `crates/manifold/src/local_state.rs:5` (imports unchanged), `:21-52` (struct), `:83-114` (lenient helpers, `differs`), `:148-164` (`Default`), `:166-187` (`remap`), `:189-208` (`all_finite`, `to_bytes`), `:349-386` (`local_state`), `:394-459` (`apply_local`), `:528-632` (tests)
 - Modify: `crates/manifold/src/main.rs:206-212` (doc), `:212` (new field after it), `:516` (initializer)
 - Modify: `crates/manifold/src/node_store.rs:171-207` (`forget_id`)
-- Test: `crates/manifold/src/local_state.rs` `mod tests`, `crates/manifold/src/session_sync/tests/local_state.rs`, `crates/manifold/src/main/tests.rs:7-56`
+- Modify: `crates/manifold/src/graph_ui/camera.rs:28` (`GraphCamera::target`, after `ease_to`), `crates/manifold/src/json_level.rs:562` (use it)
+- Test: `crates/manifold/src/graph_ui/camera.rs` `mod tests`, `crates/manifold/src/local_state.rs` `mod tests`, `crates/manifold/src/session_sync/tests/local_state.rs`, `crates/manifold/src/main/tests.rs:7-56`
 - Docs: `README.md:364`
 
 **Interfaces:**
@@ -77,6 +84,7 @@ status: draft
   - `LevelView::camera_rect(&self) -> Option<egui::Rect>`
   - `LocalState<K>::levels: BTreeMap<Option<K>, LevelView>`
   - `App::level_views: BTreeMap<Option<NodeId>, local_state::LevelView>` (field in `main.rs`)
+  - `GraphCamera::target(&self) -> egui::Rect` (the running ease's `to`, else `rect`)
   - `App::live_level_view(&self) -> LevelView`
 
 - [ ] **Step 1: Mark the plan active**
@@ -193,6 +201,19 @@ In `nulls_written_by_older_builds_read_back`, replace the line `assert_eq!(state
 
 ```rust
         assert!(state.levels.is_empty(), "an old file's camera is ignored");
+```
+
+In `crates/manifold/src/graph_ui/camera.rs` `mod tests`, add:
+
+```rust
+    #[test]
+    fn the_target_is_where_an_ease_is_going() {
+        let mut camera = GraphCamera::new();
+        let to = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(50.0, 50.0));
+        assert_eq!(camera.target(), camera.rect);
+        camera.ease_to(to);
+        assert_eq!(camera.target(), to);
+    }
 ```
 
 - [ ] **Step 3: Write the failing App-level tests**
@@ -478,6 +499,28 @@ In `crates/manifold/src/node_store.rs` `forget_id`, after `self.doc.hidden_local
 
 - [ ] **Step 9: `live_level_view`, `local_state()` and `apply_local`**
 
+In `crates/manifold/src/graph_ui/camera.rs`, after `ease_to`, add:
+
+```rust
+    /// Where the camera is headed: the running ease's target, else where it is. A frame of a running ease is not a place
+    /// the user chose (`App::live_level_view`, the JSON level's reveal check).
+    pub(crate) fn target(&self) -> egui::Rect {
+        self.tween.as_ref().map_or(self.rect, |t| t.to)
+    }
+```
+
+In `crates/manifold/src/json_level.rs:562` replace
+
+```rust
+        let view = self.camera.tween.as_ref().map_or(self.camera.rect, |t| t.to);
+```
+
+with
+
+```rust
+        let view = self.camera.target();
+```
+
 In `crates/manifold/src/local_state.rs`, in `impl App`, add before `local_state`:
 
 ```rust
@@ -485,7 +528,7 @@ In `crates/manifold/src/local_state.rs`, in `impl App`, add before `local_state`
     /// the user asked for, not a frame of the animation) and its Collapse Groups toggle. `switch_group_level` saves it
     /// for the level it leaves; personal state writes it for the level in view.
     pub(crate) fn live_level_view(&self) -> LevelView {
-        LevelView::new(self.camera.tween.map_or(self.camera.rect, |t| t.to), self.groups_collapsed)
+        LevelView::new(self.camera.target(), self.groups_collapsed)
     }
 ```
 
@@ -563,7 +606,7 @@ with
 Run: `cargo test -j 8 -p manifold --bins local_state`
 Expected: PASS, including `levels_round_trip_with_the_top_level_under_its_own_key`, `an_old_files_camera_and_collapsed_are_ignored`, `a_non_finite_camera_is_no_change`, `personal_state_applies_the_level_in_views_camera_and_keeps_the_others`, `personal_state_drops_the_views_of_levels_the_document_no_longer_holds`, `a_late_read_of_no_personal_state_keeps_the_live_view`.
 
-Run: `cargo test -j 8 -p manifold --bins -- forget_id_clears_every_id_keyed_table every_id_keyed_field_is_forgotten_or_excused`
+Run: `cargo test -j 8 -p manifold --bins -- the_target_is_where_an_ease_is_going forget_id_clears_every_id_keyed_table every_id_keyed_field_is_forgotten_or_excused`
 Expected: PASS (the second test sees `level_views`' `Option<NodeId` type and finds `self.level_views` in `forget_id`).
 
 - [ ] **Step 11: README `:364`**
@@ -586,7 +629,7 @@ Run: `cargo fmt --all` then the clippy command from Global Constraints.
 Expected: clippy finishes with no warnings.
 
 ```bash
-git add crates/manifold/src/local_state.rs crates/manifold/src/main.rs crates/manifold/src/node_store.rs crates/manifold/src/session_sync/tests/local_state.rs crates/manifold/src/main/tests.rs README.md docs/superpowers/plans/2026-11-01-per-level-view-state.md
+git add crates/manifold/src/local_state.rs crates/manifold/src/main.rs crates/manifold/src/node_store.rs crates/manifold/src/graph_ui/camera.rs crates/manifold/src/json_level.rs crates/manifold/src/session_sync/tests/local_state.rs crates/manifold/src/main/tests.rs README.md docs/superpowers/plans/2026-11-01-per-level-view-state.md
 git diff --cached --stat
 git commit -m "Personal state: a view per level (LocalState::levels) replaces the one camera and collapsed bit
 
@@ -602,12 +645,13 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 - Modify: `crates/manifold/src/local_state.rs` (`LevelView::camera_or`, a unit test)
 - Modify: `crates/manifold/src/json_level.rs:251-268` (`sync_json_level`)
 - Modify: `crates/manifold/src/session_files.rs:527-540` (`teardown_running_session`)
+- Modify: `crates/manifold/src/trail_nav.rs:201` (`finish_trail_focus`), `crates/manifold/src/json_level.rs:293-300` (`open_ref`)
 - Modify (doc comments): `crates/manifold/src/graph_ui/camera.rs:234`, `crates/manifold/src/view_modes.rs:67-70`
 - Test: `crates/manifold/src/session_sync/tests/local_state.rs`, `crates/manifold/src/json_level/tests.rs`, `crates/manifold/src/local_state.rs` `mod tests`
-- Docs: `README.md:217`, `:233`; `PARKED.md:47`
+- Docs: `README.md:217`, `:233`; `PARKED.md:47`; `docs/superpowers/specs/2026-09-25-session-op-log-design.md:167`
 
 **Interfaces:**
-- Consumes (Task 1): `LevelView { camera, collapsed }`, `LevelView::new(egui::Rect, bool)`, `LevelView::camera_rect() -> Option<egui::Rect>`, `App::level_views: BTreeMap<Option<NodeId>, LevelView>`, `App::live_level_view() -> LevelView`. Existing: `App::fit_all_nodes_scene_rect() -> egui::Rect` (`graph_nav.rs:414`), `GraphCamera::ease_to(egui::Rect)`, `GraphCamera::jump_to(egui::Rect)`, `App::take_out(NodeId, node_store::Removal)`, `App::replace_running_session(&JsonDoc, Trust)`.
+- Consumes (Task 1): `LevelView { camera, collapsed }`, `LevelView::new(egui::Rect, bool)`, `LevelView::camera_rect() -> Option<egui::Rect>`, `App::level_views: BTreeMap<Option<NodeId>, LevelView>`, `App::live_level_view() -> LevelView`, `GraphCamera::target() -> egui::Rect`. Existing: `App::fit_all_nodes_scene_rect() -> egui::Rect` (`graph_nav.rs:414`), `GraphCamera::ease_to(egui::Rect)`, `GraphCamera::jump_to(egui::Rect)`, `App::take_out(NodeId, node_store::Removal)`, `App::replace_running_session(&JsonDoc, Trust)`.
 - Produces:
   - `LevelView::camera_or(&self, fit: egui::Rect) -> egui::Rect`
   - `App::enter_level(&mut self, group: Option<NodeId>)` (`pub(crate)`, in `graph_ui/scene.rs`)
@@ -700,14 +744,28 @@ fn deleting_the_level_in_view_leaves_no_view_for_it() {
 fn opening_a_session_drops_the_old_sessions_level_views() {
     let mut app = app_on(&temp_dir("level-views-teardown").join("session.mnf"), 1);
     let (g, _) = group_with_note(&mut app);
+    app.camera.jump_to(world_rect(7.0, 7.0, 77.0, 77.0));
     app.switch_group_level(Some(g));
     app.groups_collapsed = true;
+    assert!(app.level_views.contains_key(&None), "the top level's view was saved on the way in");
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
-    assert!(app.level_views.keys().all(Option::is_none), "no level of the old session survives");
+    assert!(app.level_views.is_empty(), "no level of the old session survives, the top level's included");
     assert!(!app.groups_collapsed);
-    assert_eq!(app.local_state().levels.keys().copied().collect::<Vec<_>>(), [None]);
+    assert_eq!(app.local_state().levels.keys().copied().collect::<Vec<_>>(), [None], "only the level in view is written");
+}
+
+/// `show_level_of` no longer fits the level, so a caller that selects a card must bring it into view itself.
+#[test]
+fn opening_a_ref_reveals_its_card() {
+    let mut app = app_on(&temp_dir("level-views-open-ref").join("session.mnf"), 1);
+    let (g, note) = group_with_note(&mut app);
+    app.switch_group_level(Some(g));
+    app.switch_group_level(None);
+    app.open_ref(note);
+    assert_eq!(app.current_group, Some(g));
+    assert_eq!(app.camera.reveal, Some(note));
 }
 
 /// Each level's view goes through `session.mnf.local` and comes back: the level in view at once, the others on the
@@ -916,15 +974,34 @@ with
 /// `TRANSITION_DURATION` rather than instantly, with the same smoothstep easing as `Transition`
 ```
 
-- [ ] **Step 9: Run the tests to verify they pass**
+- [ ] **Step 9: Callers that select a card after a level show**
+
+In `crates/manifold/src/json_level.rs`, in `open_ref`, after `self.show_level_of(target);` add:
+
+```rust
+        self.camera.reveal = Some(target);
+```
+
+In `crates/manifold/src/trail_nav.rs`, in `finish_trail_focus`'s Graph branch (the `show_level_of(id)` at `:201`, after the `leave_to_graph` check), add after `self.show_level_of(id);`:
+
+```rust
+        self.camera.reveal = Some(id);
+```
+
+(The Item-view branch at `:194` opens the card in the Item view and needs none. `omnibar.rs:351` and `:363` already set `reveal` or use the Item view.)
+
+- [ ] **Step 10: Run the tests to verify they pass**
 
 Run: `cargo test -j 8 -p manifold --bins local_state`
-Expected: PASS, including `a_saved_camera_is_used_only_while_it_meets_the_level`, `switching_levels_returns_to_each_levels_view`, `leaving_mid_ease_saves_where_the_ease_was_going`, `a_saved_view_that_misses_the_level_falls_back_to_fit_all`, `deleting_the_level_in_view_leaves_no_view_for_it`, `opening_a_session_drops_the_old_sessions_level_views`, `each_levels_view_survives_a_restart`.
+Expected: PASS, including `opening_a_ref_reveals_its_card`, `a_saved_camera_is_used_only_while_it_meets_the_level`, `switching_levels_returns_to_each_levels_view`, `leaving_mid_ease_saves_where_the_ease_was_going`, `a_saved_view_that_misses_the_level_falls_back_to_fit_all`, `deleting_the_level_in_view_leaves_no_view_for_it`, `opening_a_session_drops_the_old_sessions_level_views`, `each_levels_view_survives_a_restart`.
 
 Run: `cargo test -j 8 -p manifold --bins json_level`
 Expected: PASS, including `a_json_level_keeps_its_own_camera`, `leaving_an_unenterable_json_level_saves_no_view_for_it` and the existing `a_refetch_placeholder_is_not_entered_and_keeps_its_view`.
 
-- [ ] **Step 10: README `:217`, `:233` and PARKED**
+Run: `cargo test -j 8 -p manifold --bins` (the whole crate, once, before this task's commit: existing tests and headless paths that assumed fit-all after a switch, such as `graph_ui.rs:524` and `debug_export.rs:577`, `:595`, first meet the restore here).
+Expected: PASS (the one `LOCK_WAIT` test takes about 5 s; `#[ignore]`d timing tests are skipped). A newly failing existing test is triaged, not patched around: if it wants fit-all after a switch, it drops the level's saved view first (`app.level_views.clear()`); if it was about restoring, it asserts the restored rect. A failure that is neither means the plan is wrong: stop and report.
+
+- [ ] **Step 11: README `:217`, `:233`, PARKED and the op-log spec**
 
 Use the Edit tool for each replacement (old text, then new text).
 
@@ -958,7 +1035,17 @@ since a collapsed non-empty group now reaches that same branch too. Session-only
 since a collapsed non-empty group now reaches that same branch too. Each level keeps its own toggle, across restarts too (per-level view state, 2026-11-01; it was session-only when this entry was written).
 ```
 
-`PARKED.md:47` (the "Groups as scopes inside one document" entry; `*Status:* parked, direction decided.` alone also matches `:50`, so the old text includes the evidence clause before it, which only `:47` has):
+`PARKED.md:47` (the "Groups as scopes inside one document" entry), first the stale "today" clause:
+
+```text
+(`local_state.rs`: today one global `camera` and `groups_collapsed`; a map keyed by level, cached for levels not in view, `remap` renaming its keys)
+```
+
+```text
+(`local_state.rs`, `LocalState::levels`: a map keyed by level, cached for levels not in view, `remap` renaming its keys; done by the per-level view state plan, 2026-11-01)
+```
+
+then the status (`*Status:* parked, direction decided.` alone also matches `:50`, so the old text includes the evidence clause before it, which only `:47` has):
 
 ```text
 *Evidence:* surveys of 2026-10-31 (counts by grep, order of magnitude). *Status:* parked, direction decided.
@@ -968,13 +1055,23 @@ since a collapsed non-empty group now reaches that same branch too. Each level k
 *Evidence:* surveys of 2026-10-31 (counts by grep, order of magnitude). *Status:* parked, direction decided; Slice 2 (per-level camera and collapsed state, `LocalState::levels`) done, plan `docs/superpowers/plans/2026-11-01-per-level-view-state.md`.
 ```
 
-- [ ] **Step 11: Format, lint and commit**
+`docs/superpowers/specs/2026-09-25-session-op-log-design.md:166-167` (a done spec; annotate, don't rewrite):
+
+```text
+  was saved at (the app has one camera; per-level cameras are later);
+```
+
+```text
+  was saved at (the app has one camera; per-level cameras are later) [superseded 2026-11-01: `LocalState::levels` keeps a camera and Collapse Groups toggle per level];
+```
+
+- [ ] **Step 12: Format, lint and commit**
 
 Run: `cargo fmt --all` then the clippy command from Global Constraints.
 Expected: clippy finishes with no warnings.
 
 ```bash
-git add crates/manifold/src/graph_ui/scene.rs crates/manifold/src/local_state.rs crates/manifold/src/json_level.rs crates/manifold/src/session_files.rs crates/manifold/src/graph_ui/camera.rs crates/manifold/src/view_modes.rs crates/manifold/src/session_sync/tests/local_state.rs crates/manifold/src/json_level/tests.rs README.md PARKED.md
+git add crates/manifold/src/graph_ui/scene.rs crates/manifold/src/local_state.rs crates/manifold/src/json_level.rs crates/manifold/src/session_files.rs crates/manifold/src/graph_ui/camera.rs crates/manifold/src/view_modes.rs crates/manifold/src/trail_nav.rs crates/manifold/src/session_sync/tests/local_state.rs crates/manifold/src/json_level/tests.rs README.md PARKED.md docs/superpowers/specs/2026-09-25-session-op-log-design.md
 git diff --cached --stat
 git commit -m "Switching levels returns to that level's camera and Collapse Groups toggle
 
@@ -983,7 +1080,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 
 ---
 
-### Task 3: Whole-crate check and close-out
+### Task 3: Final lint, gate tier and close-out
 
 **Files:**
 - Modify: `docs/superpowers/plans/2026-11-01-per-level-view-state.md` (front matter)
@@ -997,12 +1094,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 Run: `git grep -n "groups_collapsed\b" -- crates` and `git grep -n "lenient_camera\|all_finite\|state\.camera\|\.camera ==" -- crates`
 Expected: `groups_collapsed` only as the `App` field and its readers (`main.rs`, `card/group_body.rs`, `graph_ui/toolbar.rs`, `local_state.rs`, `scene.rs`, `session_files.rs`, tests); the second grep prints nothing.
 
-- [ ] **Step 2: Whole crate tests (the end-of-plan check, not per edit)**
-
-Run: `cargo test -j 8 -p manifold --bins`
-Expected: PASS (the one `LOCK_WAIT` test takes about 5 s; `#[ignore]`d timing tests are skipped).
-
-- [ ] **Step 3: Format check, lint and gate tier**
+- [ ] **Step 2: Format check, lint and gate tier**
 
 Run: `cargo fmt --all --check` and the clippy command from Global Constraints.
 Expected: both clean.
@@ -1010,7 +1102,7 @@ Expected: both clean.
 Run: `cargo build -p gate` then `target/debug/gate.exe tier HEAD~2`
 Expected: last line `TIER full` (`local_state` and `session_sync` are core). Report it; the full gate (`target/debug/gate.exe all LOG full` through `run.ps1`, CLAUDE.md "Gate") runs only when the user asks.
 
-- [ ] **Step 4: Mark the plan done and commit**
+- [ ] **Step 3: Mark the plan done and commit**
 
 Change the front matter `status: active` to `status: done`.
 

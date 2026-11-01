@@ -41,7 +41,7 @@ status: draft
 
 - **R1 `held` returns the point.** `Mirror::held(id) -> Option<egui::Vec2>` instead of a bool: the settle needs the point to seed from, and `held(id).is_some()` is the predicate. One function, as the spec's Architecture check asks.
 - **R2 `edit_group` is the one clearing point for moves.** The spec lists Move, Join, fold and put-back separately; clearing an implicit anchor inside `edit_group` (after the group actually changes, past the Default-jar refusal) covers those plus GroupWith, Eject, Remove from Group, `MOVETOGROUP`, `follow_remote_group`'s local re-issue and undo replay. Remote moves bypass it (they write the mirror directly), which is exactly how an inert anchor arises.
-- **R3 Folds get their own anchor record.** The spec says fold uses `Moved`, but a fold records `UndoKind::Fold`, not `Revert`. `UndoKind::Fold` becomes `Fold(Vec<Folded>)` with `Folded { group, dest, anchors: Vec<(NodeId, Anchor)> }`; `fold_group` clears and returns the members' implicit anchors, and undo restores each one whose card is back in the group with no anchor. A Recently Closed reopen (not through Undo) does not restore anchors.
+- **R3 Folds get their own anchor record.** The spec says fold uses `Moved`, but a fold records `UndoKind::Fold`, not `Revert`. `UndoKind::Fold` becomes `Fold(Vec<Folded>)` with `Folded { group, dest, anchors: Vec<(NodeId, Anchor)> }`; `fold_group` clears and returns the members' implicit anchors, and undo restores each one whose card is back in the group with no anchor. A Recently Closed reopen (not through Undo) does not restore anchors. User decision d1 (2026-11-01): keep `Folded` as its own record rather than folding it into `Moved`. Redo stores the anchors its fold releases back in the record.
 - **R4 Gate `doc_key` becomes an `Option`.** Instead of a separate mirror-only wait helper, `Field::doc_key` returns `Option<&'static str>` (`None` for `Anchor`), a new `Field::word` names the field in messages, and `field_agree` compares A and B only when there is no document key, so `wait_field` is reused unchanged.
 - **R5 JSON import skips `anchor` by name.** The import filter at `json.rs:271` excludes `field::ANCHOR` with `TYPE`, `CLOSED` and `HELD`, so a hand-written `"anchor"` key never reaches the typed match (which would error).
 - **R6 The drag-release test changes meaning.** `session_sync/tests/edits.rs` `a_drag_release_saves_the_dropped_position` asserted the dropped card was pushed by the next settle; it now asserts the card stays and its neighbour moves (spec "Behaviour changes", first line).
@@ -524,7 +524,7 @@ Expected: FAIL to compile ("no method named `anchor`", "no method named `edit_an
     /// "Meaning"); an implicit anchor from another group is inert. It reads the document only, so replicas agree.
     pub(crate) fn held(&self, id: NodeId) -> Option<egui::Vec2> {
         let a = self.anchor(id)?;
-        (a.explicit || a.group == self.group(id)).then(|| egui::vec2(a.pos[0], a.pos[1]))
+        (a.explicit || a.group == self.group(id)).then_some(egui::vec2(a.pos[0], a.pos[1]))
     }
 
     /// The user's pin: an explicit anchor, in any group. The pin mark, the menu rows, Pin All and the idle-sleep
@@ -1094,7 +1094,8 @@ fn an_undo_skips_a_card_dropped_again_since() {
     assert_eq!(app.doc.mirror.group(n), Some(g), "left where the user put it");
 }
 
-/// Dissolve releases the members' drop anchors; Undo reopens the group and puts each back, Redo releases them again.
+/// Dissolve releases the members' drop anchors; Undo reopens the group and puts each back, Redo releases them again
+/// (and the record keeps what it released), a second Undo puts them back again.
 #[test]
 fn a_fold_is_undone_with_its_members_anchors() {
     let path = store::testutil::temp_dir("fold-anchor-undo").join("session.mnf");
@@ -1111,6 +1112,8 @@ fn a_fold_is_undone_with_its_members_anchors() {
     assert_eq!(app.doc.mirror.anchor(inner), dropped, "the drop is back with the card");
     app.step_history(None, true);
     assert_eq!((app.doc.mirror.group(inner), app.doc.mirror.anchor(inner)), (None, None));
+    app.step_history(None, false); // a second undo restores what the redo's fold released
+    assert_eq!((app.doc.mirror.group(inner), app.doc.mirror.anchor(inner)), (Some(g), dropped));
 }
 ```
 
@@ -1167,13 +1170,14 @@ and after the `edit_parent` block, before the `pos` block:
 ```rust
     /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them) and
     /// restores the drop anchors the fold released to members back in it with none since; redo folds each again as
-    /// the group is now, if it and its destination are shown.
-    fn replay_fold(&mut self, folds: &[Folded], redo: bool) -> (usize, usize) {
+    /// the group is now, if it and its destination are shown, and stores the anchors that fold releases back in the
+    /// record, so a second undo restores what the redo released, not what the first fold did.
+    fn replay_fold(&mut self, folds: &mut [Folded], redo: bool) -> (usize, usize) {
         let mut done = 0;
-        for f in folds {
+        for f in folds.iter_mut() {
             if redo {
                 if self.nodes.contains_key(&f.group) && f.dest.as_ref().is_none_or(|d| self.nodes.contains_key(d)) {
-                    self.fold_group(f.group, f.dest);
+                    f.anchors = self.fold_group(f.group, f.dest);
                     done += 1;
                 }
             } else if !self.nodes.contains_key(&f.group) {
@@ -1284,7 +1288,7 @@ Doc addition: "Returns the drop anchors it released (`Folded::anchors`)." Import
 
 Note the snapshot is taken in `apply_drop` after `release_drag` ran, so for a dragged card its snapshot anchor is the release's; the origin overrides it with the pre-drag one.
 
-`search/arrange.rs:92-97`: the literal gains `anchor: (held, held),` where `let held = self.doc.mirror.anchor(id);` is read before the writes (Task 6 changes it to release). `suggest.rs:95` `self.moved_since(before, &[])` compiles unchanged.
+`search/arrange.rs:92-97`: the literal gains `anchor: (held, held),` where `let held = self.doc.mirror.anchor(id);` is read before the writes. This is temporary and only compiles the record: until Task 6 Arrange does not release the anchors of the cards it moves (a held card is moved, then re-held at its old point by the next settle), so do not stop the plan between Tasks 5 and 6. `suggest.rs:95` `self.moved_since(before, &[])` compiles unchanged.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -1463,7 +1467,7 @@ and its doc: "A pinned card stays, and so does a group; a card it moves loses it
 ```rust
 pub(crate) static TIDY: Command = Command {
     title: "Tidy",
-    phrases: &["tidy", "release dropped cards"],
+    phrases: &["tidy", "tidy dropped cards"],
     run: App::tidy_level,
 };
 pub(crate) static COMMANDS: [&Command; 3] = [&SUGGEST_GROUPS, &ARRANGE, &TIDY];
@@ -1585,7 +1589,7 @@ impl Field {
     /// The EXPORTSESSION node key; `None` for a field the document JSON drops (the anchor), which then agrees when
     /// A and B do.
     pub fn doc_key(self) -> Option<&'static str> {
-        (self != Field::Anchor).then(|| self.word())
+        (self != Field::Anchor).then_some(self.word())
     }
 }
 ```
@@ -1680,7 +1684,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
   - `git grep -n "pos: (" docs/superpowers/specs/2026-10-19-move-undo-design.md`: if it lists `Moved`'s fields, add `anchor`.
   - `git grep -n -i "anchor\|pinned" ROADMAP.md`: nothing found while planning; record the result in the closing report.
   - CHANGELOG: no edit (VERSIONING: entries are written at the bump). The `**Breaking:**` line lives in the spec's "Behaviour changes"; name it in this commit's message for the next bump.
-  - This plan's front matter: `status: done`.
+  - This plan's front matter stays `active` until Step 5 is settled; any leftover goes to `PARKED.md` before it becomes `done` (VERSIONING).
 
 - [ ] **Step 3: Commit**
 
@@ -1696,6 +1700,7 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 ```
 
 - [ ] **Step 4: Closing checks (on request only).** `cargo clippy` already ran in each commit's hook. The pre-merge gate is `full` (store, mirror and session-sync changes); run it only when the user asks, through `~/.claude/runs/run.ps1 -Kind gate -Detach` as CLAUDE.md "Gate" says. Expect, and report rather than fix silently: `gate two` s12's new anchor check; `layout` (MOVENODE-parked cards now stay held); `shots` graph views after a mouse drag (`shots.rs:862`, `:928`, `:1055`, `:1112`) may differ, because a dropped card no longer drifts and the Tidy chip appears; re-take those baselines only with the user's go-ahead.
+- [ ] **Step 5: Adapt the baselines (on the user's go-ahead, after the gate run).** For each `layout` and `shots` stage the gate run reports as failing, check the diff is one of the expected changes above (a held MOVENODE-parked card; a dropped card staying put; the Tidy chip), then re-take that baseline the way the stage's own failure message says (README "Headless mode"), commit the baselines as their own commit, and rerun the same gate tier until it passes. An unexpected diff is a finding: report it instead of re-taking. Last, set this plan's front matter to `status: done` and amend nothing: make it a small follow-up commit. The baseline images are part of this step's change set.
 
 ---
 
@@ -1710,3 +1715,5 @@ Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
 - Round 1 (spec coverage): every Slice 1 bullet maps to a task (Encoding: 1; No bump: 1; Meaning: 2; Writers: 2, 4, 6; Readers: 3; Export: 1, 2; Undo: 5; Respawn: 2; Deleted: 2) and every Slice 1 test line in the spec's Tests section has a test (the idle-sleep one is checked through `pinned`, since a live tab can't be built in a unit test). Caught: fold undo is `UndoKind::Fold`, not `Moved` (R3); the JSON import would error on an `"anchor"` key (R5).
 - Round 2 (compile order): `PINNED` cannot be deleted before its readers change, so Task 1 adds `ANCHOR` alongside it (20 `FIELDS` for one task) and Task 2 does the whole switch, Pin and respawn included. Caught: `Moved` literals in `arrange.rs` must change in Task 5, not 6; `debug_move_node`'s existing test needs no change to pass, only an added assert.
 - Round 3 (behaviour): caught that `a_drag_release_saves_the_dropped_position` inverts (R6); that Unpin All on a drop-anchored, then pinned, card would clear the drop (the test uses two tabs instead); that `replay_revert` must write the anchor after `edit_group`, which releases it; that `moved_since`'s snapshot runs after the release, so the origin must carry the pre-drag anchor; that `shots` baselines may move. A final pass found no further material issue.
+
+- Round 4 (minor review findings, applied): the omnibar phrase for Tidy no longer starts with "release" (prefix match surfaced it for "re"); redo in `replay_fold` stores the released anchors back (`&mut [Folded]`) and the fold test does undo, redo, undo; `then_some` replaces two cheap lazy closures (clippy `unnecessary_lazy_evaluations`); Task 5 states that Arrange is temporarily unreleased until Task 6; Task 8 gains Step 5 to adapt the layout and shots baselines on the user's go-ahead. Rejected: Task 1's tests as "vacuous" (they fail to compile before Step 3 and the json filter and encoder land in the same task).
