@@ -559,7 +559,7 @@ impl App {
         let Some(level) = self.json_level.as_mut() else { return };
         // Pan only if the entry isn't already fully in view, judged where
         // the camera is headed, so clicking what's on screen never moves it.
-        let view = self.camera.tween.as_ref().map_or(self.camera.rect, |t| t.to);
+        let view = self.camera.target();
         if let Some(target) = level.entry_rect(pointer).filter(|r| !view.contains_rect(*r)) {
             self.camera.ease_to(egui::Rect::from_center_size(target.center(), view.size()));
         }

@@ -204,12 +204,18 @@ struct App {
     /// test node) is at the origin.
     layout: HashMap<NodeId, egui::Vec2>,
     /// Toggled by the Graph toolbar's "Collapse Groups"/"Expand Groups"
-    /// button -- while `true`, every non-empty group card falls back to
-    /// the plain centered name+count layout an empty group already uses,
-    /// skipping the 2x2 member-thumbnail grid. A denser overview for a
-    /// graph with many/large groups, purely a rendering toggle -- doesn't
-    /// touch `groups`/membership at all. Session-only, resets on restart.
+    /// button -- while `true`, every non-empty group card at the level in
+    /// view falls back to the plain centered name+count layout an empty
+    /// group already uses, skipping the 2x2 member-thumbnail grid. A denser
+    /// overview for a level with many/large groups, purely a rendering
+    /// toggle -- doesn't touch membership at all. The level in view's own:
+    /// each level keeps its toggle in `level_views` while out of view and in
+    /// personal state across restarts (`LocalState::levels`).
     groups_collapsed: bool,
+    /// The view each level was left at (`None` the top level), restored on the way back and written to personal
+    /// state (`LocalState::levels`). The level in view lives in `camera` and `groups_collapsed` (`live_level_view`),
+    /// so its entry here, if any, is stale until the next switch saves it.
+    level_views: BTreeMap<Option<NodeId>, local_state::LevelView>,
     /// `None` while viewing the top level; `Some(group_id)` while a
     /// group's own subgraph has been drilled into — only meaningful when
     /// `view_mode == Graph`, but not reset on leaving Graph view, so
@@ -514,6 +520,7 @@ impl App {
             node_order: Vec::new(),
             layout: HashMap::new(),
             groups_collapsed: false,
+            level_views: BTreeMap::new(),
             current_group: None,
             json_level: None,
             virtual_sources: vec![std::rc::Rc::new(trail_strip::TrailSource)],

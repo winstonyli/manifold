@@ -184,6 +184,7 @@ impl App {
         self.spawns.forget(id);
         // A hide re-inserts its entry after this; every permanent removal drops it.
         self.doc.hidden_local.remove(&id);
+        self.level_views.remove(&Some(id));
         self.pending_sleeps.remove(&id);
         self.clear_cookie_state(id);
         self.saved_scroll.remove(&id);

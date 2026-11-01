@@ -1,6 +1,11 @@
 //! Session-sync tests: the local-state file and per-device state.
 
 use super::*;
+use crate::local_state::LevelView;
+
+fn world_rect(x0: f32, y0: f32, x1: f32, y1: f32) -> egui::Rect {
+    egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+}
 
 #[test]
 fn hidden_personal_state_survives_a_launch_and_a_delete_drops_it() {
@@ -233,7 +238,44 @@ fn a_late_read_of_no_personal_state_keeps_the_live_view() {
     assert_eq!((app.view_mode, app.groups_collapsed), (ViewMode::Item, true), "not reset to defaults");
     app.maybe_write_local(true);
     let bytes = app.doc.journal.as_ref().unwrap().read_local().unwrap().unwrap();
-    assert!(LocalState::from_bytes(&bytes).unwrap().groups_collapsed, "the next write saves the live view");
+    assert!(LocalState::from_bytes(&bytes).unwrap().levels[&None].collapsed, "the next write saves the live view");
+}
+
+/// Personal state's level views: the level in view takes its camera and Collapse Groups toggle at once, the others
+/// wait in `level_views` for a switch, and all are written back, the level in view from the live camera (or where a
+/// running ease is taking it).
+#[test]
+fn personal_state_applies_the_level_in_views_camera_and_keeps_the_others() {
+    let mut app = app_on(&temp_dir("level-views-apply").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    app.groups_collapsed = true;
+    let top = LevelView::new(world_rect(-500.0, -400.0, 500.0, 400.0), true);
+    let inside = LevelView::new(world_rect(-300.0, -200.0, 300.0, 200.0), false);
+    let levels = BTreeMap::from([(None, top), (Some(g), inside)]);
+    app.apply_local(LocalState { current_group: Some(g), levels: levels.clone(), ..LocalState::default() });
+    assert_eq!(app.current_group, Some(g));
+    assert_eq!(Some(app.camera.rect), inside.camera_rect());
+    assert!(!app.groups_collapsed, "g's toggle, not the top level's");
+    assert_eq!(app.level_views[&None], top, "kept for the switch back");
+    assert_eq!(app.local_state().levels, levels, "written back as read");
+    let ahead = world_rect(0.0, 0.0, 50.0, 50.0);
+    app.camera.ease_to(ahead);
+    assert_eq!(app.local_state().levels[&Some(g)].camera_rect(), Some(ahead), "a running ease writes where it goes");
+}
+
+/// The written map keeps the level in view and every level the document still holds; an id it no longer holds is
+/// pruned (as `hidden_local` is).
+#[test]
+fn personal_state_drops_the_views_of_levels_the_document_no_longer_holds() {
+    let mut app = app_on(&temp_dir("level-views-prune").join("session.mnf"), 1);
+    let (g, _) = group_with_note(&mut app);
+    let gone = NodeId { actor: ActorId(7), counter: 1 };
+    app.level_views.insert(Some(g), LevelView { camera: None, collapsed: true });
+    app.level_views.insert(Some(gone), LevelView { camera: None, collapsed: true });
+    let levels = app.local_state().levels;
+    assert!(levels.contains_key(&Some(g)), "a shown group keeps its view");
+    assert!(!levels.contains_key(&Some(gone)), "an id the document doesn't hold is dropped");
+    assert!(levels.contains_key(&None), "the level in view is always written");
 }
 
 /// Personal state written before a restored tab's wake lands still

@@ -38,6 +38,8 @@ fn forget_id_clears_every_id_keyed_table() {
     app.link.connect_drag = Some(t);
     app.interaction.hovered = Some(tc);
 
+    app.level_views.insert(Some(t), crate::local_state::LevelView::default());
+    app.level_views.insert(Some(u), crate::local_state::LevelView::default());
     app.forget_id(t);
 
     assert!(app.spawns.skip_convert.is_empty() && app.pending_sleeps.is_empty());
@@ -53,6 +55,7 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.interaction.hovered.is_none());
+    assert!(!app.level_views.contains_key(&Some(t)) && app.level_views.contains_key(&Some(u)), "only t's view goes");
 }
 
 /// C1: App fields that can hold a node id, but that `forget_id` deliberately leaves alone, each with why. A

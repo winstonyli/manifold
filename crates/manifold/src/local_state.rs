@@ -30,12 +30,11 @@ pub(crate) struct LocalState<K = NodeId> {
     pub viewed_image: Option<K>,
     #[serde(default, deserialize_with = "lenient_id")]
     pub split_tab: Option<K>,
-    #[serde(default)]
-    pub groups_collapsed: bool,
-    /// The camera rect `[min x, min y, max x, max y]` and the level it was
-    /// saved at.
-    #[serde(default, deserialize_with = "lenient_camera")]
-    pub camera: Option<([f32; 4], Option<K>)>,
+    /// Each level's view (`None` the top level; a JSON level under its Json node's id), written as an object keyed by
+    /// the level's id text, the top level under `TOP_LEVEL`. An entry whose key or value does not read costs only
+    /// itself (`lenient_levels`).
+    #[serde(default, serialize_with = "levels_by_key", deserialize_with = "lenient_levels")]
+    pub levels: BTreeMap<Option<K>, LevelView>,
     /// Per node, by live id.
     #[serde(default, deserialize_with = "crate::json_file::lenient_map")]
     pub nodes: BTreeMap<K, LocalNode>,
@@ -80,38 +79,75 @@ fn is_false(b: &bool) -> bool {
     !b
 }
 
+/// A level's view as it was left (`LocalState::levels`, `App::level_views`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct LevelView {
+    /// The camera rect `[min x, min y, max x, max y]`; `None` once a non-finite one was dropped (`LocalState::finite`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<[f32; 4]>,
+    /// Collapse Groups: this level's group cards hide their member-thumbnail grid (`card/group_body.rs`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collapsed: bool,
+}
+
+impl LevelView {
+    pub(crate) fn new(camera: egui::Rect, collapsed: bool) -> Self {
+        LevelView { camera: Some([camera.min.x, camera.min.y, camera.max.x, camera.max.y]), collapsed }
+    }
+
+    pub(crate) fn camera_rect(&self) -> Option<egui::Rect> {
+        self.camera.map(|[x0, y0, x1, y1]| egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)))
+    }
+}
+
+/// The key the top level's view is written under in `LocalState::levels`; a group's is its id text.
+const TOP_LEVEL: &str = "top";
+
+/// A `LocalState::levels` key as written: `TOP_LEVEL` for the top level, else the id's own text.
+struct LevelKey<'a, K>(Option<&'a K>);
+
+impl<K: Serialize> Serialize for LevelKey<'_, K> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            None => s.serialize_str(TOP_LEVEL),
+            Some(id) => id.serialize(s),
+        }
+    }
+}
+
+fn levels_by_key<S: serde::Serializer, K: Serialize>(
+    levels: &BTreeMap<Option<K>, LevelView>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    s.collect_map(levels.iter().map(|(level, view)| (LevelKey(level.as_ref()), view)))
+}
+
+/// `LocalState::levels` as read: an entry whose key is neither `TOP_LEVEL` nor a `K`, or whose value is not a
+/// `LevelView`, is dropped on its own.
+fn lenient_levels<'de, D: serde::Deserializer<'de>, K: FromStr + Ord>(
+    d: D,
+) -> Result<BTreeMap<Option<K>, LevelView>, D::Error> {
+    let raw = HashMap::<String, serde_json::Value>::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let level = if key == TOP_LEVEL { None } else { Some(key.parse().ok()?) };
+            Some((level, serde_json::from_value(value).ok()?))
+        })
+        .collect())
+}
+
 /// An id that does not read as a `K` is none.
 fn lenient_id<'de, D: serde::Deserializer<'de>, K: FromStr>(d: D) -> Result<Option<K>, D::Error> {
     Ok(Option::<String>::deserialize(d)?.and_then(|text| text.parse().ok()))
 }
 
-/// A camera rect with a `null` in it reads as no saved camera; so does a level id that does not read as a `K`.
-#[allow(clippy::type_complexity, reason = "mirrors the field's own type")]
-fn lenient_camera<'de, D: serde::Deserializer<'de>, K: FromStr>(
-    d: D,
-) -> Result<Option<([f32; 4], Option<K>)>, D::Error> {
-    let raw = Option::<([Option<f32>; 4], Option<String>)>::deserialize(d)?;
-    Ok(raw.and_then(|(r, level)| {
-        let level = match level {
-            None => None,
-            Some(text) => Some(text.parse().ok()?),
-        };
-        Some(([r[0]?, r[1]?, r[2]?, r[3]?], level))
-    }))
+/// Whether `a` and `b` differ enough to write. Compared as written (`LocalState::finite`): a non-finite value is never
+/// written, so it must not read as a change either.
+pub(crate) fn differs(a: &LocalState, b: &LocalState) -> bool {
+    a.finite() != b.finite()
 }
 
-/// Whether `a` and `b` differ enough to write.
-pub(crate) fn differs(a: &LocalState, b: &LocalState) -> bool {
-    let strip = |s: &LocalState| {
-        let mut s = s.clone();
-        // A non-finite camera is never written (`to_bytes`), so it must not read as a change either.
-        if s.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
-            s.camera = None;
-        }
-        s
-    };
-    strip(a) != strip(b)
-}
 /// The personal-state file's write bookkeeping (`App::local_persist`).
 pub(crate) struct LocalPersist {
     /// Personal state (spec "Personal state") last written to
@@ -153,8 +189,7 @@ impl<K> Default for LocalState<K> {
             current_group: None,
             viewed_image: None,
             split_tab: None,
-            groups_collapsed: false,
-            camera: None,
+            levels: BTreeMap::new(),
             nodes: BTreeMap::new(),
             json_accessor_paths: false,
             json_outline_hidden: false,
@@ -172,13 +207,19 @@ impl LocalState<String> {
             current_group: id(&self.current_group),
             viewed_image: id(&self.viewed_image),
             split_tab: id(&self.split_tab),
-            camera: self
-                .camera
-                .filter(|(_, level)| level.is_none() || id(level).is_some())
-                .map(|(r, level)| (r, id(&level))),
+            levels: self
+                .levels
+                .into_iter()
+                .filter_map(|(level, view)| {
+                    let level = match level {
+                        None => None,
+                        Some(old) => Some(*map.get(&old)?),
+                    };
+                    Some((level, view))
+                })
+                .collect(),
             nodes: self.nodes.into_iter().filter_map(|(k, v)| Some((*map.get(&k)?, v))).collect(),
             view_item: self.view_item,
-            groups_collapsed: self.groups_collapsed,
             json_accessor_paths: self.json_accessor_paths,
             json_outline_hidden: self.json_outline_hidden,
             right_panel_width: self.right_panel_width,
@@ -187,24 +228,20 @@ impl LocalState<String> {
 }
 
 impl LocalState {
-    fn all_finite(&self) -> bool {
-        self.camera.as_ref().is_none_or(|(r, _)| r.iter().all(|v| v.is_finite()))
-            && self.right_panel_width.is_none_or(f32::is_finite)
-    }
-
-    /// serde_json writes NaN and infinity as `null`, which a plain `f32`
-    /// can't read back: one bad value would make the whole file unreadable,
-    /// Recently Closed included. A non-finite value is dropped.
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
-        if self.all_finite() {
-            return serde_json::to_vec(self).expect("personal state serializes");
-        }
+    /// This state as written: serde_json writes NaN and infinity as `null`, which a plain `f32` can't read back, so one
+    /// bad value would make the whole file unreadable. A non-finite camera or panel width is dropped (a level keeps its
+    /// toggle).
+    fn finite(&self) -> LocalState {
         let mut clean = self.clone();
-        if clean.camera.as_ref().is_some_and(|(r, _)| r.iter().any(|v| !v.is_finite())) {
-            clean.camera = None;
+        for view in clean.levels.values_mut() {
+            view.camera = view.camera.filter(|r| r.iter().all(|v| v.is_finite()));
         }
         clean.right_panel_width = clean.right_panel_width.filter(|w| w.is_finite());
-        serde_json::to_vec(&clean).expect("personal state serializes")
+        clean
+    }
+
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.finite()).expect("personal state serializes")
     }
 
     /// `None` for bytes that aren't this shape: treated as a fresh start.
@@ -342,6 +379,13 @@ impl App {
         local
     }
 
+    /// The level in view's live view: the camera (or, while an ease runs, where it is going: the level change or fit
+    /// the user asked for, not a frame of the animation) and its Collapse Groups toggle. `switch_group_level` saves it
+    /// for the level it leaves; personal state writes it for the level in view.
+    pub(crate) fn live_level_view(&self) -> LevelView {
+        LevelView::new(self.camera.target(), self.groups_collapsed)
+    }
+
     /// This profile's personal state as the live graph currently shows it
     /// (spec "Personal state"): what to write to `session.mnf.local`. A
     /// node still spawning keeps its `pending_local` entry, so a quit
@@ -361,23 +405,34 @@ impl App {
                 }
             }
         }
+        let doc = self.doc.journal.as_ref().map(|j| j.doc());
         // Hidden nodes keep theirs while the document still holds them (a Delete not yet seen is dropped).
-        if let Some(doc) = self.doc.journal.as_ref().map(|j| j.doc()) {
+        if let Some(doc) = doc {
             for (id, node) in &self.doc.hidden_local {
                 if doc.nodes.get(id).is_some_and(Node::is_live) {
                     nodes.entry(*id).or_insert_with(|| node.clone());
                 }
             }
         }
-        let rect = self.camera.rect;
+        // A level's view is kept while its group is shown or the document still holds it; the level in view's is live.
+        let mut levels: BTreeMap<Option<NodeId>, LevelView> = self
+            .level_views
+            .iter()
+            .filter(|(level, _)| {
+                level.is_none_or(|g| {
+                    self.nodes.contains_key(&g) || doc.is_some_and(|d| d.nodes.get(&g).is_some_and(Node::is_live))
+                })
+            })
+            .map(|(&level, &view)| (level, view))
+            .collect();
+        levels.insert(self.current_group, self.live_level_view());
         LocalState {
             focused: self.focused,
             view_item: item,
             current_group: self.current_group,
             viewed_image: self.viewed_image.filter(|_| item),
             split_tab: self.split_tab,
-            groups_collapsed: self.groups_collapsed,
-            camera: Some(([rect.min.x, rect.min.y, rect.max.x, rect.max.y], self.current_group)),
+            levels,
             nodes,
             json_accessor_paths: self.json_ui.json_accessor_paths,
             json_outline_hidden: !self.json_ui.json_outline_visible,
@@ -412,7 +467,6 @@ impl App {
             self.split_tab = Some(id);
         }
         self.view_mode = if state.view_item { ViewMode::Item } else { ViewMode::Graph };
-        self.groups_collapsed = state.groups_collapsed;
         self.json_ui.json_accessor_paths = state.json_accessor_paths;
         self.json_ui.json_outline_visible = !state.json_outline_hidden;
         if let Some(width) = state.right_panel_width {
@@ -450,11 +504,13 @@ impl App {
             self.doc.local_persist.pending_local = Some(pending);
         }
 
-        if let Some((rect, level)) = state.camera {
-            if level == self.current_group {
-                self.camera.rect = egui::Rect::from_min_max(egui::pos2(rect[0], rect[1]), egui::pos2(rect[2], rect[3]));
-                self.camera.frame_restored = false;
-            }
+        // The level in view takes its view now; the others wait in `level_views` for a switch (`enter_level`).
+        self.level_views = state.levels;
+        let view = self.level_views.get(&self.current_group).copied().unwrap_or_default();
+        self.groups_collapsed = view.collapsed;
+        if let Some(rect) = view.camera_rect() {
+            self.camera.rect = rect;
+            self.camera.frame_restored = false;
         }
     }
 
@@ -535,6 +591,10 @@ mod tests {
         LocalState { nodes: BTreeMap::from([(node(1), entry)]), ..LocalState::default() }
     }
 
+    fn rect(x0: f32, y0: f32, x1: f32, y1: f32) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
+    }
+
     #[test]
     fn a_changed_or_new_node_is_a_change() {
         assert!(!differs(&with_title("a"), &with_title("a")));
@@ -548,6 +608,11 @@ mod tests {
         let state = LocalState::<String> {
             focused: Some("a".into()),
             current_group: Some("gone".into()),
+            levels: BTreeMap::from([
+                (None, LevelView { camera: None, collapsed: true }),
+                (Some("a".to_owned()), LevelView::default()),
+                (Some("gone".to_owned()), LevelView::default()),
+            ]),
             nodes: BTreeMap::from([("a".to_owned(), entry), ("gone".to_owned(), LocalNode::default())]),
             ..LocalState::default()
         };
@@ -555,17 +620,20 @@ mod tests {
         assert_eq!(out.focused, Some(node(2)));
         assert_eq!(out.current_group, None);
         assert_eq!(out.nodes.keys().collect::<Vec<_>>(), [&node(2)]);
+        assert_eq!(out.levels.keys().copied().collect::<Vec<_>>(), [None, Some(node(2))], "the top level stays");
     }
 
     #[test]
     fn an_unreadable_id_costs_only_itself() {
         let text = format!(
-            r#"{{"focused":"not an id","split_tab":"{}","camera":[[0,0,1,1],"nope"],"nodes":{{"junk":{{"title":"j"}},"{}":{{"title":"k"}}}}}}"#,
+            r#"{{"focused":"not an id","split_tab":"{}","levels":{{"nope":{{"collapsed":true}},"{}":{{"camera":"junk"}},"top":{{"collapsed":true}}}},"nodes":{{"junk":{{"title":"j"}},"{}":{{"title":"k"}}}}}}"#,
             node(5),
+            node(7),
             node(6)
         );
         let state = LocalState::from_bytes(text.as_bytes()).expect("the file still reads");
-        assert_eq!((state.focused, state.split_tab, state.camera), (None, Some(node(5)), None));
+        assert_eq!((state.focused, state.split_tab), (None, Some(node(5))));
+        assert_eq!(state.levels, BTreeMap::from([(None, LevelView { camera: None, collapsed: true })]));
         assert_eq!(state.nodes.keys().collect::<Vec<_>>(), [&node(6)]);
     }
 
@@ -574,6 +642,32 @@ mod tests {
         let state = with_title("t");
         let json: serde_json::Value = serde_json::from_slice(&state.to_bytes()).unwrap();
         assert_eq!(json["nodes"][node(1).to_string()]["title"], "t");
+    }
+
+    #[test]
+    fn levels_round_trip_with_the_top_level_under_its_own_key() {
+        let state = LocalState {
+            levels: BTreeMap::from([
+                (None, LevelView::new(rect(0.0, 0.0, 10.0, 10.0), true)),
+                (Some(node(3)), LevelView::new(rect(-5.0, -5.0, 5.0, 5.0), false)),
+            ]),
+            ..LocalState::default()
+        };
+        let json: serde_json::Value = serde_json::from_slice(&state.to_bytes()).unwrap();
+        assert_eq!(json["levels"][TOP_LEVEL]["collapsed"], true);
+        assert_eq!(json["levels"][node(3).to_string()]["camera"], serde_json::json!([-5.0, -5.0, 5.0, 5.0]));
+        assert!(json["levels"][node(3).to_string()].get("collapsed").is_none(), "a false toggle is left out");
+        assert_eq!(LocalState::from_bytes(&state.to_bytes()), Some(state));
+    }
+
+    /// Files written before per-level views hold one `camera` (with its level) and one `groups_collapsed`: they are
+    /// ignored, once, and the rest of the file reads.
+    #[test]
+    fn an_old_files_camera_and_collapsed_are_ignored() {
+        let text = format!(r#"{{"camera":[[0,0,1,1],"{}"],"groups_collapsed":true,"focused":"{}"}}"#, node(2), node(2));
+        let state = LocalState::from_bytes(text.as_bytes()).expect("still readable");
+        assert_eq!(state.focused, Some(node(2)));
+        assert!(state.levels.is_empty());
     }
 
     #[test]
@@ -586,18 +680,20 @@ mod tests {
     #[test]
     fn a_non_finite_value_costs_only_itself() {
         let mut state = with_title("kept");
-        state.camera = Some(([0.0, f32::INFINITY, 1.0, 1.0], None));
+        state.levels.insert(None, LevelView { camera: Some([0.0, f32::INFINITY, 1.0, 1.0]), collapsed: true });
         state.right_panel_width = Some(f32::NAN);
         let back = LocalState::from_bytes(&state.to_bytes()).expect("still readable");
         assert_eq!(back.nodes[&node(1)].title, "kept");
-        assert_eq!((back.camera, back.right_panel_width), (None, None));
+        assert_eq!(back.levels[&None], LevelView { camera: None, collapsed: true }, "the toggle stays");
+        assert_eq!(back.right_panel_width, None);
     }
 
     #[test]
     fn a_non_finite_camera_is_no_change() {
         let mut state = with_title("t");
-        state.camera = Some(([0.0, f32::NAN, 1.0, 1.0], None));
-        assert!(!differs(&state, &state.clone()), "it is never written, so it never differs");
+        state.levels.insert(None, LevelView { camera: Some([0.0, f32::NAN, 1.0, 1.0]), collapsed: false });
+        state.right_panel_width = Some(f32::NAN);
+        assert!(!differs(&state, &state.clone()), "neither is written, so neither differs");
     }
 
     /// Files written before the fix hold `null` where the value was NaN.
@@ -609,7 +705,7 @@ mod tests {
         );
         let state = LocalState::from_bytes(bytes.as_bytes()).expect("lenient");
         assert_eq!(state.nodes[&node(1)].title, "t", "an old file's pos is ignored");
-        assert_eq!(state.camera, None);
+        assert!(state.levels.is_empty(), "an old file's camera is ignored");
         assert_eq!(state.nodes.len(), 1, "an old file's Recently Closed list is ignored, not an error");
     }
 

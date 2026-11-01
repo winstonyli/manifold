@@ -30,6 +30,12 @@ impl GraphCamera {
         self.momentum = None;
     }
 
+    /// Where the camera is headed: the running ease's target, else where it is. A frame of a running ease is not a place
+    /// the user chose (`App::live_level_view`, the JSON level's reveal check).
+    pub(crate) fn target(&self) -> egui::Rect {
+        self.tween.as_ref().map_or(self.rect, |t| t.to)
+    }
+
     /// Whether an ease or a pan glide is still moving `rect`.
     pub(crate) fn is_moving(&self) -> bool {
         self.tween.is_some() || self.momentum.is_some()
@@ -454,6 +460,15 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_target_is_where_an_ease_is_going() {
+        let mut camera = GraphCamera::new();
+        let to = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(50.0, 50.0));
+        assert_eq!(camera.target(), camera.rect);
+        camera.ease_to(to);
+        assert_eq!(camera.target(), to);
+    }
 
     /// A reopened card the layout put out of view is eased into it; one already in view leaves the camera alone.
     #[test]
