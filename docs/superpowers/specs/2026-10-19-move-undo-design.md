@@ -32,6 +32,7 @@ a counter that never reuses, so a toast cannot undo a different entry after othe
 | group | `mirror.group(id)` | what the effect set |
 | pos | `mirror.pos(id)` at drag start | what `release_drag` wrote |
 | parent (Reparent only) | `mirror.parent(id)` | the new parent |
+| anchor (*added 2026-11-01: the `anchor` register, see `2026-11-01-scopes-nested-layout-anchor-design.md` Slice 1; `Moved.anchor` is the pair, replayed through `edit_anchor`*) | `mirror.anchor(id)` | what the effect set |
 
 plus `created: Option<String>`, the group GroupWith made.
 
@@ -67,7 +68,7 @@ back to the undo stack. Only a fresh drop, Dissolve, Ungroup All or Merge pushes
 - `Revert`: the same snapshot run the other way: restore a card to *written* only if it still equals *old*.
 - GroupWith: also reopen `created` if it is still closed (`reopen_node`; if it was reopened meanwhile, skip that step),
   then move the members in. The same group id comes back, so Recently Closed references stay valid.
-- `Reopen`: the entry also keeps `(group, dest)`. Redo calls `fold_group(group, dest)` if the group is shown and (for
+- `Reopen`: the entry also keeps `(group, dest)` (*2026-11-01: it is now `Folded { group, dest, anchors }`; `anchors` are the drop anchors the fold released, restored on undo to members back in the group that are not pinned since, and re-recorded by a redo's fold*). Redo calls `fold_group(group, dest)` if the group is shown and (for
   a merge) `dest` is shown. It folds the group *as it is now*, including a member dropped in after the undo (a
   deliberate ruling: redo means "dissolve it again", not "restore the old membership"). Merge's links stay on the
   target, so there is nothing to retarget.

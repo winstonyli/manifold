@@ -290,7 +290,8 @@ impl App {
     }
 
     /// Undo reopens each group (`reopen_node`, which puts back the members still where the fold sent them) and
-    /// restores the drop anchors the fold released to members back in it with none since; redo folds each again as
+    /// restores the drop anchors the fold released to members back in it (`reopen_node` has already released any drop
+    /// made in the destination since the fold, so the `is_none` guard only skips a member pinned since); redo folds each again as
     /// the group is now, if it and its destination are shown, and stores the anchors that fold releases back in the
     /// record, so a second undo restores what the redo released, not what the first fold did.
     fn replay_fold(&mut self, folds: &mut [Folded], redo: bool) -> (usize, usize) {
