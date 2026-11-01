@@ -102,6 +102,8 @@ impl App {
             self.edit_pos(id, Some(after));
             self.snap_layout(id, after);
         }
+        // Releasing drops changed the settle key; record it, else the next frame re-settles over this arrangement.
+        self.graph.settled_key = Some(self.current_level_settle_key());
         if !moved.is_empty() {
             self.record_undo("Arranged by topic".to_owned(), UndoKind::Revert { moved, created: None });
             self.save_session();
@@ -307,6 +309,17 @@ mod tests {
         let serial = app.toasts.undo.as_ref().map(|u| u.1);
         app.step_history(serial, false);
         assert_eq!(app.doc.mirror.anchor(cats[0]), dropped);
+    }
+
+    /// Releasing a drop changes the settle key; Arrange must record the new one, else the next frame re-settles the
+    /// level (without the similarity edges) and loses the arrangement.
+    #[test]
+    fn arrange_leaves_the_level_settled_so_the_next_frame_does_not_re_settle() {
+        let (mut app, cats, _) = spread_app();
+        app.drop_at(cats[0]);
+        app.graph.settled_key = Some(app.current_level_settle_key()); // the frame that drew the drop
+        app.arrange_by_topic();
+        assert_eq!(app.graph.settled_key, Some(app.current_level_settle_key()), "the per-frame check sees no change");
     }
 
     #[test]
