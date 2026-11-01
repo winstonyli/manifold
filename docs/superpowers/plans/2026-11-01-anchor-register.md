@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Anchor Register (Slice 1) Implementation Plan
