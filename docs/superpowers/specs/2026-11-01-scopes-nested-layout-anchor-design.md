@@ -240,7 +240,7 @@ you act on a member by opening the group (Enter), as now. It does not add a way 
 - Interactive members of an expanded group (selection, drag, drop, linking across the box): Slice 4, to PARKED.
 - Removing `POS` itself, removing user placement, a whole-tree canvas (j2, j3): decided against for now.
 - A `rank` register, member order shared across replicas (l1).
-- Similarity edges in the shared layout (n1; decided 2026-11-01 as n2: synced labels as the input, pulling as size-weighted cohorts; PARKED "Shared topic input for similarity edges").
+- Similarity edges in the shared layout (n1; decided 2026-11-01: no topic force in the settle, topic structure comes from Suggest groups, and the Arrange action is removed; PARKED "Shared topic input for similarity edges" and "Remove Arrange by topic").
 - Folding the group-chain walkers; soft pins; separate documents (PARKED).
 
 ## Architecture check
