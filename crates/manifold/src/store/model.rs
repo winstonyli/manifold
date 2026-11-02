@@ -259,7 +259,7 @@ pub struct FieldDef {
 }
 
 /// `field::ANCHOR`'s value: a card held at `pos`, in its group's local coordinates (as `POS`), written while the card
-/// was in `group`. `explicit` is a user Pin, which only Unpin releases; otherwise it is a drop, which Tidy, Arrange
+/// was in `group`. `explicit` is a user Pin, which only Unpin releases; otherwise it is a drop, which Tidy
 /// and a local move release, and which holds only while the card is still in `group` (`Mirror::held`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Anchor {

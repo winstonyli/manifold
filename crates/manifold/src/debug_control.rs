@@ -736,9 +736,6 @@ const VERBS: &[Verb] = &[
             app.suggest_groups();
         })
     }),
-    row("ARRANGE", "Toolbar's Arrange by topic: lay this level's cards out by page text (one undo step)", |_| {
-        job(|app, _| app.arrange_by_topic())
-    }),
     row("TIDY", "Toolbar's Tidy: release this level's drop anchors, pins stay (one undo step)", |_| {
         job(|app, _| app.tidy_level())
     }),
@@ -1413,7 +1410,6 @@ mod tests {
             "WAITIDLE 5",
             "WAITINDEX 5",
             "SUGGEST",
-            "ARRANGE",
             "TIDY",
             "ACCEPTSUGGESTION 0",
             "ACCEPTSUGGESTIONLABEL 0",

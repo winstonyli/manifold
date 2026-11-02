@@ -11,7 +11,6 @@
 mod ab;
 #[cfg(windows)]
 mod all;
-mod arrange;
 #[cfg(windows)]
 mod cef_pin;
 mod check;
@@ -170,7 +169,6 @@ mod windows_main {
         Stage::work("search", crate::search::search),
         Stage::work("suggest-groups", crate::suggest_groups::suggest_groups),
         Stage::work("labels", crate::labels::labels),
-        Stage::work("arrange", crate::arrange::arrange),
         Stage::work("sleep", crate::sleep::sleep).listed_as(""),
         Stage::work("jar", crate::jar::jar).listed_as(""),
         Stage::work("kill-check", crate::kill_check::kill_check).listed_as(""),

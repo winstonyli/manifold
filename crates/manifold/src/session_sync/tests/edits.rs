@@ -639,3 +639,48 @@ fn a_link_and_a_group_take_an_unknown_card() {
     assert_eq!(doc.effective_group(key), Some(g));
     assert_eq!(app.doc.mirror.group(key), Some(g));
 }
+
+#[test]
+fn tidy_releases_drops_and_keeps_pins_in_one_undo_step() {
+    let mut app = App::default();
+    let (dropped_note, pinned_note) = (add_note(&mut app, "a"), add_note(&mut app, "b"));
+    app.drop_at(dropped_note);
+    app.toggle_pin(pinned_note);
+    let (dropped, pos) = (app.doc.mirror.anchor(dropped_note), app.doc.mirror.pos(dropped_note));
+    assert!(app.level_has_drops());
+    app.tidy_level();
+    assert_eq!(app.doc.mirror.anchor(dropped_note), None, "the drop is released");
+    assert_eq!(app.doc.mirror.pos(dropped_note), pos, "and the card is not moved");
+    assert!(app.doc.mirror.pinned(pinned_note), "a pin stays");
+    assert!(!app.level_has_drops());
+    let serial = app.toasts.undo.as_ref().map(|u| u.1);
+    app.step_history(serial, false);
+    assert_eq!(app.doc.mirror.anchor(dropped_note), dropped, "Undo holds it again");
+    app.step_history(None, true);
+    assert_eq!(app.doc.mirror.anchor(dropped_note), None);
+}
+
+#[test]
+fn tidy_with_nothing_to_release_records_nothing() {
+    let mut app = App::default();
+    let note = add_note(&mut app, "a");
+    app.toggle_pin(note);
+    app.tidy_level();
+    assert!(app.toasts.undo.is_none(), "no undo step");
+    assert!(app.doc.mirror.pinned(note), "the pin is untouched");
+}
+
+/// Tidy releases an inert drop too (written in another group, left by a remote move), so moving the card back does
+/// not revive it.
+#[test]
+fn tidy_releases_an_inert_drop_so_moving_back_does_not_revive_it() {
+    let mut app = App::default();
+    let g = add_group(&mut app, "g");
+    let note = add_note(&mut app, "n");
+    app.edit_anchor(note, Some(Anchor { pos: [5.0, 5.0], group: Some(g), explicit: false }));
+    assert_eq!(app.doc.mirror.held(note), None, "inert at the top level");
+    app.tidy_level();
+    assert_eq!(app.doc.mirror.anchor(note), None);
+    app.doc.mirror.set_group(note, Some(g)); // a remote move back, mirror only
+    assert_eq!(app.doc.mirror.held(note), None, "nothing to revive");
+}

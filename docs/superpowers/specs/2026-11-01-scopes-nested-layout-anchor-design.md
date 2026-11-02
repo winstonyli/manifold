@@ -245,9 +245,9 @@ you act on a member by opening the group (Enter), as now. It does not add a way 
 
 ## Architecture check
 
-Special cases this adds: Tidy is a fourth action on the Arrange surfaces (toolbar, omnibar, headless), and Arrange,
-Tidy and Unpin are three ways to release holds. They share `clear_anchors`; Tidy is Arrange without the move. If the
-chip row grows again, fold Tidy into Arrange as a "keep placement" option rather than adding a fifth action. The held
+Arrange by topic was removed on 2026-11-01 (user, as1/au1; `git show cabfa377:crates/manifold/src/search/arrange.rs`),
+so the Arrange mentions above are history. Tidy and Unpin are the two ways to release holds; they share
+`clear_anchors`. The held
 predicate is one function (`held`), not a union of two; `pinned` stays only as the user-facing bit.
 
 ## Docs to update when each slice lands

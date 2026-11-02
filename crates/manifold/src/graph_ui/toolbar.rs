@@ -234,13 +234,6 @@ impl App {
             if response.clicked() {
                 self.suggest_groups();
             }
-            let response =
-                chip_icon_button(ui, egui::Id::new("icon_btn_arrange_by_topic"), egui_phosphor::light::SHAPES)
-                    .named_tip("Arrange by topic: move cards about the same thing next to each other");
-            grow(response.rect);
-            if response.clicked() {
-                self.arrange_by_topic();
-            }
             if self.level_has_drops() {
                 let response = chip_icon_button(ui, egui::Id::new("icon_btn_tidy"), egui_phosphor::light::BROOM)
                     .named_tip("Tidy: let dropped cards move again; pins stay");

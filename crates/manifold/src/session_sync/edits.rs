@@ -174,7 +174,7 @@ impl App {
     }
 
     /// Releases the anchor of each of `ids` whose explicit bit is `explicit`, and returns what it released, for an
-    /// undo record. The three ways a hold is let go share it: Unpin (`explicit`), Tidy and Arrange (not), and a local
+    /// undo record. The ways a hold is let go share it: Unpin (`explicit`), Tidy (not), and a local
     /// move or fold (not; `edit_group`, `fold_group`).
     pub(crate) fn clear_anchors(&mut self, ids: &[NodeId], explicit: bool) -> Vec<(NodeId, Anchor)> {
         let mut cleared = Vec::new();
@@ -185,6 +185,43 @@ impl App {
             }
         }
         cleared
+    }
+
+    /// Tidy (toolbar, omnibar, `TIDY`): releases every drop anchor of the level's cards, inert ones included (so a
+    /// stale one can't revive when a card is moved back), so the next settle moves dropped cards again; pins stay.
+    /// One undo step; nothing to release records nothing.
+    pub(crate) fn tidy_level(&mut self) {
+        let mut level: Vec<NodeId> = self.nodes.keys().copied().filter(|&id| self.in_level(id)).collect();
+        level.sort();
+        let released = self.clear_anchors(&level, false);
+        if released.is_empty() {
+            return;
+        }
+        let message = match released.len() {
+            1 => "Tidied 1 card".to_owned(),
+            n => format!("Tidied {n} cards"),
+        };
+        let moved = released
+            .into_iter()
+            .map(|(id, anchor)| {
+                let (group, parent, pos) =
+                    (self.doc.mirror.group(id), self.doc.mirror.parent(id), self.doc.mirror.pos(id));
+                crate::undo::Moved {
+                    id,
+                    group: (group, group),
+                    parent: (parent, parent),
+                    pos: (pos, pos),
+                    anchor: (Some(anchor), None),
+                }
+            })
+            .collect();
+        self.record_undo(message, crate::undo::UndoKind::Revert { moved, created: None });
+        self.save_session();
+    }
+
+    /// Whether any card at the level shown has a drop anchor (held or inert): when the toolbar offers Tidy.
+    pub(crate) fn level_has_drops(&self) -> bool {
+        self.nodes.keys().any(|&id| self.in_level(id) && self.doc.mirror.anchor(id).is_some_and(|a| !a.explicit))
     }
 
     /// The one writer of a tab's engine: called when a switch starts (`start_swap_to`, a wake into
