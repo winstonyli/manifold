@@ -35,7 +35,7 @@ pub fn folder() -> Option<PathBuf> {
 ///   extension stays (`cap_length`);
 /// - a Windows device name (`is_windows_device_name`) gets a leading `_`, within that length;
 /// - "download" if nothing is left, or only `.`/`..`.
-pub fn safe_name(suggested: &str) -> String {
+pub(crate) fn safe_name(suggested: &str) -> String {
     let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
     let cleaned: String =
         last.chars().map(|c| if c.is_control() || "<>:\"/\\|?*".contains(c) { '_' } else { c }).collect();
@@ -118,7 +118,7 @@ fn split_extension(name: &str) -> (&str, Option<&str>) {
 /// `dir/name`, or `dir/stem (n).ext` with the first n that isn't `taken`
 /// (an existing file, or one another download in flight has reserved).
 /// `a.tar.gz` numbers as `a (1).tar.gz` (`split_extension`).
-pub fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, name: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
     let first = dir.join(name);
     if !taken(&first) {
         return first;

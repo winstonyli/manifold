@@ -29,7 +29,7 @@ impl Os {
     pub const ALL: [Os; 4] = [Os::Windows, Os::Linux, Os::Mac, Os::Other];
 
     /// The OS of a `std::env::consts::OS` value.
-    pub fn from_consts(os: &str) -> Os {
+    pub(crate) fn from_consts(os: &str) -> Os {
         match os {
             "windows" => Os::Windows,
             "linux" => Os::Linux,

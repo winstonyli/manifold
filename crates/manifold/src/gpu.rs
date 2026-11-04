@@ -313,18 +313,8 @@ impl GpuState {
 
     pub fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
-        // `backends` explicitly restricted to `PRIMARY` (Vulkan/Metal/DX12/
-        // WebGPU) rather than `new_without_display_handle()`'s own default
-        // of `Backends::all()`, which also includes `GL` (on Windows, an
-        // ANGLE-backed secondary/legacy tier). Found live: this app's own
-        // `Instance::new()` was taking ~640ms on its own -- over 40% of a
-        // ~1.5s total time-to-first-frame -- and is the single largest
-        // contributor to a "extreme lag on startup" report, confirmed via
-        // temporary per-phase timing instrumentation through the rest of
-        // `GpuState::new`/`resumed()`. Loading/probing an extra backend
-        // tier this app never needs (it only ever ends up on Vulkan or
-        // DX12 in practice, per `adapter.get_info()`) is pure waste --
-        // `PRIMARY` is wgpu's own recommended set for exactly this reason.
+        // `backends` is `PRIMARY` (Vulkan/Metal/DX12), not `Backends::all()`: the default also loads `GL` (ANGLE on
+        // Windows), and `Instance::new()` then took ~640 ms, over 40% of time-to-first-frame.
         // On Windows DX12 is the default: frames were 15-30% shorter than on Vulkan in every repeat at 400 cards
         // (`PARKED.md`, "Default backend", runs `2026-10-22-ab3-*`). Elsewhere `PRIMARY` is the platform's own (Metal,
         // Vulkan). `WGPU_BACKEND` (`vulkan`, `dx12`) overrides it.
@@ -539,22 +529,10 @@ impl GpuState {
     ///
     /// Re-uploads a live tab frame plus its graph-view thumbnail.
     ///
-    /// **Reuses last frame's GPU texture in place (`queue.write_texture`)
-    /// whenever this frame's size/format match it, instead of allocating a
-    /// brand new `wgpu::Texture` (and, for the main frame, a new bind group)
-    /// every single call.** Found on a real, reported "the app just feels
-    /// slow" investigation: `device.create_texture_with_data` here was the
-    /// dominant per-frame cost by a wide margin (confirmed via temporary
-    /// timing instrumentation) -- allocating a fresh GPU resource from
-    /// scratch on *every* uploaded frame, for a live tab that's continuously
-    /// producing same-sized frames the overwhelming majority of the time
-    /// (a resize is the only thing that actually changes dimensions). Only
-    /// the main frame's own `bind_group` still needs recreating alongside a
-    /// genuinely new texture (it references the texture's view directly);
-    /// the thumbnail's `egui_id`, once registered, is instead just re-
-    /// pointed at a replacement texture via `update_egui_texture_from_wgpu_
-    /// texture` when a new one is unavoidable, so callers holding onto that
-    /// id never see it silently change.
+    /// **Reuses last frame's GPU texture in place (`queue.write_texture`) whenever this frame's size and format match
+    /// it**: allocating a texture per uploaded frame was the dominant per-frame cost of a live tab (a resize is the only
+    /// thing that changes dimensions). The main frame's `bind_group` is recreated only alongside a new texture; the
+    /// thumbnail's `egui_id` is re-pointed at a replacement texture, so callers holding it never see it change.
     ///
     /// `rows` is the band of rows that changed since the previous upload (`None`: all of them). Only a texture that
     /// exists, is not `stale` and keeps its size takes just that band.

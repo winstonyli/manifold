@@ -74,21 +74,9 @@ impl App {
         let mut shortcuts_help_button_rect = None;
         let mut actions = ItemToolbarActions::default();
         toolbar_panel("toolbar", ui, |ui| {
-            // Not `horizontal_centered` (`Align::Center`): measured live
-            // that `egui::ComboBox` paints itself ~4.5pt lower than a
-            // plain `Button`/`TextEdit` even when all three report the
-            // exact same `response.rect.height()` (confirmed via
-            // temporary debug prints: 27.0 for all three, but the combo
-            // box's `rect.min.y` alone sat 4.5pt below the back button's)
-            // — an internal quirk of `ComboBox::show_ui` wrapping its
-            // content in its own nested `ui.horizontal(...)`, whose
-            // layout-pass size estimate apparently doesn't quite match
-            // what it actually paints. Since every item in this row is
-            // now confirmed the same real height (the address-bar-margin
-            // fix above made sure of that), top-aligning instead of
-            // center-aligning sidesteps the mismatch entirely rather
-            // than compensating for a specific pixel offset that could
-            // silently drift if padding/fonts ever change.
+            // Top-aligned, not `horizontal_centered`: `egui::ComboBox` paints ~4.5pt lower than a `Button` or `TextEdit` of
+            // the same reported height (its nested `ui.horizontal` misestimates its size), and every item here is the
+            // same height, so aligning tops avoids the mismatch without a pixel offset that fonts or padding could break.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
                 // A Tab's Graph button lives in its nav chip (see
                 // `render_tab_toolbar_content`); other kinds keep it standalone.

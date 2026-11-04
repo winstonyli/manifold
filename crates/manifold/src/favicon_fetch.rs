@@ -181,8 +181,7 @@ fn cached_or_fetched(
 }
 
 fn read_png(path: &Path) -> Option<FaviconImage> {
-    // A cache file written before favicons were fitted may be full size.
-    let image = crate::rgba::fit_image(image::open(path).ok()?.into_rgba8(), crate::rgba::FAVICON_SIDE);
+    let image = image::open(path).ok()?.into_rgba8();
     let (width, height) = image.dimensions();
     Some(FaviconImage { rgba: image.into_raw(), width, height })
 }
@@ -202,16 +201,12 @@ fn cache_file_name(origin: &str) -> String {
     format!("{name}.png")
 }
 
-/// Deletes the files in `dir` not written for `max_age`, and at once any
-/// named for an origin with userinfo (`@` is `_40` in `cache_file_name`):
-/// builds before `UrlParts::origin` dropped it cached under the user name and
-/// password, and no origin today has one.
+/// Deletes the files in `dir` not written for `max_age`.
 fn prune_cache(dir: &Path, max_age: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.flatten() {
         let modified = entry.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::now());
-        let userinfo = entry.file_name().to_string_lossy().contains("_40");
-        if userinfo || modified.elapsed().is_ok_and(|age| age >= max_age) {
+        if modified.elapsed().is_ok_and(|age| age >= max_age) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
@@ -257,20 +252,6 @@ mod tests {
         prune_cache(&dir, CACHE_PRUNE);
         assert!(!dir.join(cache_file_name("https://old")).exists());
         assert!(dir.join(cache_file_name("https://new")).exists());
-    }
-
-    /// A file an older build named with userinfo goes on the next prune, however new; an `_` or a port of 40 is
-    /// not mistaken for one.
-    #[test]
-    fn pruning_deletes_files_named_with_userinfo() {
-        let dir = temp_dir("favicon-userinfo");
-        for origin in ["https://user:pw@host", "https://a_40.host", "https://host:4040"] {
-            cached_or_fetched(&dir, origin, |_| Some(image(1)));
-        }
-        prune_cache(&dir, CACHE_PRUNE);
-        assert!(!dir.join(cache_file_name("https://user:pw@host")).exists());
-        assert!(dir.join(cache_file_name("https://a_40.host")).exists());
-        assert!(dir.join(cache_file_name("https://host:4040")).exists());
     }
 
     #[test]

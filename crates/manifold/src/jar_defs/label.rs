@@ -71,7 +71,7 @@ pub(crate) fn will_switch_tooltip(cleared: bool, target: &str, can_switch_now: b
 /// The SHA-256 hex (lower case) of node id `id`'s text, where a jar's marker fragment comes from (`jar_fragment`).
 pub(super) fn id_digest(id: NodeId) -> String {
     use sha2::Digest;
-    sha2::Sha256::digest(id.to_string().as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+    manifold_view_protocol::transport::to_hex(&sha2::Sha256::digest(id.to_string().as_bytes()))
 }
 
 /// The marker fragment that tells jar `id` apart from the other jars with its name; `None` when no other jar has it

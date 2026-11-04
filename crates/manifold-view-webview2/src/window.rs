@@ -99,35 +99,8 @@ pub fn create_hidden_window() -> Result<HWND> {
 /// window that must stay a normal window for other reasons, but shouldn't
 /// show up in the taskbar"), not a window-style trick at all.
 ///
-/// Three window-style-based approaches broke the old `CreateForWindow`-based
-/// capture, **which no longer exists** (capture reads the Composition visual
-/// now, and doesn't look at the window), so none of these is known to be a
-/// problem any more -- but none has been tested against the current capture. Anyone who
-/// wants to simplify this away (e.g. `WS_EX_TOOLWINDOW` at creation time,
-/// which would make this whole function unnecessary) should re-verify them
-/// first rather than assuming they still fail:
-/// - `WS_EX_TOOLWINDOW`/`WS_POPUP` at window-creation time: `Windows.
-///   Graphics.Capture`'s `CreateForWindow` rejects both outright with
-///   `E_INVALIDARG` (this is *why* `create_hidden_window` uses plain
-///   `WS_OVERLAPPEDWINDOW` at all).
-/// - Giving the window an owner (any owner, including a purpose-built
-///   invisible one): `CreateForWindow` rejects an *owned*
-///   window with the identical `E_INVALIDARG` -- ownership status is
-///   checked just as strictly as the style bits.
-/// - Adding `WS_EX_TOOLWINDOW` via `SetWindowLongPtrW` *after* capture
-///   already started (this doesn't trip the `CreateForWindow` check, since
-///   that only validates once): this reliably corrupts the
-///   already-running capture -- with `SWP_FRAMECHANGED` forcing an
-///   immediate non-client recalculation (`WS_EX_TOOLWINDOW` windows get a
-///   shorter caption), content came back blank white with a
-///   garbage-colored seam at the old caption boundary; the bare style bit
-///   with no recalculation trigger still came back blank (no seam, but no
-///   content either); adding an explicit hide/show cycle (the normally-
-///   correct way to force Explorer to notice a style change) made capture
-///   go solid black instead, i.e. stopped delivering frames entirely.
-///   `ITaskbarList::DeleteTab` touches none of this -- no style bits, no
-///   visibility transition, no NC-area recalculation -- so it doesn't
-///   share any of these failure modes.
+/// The old `CreateForWindow` capture rejected window-style approaches (owner, tool-window styles); that capture is gone,
+/// but see `docs/decisions/2026-11-04-taskbar-hiding-window-styles.md` before simplifying this away.
 ///
 /// Runs on a **detached background thread**, not inline. `DeleteTab` itself
 /// does not hang (a synchronous call completes well under the 2s retry
