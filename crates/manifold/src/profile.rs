@@ -238,24 +238,9 @@ mod tests {
         let app = crate::App::default();
         assert_eq!(app.settings.fingerprint, None);
 
-        let mut offenders = Vec::new();
         let needles =
             ["\"APPDATA\"", "\"LOCALAPPDATA\"", "\"USERPROFILE\"", "\"HOME\"", "etcetera", "dirs::", "known_folder"];
-        scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &needles, &mut offenders);
+        let offenders = crate::src_scan::offenders(&needles, "profile.rs");
         assert_eq!(offenders, Vec::<String>::new(), "look up the profile folder with profile::dir()");
-    }
-
-    fn scan(dir: &Path, needles: &[&str], offenders: &mut Vec<String>) {
-        for entry in std::fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                scan(&path, needles, offenders);
-            } else if path.extension().is_some_and(|ext| ext == "rs")
-                && !path.ends_with("profile.rs")
-                && needles.iter().any(|needle| std::fs::read_to_string(&path).unwrap().contains(needle))
-            {
-                offenders.push(path.display().to_string());
-            }
-        }
     }
 }

@@ -762,11 +762,10 @@ mod tests {
     use crate::store::model::Kind;
 
     /// Frame cost of the level scan (timing, not correctness, so ignored):
-    /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Three variants over the same 2000
-    /// nodes: the old enum pass (eight passes, each matching the payload against one kind),
-    /// the eight `card_kind`-filtered passes plus a group pass, and the single bucketed pass
-    /// (`level_scan`). Release-build numbers are recorded in the 2b-6 plan's Outcome
-    /// (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`).
+    /// `cargo test -p manifold --bins level_pass_cost -- --ignored --nocapture`. Times `level_scan` over 2000 nodes and
+    /// where its per-node cost goes. That it buckets like per-layer `card_kind` filters is pinned by
+    /// `level::level_scan_buckets_every_node_on_the_level_by_layer_in_node_order`; the timings of the passes it replaced
+    /// are in the 2b-6 plan's Outcome (`docs/superpowers/plans/2026-10-06-node-model-2b-6-enums-to-type.md`).
     #[test]
     #[ignore]
     fn level_pass_cost() {
@@ -781,50 +780,9 @@ mod tests {
             let in_level = app.node_order.iter().filter(|id| app.in_level(**id)).count();
             println!("level {level:?}: {in_level} of {} nodes", app.node_order.len());
 
-            // (a) The old enum pass: eight per-kind calls, each a walk of `node_order` keeping the nodes whose
-            // payload variant was that kind (the card enum 2b-6 deleted, matched per node per pass).
-            let old_layer = |payload: &Runtime| match payload {
-                Runtime::Tab(_) => 0,
-                Runtime::Unloaded(_) => 1,
-                Runtime::Download(_) => 2,
-                Runtime::Note(_) | Runtime::Jar | Runtime::Unknown => 3,
-                Runtime::Image(_) => 4,
-                Runtime::Pdf(_) => 5,
-                Runtime::Json(_) => 6,
-                Runtime::None => 7, // the old Group variant
-            };
-            let old_pass = || {
-                std::array::from_fn::<Vec<NodeId>, 8, _>(|layer| {
-                    app.node_order
-                        .iter()
-                        .filter(|id| {
-                            app.in_level(**id) && app.nodes.get(*id).is_some_and(|n| old_layer(&n.runtime) == layer)
-                        })
-                        .copied()
-                        .collect()
-                })
-            };
-            report("old: 8 enum passes", timed(N, || drop(old_pass())));
-
-            // (b) The `card_kind` version: eight `card_kind` passes by draw layer plus the group pass.
-            let at_level = |pick: &dyn Fn(CardKind) -> bool| -> Vec<NodeId> {
-                app.node_order
-                    .iter()
-                    .filter(|id| app.in_level(**id) && app.card_kind(**id).is_some_and(pick))
-                    .copied()
-                    .collect()
-            };
-            let eight_pass = || {
-                let layers: [Vec<NodeId>; crate::caps::DRAW_LAYERS] =
-                    std::array::from_fn(|layer| at_level(&|kind| usize::from(kind.caps().draw_layer) == layer));
-                let groups = at_level(&|kind| is_container(kind.ty));
-                (layers, groups)
-            };
-            report("task 2: 8 card_kind passes + groups", timed(N, || drop(eight_pass())));
-
-            // (c) The single pass, and where its per-node cost goes: the level filter alone, plus `card_kind`,
+            // The single pass, and where its per-node cost goes: the level filter alone, plus `card_kind`,
             // plus `caps()` (the draw layer), plus `is_container` (the whole of `level_scan`).
-            report("task 3: level_scan, one pass", timed(N, || drop(app.level_scan())));
+            report("level_scan, one pass", timed(N, || drop(app.level_scan())));
             let mut sink = 0usize;
             let level_only = || app.node_order.iter().filter(|id| app.in_level(**id)).count();
             report("  in_level only", timed(N, || sink += level_only()));
@@ -841,11 +799,6 @@ mod tests {
             };
             report("  + caps().draw_layer", timed(N, || sink += layers_only()));
             assert!(sink > 0);
-
-            let (layers, groups) = eight_pass();
-            let scan = app.level_scan();
-            assert_eq!((scan.layers, scan.groups), (layers, groups));
-            assert_eq!(old_pass().concat().len(), scan_len(&app));
         }
     }
 
@@ -868,11 +821,6 @@ mod tests {
             report(&what, timed(10, || app.settle_current_level()));
         }
     }
-
-    fn scan_len(app: &App) -> usize {
-        app.level_scan().layers.concat().len()
-    }
-
     /// H1: another replica moves a selected tab into a group; the next frame drops it from the selection, so Close
     /// Selected closes only what is still on screen.
     #[test]

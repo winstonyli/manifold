@@ -79,6 +79,8 @@ mod settings_page;
 mod settings_rows;
 mod shortcuts;
 mod sleep_state;
+#[cfg(test)]
+mod src_scan;
 mod store;
 mod suggestions;
 mod tab_view;

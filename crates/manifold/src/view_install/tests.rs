@@ -44,17 +44,25 @@ fn view_status_is_reused_within_a_frame_and_refreshed_when_an_install_changes() 
 #[test]
 fn remove_deletes_the_runtime_and_its_leftovers_only_when_idle() {
     let dir = temp_dir("remove_runtime");
-    std::fs::create_dir_all(dir.join("cef-runtime")).unwrap();
-    std::fs::write(dir.join("cef-runtime").join(lib()), vec![0u8; 5]).unwrap();
+    let live = dir.join("cef-runtime");
+    std::fs::create_dir_all(&live).unwrap();
+    std::fs::write(live.join(MARKER), "v").unwrap();
+    std::fs::write(live.join(lib()), vec![0u8; 5]).unwrap();
     std::fs::write(dir.join("cef-runtime.part"), b"keep").unwrap();
-    assert_eq!(dir_size(&dir.join("cef-runtime")), 5);
+    std::fs::create_dir_all(dir.join("cef-runtime.tmp")).unwrap();
+    std::fs::create_dir_all(dir.join("cef-runtime.old")).unwrap();
+    assert_eq!(dir_size(&live), 6);
+    assert!(has_leftovers(&dir, ViewKind::Cef, &[]));
     assert!(remove_view_files(&dir, ViewKind::Cef, &[], true, false).is_err());
     assert!(remove_view_files(&dir, ViewKind::Cef, &[], false, true).is_err());
-    assert!(dir.join("cef-runtime").exists());
+    assert!(live.exists());
     remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
-    assert!(!dir.join("cef-runtime").exists());
-    assert!(!dir.join("cef-runtime.part").exists(), "Remove also clears the leftovers");
+    assert!(!live.exists() && !has_leftovers(&dir, ViewKind::Cef, &[]), "Remove also clears the leftovers");
     remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap(); // already gone is fine
+                                                                        // Leftovers with no runtime: still deletable.
+    std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
+    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
+    assert!(!has_leftovers(&dir, ViewKind::Cef, &[]));
 }
 
 #[test]
@@ -809,25 +817,6 @@ fn a_file_where_the_old_install_is_set_aside_is_cleared() {
     install(&pin, &data, &mut |_| {}, &AtomicBool::new(false)).unwrap();
     assert!(data.join("cef-runtime").join(MARKER).exists());
     assert!(!data.join("cef-runtime.old").exists() && !data.join("cef-runtime.tmp").exists());
-}
-
-#[test]
-fn remove_deletes_the_marker_first_and_the_leftovers() {
-    let dir = temp_dir("ei47");
-    let live = dir.join("cef-runtime");
-    std::fs::create_dir_all(&live).unwrap();
-    std::fs::write(live.join(MARKER), "v").unwrap();
-    std::fs::write(live.join(lib()), b"x").unwrap();
-    std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
-    std::fs::create_dir_all(dir.join("cef-runtime.tmp")).unwrap();
-    std::fs::create_dir_all(dir.join("cef-runtime.old")).unwrap();
-    assert!(has_leftovers(&dir, ViewKind::Cef, &[]));
-    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
-    assert!(!live.exists() && !has_leftovers(&dir, ViewKind::Cef, &[]));
-    // Leftovers with no runtime: still deletable.
-    std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
-    remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
-    assert!(!has_leftovers(&dir, ViewKind::Cef, &[]));
 }
 
 #[test]
