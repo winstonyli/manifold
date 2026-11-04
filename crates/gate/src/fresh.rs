@@ -121,22 +121,23 @@ mod tests {
     /// A folder with manifold.exe and the hosts in `DEP_INFO_HOSTS`, each with a `.d` naming `src.rs`, and CEF's built
     /// exe with its copy in its runtime folder (`cef_exe_and_copy`); `src.rs` and every exe get the mtimes (seconds
     /// since the epoch) the test sets.
-    struct Bin(PathBuf);
+    struct Bin {
+        dir: PathBuf,
+        _tmp: tempfile::TempDir,
+    }
 
     impl Bin {
         fn new(name: &str) -> Bin {
-            let dir = std::env::temp_dir().join(format!("gate-fresh-test-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
-            std::fs::create_dir_all(&dir).unwrap();
-            let bin = Bin(dir);
+            let tmp = tempfile::Builder::new().prefix(&format!("gate-fresh-test-{name}-")).tempdir().unwrap();
+            let bin = Bin { dir: tmp.path().to_path_buf(), _tmp: tmp };
             bin.touch("src.rs", 1);
             // `manifold` is the app's own exe, not a host row.
             let exes = std::iter::once(("manifold", "manifold.exe".to_owned()))
                 .chain(DEP_INFO_HOSTS.iter().map(|h| (h.exe, h.file_name(Os::here()))));
             for (stem, file) in exes {
-                let rule = format!("{}: {}", bin.0.join(&file).display(), bin.0.join("src.rs").display());
+                let rule = format!("{}: {}", bin.dir.join(&file).display(), bin.dir.join("src.rs").display());
                 std::fs::write(
-                    bin.0.join(format!("{stem}.d")),
+                    bin.dir.join(format!("{stem}.d")),
                     rule.replace(' ', "\\ ").replacen(".exe:\\ ", ".exe: ", 1),
                 )
                 .unwrap();
@@ -150,20 +151,14 @@ mod tests {
 
         /// Sets `file`'s mtime, creating the file and its folder if they are missing.
         fn touch(&self, file: &str, secs: u64) {
-            let path = self.0.join(file);
+            let path = self.dir.join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             let f = std::fs::OpenOptions::new().create(true).append(true).open(&path).unwrap();
             f.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
         }
 
         fn check(&self) -> Result<(), String> {
-            require_fresh_exe(&self.0.join("manifold.exe"))
-        }
-    }
-
-    impl Drop for Bin {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+            require_fresh_exe(&self.dir.join("manifold.exe"))
         }
     }
 
@@ -190,8 +185,8 @@ mod tests {
         assert!(err.contains("manifold-view-pdfium.exe is older"), "{err}");
 
         // A host that is absent is skipped.
-        std::fs::remove_file(bin.0.join("manifold-view-webview2.exe")).unwrap();
-        std::fs::remove_file(bin.0.join("manifold-view-pdfium.exe")).unwrap();
+        std::fs::remove_file(bin.dir.join("manifold-view-webview2.exe")).unwrap();
+        std::fs::remove_file(bin.dir.join("manifold-view-pdfium.exe")).unwrap();
         assert_eq!(bin.check(), Ok(()), "a missing host is skipped");
 
         bin.touch("manifold.exe", 2);
@@ -222,7 +217,7 @@ mod tests {
         assert!(err.contains(&format!("{copy} is older than the built one")), "{err}");
         assert!(err.contains("sync-runtime-deps") && err.contains("ALLOW_STALE"), "{err}");
 
-        std::fs::remove_file(bin.0.join(&copy)).unwrap();
+        std::fs::remove_file(bin.dir.join(&copy)).unwrap();
         assert_eq!(bin.check(), Ok(()), "an absent copy is skipped");
     }
 }

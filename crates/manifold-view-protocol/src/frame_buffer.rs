@@ -233,16 +233,14 @@ mod tests {
 
     /// A unique directory per test, so no test sweeps the real temp dir, where
     /// a running manifold's frame files live.
-    fn sweep_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("manifold-frame-sweep-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn sweep_dir(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new().prefix(&format!("manifold-frame-sweep-{name}-")).tempdir().unwrap()
     }
 
     #[test]
     fn the_sweep_removes_only_old_frame_files() {
-        let dir = sweep_dir("old");
+        let tmp = sweep_dir("old");
+        let dir = tmp.path().to_path_buf();
         std::fs::write(dir.join("manifold-frame-a.bin"), [0u8; 8]).unwrap();
         std::fs::write(dir.join("manifold-store-x"), [0u8; 8]).unwrap();
         std::fs::write(dir.join("other.bin"), [0u8; 8]).unwrap();
@@ -250,7 +248,6 @@ mod tests {
         assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
         assert!(!dir.join("manifold-frame-a.bin").exists());
         assert!(dir.join("manifold-store-x").exists() && dir.join("other.bin").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A live engine keeps its frame file mapped; Windows refuses an exclusive
@@ -260,7 +257,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn the_sweep_spares_a_mapped_frame_file() {
-        let dir = sweep_dir("live");
+        let tmp = sweep_dir("live");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("manifold-frame-live.bin");
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path).unwrap();
         file.set_len(64).unwrap();
@@ -271,7 +269,6 @@ mod tests {
         drop(live);
         assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
         assert!(!path.exists(), "an unmapped one goes");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// On Unix a mapping blocks nothing, so the sweep goes by the shared lock a
@@ -281,7 +278,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_sweep_spares_a_locked_frame_file() {
-        let dir = sweep_dir("locked");
+        let tmp = sweep_dir("locked");
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("manifold-frame-locked.bin");
         std::fs::write(&path, [0u8; 64]).unwrap();
         let live = SharedFrameBuffer::open_existing(path.clone(), 4, 4).unwrap();
@@ -292,7 +290,6 @@ mod tests {
         assert!(unused(&path), "released");
         assert_eq!(sweep_stale_frames_in(&dir, Duration::ZERO), 1);
         assert!(!path.exists(), "an unlocked one goes");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `create` locks the file it renames into place, and a resize's new file

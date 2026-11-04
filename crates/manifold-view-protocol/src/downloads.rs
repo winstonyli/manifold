@@ -343,8 +343,8 @@ mod tests {
     /// nothing is saved anywhere else; the refusal says why, in the OS's words, which name no path.
     #[test]
     fn a_destination_is_made_in_the_folder_or_refused() {
-        let root = std::env::temp_dir().join(format!("manifold-destination-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
         let dir = root.join("Zoë Q dl");
         let none = |_: &Path| false;
         assert_eq!(destination(Some(dir.as_path()), "../a.zip", none), Ok(dir.join("a.zip")));
@@ -367,7 +367,6 @@ mod tests {
         assert_eq!(refusal.failure.kind, FailureKind::FolderUnusable, "a file in its place");
         assert!(!refusal.failure.detail.is_empty(), "the OS's words");
         assert!(!refusal.failure.detail.contains("manifold-destination-test"), "no path: {}", refusal.failure.detail);
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A folder that can't be made on a full disk is `DiskFull`; any other reason is an unusable folder.

@@ -127,8 +127,8 @@ mod tests {
 
     #[test]
     fn unreadable_file_is_moved_aside() {
-        let dir = std::env::temp_dir().join(format!("manifold-json-file-test-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("thing.json");
         assert_eq!(load_or_move_aside::<Vec<u32>>(&path, "thing"), Ok(None));
         std::fs::write(&path, "[1, 2").unwrap();
@@ -141,7 +141,6 @@ mod tests {
         assert!(aside[0].to_string_lossy().starts_with("thing.unreadable-"));
         std::fs::write(&path, "[1, 2]").unwrap();
         assert_eq!(load_or_move_aside::<Vec<u32>>(&path, "thing"), Ok(Some(vec![1, 2])));
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A path whose existence can't be told (here a name too long for any file system) isn't read as missing:

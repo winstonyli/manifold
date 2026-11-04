@@ -30,3 +30,6 @@ name = "render_stub"
 path = "src/bin/render_stub.rs"
 test = false
 doc = false
+
+[dev-dependencies]
+tempfile.workspace = true

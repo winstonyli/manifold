@@ -11,3 +11,6 @@ workspace = true
 manifold-view-protocol.workspace = true
 pdfium-render.workspace = true
 pdfium-auto.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -109,7 +109,6 @@ mod tuning {
     use crate::search::DocKey;
     use crate::store::model::{ActorId, NodeId};
     use std::collections::BTreeMap;
-    use std::time::Instant;
 
     /// `topics` topics of `per` documents: 12 words from the topic's 30-word vocabulary and 4 from 40 shared ones.
     fn corpus(topics: usize, per: usize) -> Vec<(DocKey, BTreeMap<String, u32>)> {
@@ -162,21 +161,6 @@ mod tuning {
                 })
                 .collect();
             println!("threshold {threshold}: {} clusters, pure/size {summary:?}", found.len());
-        }
-    }
-
-    /// The cost of a "Suggest groups" at the cap (`CLUSTER_MAX_CARDS` documents), embedding and clustering.
-    #[test]
-    #[ignore = "timing for the inline-vs-worker decision; run with --release --nocapture"]
-    fn cap_timing() {
-        for n in [100, 200, CLUSTER_MAX_CARDS] {
-            let docs = corpus(8, n / 8);
-            let t0 = Instant::now();
-            let emb = embed(&docs);
-            let embedded = t0.elapsed();
-            let t1 = Instant::now();
-            let found = cluster(&emb, CLUSTER_MIN_SIMILARITY);
-            println!("{n} docs: embed {embedded:?}, cluster {:?} ({} clusters)", t1.elapsed(), found.len());
         }
     }
 }

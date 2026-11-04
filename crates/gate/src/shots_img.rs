@@ -238,7 +238,8 @@ mod tests {
 
     #[test]
     fn shot_trees_compare_by_pixels_and_skip_derived_files() {
-        let dir = std::env::temp_dir().join(format!("gate-shots-diff-test-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let (a, b) = (dir.join("a"), dir.join("b"));
         let black = RgbImage::from_pixel(4, 4, image::Rgb([0, 0, 0]));
         let mut white_dot = black.clone();
@@ -253,7 +254,6 @@ mod tests {
         }
         black.save(a.join("only-a.png")).unwrap();
         let (lines, same) = diff_trees(&a, &b).unwrap();
-        fs::remove_dir_all(&dir).unwrap();
         assert!(!same);
         assert_eq!(
             lines,

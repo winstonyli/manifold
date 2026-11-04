@@ -1819,7 +1819,8 @@ mod tests {
 
     #[test]
     fn content_dirs_are_named_by_their_files_and_reused() {
-        let root = std::env::temp_dir().join(format!("gate-content-dir-test-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
         let a = content_dir(&root, &[("x.txt", b"one"), ("y.txt", b"")]).unwrap();
         assert_eq!(fs::read(a.join("x.txt")).unwrap(), b"one");
         assert_eq!(fs::read(a.join("y.txt")).unwrap(), b"");
@@ -1827,6 +1828,5 @@ mod tests {
         assert_ne!(content_dir(&root, &[("x.txt", b"two"), ("y.txt", b"")]).unwrap(), a, "new bytes, new folder");
         assert_ne!(content_dir(&root, &[("z.txt", b"one"), ("y.txt", b"")]).unwrap(), a, "new name, new folder");
         assert_eq!(fs::read_dir(&a).unwrap().count(), 2, "no temp files left behind");
-        fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -335,16 +335,14 @@ mod tests {
     }
 
     /// A fresh, empty folder of this test's own.
-    fn temp_folder(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("manifold-wv2-{name}-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_folder(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new().prefix(&format!("manifold-wv2-{name}-test-")).tempdir().unwrap()
     }
 
     #[test]
     fn a_retry_takes_the_path_of_the_broken_download_it_retries() {
-        let dir = temp_folder("retry");
+        let tmp = temp_folder("retry");
+        let dir = tmp.path().to_path_buf();
         let slow = dir.join("slow.zip");
         let broken = [seen(&slow, "http://h/slow", true)];
         let proposed = r"C:\names\slow (1).zip";
@@ -367,7 +365,6 @@ mod tests {
             Ok(dir.join("slow (1).zip")),
             "a fresh download of the same URL is a new one"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -383,7 +380,8 @@ mod tests {
     /// Review Focus 4: a second download of one name while the first is arriving is numbered; a retry is not.
     #[test]
     fn a_second_download_of_one_name_is_numbered_and_a_retry_is_not() {
-        let dir = temp_folder("second");
+        let tmp = temp_folder("second");
+        let dir = tmp.path().to_path_buf();
         let folder = Some(dir.as_path());
         let a = dir.join("a.zip");
         let healthy = [seen(&a, "http://h/a", false)];
@@ -421,14 +419,14 @@ mod tests {
             Ok(a.clone()),
             "the retry keeps the name"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Review Focus 4: a retry that ends takes the broken download it retried with it. That one never reports
     /// again; held, it would keep the name taken after the retry failed and its file went.
     #[test]
     fn a_retry_that_ends_frees_the_name_of_the_download_it_retried() {
-        let dir = temp_folder("release");
+        let tmp = temp_folder("release");
+        let dir = tmp.path().to_path_buf();
         let folder = Some(dir.as_path());
         let (slow, other) = (dir.join("slow.zip"), dir.join("other.zip"));
         let mut held = vec![
@@ -444,7 +442,6 @@ mod tests {
             Ok(slow.clone()),
             "the failed retry's file is gone, so the name is free again"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Every reason webview2-com-sys 0.39.1 names (0-29) has its kind; one it doesn't name is `Other`.

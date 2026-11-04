@@ -16,12 +16,11 @@ fn the_fixture_renders_to_a_frame() {
 
 #[test]
 fn a_garbage_file_exits_one_with_one_line() {
-    let dir = std::env::temp_dir().join(format!("view-pdfium-test-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
     let path = dir.join("bad.pdf");
     std::fs::write(&path, b"%PDF-1.4\nnot really").unwrap();
     let out = run(&path);
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
     assert_eq!(String::from_utf8_lossy(&out.stderr).trim().lines().count(), 1);

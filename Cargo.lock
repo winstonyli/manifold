@@ -3096,6 +3096,7 @@ dependencies = [
  "serde_json",
  "sha1 0.10.7",
  "sha2 0.10.9",
+ "tempfile",
  "windows-sys 0.59.0",
 ]
 
@@ -5022,6 +5023,7 @@ dependencies = [
  "sha2 0.10.9",
  "skrifa 0.44.0",
  "tar",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "unicode-segmentation",
@@ -5057,6 +5059,7 @@ dependencies = [
  "manifold-view-protocol",
  "pdfium-auto",
  "pdfium-render",
+ "tempfile",
 ]
 
 [[package]]
@@ -5068,6 +5071,7 @@ dependencies = [
  "memmap2",
  "postcard",
  "serde",
+ "tempfile",
  "windows-sys 0.59.0",
 ]
 
@@ -5104,6 +5108,7 @@ dependencies = [
  "manifold-pages",
  "manifold-view-protocol",
  "serde_json",
+ "tempfile",
  "webview2-com",
  "windows 0.62.2",
  "windows-numerics 0.3.1",

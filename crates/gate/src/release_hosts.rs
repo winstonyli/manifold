@@ -164,10 +164,9 @@ mod tests {
     /// A repo root with every host's release build under `target/release/` (Servo's ANGLE DLLs in mozangle's
     /// `build/mozangle/<hash>/out/`) and the Linux job's artifact under `webkit-host/`, each file holding its own name.
     /// No `dist/` yet.
-    fn release_tree(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!("gate-release-{name}-{}", std::process::id()));
-        let root = std::path::absolute(root).unwrap();
-        let _ = fs::remove_dir_all(&root);
+    fn release_tree(name: &str) -> tempfile::TempDir {
+        let tmp = tempfile::Builder::new().prefix(&format!("gate-release-{name}-")).tempdir().unwrap();
+        let root = tmp.path();
         for file in [
             "target/release/manifold-view-servo.exe",
             "target/release/build/mozangle/aaa/out/libEGL.dll",
@@ -181,15 +180,16 @@ mod tests {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, file.rsplit('/').next().unwrap()).unwrap();
         }
-        root
+        tmp
     }
 
     #[test]
     fn release_pins_copies_each_downloaded_host_and_writes_its_manifest() {
-        let root = release_tree("pins");
+        let tmp_root = release_tree("pins");
+        let root = tmp_root.path();
         let dist = root.join("dist");
         assert!(!dist.exists());
-        let lines = release_pins_in(&root, TAG, &dist, &root.join("webkit-host")).unwrap();
+        let lines = release_pins_in(root, TAG, &dist, &root.join("webkit-host")).unwrap();
         let manifest_path = dist.join("manifold-vX.Y.Z-windows-x64.host-pins.json");
         assert_eq!(lines, [format!("MANIFOLD_HOST_PINS={}", manifest_path.display())]);
         assert!(!lines[0].contains(r"\\?\"));
@@ -215,46 +215,46 @@ mod tests {
         }
         let platforms = manifest.as_object().unwrap().values().flat_map(|p| p.as_object().unwrap().values());
         assert_eq!(platforms.map(|files| files.as_array().unwrap().len()).sum::<usize>(), pinned.len());
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn a_missing_host_file_is_an_error_naming_it_and_where_it_was_looked_for() {
-        let root = release_tree("missing");
+        let tmp_root = release_tree("missing");
+        let root = tmp_root.path();
         let (dist, foreign) = (root.join("dist"), root.join("webkit-host"));
         let release = root.join("target").join("release");
         fs::remove_file(release.join("build/mozangle/aaa/out/libGLESv2.dll")).unwrap();
         let looked = format!("mozangle's out/libGLESv2.dll under {}", release.join("build").display());
         let want = format!("servo/windows-x64 libGLESv2.dll: not found (looked for {looked})");
-        assert_eq!(release_pins_in(&root, TAG, &dist, &foreign), Err(want));
+        assert_eq!(release_pins_in(root, TAG, &dist, &foreign), Err(want));
         fs::remove_file(release.join("manifold-view-servo.exe")).unwrap();
         let looked = release.join("manifold-view-servo.exe").display().to_string();
         let want = format!("servo/windows-x64 manifold-view-servo.exe: not found (looked for {looked})");
-        assert_eq!(release_pins_in(&root, TAG, &dist, &foreign), Err(want));
-        let _ = fs::remove_dir_all(&root);
+        assert_eq!(release_pins_in(root, TAG, &dist, &foreign), Err(want));
     }
 
     #[test]
     fn a_host_built_for_another_os_comes_from_foreign() {
-        let root = release_tree("foreign");
+        let tmp_root = release_tree("foreign");
+        let root = tmp_root.path();
         let (dist, foreign) = (root.join("dist"), root.join("webkit-host"));
         // A file of the same name in this OS's target/release is not the Linux job's build.
         fs::write(root.join("target").join("release").join("manifold-view-webkitgtk"), "not this one").unwrap();
-        release_pins_in(&root, TAG, &dist, &foreign).unwrap();
+        release_pins_in(root, TAG, &dist, &foreign).unwrap();
         let copied = fs::read_to_string(dist.join("manifold-view-webkitgtk-linux-x64")).unwrap();
         assert_eq!(copied, "manifold-view-webkitgtk");
         let elf = foreign.join("manifold-view-webkitgtk");
         fs::remove_file(&elf).unwrap();
         let want = format!("webkit/linux-x64 manifold-view-webkitgtk: not found (looked for {})", elf.display());
-        assert_eq!(release_pins_in(&root, TAG, &dist, &foreign), Err(want));
-        let _ = fs::remove_dir_all(&root);
+        assert_eq!(release_pins_in(root, TAG, &dist, &foreign), Err(want));
     }
 
     #[test]
     fn release_embedded_copies_each_embedded_host_and_records_its_hash() {
-        let root = release_tree("embedded");
+        let tmp_root = release_tree("embedded");
+        let root = tmp_root.path();
         let dist = root.join("dist");
-        let lines = release_embedded_in(&root, TAG, &dist).unwrap();
+        let lines = release_embedded_in(root, TAG, &dist).unwrap();
         let webview2 = dist.join("embedded").join("manifold-view-webview2.exe");
         let pdfium = dist.join("embedded").join("manifold-view-pdfium.exe");
         let want = [
@@ -276,8 +276,7 @@ mod tests {
         let source = root.join("target").join("release").join("manifold-view-pdfium.exe");
         fs::remove_file(&source).unwrap();
         let want = format!("pdfium manifold-view-pdfium.exe: not found (looked for {})", source.display());
-        assert_eq!(release_embedded_in(&root, TAG, &dist), Err(want));
-        let _ = fs::remove_dir_all(&root);
+        assert_eq!(release_embedded_in(root, TAG, &dist), Err(want));
     }
 
     #[test]
@@ -292,12 +291,11 @@ mod tests {
 
     /// The manifest `release_pins_in` writes for a `release_tree`, parsed as `release-verify` parses it.
     fn written_manifest(name: &str) -> Vec<Pinned> {
-        let root = release_tree(name);
-        let lines = release_pins_in(&root, TAG, &root.join("dist"), &root.join("webkit-host")).unwrap();
+        let tmp_root = release_tree(name);
+        let root = tmp_root.path();
+        let lines = release_pins_in(root, TAG, &root.join("dist"), &root.join("webkit-host")).unwrap();
         let path = lines[0].strip_prefix("MANIFOLD_HOST_PINS=").unwrap();
-        let entries = manifest_files(&fs::read_to_string(path).unwrap()).unwrap();
-        let _ = fs::remove_dir_all(&root);
-        entries
+        manifest_files(&fs::read_to_string(path).unwrap()).unwrap()
     }
 
     fn sorted(mut files: Vec<String>) -> Vec<String> {

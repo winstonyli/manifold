@@ -374,7 +374,8 @@ mod tests {
     #[test]
     fn launch_registers_its_log_once_and_take_empties_the_list() {
         // One test, not two: the registry is process-wide and tests run in parallel.
-        let dir = std::env::temp_dir().join(format!("gate-register-test-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let missing_exe = dir.join("no-such-manifold.exe");
         let log = dir.join("x.log");
         assert!(Instance::launch(&missing_exe, &dir.join("profile"), &dir, "x.log").is_err(), "the spawn fails");
@@ -386,7 +387,6 @@ mod tests {
         let taken = take_logs();
         assert_eq!(taken.iter().filter(|p| **p == log).count(), 1, "deduplicated: {taken:?}");
         assert!(!take_logs().contains(&log), "take empties the list");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -396,7 +396,8 @@ mod tests {
 
     #[test]
     fn seeded_settings_skip_the_demo() {
-        let dir = std::env::temp_dir().join(format!("gate-seed-test-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         seed_settings(&dir, "webview2", ", \"x\": 1").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("settings.json")).unwrap()).unwrap();
         assert_eq!(v["has_shown_first_launch_demo"], true);
@@ -404,7 +405,6 @@ mod tests {
         assert_eq!(v["x"], 1);
         assert_eq!(v["download_directory"], download_dir(&dir).unwrap().to_str().unwrap());
         assert!(Path::new(v["download_directory"].as_str().unwrap()).is_absolute());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

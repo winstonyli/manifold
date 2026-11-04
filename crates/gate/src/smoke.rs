@@ -1386,7 +1386,8 @@ mod tests {
 
     #[test]
     fn border_pixels_near_the_card_edge() {
-        let dir = std::env::temp_dir().join(format!("gate-border-test-{}", std::process::id()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         fs::create_dir_all(&dir).unwrap();
         let png = dir.join("b.png");
         let mut img = image::RgbImage::from_pixel(50, 50, image::Rgb([10, 10, 10]));
@@ -1407,7 +1408,6 @@ mod tests {
             [10, 10, 10]
         ));
         assert!(border_near(&s, &png, "far", [10, 10, 10]));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

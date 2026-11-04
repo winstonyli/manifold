@@ -405,7 +405,8 @@ mod windows_main {
 
         #[test]
         fn log_tails_mask_the_verdict_words_and_skip_empty_and_missing_logs() {
-            let dir = std::env::temp_dir().join(format!("gate-tails-test-{}", std::process::id()));
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().to_path_buf();
             std::fs::create_dir_all(&dir).unwrap();
             let (full, empty, missing) = (dir.join("full.log"), dir.join("empty.log"), dir.join("missing.log"));
             let lines: Vec<String> = (1..=25).map(|i| format!("line {i}")).collect();
@@ -417,15 +418,14 @@ mod windows_main {
             assert!(text.contains("P-ASS: x") && text.contains("F-AIL: y"), "{text}");
             assert!(text.contains("line 8\n") && !text.contains("line 7\n"), "the last 20 lines only: {text}");
             assert!(!text.contains("empty.log") && !text.contains("missing.log"), "{text}");
-            let _ = std::fs::remove_dir_all(&dir);
         }
 
         /// Under `cargo test` the exe is `target/debug/deps/gate-*.exe`, with no `manifold.exe` beside it, so
         /// `manifold_exe()` fails: the setup-failure path, which touches no process-wide counter.
         #[test]
         fn a_setup_failure_runs_no_body_and_makes_no_dir() {
-            let root = std::env::temp_dir().join(format!("gate-setup-test-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
             let ran = std::cell::Cell::new(false);
             let _ = run_stage("t", Some(root.clone()), true, |_| {
                 ran.set(true);
@@ -453,8 +453,8 @@ mod windows_main {
         /// asserted: it reads the process-wide count (Step 6 checks that a passing stage exits 0).
         #[test]
         fn a_passing_body_runs_in_its_work_dir_and_leaves_none_behind() {
-            let root = std::env::temp_dir().join(format!("gate-ok-test-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
             let seen = std::cell::RefCell::new(None);
             let before = failures();
             let _ = run_stage("t", Some(root.clone()), false, |ctx| {
@@ -468,13 +468,12 @@ mod windows_main {
             if before == after && std::env::var_os("KEEP").is_none() {
                 assert!(!work.exists(), "a passing run deletes its work dir");
             }
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
         fn work_dirs_live_under_gate_runs_and_old_ones_are_pruned() {
-            let root = std::env::temp_dir().join(format!("gate-prune-test-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&root);
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().to_path_buf();
             let runs = root.join("gate-runs");
             let (old, mid) = (runs.join("old-1"), runs.join("mid-1"));
             let sibling = root.join("gate-mine");
@@ -498,7 +497,6 @@ mod windows_main {
             let work = work_dir(Some(root.clone()), "t").unwrap();
             assert_eq!(work, runs.join(format!("t-{}", std::process::id())), "the work dir lives under gate-runs");
             assert!(work.is_dir() && mid.is_dir(), "work_dir makes its dir and keeps younger ones");
-            let _ = std::fs::remove_dir_all(&root);
         }
 
         #[test]
