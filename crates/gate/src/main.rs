@@ -18,7 +18,6 @@ mod click_count;
 #[cfg(windows)]
 mod closed;
 #[cfg(windows)]
-mod dblprobe;
 #[cfg(windows)]
 mod download;
 #[cfg(windows)]
@@ -147,7 +146,6 @@ mod windows_main {
         Stage::work("two", crate::two::two),
         Stage::work("unknown-type", crate::unknown_type::unknown_type),
         Stage::work("closed", crate::closed::closed),
-        Stage::work("dblprobe", crate::dblprobe::dblprobe),
         Stage::work("trail", crate::trail::trail),
         Stage::work("unresponsive", crate::stress::unresponsive),
         Stage::work("focus-loss", crate::focus::focus_loss).listed_as(""),
