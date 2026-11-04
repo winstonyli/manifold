@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(refusal.path, file.join("c.zip"));
         assert_eq!(refusal.failure.kind, FailureKind::FolderUnusable, "a file in its place");
         assert!(!refusal.failure.detail.is_empty(), "the OS's words");
-        assert!(!refusal.failure.detail.contains("manifold-destination-test"), "no path: {}", refusal.failure.detail);
+        assert!(!refusal.failure.detail.contains(&*root.to_string_lossy()), "no path: {}", refusal.failure.detail);
     }
 
     /// A folder that can't be made on a full disk is `DiskFull`; any other reason is an unusable folder.

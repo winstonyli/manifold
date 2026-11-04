@@ -59,7 +59,8 @@ fn remove_deletes_the_runtime_and_its_leftovers_only_when_idle() {
     remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
     assert!(!live.exists() && !has_leftovers(&dir, ViewKind::Cef, &[]), "Remove also clears the leftovers");
     remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap(); // already gone is fine
-                                                                        // Leftovers with no runtime: still deletable.
+
+    // Leftovers with no runtime: still deletable.
     std::fs::write(dir.join("cef-runtime.part"), b"x").unwrap();
     remove_view_files(&dir, ViewKind::Cef, &[], false, false).unwrap();
     assert!(!has_leftovers(&dir, ViewKind::Cef, &[]));

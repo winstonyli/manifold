@@ -3,7 +3,7 @@
 //! was entered, and goes back. Round kinds, in turn: click straight away; move the pointer onto the card and let a
 //! frame draw first; click Reset View (the toolbar's fit button, which eases the camera) first, as the smoke sites do.
 //! `ROUNDS` (default 100) counts all kinds together; prints one line per kind. `PAUSE` (seconds, unset by default) is
-//! slept after the Reset View click in the third kind. Not part of `all`.
+//! slept after the Reset View click's settle wait in the third kind. Not part of `all`.
 
 use std::io;
 use std::path::Path;
