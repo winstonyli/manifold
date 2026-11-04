@@ -111,8 +111,7 @@ fn run(args: &[String]) -> Result<(), String> {
     if arms.len() < 2 {
         return Err("an A/B needs at least two ARMs".into());
     }
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().map_err(|e| e.to_string())?;
-    let repo = repo.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map_or(repo.clone(), Into::into);
+    let repo = crate::fresh::repo();
     let run_ps1 = std::env::var_os("USERPROFILE").map(|h| Path::new(&h).join(".claude/runs/run.ps1"));
     let run_ps1 = run_ps1.filter(|p| p.exists()).ok_or("~/.claude/runs/run.ps1 not found: see RUNS.md")?;
     let trace = repo.join("target/profile/trace.json");

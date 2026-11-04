@@ -23,7 +23,7 @@ use serde_json::Value;
 use crate::check::{fail_line, failures, note_failure, pass_line, Marks};
 use crate::instance::{file_url, seed_settings, Instance, QUIT_TIMEOUT};
 use crate::link::{bad, truthy};
-use crate::state::{fmt0, round_half_even, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
+use crate::state::{fmt0, round_i, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query, Server};
 use crate::windows_main::Ctx;
 
@@ -243,9 +243,9 @@ fn converted(session: &Value, name: &str, kind: &str) -> bool {
 fn border_near(s: &State, png: &Path, id: &str, want: [u8; 3]) -> bool {
     let Some(r) = rect_of(s, id) else { return false };
     let Ok(img) = crate::shots_img::load(png) else { return false };
-    let (mid_x, mid_y) = (round_half_even((r[0] + r[2]) / 2.0) as i64, round_half_even((r[1] + r[3]) / 2.0) as i64);
-    let (left, top) = (round_half_even(r[0]) as i64, round_half_even(r[1]) as i64);
-    let (right, bottom) = (round_half_even(r[2]) as i64, round_half_even(r[3]) as i64);
+    let (mid_x, mid_y) = (round_i((r[0] + r[2]) / 2.0), round_i((r[1] + r[3]) / 2.0));
+    let (left, top) = (round_i(r[0]), round_i(r[1]));
+    let (right, bottom) = (round_i(r[2]), round_i(r[3]));
     let mut near = f64::INFINITY;
     for (cx, cy, step) in
         [(left, mid_y, (1, 0)), (right - 3, mid_y, (1, 0)), (mid_x, top, (0, 1)), (mid_x, bottom - 3, (0, 1))]

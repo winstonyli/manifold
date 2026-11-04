@@ -11,11 +11,9 @@
 use std::io;
 use std::path::PathBuf;
 
-use serde_json::Value;
-
 use crate::check::{check, check_is, Marks};
 use crate::instance::{Instance, QUIT_TIMEOUT};
-use crate::link::bad;
+use crate::link::{bad, py};
 use crate::probes::seed;
 use crate::state::{State, GROUP, NOTE};
 use crate::windows_main::Ctx;
@@ -159,11 +157,6 @@ fn drive(run: &Run, m: &mut Marks) -> io::Result<()> {
     check_is("Ctrl+Shift+Z drops it into the group again", Some(g.clone()), group_of(&m3));
     Run::stop(b)?;
     Run::stop(a)
-}
-
-/// A JSON value as text: a string's own text, anything else as JSON.
-fn py(v: &Value) -> String {
-    v.as_str().map_or_else(|| v.to_string(), str::to_string)
 }
 
 pub fn closed(ctx: &mut Ctx) -> io::Result<()> {

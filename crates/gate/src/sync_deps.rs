@@ -27,7 +27,7 @@ use std::time::SystemTime;
 
 use manifold_hosts::{BuildOutput, Host, Os};
 
-use crate::cef_pin::repo;
+use crate::fresh::repo;
 
 fn say(msg: &str) {
     println!("sync-runtime-deps: {msg}");

@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::check::{check_eq, Marks};
 use crate::instance::{Instance, QUIT_TIMEOUT};
 use crate::probes::seed;
-use crate::state::{round_half_even, State};
+use crate::state::{round_i, State};
 use crate::windows_main::Ctx;
 
 pub(crate) fn bad(msg: String) -> io::Error {
@@ -22,7 +22,7 @@ pub(crate) fn bad(msg: String) -> io::Error {
 
 /// Python's `round(v)` of a JSON number, as an int.
 fn rnd(v: &Value) -> io::Result<i64> {
-    v.as_f64().map(|f| round_half_even(f) as i64).ok_or_else(|| bad(format!("not a number: {v}")))
+    v.as_f64().map(round_i).ok_or_else(|| bad(format!("not a number: {v}")))
 }
 
 pub(crate) fn num(v: &Value) -> io::Result<f64> {
@@ -43,29 +43,26 @@ fn links(s: &State) -> &[Value] {
 /// each when there is no link.
 fn summary(s: &State) -> (usize, String) {
     let l = links(s);
-    let text = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_string);
     match l.first() {
-        Some(f) => (l.len(), format!("{} {} {}", text(&f["id"]), text(&f["from"]), text(&f["to"]))),
+        Some(f) => (l.len(), format!("{} {} {}", py(&f["id"]), py(&f["from"]), py(&f["to"]))),
         None => (0, "- - -".to_string()),
     }
 }
 
-/// Python's `str()` of a JSON value, as `print(d[key])` shows it; a missing key is `<missing>` (the python would
-/// have raised KeyError and printed a traceback, so the check fails either way).
-pub(crate) fn py_str(v: Option<&Value>) -> String {
+/// Python's `str()` of a JSON value, as `print(d[key])` shows it.
+pub(crate) fn py(v: &Value) -> String {
     match v {
-        None => "<missing>".to_string(),
-        Some(Value::Null) => "None".to_string(),
-        Some(Value::Bool(true)) => "True".to_string(),
-        Some(Value::Bool(false)) => "False".to_string(),
-        Some(Value::String(s)) => s.clone(),
-        Some(other) => other.to_string(),
+        Value::Null => "None".to_string(),
+        Value::Bool(true) => "True".to_string(),
+        Value::Bool(false) => "False".to_string(),
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 
 /// link-probe.sh `field`: `print(d[key])`.
 fn field(s: &State, key: &str) -> String {
-    py_str(s.0.get(key))
+    s.0.get(key).map_or_else(|| "<missing>".to_string(), py)
 }
 
 /// Python truthiness of a JSON value (`if v`).
@@ -83,7 +80,7 @@ pub(crate) fn truthy(v: &Value) -> bool {
 /// link-probe.sh `rect_of`: the card's rect, each value rounded, space-separated.
 fn rect_of(s: &State, id: &str) -> io::Result<String> {
     let r = s.rect(id).ok_or_else(|| bad(format!("no card {id}, or it has no rect")))?;
-    Ok(r.iter().map(|v| rnd_f(*v).to_string()).collect::<Vec<_>>().join(" "))
+    Ok(r.iter().map(|v| round_i(*v).to_string()).collect::<Vec<_>>().join(" "))
 }
 
 /// link-probe.sh `card_pt`: a card's centre (`screen`), rounded.
@@ -139,16 +136,11 @@ fn handle_cards(s: &State) -> String {
 fn abc(s: &State) -> io::Result<(usize, Vec<String>)> {
     let mut keyed = Vec::new();
     for c in s.cards() {
-        let row = round_half_even(num(&c["screen"][1])? / 50.0) as i64;
+        let row = round_i(num(&c["screen"][1])? / 50.0);
         keyed.push((row, num(&c["screen"][0])?, c["id"].as_str().unwrap_or_default().to_string()));
     }
     keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     Ok((keyed.len(), keyed.into_iter().map(|(_, _, id)| id).collect()))
-}
-
-/// Python's `round(f)` as an int.
-fn rnd_f(f: f64) -> i64 {
-    round_half_even(f) as i64
 }
 
 /// The script's `drag_to X0 Y0 X1 Y1`: hover, press, then six steps to (X1, Y1) (bash integer arithmetic, truncating
@@ -298,7 +290,7 @@ fn drive(run: &Run, m: &mut Marks) -> io::Result<Exports> {
     // python: round() of c[a]'s screen, ((r[0]+r[2])/2, (r[1]+r[3])/2) of link_handles[a]["right"], c[b]'s screen.
     let (ax, ay) = card_pt(&s6, &a)?;
     let r = &s6.0["link_handles"][a.as_str()]["right"];
-    let (hx, hy) = (rnd_f((num(&r[0])? + num(&r[2])?) / 2.0), rnd_f((num(&r[1])? + num(&r[3])?) / 2.0));
+    let (hx, hy) = (round_i((num(&r[0])? + num(&r[2])?) / 2.0), round_i((num(&r[1])? + num(&r[3])?) / 2.0));
     let (bx, by) = card_pt(&s6, &b)?;
     i.send(&format!("MOUSEMOVE {ax} {ay}"))?;
     i.send(&format!("MOUSEMOVE {hx} {hy}"))?;
@@ -311,7 +303,7 @@ fn drive(run: &Run, m: &mut Marks) -> io::Result<Exports> {
     // The same drag, released 15 points left of b's left edge: within the drop tolerance of b, off every card.
     // python: r = b's rect; (round(r[0]) - 15, round((r[1]+r[3])/2))
     let rb = &s7.require_card(&b).map_err(bad)?["rect"];
-    let (nx, ny) = (rnd(&rb[0])? - 15, rnd_f((num(&rb[1])? + num(&rb[3])?) / 2.0));
+    let (nx, ny) = (rnd(&rb[0])? - 15, round_i((num(&rb[1])? + num(&rb[3])?) / 2.0));
     i.send(&format!("UNLINK {a} {b}"))?;
     i.send("SLEEP 1")?;
     i.send(&format!("MOUSEMOVE {ax} {ay}"))?;

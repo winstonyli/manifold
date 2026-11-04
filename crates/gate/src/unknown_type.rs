@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::check::{check, check_eq, Marks};
 use crate::instance::{Instance, QUIT_TIMEOUT};
-use crate::link::{bad, num};
+use crate::link::{bad, num, py};
 use crate::probes::seed;
 use crate::state::{State, GROUP, TAB};
 use crate::windows_main::Ctx;
@@ -129,11 +129,6 @@ fn drive(run: &Run, m: &mut Marks) -> io::Result<()> {
     let session = i.export_session("session6")?;
     check_eq("both are stored with the real type", 2, stored_named(&session, "Future"));
     Run::stop(i)
-}
-
-/// A JSON value as text: a string's own text, anything else as JSON.
-fn py(v: &Value) -> String {
-    v.as_str().map_or_else(|| v.to_string(), str::to_string)
 }
 
 pub fn unknown_type(ctx: &mut Ctx) -> io::Result<()> {

@@ -29,18 +29,10 @@ use serde_json::Value;
 
 use crate::check::{check_eq, Section};
 use crate::instance::Instance;
+use crate::link::py;
 use crate::probes::{guarded, quit, seed};
-use crate::state::{round_half_even, State};
+use crate::state::{round_i, State};
 use crate::windows_main::Ctx;
-
-/// Python's `str()` of a JSON value: `None` for null.
-fn py(v: &Value) -> String {
-    match v {
-        Value::Null => "None".to_owned(),
-        Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
-}
 
 fn field(s: &State, key: &str) -> String {
     py(&s.0[key])
@@ -51,7 +43,7 @@ fn nlinks(s: &State) -> usize {
 }
 
 fn rounded(v: &Value) -> i64 {
-    round_half_even(v.as_f64().unwrap_or(0.0)) as i64
+    round_i(v.as_f64().unwrap_or(0.0))
 }
 
 /// The two cards, a the left one: ids and the points the drags use.
@@ -78,9 +70,7 @@ fn cards(s: &State) -> Option<Cards> {
     let (ca, cb) = (c.first()?, c.get(1)?);
     let (a, b) = (ca["id"].as_str()?.to_owned(), cb["id"].as_str()?.to_owned());
     let r = &s.0["link_handles"][&a]["right"];
-    let mid = |i: usize, j: usize| {
-        round_half_even((r[i].as_f64().unwrap_or(0.0) + r[j].as_f64().unwrap_or(0.0)) / 2.0) as i64
-    };
+    let mid = |i: usize, j: usize| round_i((r[i].as_f64().unwrap_or(0.0) + r[j].as_f64().unwrap_or(0.0)) / 2.0);
     Some(Cards {
         count: c.len(),
         a,
@@ -96,7 +86,7 @@ fn cards(s: &State) -> Option<Cards> {
 
 fn rect_of(s: &State, id: &str) -> String {
     let rect = s.rect(id).unwrap_or_default();
-    rect.iter().map(|v| (round_half_even(*v) as i64).to_string()).collect::<Vec<_>>().join(" ")
+    rect.iter().map(|v| (round_i(*v)).to_string()).collect::<Vec<_>>().join(" ")
 }
 
 fn groups(s: &State, a: &str, b: &str) -> String {

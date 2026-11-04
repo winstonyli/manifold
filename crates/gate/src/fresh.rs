@@ -40,13 +40,21 @@ pub fn parse_dep_info(text: &str) -> Vec<PathBuf> {
     sources
 }
 
+/// The repo this gate was built from (`crates/gate/../..`), without the verbatim `\\?\` prefix `canonicalize` adds,
+/// which the elevated samply task cannot expand.
+pub(crate) fn repo() -> PathBuf {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let Ok(plain) = repo.canonicalize() else { return repo };
+    plain.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map_or(plain.clone(), PathBuf::from)
+}
+
 fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
 /// The sources listed in `<exe minus .exe>.d` that are newer than `exe` (none if there is no `.d`; a source that no
 /// longer exists is not newer).
-fn sources_newer_than(exe: &Path) -> Vec<PathBuf> {
+pub(crate) fn sources_newer_than(exe: &Path) -> Vec<PathBuf> {
     let Ok(text) = std::fs::read_to_string(exe.with_extension("d")) else { return Vec::new() };
     let Some(built) = mtime(exe) else { return Vec::new() };
     parse_dep_info(&text).into_iter().filter(|src| mtime(src).is_some_and(|t| t > built)).collect()

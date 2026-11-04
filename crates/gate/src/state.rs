@@ -35,9 +35,9 @@ pub const W: f64 = 816.0;
 pub const H: f64 = 639.0;
 pub const TOP: f64 = 40.0;
 
-/// Python's `round(x)` for a float: ties go to the even integer (0.5 -> 0, 1.5 -> 2, 2.5 -> 2).
-pub fn round_half_even(x: f64) -> f64 {
-    x.round_ties_even()
+/// A float rounded to the nearest integer, ties to the even one (0.5 -> 0, 1.5 -> 2, 2.5 -> 2), as python's `round`.
+pub fn round_i(x: f64) -> i64 {
+    x.round_ties_even() as i64
 }
 
 /// Reproduces python's `"%.0f" % x`, which is what the scripts put in command lines (`CLICK 407 332`): the value
@@ -45,9 +45,8 @@ pub fn round_half_even(x: f64) -> f64 {
 /// (`"%.0f" % -0.4`); this prints `0`. The commands parse both the same, so command lines stay identical to the
 /// scripts' except where the script would have printed `-0`.
 pub fn fmt0(x: f64) -> String {
-    let r = round_half_even(x);
     // `-0.0 as i64` is 0, so no "-0"; coordinates are far inside i64.
-    format!("{}", r as i64)
+    round_i(x).to_string()
 }
 
 /// `"%.0f %.0f"`.
@@ -586,17 +585,6 @@ mod tests {
         ]}));
         let paths: Vec<_> = s.downloads_from("http://h/slow").iter().map(|d| d["path"].as_str()).collect();
         assert_eq!(paths, [Some("C:\\dl\\slow.zip")]);
-    }
-
-    #[test]
-    fn rounding_matches_python() {
-        // python: round(0.5)=0 round(1.5)=2 round(2.5)=2 round(-0.4)=0 round(-0.5)=0 (as -0.0)
-        assert_eq!(round_half_even(0.5), 0.0);
-        assert_eq!(round_half_even(1.5), 2.0);
-        assert_eq!(round_half_even(2.5), 2.0);
-        assert_eq!(round_half_even(-0.4), 0.0);
-        assert_eq!(round_half_even(-0.5), 0.0);
-        assert_eq!(round_half_even(12.345), 12.0);
     }
 
     #[test]

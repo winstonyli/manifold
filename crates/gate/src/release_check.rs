@@ -8,8 +8,9 @@
 use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
-use crate::cef_pin::{hash_file, repo};
+use crate::cef_pin::hash_file;
 use crate::check::{check, exit_code, note_failure};
+use crate::fresh::repo;
 
 fn git(root: &Path, args: &[&str]) -> Option<String> {
     let out = Command::new("git").args(args).current_dir(root).stdin(Stdio::null()).output().ok()?;

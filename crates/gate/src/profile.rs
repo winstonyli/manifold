@@ -33,7 +33,7 @@
 use std::fmt::Write as _;
 use std::io::Write as _;
 use std::os::windows::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 use std::time::Instant;
 
@@ -45,28 +45,6 @@ use crate::instance::BELOW_NORMAL;
 const GRAPH_NOTES: usize = 80; // the default of `GRAPH_NOTES` in the environment
 const SCENARIOS: [&str; 6] =
     ["json-pan", "json-zoom", "json-reveal-numbers", "json-reveal-objects", "graph-frames", "graph-idle"];
-
-/// The most recently changed `.rs` or `Cargo.toml` file under `dir`, with its time, leaving out `crates/gate`: the
-/// harness is not part of the exe it profiles.
-fn newest_source(dir: &Path) -> Option<(PathBuf, std::time::SystemTime)> {
-    let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        let found = if path.file_name().is_some_and(|n| n == "gate") {
-            None
-        } else if path.is_dir() {
-            newest_source(&path)
-        } else if path.extension().is_some_and(|e| e == "rs") || path.file_name().is_some_and(|n| n == "Cargo.toml") {
-            entry.metadata().and_then(|m| m.modified()).ok().map(|at| (path, at))
-        } else {
-            None
-        };
-        if let Some(found) = found.filter(|f| newest.as_ref().is_none_or(|n| f.1 > n.1)) {
-            newest = Some(found);
-        }
-    }
-    newest
-}
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -237,15 +215,12 @@ fn run(args: &[String]) -> Result<(), String> {
     }
     let mode = scenario.strip_prefix("json-").unwrap_or(scenario);
     let seconds: f64 = pos.next().map_or(Ok(20.0), |s| s.parse()).map_err(|e| format!("SECONDS: {e}"))?;
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().map_err(|e| e.to_string())?;
-    // `canonicalize` gives a verbatim `\\?\` path, which the elevated samply task cannot expand.
-    let repo = repo.to_str().and_then(|s| s.strip_prefix(r"\\?\")).map_or(repo.clone(), PathBuf::from);
+    let repo = crate::fresh::repo();
     let release = repo.join("target/release/manifold.exe");
     if !release.exists() {
         return Err(format!("build the release exe first (see the module doc): {}", release.display()));
     }
-    let built = release.metadata().and_then(|m| m.modified()).map_err(|e| e.to_string())?;
-    if let Some(newer) = newest_source(&repo.join("crates")).filter(|(_, at)| *at > built).map(|(path, _)| path) {
+    if let Some(newer) = crate::fresh::sources_newer_than(&release).first() {
         return Err(format!("the release exe is older than {}: rebuild it (see the module doc)", newer.display()));
     }
     let out = repo.join("target/profile");
@@ -343,20 +318,6 @@ pub fn profile(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_newest_source_is_the_latest_rs_or_manifest_below_a_directory() {
-        let dir = std::env::temp_dir().join(format!("gate-newest-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(dir.join("a/src")).unwrap();
-        std::fs::write(dir.join("a/src/old.rs"), "").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        std::fs::write(dir.join("a/notes.txt"), "").unwrap();
-        std::fs::write(dir.join("a/Cargo.toml"), "").unwrap();
-        let (path, _) = newest_source(&dir).unwrap();
-        assert!(path.ends_with("Cargo.toml"), "{path:?}");
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
 
     #[test]
     fn the_tree_has_branch_cubed_leaves_and_the_script_reveals_each_depth_2_card() {

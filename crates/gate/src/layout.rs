@@ -21,6 +21,7 @@ use serde_json::Value;
 
 use crate::check::{check, Section};
 use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
+use crate::link::bad;
 use crate::state::{State, GROUP, NOTE, TAB};
 use crate::windows_main::Ctx;
 
@@ -89,10 +90,6 @@ static SCENARIOS: [Scenario; 11] = [
         list_below: None,
     },
 ];
-
-fn bad(msg: String) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg)
-}
 
 /// A rect as `[left, top, right, bottom]`.
 type Rect = [f64; 4];

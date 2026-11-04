@@ -21,7 +21,8 @@ use std::process::ExitCode;
 use manifold_hosts::{Delivery, Host, Os};
 use serde_json::{json, Map, Value};
 
-use crate::cef_pin::{hash_file, repo};
+use crate::cef_pin::hash_file;
+use crate::fresh::repo;
 use crate::sync_deps::find_first;
 
 /// The hash record of an embedded host in a release's DIST, `<stem>.embedded-<id>.sha256`, where `stem` is

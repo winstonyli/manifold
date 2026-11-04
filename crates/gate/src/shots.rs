@@ -62,8 +62,8 @@ use crate::probes::{import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
 use crate::shots_net::{resume_body, Downloads, Proxy};
 use crate::state::{
-    bar_stops, round_half_even, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH,
-    SPLIT_VIEW, TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
+    bar_stops, round_i, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH, SPLIT_VIEW,
+    TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
 };
 use crate::suggest;
 use crate::windows_main::Ctx;
@@ -809,8 +809,8 @@ impl Shots {
                         .and_then(|es| es.iter().find(|e| e["kind"] == "link"))
                         .ok_or_else(|| io::Error::other("no link edge"))?;
                     let (lx, ly) = (
-                        round_half_even(edge["screen"][0].as_f64().unwrap_or(0.0)),
-                        round_half_even(edge["screen"][1].as_f64().unwrap_or(0.0)),
+                        round_i(edge["screen"][0].as_f64().unwrap_or(0.0)),
+                        round_i(edge["screen"][1].as_f64().unwrap_or(0.0)),
                     );
                     send!(s, format!("MOUSEMOVE {lx} {ly}"), "SLEEP 1")?;
                     s.shot("graph-link-hover")?;
@@ -836,8 +836,7 @@ impl Shots {
                     .filter(|a| a.len() == 4)
                     .ok_or_else(|| io::Error::other("no left link handle"))?;
                 let f = |i: usize| r[i].as_f64().unwrap_or(0.0);
-                let (hx, hy) =
-                    (round_half_even((f(0) + f(2)) / 2.0) as i64, round_half_even((f(1) + f(3)) / 2.0) as i64);
+                let (hx, hy) = (round_i((f(0) + f(2)) / 2.0), round_i((f(1) + f(3)) / 2.0));
                 if s.has("graph-link-handles") {
                     send!(s, format!("MOUSEMOVE {hx} {hy}"), "SLEEP 1")?;
                     s.shot("graph-link-handles")?;
@@ -1753,7 +1752,7 @@ fn content_dir(root: &Path, files: &[(&str, &[u8])]) -> io::Result<PathBuf> {
             hash.update(part);
         }
     }
-    let hex: String = hash.finalize()[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let hex: String = manifold_view_protocol::transport::to_hex(&hash.finalize()[..8]);
     let dir = root.join(format!("gate-shots-{hex}"));
     fs::create_dir_all(&dir)?;
     for (name, bytes) in files {

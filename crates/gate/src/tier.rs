@@ -158,8 +158,7 @@ fn nul_split(bytes: &[u8]) -> impl Iterator<Item = String> + '_ {
 }
 
 pub fn tier(args: &[String]) -> ExitCode {
-    // crates/gate/../..: the repo this gate was built from.
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = crate::fresh::repo();
     let stdin = args.first().is_some_and(|a| a == "--stdin");
     let (paths, base) = if stdin {
         let mut text = String::new();

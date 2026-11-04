@@ -88,8 +88,7 @@ fn wait_pdf(inst: &mut Instance) {
 }
 
 pub(crate) fn package(args: &[String]) -> ExitCode {
-    // crates/gate/../..: the repo this gate was built from.
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repo = crate::fresh::repo();
     let Some(exe_src) = args.first().map(PathBuf::from).or_else(|| newest_release(&repo)).filter(|p| p.is_file())
     else {
         eprintln!("no release exe: pass one, or download a draft release's exe");

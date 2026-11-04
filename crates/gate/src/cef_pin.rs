@@ -10,23 +10,14 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::fresh::repo;
+use manifold_view_protocol::transport::to_hex;
 use serde_json::Value;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
-
-pub(crate) fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-pub(crate) fn hex(bytes: &[u8]) -> String {
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
 
 /// (SHA-256 hex, SHA-1 hex, byte count) of a file, read in 1 MiB chunks.
 pub(crate) fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
@@ -36,7 +27,7 @@ pub(crate) fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
     loop {
         let got = f.read(&mut buf).map_err(|e| e.to_string())?;
         if got == 0 {
-            return Ok((hex(&s256.finalize()), hex(&s1.finalize()), n));
+            return Ok((to_hex(&s256.finalize()), to_hex(&s1.finalize()), n));
         }
         s256.update(&buf[..got]);
         s1.update(&buf[..got]);
