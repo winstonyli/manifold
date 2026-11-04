@@ -2,9 +2,8 @@
 //! It launches `manifold --headless` itself, drives it over stdin, reads the exported state back and prints the
 //! `PASS:`/`FAIL:`/`TIMING` lines the shell scripts print, so `gate all` can run it as a stage. The exit code is
 //! 0 when no check failed.
-//!
-//! Stages: `launch-forms` (was scripts/launch-forms-probe.sh), `layout` (popups inside the window and opaque, see layout.rs), `link` (was scripts/link-probe.sh), `unknown-type` (a node of a type this build doesn't know, end to end, see unknown_type.rs), `closed` (the closed field end to end, see closed.rs), `trail` (Back and Forward over a tab's pages and opened-from, see trail.rs), `smoke` (was
-//! scripts/headless-smoke-test.sh) and `two` (the two-instance test, was scripts/two-instance-test.sh). Run from the repo after
+//! Stages are the `STAGES` table below (`gate` with no arguments prints their usage); each module's own header says
+//! what its stage checks. Run from the repo after
 //! `cargo build -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`; the exe is `manifold.exe` beside `gate.exe`.
 
 #[cfg(windows)]
@@ -178,7 +177,7 @@ mod windows_main {
         Stage::args("release-verify", "vX.Y.Z [DIST]", crate::release_verify::release_verify),
         Stage::args("release-check", "vX.Y.Z", crate::release_check::release_check),
         Stage::args("release-tag", "vX.Y.Z", crate::release_check::release_tag),
-        Stage::args("release-notes", "vX.Y.Z", crate::release_check::release_notes),
+        Stage::args("release-notes", "vX.Y.Z [HOST_PINS]", crate::release_check::release_notes),
         Stage { name: "sync-runtime-deps", usage: "", run: Run::Bare(crate::sync_deps::sync_runtime_deps) },
         Stage::args("cef-pin", "[--platform ID] PREFIX", crate::cef_pin::cef_pin_main),
         Stage::args("profile", "SCENARIO [SECONDS] [--samply] [--visible]", crate::profile::profile),

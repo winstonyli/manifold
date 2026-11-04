@@ -60,7 +60,7 @@ pub(crate) fn py(v: &Value) -> String {
     }
 }
 
-/// link-probe.sh `field`: `print(d[key])`.
+/// The old link-probe.sh `field`: `print(d[key])`.
 fn field(s: &State, key: &str) -> String {
     s.0.get(key).map_or_else(|| "<missing>".to_string(), py)
 }
@@ -186,7 +186,7 @@ struct Run {
 }
 
 impl Run {
-    /// scripts/link-probe.sh `start`: one instance on the profile (BelowNormal, in the job), its tabs up and at least
+    /// The old link-probe.sh `start`: one instance on the profile (BelowNormal, in the job), its tabs up and at least
     /// `links` link edges drawn. WAITTABS only says no spawn is in flight; the cards and the link nodes reach the
     /// mirror through the store afterwards, so the restore is waited on by what it produces. A restore that never
     /// completes fails here, naming what arrived, instead of as a missing edge several steps on.
@@ -206,7 +206,7 @@ impl Run {
         Ok(inst)
     }
 
-    /// scripts/link-probe.sh `stop`.
+    /// The old link-probe.sh `stop`.
     fn stop(mut inst: Instance) -> io::Result<()> {
         inst.quit(QUIT_TIMEOUT).map(|_| ())
     }

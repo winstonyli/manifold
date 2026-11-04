@@ -1,27 +1,29 @@
-//! The steps `gate all` runs after `two` are the `STEPS` table below: add a stage there, nowhere else in this file.
 //! `gate all LOG [full|light|ui]`: the pre-merge gate (was scripts/gate.sh), sequential so load from other sessions is the
 //! only thing that stretches it. A Git Bash fork costs seconds on this machine and the old script forked per stage for
 //! the clock, the log counts and the timing join; here only the stages and one PowerShell call for Defender are spawned.
 //!
-//! - `full` (default): `gate two` x3, `smoke`, `launch-forms`, `page-text`, `search`, `suggest-groups`, `labels`, `download`, `link`, `unknown-type`, `closed`, `trail`, `sleep-history`, `layout`, `kill-check`, `shots-aa`. For any change to sync, the store, the
-//!   mirror, session save/restore or the view hosts.
-//! - `light`: the same with `two` once and no `shots-aa`. For UI code that writes the store or reaches a view, and scripts. The repeats in
-//!   `full` exist to catch flaky ordering in sync, which UI-only changes cannot reach.
-//! - `ui`: `cargo test` of the three CI crates, then `link`, `unknown-type`, `closed`, `trail`, `sleep-history` and `layout`. For drawing, input and view-state modules
-//!   that import no store, sync or network module (the list is in tier.rs), and docs.
+//! What runs is the `STEPS` table below (add a stage there, nowhere else in this file); each step's `from` is the least
+//! mode that runs it.
+//! - `full` (default): `gate two` x3, then every step. For any change to sync, the store, the mirror, session
+//!   save/restore or the view hosts.
+//! - `light`: `two` once, and the steps from `light` up (`kill-check` and `shots-aa` are `full` only). For UI code that writes the
+//!   store or reaches a view, and scripts. The repeats in `full` exist to catch flaky ordering in sync, which UI-only
+//!   changes cannot reach.
+//! - `ui`: `cargo test` of the four crates it names (`manifold`, `manifold-view-protocol`, `manifold-pages`,
+//!   `manifold-view-webview2`; CI tests six, and the hook's clippy covers seven), then the steps marked `ui`. For
+//!   drawing, input and view-state modules that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
-//! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode, (after `sleep-history`, except `cef`). `cef` adds `download-cef` (right after `download`, in `light` and up) and `kill-check-cef` (after `layout`, in `full`) and needs the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"). `servo` adds `trail-servo`
-//! and `sleep-servo` (cases history, crash, restart) and needs the Servo host built in `target-servo` with its DLLs
-//! beside it (`gate sync-runtime-deps`; README "Building Servo on its own"). `webkit` adds `download-webkit` (right after
-//! `download-cef`, in `light` and up), `trail-webkit` and `sleep-webkit`, needs the WebKit host built in WSL, and takes
-//! `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default route's `via`;
-//! README "WebKit under the gate"), for those steps only; without it they fail.
+//! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode; a step's `engine` field names which. `cef` needs
+//! the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"), `servo` the Servo host built in `target-servo` with
+//! its DLLs beside it (`gate sync-runtime-deps`; README "Building Servo on its own"), and `webkit` the WebKit host built
+//! in WSL plus `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default
+//! route's `via`; README "WebKit under the gate"); without it the webkit steps fail.
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
-//! Progress and verdicts go to LOG; each stage's own output to LOG.two-N.log, .smoke.log, .launch-forms.log, .page-text.log, .search.log, .suggest-groups.log, .labels.log, .download.log, .download-cef.log, .link.log, .unknown-type.log, .closed.log, .trail.log,
-//! .sleep-history.log, .layout.log, .kill-check.log, .kill-check-cef.log, .shots-aa.log and .unit.log. After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest
-//! ten; LOG.cpu holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
+//! Progress and verdicts go to LOG; each step's own output to `LOG.<step>.log` (`two` as `LOG.two-N.log`, the unit tests
+//! as `LOG.unit.log`). After each stage LOG gets its `TIMING` lines (see timing.rs) and at the end the slowest ten;
+//! `LOG.cpu` holds the machine's CPU load sampled every few seconds. Running the stages in parallel was tried
 //! (2026-10-07) and was worse: 53 min, all four runs failed on timing waits under load.
 
 use std::fs::{self, File, OpenOptions};

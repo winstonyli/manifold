@@ -1,5 +1,5 @@
-//! One `manifold --headless` instance the runner drives (scripts/lib.sh `launch_headless`/`send`/`wait_file`,
-//! the old scripts/winpid.sh, the start/stop pattern of scripts/link-probe.sh).
+//! One `manifold --headless` instance the runner drives (the old scripts/lib.sh `launch_headless`/`send`/`wait_file`,
+//! the old scripts/winpid.sh, the start/stop pattern of the old scripts/link-probe.sh).
 //!
 //! The protocol (debug_control.rs `spawn_stdin_reader`): commands are lines on the app's stdin; there is NO response
 //! channel. Results come back as files the app writes (`EXPORTSTATE`, `EXPORTSESSION`, `SCREENSHOT`), so every wait
@@ -86,7 +86,7 @@ pub fn file_url(path: &Path) -> String {
     format!("file:///{}", path.display().to_string().replace('\\', "/").replace(' ', "%20"))
 }
 
-/// Polls until `path` exists and is non-empty (scripts/lib.sh `wait_file`). The EXPORT* files are replaced
+/// Polls until `path` exists and is non-empty (the old scripts/lib.sh `wait_file`). The EXPORT* files are replaced
 /// atomically, so a non-empty one is whole; a SCREENSHOT is not (see `Instance::screenshot`).
 pub fn wait_file(path: &Path, timeout: Duration) -> io::Result<()> {
     let deadline = Instant::now() + timeout;

@@ -1,7 +1,7 @@
-//! `gate smoke` (was scripts/headless-smoke-test.sh): one headless instance on a fresh profile, driven through 11
-//! sections (labels and TIMING names as the script had them), with the suggestions endpoint of `suggest.rs` standing
+//! `gate smoke` (was scripts/headless-smoke-test.sh): one headless instance on a fresh profile, driven through its
+//! sections (one `mark` each; labels and TIMING names as the script had them), with the suggestions endpoint of `suggest.rs` standing
 //! in for DuckDuckGo. Each check is an inline closure over the exported `State`; the expression's text rides along
-//! only for the FAIL line.
+//! only for the FAIL line. `HEADLESS_TEST_OUT` overrides the output folder (default `target\headless-test-output`).
 //!
 //! The script's waits are kept as they are (this is a port, not a tuning pass): `wait_for_file`'s 30 s window and
 //! size-stability rule apply to every export, `settle` re-exports until two in a row agree (0.3 s apart, 40 tries),

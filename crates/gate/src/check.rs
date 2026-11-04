@@ -10,12 +10,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 static FAILURES: AtomicU32 = AtomicU32::new(0);
 
-/// `PASS: label` (scripts/lib.sh `check`).
+/// `PASS: label` (the old scripts/lib.sh `check`).
 pub fn pass_line(label: &str) -> String {
     format!("PASS: {label}")
 }
 
-/// `FAIL: label: got [got], wanted [want]` (scripts/lib.sh `check`).
+/// `FAIL: label: got [got], wanted [want]` (the old scripts/lib.sh `check`).
 pub fn fail_eq_line(label: &str, want: &dyn Display, got: &dyn Display) -> String {
     format!("FAIL: {label}: got [{got}], wanted [{want}]")
 }

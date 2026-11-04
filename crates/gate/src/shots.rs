@@ -83,6 +83,10 @@ const SEARCH_ENGINE: &str = "Default search engine";
 /// The most Tab presses a `tab_walk` makes before it reports that it never ended.
 const TAB_WALK_CAP: u32 = 40;
 
+/// A calibration number read from the environment, so a pixel position can be retuned without a rebuild. The names and
+/// defaults: `CROP_PX` 110; the hover scans `HOVER_STEP` 14, `HOVER_Y` 16, `HOVER_BAND` 34; the find bar `FIND_Y` 60,
+/// `FIND_BAND` 90; the tab-actions menu `MENU_X` 700, `MENU_X0` 640, `MENU_Y0` 424, `MENU_Y1` 646; the Tab-key stops
+/// `GROUP_STOP` 12, `JSON_ENTRY_STOP` 16, `SELECT_STOP` 12.
 fn knob(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }

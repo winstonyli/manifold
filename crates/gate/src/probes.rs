@@ -53,14 +53,14 @@ const WIDE: &str = "<!doctype html><title>wide</title>\n\
 <div style=\"width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);\n});\n</script>";
 
-/// A page taller than any window, for the sleep probe: it reports its scroll position on load and after each scroll
-/// settles, and `?dirty` makes its input differ from the default.
 /// A page with known text, for the page-text probe: a script and a style (neither is page text) around two paragraphs.
 const TEXT: &str = "<!doctype html><title>text</title><style>.x{color:STYLEMARK}</style>
 \n<p>The quick brown fox</p><script>var s='SCRIPTMARK';</script>
 <p>jumps   over
  the lazy dog</p>";
 
+/// A page taller than any window, for the sleep probe: it reports its scroll position on load and after each scroll
+/// settles, and `?dirty` makes its input differ from the default.
 const TALL: &str = "<!doctype html><title>tall</title><input id=i>\n\
 <div style=\"height:6000px;background:linear-gradient(#fff,#9cf)\"></div>\n<script>\n\
 if (location.search.includes('dirty')) document.getElementById('i').value = 'draft';\n\
@@ -68,7 +68,7 @@ fetch('/s?e=load&y=' + Math.round(scrollY));\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=scroll&y=' + Math.round(scrollY)), 300);\n});\n</script>";
 
 /// The local site: `/` reports keydowns (`/k`), `/wide` reports horizontal scrolls (`/s`), `/tall` vertical ones,
-/// `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
+/// `/text` a fixed page for the page-text probe, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
