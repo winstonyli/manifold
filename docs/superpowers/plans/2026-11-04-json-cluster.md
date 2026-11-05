@@ -18,6 +18,10 @@ status: draft
 - Python runs as `python -P file.py < /dev/null`, never on stdin. Cargo uses `-j 8`. No bare `cat` or `python` that reads stdin.
 - Test-id check: `node <scratchpad>/testlist.js OUT` (scratchpad `C:/Users/WINSTO~1/AppData/Local/Temp/claude/C--Users-Winston-Li-Documents-GitHub-manifold/a2c355a1-5493-43d2-a2ce-bd6f49ba9245/scratchpad`); ids print without a module path, so the diff checks names and count; the new tier test adds one.
 
+## End-state fit
+
+See the spec's "End-state fit": `json/{edit,level,ui,view}` replace four root stems; one path-prefix rule in `tier.rs` replaces the first-component lookup for the UI list (`CORE_MODULES` and `CORE_IMPORTS` stay first-component). Deleted: the old module names, the two old `UI_FILES` entries, the first-component UI lookup. No shims. Decisions s1 and s2 settled 2026-11-04; vocabulary renames are parked.
+
 ## Review Focus
 
 - A `json_level` rename that hits the data field or the export key (silent for the key, which the gate reads): the old-name grep lists every remaining hit, inspect each.

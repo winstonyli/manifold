@@ -34,12 +34,16 @@ json/view/tests.rs          from json_view/tests.rs  (518)
 
 ## The one real change: tier rule by path prefix
 
-`classify` names a source file's module by its first path component, so `json/ui.rs` and `json/view.rs` would both read as `json`, which is on no list (light). `json/level.rs` and `json/edit.rs` are light today and stay light. Generalizing instead of special-casing: `UI_FILES` entries become paths under `src/` without `.rs` (`"json/ui"`, `"json/view"`, and the existing stems unchanged), and a file matches an entry when its path without `.rs` equals it or starts with it plus `/`. This subsumes the first-component rule (`theme/tests.rs` still matches `theme`) and handles `json/ui/tests.rs`. About 6 lines plus one test. The import check ("on the ui list but imports a core module") is unchanged.
+`classify` names a source file's module by its first path component (`tier.rs:103`: "as a file or a folder; a source file inside either is judged by it"), so `json/ui.rs` and `json/view.rs` would both read as `json`, which is on no list (light). `CORE_MODULES` and the `CORE_IMPORTS` check stay first-component and need no change (`json` is in neither). `json/level.rs` and `json/edit.rs` are light today and stay light. Generalizing instead of special-casing: `UI_FILES` entries become paths under `src/` without `.rs` (`"json/ui"`, `"json/view"`, and the existing stems unchanged), and a file matches an entry when its path without `.rs` equals it or starts with it plus `/`. This subsumes the first-component rule (`theme/tests.rs` still matches `theme`) and handles `json/ui/tests.rs`. About 6 lines plus one test. The import check ("on the ui list but imports a core module") is unchanged.
 
-## Decisions to confirm
+## Decisions (user, 2026-11-04)
 
-- **s1** Module names `json::{edit, level, ui, view}` (`json_level_ui` -> `ui`, the drawing half of the level). The crate root has no `json` module today (`store::json` is a different path); the compiler settles any glob clash.
-- **s2** Tier rule as above (path-prefix match) rather than adding `"json"` to the UI list, which would wrongly make `json/level.rs` and `json/edit.rs` ui-tier.
+- **s1** Module names `json::{edit, level, ui, view}` (`json_level_ui` -> `ui`, the drawing half of the level), as recommended. Any renaming of the cluster's vocabulary beyond the move is parked (`PARKED.md` "JSON cluster vocabulary"). The crate root has no `json` module today (`store::json` is a different path); the compiler settles any clash.
+- **s2** Tier rule as above (path-prefix match), as recommended, rather than adding `"json"` to the UI list, which would wrongly make `json/level.rs` and `json/edit.rs` ui-tier, or a per-directory branch.
+
+## End-state fit
+
+Where each change lands in the end state: the four modules live under `json/` as one cluster (replacing four root-level stems); the tier rule is one path-prefix mechanism (replacing the first-component lookup, which the `json/` split would otherwise break). Deleted: the four root-level `json_*` module names, the `"json_level_ui"` and `"json_view"` list entries, and the first-component special case in `classify`. Nothing is kept beside its replacement; no re-exports or shims.
 
 ## Checks
 
