@@ -133,7 +133,8 @@ pub(crate) struct MenuPopups {
     /// gesture's own doc comment on `handle_rect_select`); a press landing on any card opens this instead of starting a
     /// marquee. Drawn by `App::build_node_menu`, which dispatches on the node's kind.
     pub(crate) node_menu: NodeMenu,
-    /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`).
+    /// The right-click menu of a trail strip page: its virtual card id and the screen point (`App::build_trail_menu`,
+    /// which closes it when its page is gone).
     pub(crate) trail_menu: Option<(crate::card_id::CardId, egui::Pos2)>,
     /// The Back/Forward branch popup's camera and which popup it belongs to: recentred every time the popup opens
     /// (`popup_centres_cursor`), kept while it stays open.
