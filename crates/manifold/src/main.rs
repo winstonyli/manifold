@@ -367,8 +367,8 @@ struct App {
     toasts: failure_toasts::Toasts,
     /// Undo and redo history of drops and folds (see `undo::UndoHistory`).
     undo: undo::UndoHistory,
-    /// Headless debug-control state (see `debug::HeadlessDebug`).
-    debug: debug::HeadlessDebug,
+    /// Headless debug-control state (see `debug::reader::HeadlessDebug`).
+    debug: debug::reader::HeadlessDebug,
     /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
     pacing: event_loop::FramePacing,
     /// A focus request waiting for its `TextEdit` to be built (see
@@ -539,7 +539,7 @@ impl App {
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             undo: undo::UndoHistory::default(),
-            debug: debug::HeadlessDebug::default(),
+            debug: debug::reader::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             page_tab_gate: page_tab_gate::PageTabGate::default(),
@@ -638,7 +638,7 @@ fn main() {
         ..App::load()
     };
     if headless || debug_commands {
-        debug::spawn_stdin_reader(event_loop.create_proxy());
+        debug::reader::spawn_stdin_reader(event_loop.create_proxy());
     }
 
     event_loop.run_app(&mut app).expect("run event loop");

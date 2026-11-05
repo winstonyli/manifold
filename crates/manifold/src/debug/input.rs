@@ -64,7 +64,7 @@ impl App {
     /// window draws only when asked. `ready` runs only while someone waits.
     fn release_when(
         &mut self,
-        waiters: fn(&mut Self) -> &mut crate::debug::Waiters,
+        waiters: fn(&mut Self) -> &mut crate::debug::reader::Waiters,
         ready: impl FnOnce(&mut Self) -> bool,
     ) {
         if waiters(self).is_empty() {

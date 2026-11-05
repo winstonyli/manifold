@@ -3,7 +3,7 @@
 //! the engine processes' messages.
 
 use super::*;
-use crate::debug::debug_key_event;
+use crate::debug::reader::debug_key_event;
 use crate::tabs::{AfterCrash, Held, LeftClosed};
 use winit::window::Icon;
 
