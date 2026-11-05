@@ -30,7 +30,7 @@ impl App {
         }
         // A replaced engine (crash, wake, swap) knows only `url`: the trail's engine-list shadow restarts there, and a
         // trail whose cursor is elsewhere is dropped (`NavHistory::view_reset`).
-        if let Some(history) = self.nav_history.get_mut(&id) {
+        if let Some(history) = self.scoped.nav_history.get_mut(&id) {
             history.view_reset(&url);
         }
         // A group dissolved while this spawn was still in flight (spawning

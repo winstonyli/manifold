@@ -431,7 +431,7 @@ impl App {
             self.list_popups.history_dirty = false;
         }
         let (nodes, journal) = (&self.nodes, self.doc.journal.as_ref());
-        crate::trail::history::save(&mut self.nav_history, |id| keep_trail(nodes, journal, id));
+        crate::trail::history::save(&mut self.scoped.nav_history, |id| keep_trail(nodes, journal, id));
     }
 
     /// What a successful `save_session` commit changes beyond the store: the mirror takes what the commit resolved,

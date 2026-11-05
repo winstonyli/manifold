@@ -212,10 +212,8 @@ struct App {
     /// each level keeps its toggle in `level_views` while out of view and in
     /// personal state across restarts (`LocalState::levels`).
     groups_collapsed: bool,
-    /// The view each level was left at (`None` the top level), restored on the way back and written to personal
-    /// state (`LocalState::levels`). The level in view lives in `camera` and `groups_collapsed` (`live_level_view`),
-    /// so its entry here, if any, is stale until the next switch saves it.
-    level_views: BTreeMap<Option<NodeId>, local_state::LevelView>,
+    /// State keyed by a node id that goes when the node does (`NodeScoped::forget`, from `App::forget_id`).
+    scoped: node_store::NodeScoped,
     /// `None` while viewing the top level; `Some(group_id)` while a
     /// group's own subgraph has been drilled into — only meaningful when
     /// `view_mode == Graph`, but not reset on leaving Graph view, so
@@ -265,17 +263,6 @@ struct App {
     json_level: Option<JsonLevel>,
     /// Sources of virtual cards (`virtual_source.rs`), whose entries `level_items` appends after the stored ones.
     virtual_sources: Vec<std::rc::Rc<dyn virtual_source::VirtualSource>>,
-    /// `(group_id, draft_name)` once renaming has started -- either the
-    /// toolbar's group-name button (only shown while `current_group` is
-    /// `Some`) or the top-level right-click context menu's own "Rename"
-    /// (see `node_menu`) sets this the same way. A real
-    /// `egui::TextEdit` replaces whichever plain button/menu row started
-    /// it until Enter commits or Escape cancels. Transient UI state, not
-    /// the group's name (`Mirror::name`).
-    renaming_group: Option<(NodeId, String)>,
-    /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
-    /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
-    naming_jar: Option<(NodeId, String)>,
     /// The confirm dialog that is up, if any (`build_confirm_popup`).
     confirm: Option<popups::Confirm>,
     /// The settings popup's "Save Session As..." name field -- kept across
@@ -306,8 +293,6 @@ struct App {
     split_tab: Option<NodeId>,
     /// When each live tab was last on screen, for idle auto-sleep.
     idle_clock: idle_sleep::IdleClock,
-    /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
-    pending_sleeps: HashMap<NodeId, sleep_state::PendingSleep>,
     /// Page text: load-end timers and awaited answers (`tabs::page_text`).
     page_text: tabs::PageTextTracker,
     /// The page text log (`search`).
@@ -317,10 +302,6 @@ struct App {
     jars: BTreeMap<store::model::NodeId, jar::Jar>,
     /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
     cookies: jar::CookieState,
-    /// Scroll positions of woken tabs, restored once their first load finishes.
-    saved_scroll: HashMap<NodeId, sleep_state::SavedScroll>,
-    /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
-    nav_history: HashMap<NodeId, trail::history::NavHistory>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -520,12 +501,9 @@ impl App {
             node_order: Vec::new(),
             layout: HashMap::new(),
             groups_collapsed: false,
-            level_views: BTreeMap::new(),
             current_group: None,
             json_level: None,
             virtual_sources: vec![std::rc::Rc::new(trail::strip::TrailSource)],
-            renaming_group: None,
-            naming_jar: None,
             confirm: None,
             session_name_draft: String::new(),
             focused: None,
@@ -533,13 +511,11 @@ impl App {
             image_view: ImageViewState::default(),
             split_tab: None,
             idle_clock: idle_sleep::IdleClock::default(),
-            pending_sleeps: HashMap::new(),
             page_text: Default::default(),
             search: search::Search::open(search_dir.as_deref()),
             jars,
             cookies: jar::CookieState { jar_snapshots, ..Default::default() },
-            saved_scroll: HashMap::new(),
-            nav_history,
+            scoped: node_store::NodeScoped { nav_history, ..Default::default() },
             drop_batch: 0,
             view_mode: ViewMode::Item,
             doc: doc::Doc::default(),

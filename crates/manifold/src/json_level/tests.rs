@@ -795,7 +795,7 @@ fn leaving_an_unenterable_json_level_saves_no_view_for_it() {
     app.camera.jump_to(outer);
     app.switch_group_level(Some(J));
     assert_eq!(app.current_group, Some(OUTER), "bounced to the group");
-    assert!(!app.level_views.contains_key(&Some(J)), "a level never shown keeps no view");
-    assert_eq!(app.level_views[&Some(OUTER)].camera_rect(), Some(outer));
+    assert!(!app.scoped.level_views.contains_key(&Some(J)), "a level never shown keeps no view");
+    assert_eq!(app.scoped.level_views[&Some(OUTER)].camera_rect(), Some(outer));
     assert_eq!(app.camera.tween.map(|t| t.to), Some(outer), "and the camera comes straight back");
 }

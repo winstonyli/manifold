@@ -144,7 +144,7 @@ impl App {
             self.handle_json_keys(ui, typing);
             return;
         }
-        if !typing && self.renaming_group.is_none() && self.menus.omni_popup.open.is_none() {
+        if !typing && self.scoped.renaming_group.is_none() && self.menus.omni_popup.open.is_none() {
             // Each press moves focus one node, so presses that land in one frame are each a move.
             let presses = ui.input(|i| {
                 [

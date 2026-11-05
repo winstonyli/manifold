@@ -523,13 +523,13 @@ impl App {
         self.doc.writes.held_text.clear();
         self.doc.hidden_local.clear();
         // A closed tab's trail is stashed under an id not in `nodes`, so the loop above does not forget it.
-        self.nav_history.clear();
+        self.scoped.nav_history.clear();
         self.focused = None;
         self.viewed_image = None;
         self.split_tab = None;
         self.current_group = None;
         // Not a switch: nothing is saved, and the replaced session's level views and toggle go with it.
-        self.level_views.clear();
+        self.scoped.level_views.clear();
         self.groups_collapsed = false;
         self.interaction.dragging = None;
         self.interaction.drag_moved.clear();

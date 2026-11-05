@@ -825,7 +825,7 @@ impl App {
     /// An engine swap, a sleep or an earlier "Switch Jar Now" is already on its way for tab `id`.
     /// Each replaces or shuts the host, and a second `hold_for_cookies` would cancel the one parked first.
     pub(crate) fn host_change_pending(&self, id: NodeId) -> bool {
-        self.pending_sleeps.contains_key(&id)
+        self.scoped.pending_sleeps.contains_key(&id)
             || self.cookies.cookie_holds.contains_key(&id)
             || self.nodes.get(&id).and_then(|n| n.as_tab()).is_some_and(|t| t.swap_target.is_some())
     }

@@ -352,10 +352,10 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     app.apply_node_action(&ctx, t, NodeAction::StartNewJar);
-    assert_eq!(app.naming_jar, Some((t, String::new())));
+    assert_eq!(app.scoped.naming_jar, Some((t, String::new())));
     assert_eq!(app.node_menu_view(t).unwrap().renaming, Some(String::new()), "the menu shows the name field");
     app.apply_node_action(&ctx, t, NodeAction::NewJar("  Work ".into()));
-    assert_eq!(app.naming_jar, None);
+    assert_eq!(app.scoped.naming_jar, None);
     let work = app.jar_named("Work").expect("created, trimmed");
     assert_eq!(app.doc.mirror.jar(t), Some(work));
     app.apply_node_action(&ctx, t, NodeAction::StartNewJar);
@@ -363,7 +363,7 @@ fn new_jar_names_a_jar_and_picks_it_for_the_tab() {
     assert_eq!(app.jar_defs().len(), 1, "an empty name creates nothing");
     app.apply_node_action(&ctx, t, NodeAction::StartNewJar);
     app.remove_tab(t);
-    assert_eq!(app.naming_jar, None, "closing the tab drops its draft");
+    assert_eq!(app.scoped.naming_jar, None, "closing the tab drops its draft");
 }
 
 #[test]
@@ -788,12 +788,12 @@ fn the_new_jar_field_creates_only_on_enter() {
         frame(&mut app, vec![]);
         frame(&mut app, vec![]);
         frame(&mut app, vec![egui::Event::Text("Work".into())]);
-        assert_eq!(app.naming_jar, Some((t, "Work".to_string())), "{how}: typed into the field");
+        assert_eq!(app.scoped.naming_jar, Some((t, "Work".to_string())), "{how}: typed into the field");
         for events in ending {
             frame(&mut app, events);
         }
         frame(&mut app, vec![]);
-        assert_eq!(app.naming_jar, None, "{how}: no draft left");
+        assert_eq!(app.scoped.naming_jar, None, "{how}: no draft left");
         let made = app.jar_named("Work");
         assert_eq!(made.is_some(), creates, "{how}: jars {:?}", app.jar_defs());
         assert_eq!(app.doc.mirror.jar(t), made, "{how}: the tab's jar");
@@ -823,7 +823,7 @@ fn a_group_rename_still_commits_on_a_click_away() {
         menu_frame(&ctx, &mut app, events);
     }
     menu_frame(&ctx, &mut app, vec![]);
-    assert_eq!(app.renaming_group, None);
+    assert_eq!(app.scoped.renaming_group, None);
     assert_eq!(app.doc.mirror.name(g), "Errands");
 }
 
@@ -845,15 +845,15 @@ fn a_jar_name_draft_does_not_outlive_its_menu() {
     app.menus.node_menu.open(t, egui::Pos2::ZERO);
     app.apply_node_action(&ctx, t, NodeAction::StartNewJar);
     app.drop_stray_jar_name();
-    assert!(app.naming_jar.is_some(), "its own menu is open");
+    assert!(app.scoped.naming_jar.is_some(), "its own menu is open");
     app.menus.node_menu.open(u, egui::Pos2::ZERO);
     app.drop_stray_jar_name();
-    assert_eq!(app.naming_jar, None, "another node's menu opened");
+    assert_eq!(app.scoped.naming_jar, None, "another node's menu opened");
     app.menus.node_menu.open(t, egui::Pos2::ZERO);
     app.apply_node_action(&ctx, t, NodeAction::StartNewJar);
     app.menus.node_menu.close();
     app.drop_stray_jar_name();
-    assert_eq!(app.naming_jar, None, "the menu closed");
+    assert_eq!(app.scoped.naming_jar, None, "the menu closed");
 }
 
 /// The Jar page lists "Inherit", then every jar the card's edge could name (the Default above the group, one inside

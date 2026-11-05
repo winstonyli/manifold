@@ -108,7 +108,7 @@ impl App {
     pub(crate) fn switch_group_level(&mut self, group: Option<NodeId>) {
         if self.current_group.is_none_or(|g| self.nodes.contains_key(&g)) {
             let view = self.live_level_view();
-            self.level_views.insert(self.current_group, view);
+            self.scoped.level_views.insert(self.current_group, view);
         }
         self.enter_level(group);
     }
@@ -131,7 +131,7 @@ impl App {
         self.layout_current_level();
         self.graph.settled_key = Some(self.current_level_settle_key());
         // Read after `sync_json_level`, which may have left an unenterable JSON level for its group.
-        let view = self.level_views.get(&self.current_group).copied().unwrap_or_default();
+        let view = self.scoped.level_views.get(&self.current_group).copied().unwrap_or_default();
         self.groups_collapsed = view.collapsed;
         self.camera.ease_to(view.camera_or(self.fit_all_nodes_scene_rect()));
         self.interaction.selected.clear();

@@ -384,7 +384,8 @@ impl App {
     /// `export_state`'s `trail`: each tab with a trail, by id, as `NavHistory::export` plus `back` and `forward`, the
     /// chips' enablement (`trail_enabled`).
     fn trail_state(&self) -> serde_json::Map<String, serde_json::Value> {
-        self.nav_history
+        self.scoped
+            .nav_history
             .iter()
             .map(|(id, h)| {
                 let mut v = h.export();
@@ -491,7 +492,7 @@ mod tests {
     #[test]
     fn export_state_gives_each_trail() {
         let mut app = App::default();
-        app.nav_history.insert(node(1), crate::trail::history::NavHistory::visited(&["a", "b"]));
+        app.scoped.nav_history.insert(node(1), crate::trail::history::NavHistory::visited(&["a", "b"]));
         let state = app.export_state();
         let trail = &state["trail"][node(1).to_string()];
         assert_eq!(

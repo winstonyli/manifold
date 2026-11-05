@@ -91,14 +91,14 @@ fn forget_and_reset_clear_what_the_old_sites_cleared() {
 fn finish_sleep_without_a_request_does_nothing() {
     let mut app = App::default();
     app.finish_sleep(node(1), PageState { scroll_x: 0.0, scroll_y: 10.0, dirty_form: false });
-    assert!(app.pending_sleeps.is_empty() && app.saved_scroll.is_empty());
+    assert!(app.scoped.pending_sleeps.is_empty() && app.scoped.saved_scroll.is_empty());
 }
 
 #[test]
 fn request_sleep_needs_a_live_tab() {
     let mut app = App::default();
     assert!(!app.request_sleep(node(1), SleepWhy::Manual));
-    assert!(app.pending_sleeps.is_empty());
+    assert!(app.scoped.pending_sleeps.is_empty());
 }
 
 #[test]
@@ -106,12 +106,12 @@ fn unanswered_requests_are_settled_after_the_timeout() {
     let mut app = App::default();
     let t0 = std::time::Instant::now();
     for (id, why) in [(node(1), SleepWhy::Manual), (node(2), SleepWhy::Idle), (node(3), SleepWhy::JarSwitch)] {
-        app.pending_sleeps.insert(id, PendingSleep { why, sent: t0 });
+        app.scoped.pending_sleeps.insert(id, PendingSleep { why, sent: t0 });
     }
     app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
-    assert_eq!(app.pending_sleeps.len(), 3);
+    assert_eq!(app.scoped.pending_sleeps.len(), 3);
     app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
-    assert!(app.pending_sleeps.is_empty());
+    assert!(app.scoped.pending_sleeps.is_empty());
 }
 
 mod page_text {

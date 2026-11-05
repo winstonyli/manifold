@@ -30,7 +30,7 @@ impl App {
     /// A Back or Forward press on tab `id` (the toolbar chips, `GOBACK`/`GOFORWARD`). Ignored while a move is pending.
     pub(crate) fn navigate_history(&mut self, id: NodeId, dir: Dir) {
         let now = Instant::now();
-        let history = self.nav_history.get(&id);
+        let history = self.scoped.nav_history.get(&id);
         if history.is_some_and(|h| h.move_pending(now)) {
             return;
         }
@@ -41,7 +41,8 @@ impl App {
         if own {
             let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { return };
             let (back, forward) = (node.can_go_back, node.can_go_forward);
-            let action = self.nav_history.get_mut(&id).map_or(NavAction::None, |h| h.go(dir, back, forward, now));
+            let action =
+                self.scoped.nav_history.get_mut(&id).map_or(NavAction::None, |h| h.go(dir, back, forward, now));
             self.send_nav_action(id, action);
             return;
         }
@@ -67,7 +68,7 @@ impl App {
     /// The chips' enablement for tab `id`: the trail's own Back, else an opened-from parent; the trail's own Forward,
     /// else a valid `left_to`.
     pub(crate) fn trail_enabled(&self, id: NodeId) -> (bool, bool) {
-        let history = self.nav_history.get(&id);
+        let history = self.scoped.nav_history.get(&id);
         let back = history.is_some_and(|h| h.can_go_back()) || self.trail_parent(id).is_some();
         let forward = history.is_some_and(|h| h.can_go_forward()) || self.left_to_child(id).is_some();
         (back, forward)
@@ -94,7 +95,7 @@ impl App {
 
     /// A row of the branch list: a plain move to `entry` of tab `tab`'s trail.
     pub(crate) fn trail_pick(&mut self, tab: NodeId, entry: usize) {
-        let Some(h) = self.nav_history.get_mut(&tab) else { return };
+        let Some(h) = self.scoped.nav_history.get_mut(&tab) else { return };
         let action = h.go_to(entry, Instant::now());
         self.send_nav_action(tab, action);
     }
@@ -102,7 +103,9 @@ impl App {
     /// "Open as card" on a branch row (decision 9): a new tab opened from `tab` at that entry's URL, with opened-from
     /// and the group set as for any opened tab, at `pos` (world) when given. The trail is unchanged.
     pub(crate) fn open_branch_as_card(&mut self, tab: NodeId, entry: usize, pos: Option<egui::Vec2>) {
-        let Some(url) = self.nav_history.get(&tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else { return };
+        let Some(url) = self.scoped.nav_history.get(&tab).and_then(|h| h.entry_url(entry)).map(str::to_owned) else {
+            return;
+        };
         self.spawn_tab_from(tab, &url, pos);
     }
 
@@ -124,7 +127,7 @@ impl App {
     fn trail_back_to_parent(&mut self, id: NodeId) {
         let Some(parent) = self.trail_parent(id) else { return };
         if self.trail_is_tab(parent) {
-            self.nav_history.entry(parent).or_default().set_left_to(Some(id));
+            self.scoped.nav_history.entry(parent).or_default().set_left_to(Some(id));
         }
         self.trail_focus(parent);
     }
@@ -132,7 +135,7 @@ impl App {
     /// `parent`'s `left_to` while it is valid (decision 7): the child is live and its opened-from walk ends at
     /// `parent` (a grandparent Back resolved to after a delete keeps it).
     fn left_to_child(&self, parent: NodeId) -> Option<NodeId> {
-        let child = self.nav_history.get(&parent)?.left_to()?;
+        let child = self.scoped.nav_history.get(&parent)?.left_to()?;
         (self.is_live_id(child) && self.trail_parent(child) == Some(parent)).then_some(child)
     }
 
@@ -141,7 +144,7 @@ impl App {
         match self.left_to_child(id) {
             Some(child) => self.trail_focus(child),
             None => {
-                if let Some(h) = self.nav_history.get_mut(&id) {
+                if let Some(h) = self.scoped.nav_history.get_mut(&id) {
                     h.set_left_to(None);
                 }
             }

@@ -42,7 +42,7 @@ impl App {
                     return false;
                 };
                 let url = self.reported_url(tab_id, url, loading, current);
-                let stale = self.nav_history.entry(tab_id).or_default().observe(
+                let stale = self.scoped.nav_history.entry(tab_id).or_default().observe(
                     &url,
                     &title,
                     loading,
@@ -81,9 +81,9 @@ impl App {
                 if !loading {
                     self.note_settled(tab_id, &url, load_ended, std::time::Instant::now());
                 }
-                let restore = self.saved_scroll.get_mut(&tab_id).is_some_and(|s| s.on_loading(loading));
+                let restore = self.scoped.saved_scroll.get_mut(&tab_id).is_some_and(|s| s.on_loading(loading));
                 if restore {
-                    if let Some(s) = self.saved_scroll.remove(&tab_id) {
+                    if let Some(s) = self.scoped.saved_scroll.remove(&tab_id) {
                         if let Some(tab) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
                             tab.tab.send(&HostToView::RestoreScroll { x: s.x, y: s.y });
                         }

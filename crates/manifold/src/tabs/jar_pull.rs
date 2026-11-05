@@ -157,7 +157,7 @@ impl App {
     /// snapshot arrived, so there is nothing to undo.
     fn cancel_held(&mut self, id: NodeId, held: Held) {
         if let Held::PageState(_) = held {
-            self.pending_sleeps.remove(&id);
+            self.scoped.pending_sleeps.remove(&id);
         }
     }
 

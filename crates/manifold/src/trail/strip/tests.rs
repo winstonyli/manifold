@@ -7,7 +7,7 @@ use crate::virtual_source::fake::Rig;
 fn forked() -> Rig {
     let mut rig = Rig::new();
     let tab = rig.tab();
-    rig.app.nav_history.insert(
+    rig.app.scoped.nav_history.insert(
         tab,
         NavHistory::with_tree(
             &[("/a", None, Some(3)), ("/b", Some(0), Some(2)), ("/c", Some(1), None), ("/d", Some(0), None)],
@@ -25,7 +25,7 @@ fn forked() -> Rig {
 
 /// The card id of the page at arena index `entry` of `tab`'s trail.
 fn page_id(rig: &Rig, tab: NodeId, entry: usize) -> CardId {
-    let history = &rig.app.nav_history[&tab];
+    let history = &rig.app.scoped.nav_history[&tab];
     page_card(history, history.serial_of(entry).expect("the trail has that page"))
 }
 
@@ -42,7 +42,7 @@ fn a_strip_that_appears_off_screen_is_framed_once() {
     rig.frame(vec![], egui::Modifiers::NONE);
     let far = egui::Rect::from_min_size(egui::pos2(9000.0, 9000.0), rig.app.camera.rect.size());
     rig.app.camera.jump_to(far);
-    rig.app.nav_history.insert(tab, NavHistory::visited(&["/a", "/b"]));
+    rig.app.scoped.nav_history.insert(tab, NavHistory::visited(&["/a", "/b"]));
     rig.frame(vec![], egui::Modifiers::NONE);
     assert!(rig.app.camera.tween.is_some(), "the strip appeared off screen: the camera eases to it");
     assert_eq!(rig.app.camera.strip_tab, Some(tab));
@@ -136,7 +136,7 @@ fn no_strip_for_one_page_no_focus_tab_view_or_another_level() {
     rig.app.current_group = Some(node(9999));
     assert!(pages(&rig).is_empty(), "the tab is on another level");
     rig.app.current_group = None;
-    rig.app.nav_history.insert(tab, NavHistory::with_tree(&[("/a", None, None)], 0));
+    rig.app.scoped.nav_history.insert(tab, NavHistory::with_tree(&[("/a", None, None)], 0));
     assert!(pages(&rig).is_empty(), "one page");
 }
 
@@ -237,11 +237,11 @@ fn clicking_a_page_starts_a_plain_move_to_it_and_not_while_one_is_pending() {
     let b = rig.screen(page_id(&rig, tab, 1)).center();
     rig.click(b);
     let now = std::time::Instant::now();
-    assert!(rig.app.nav_history[&tab].move_pending(now), "the click started a move");
+    assert!(rig.app.scoped.nav_history[&tab].move_pending(now), "the click started a move");
     // A second click on another page while that move is pending is ignored.
     let c = rig.screen(page_id(&rig, tab, 2)).center();
     rig.click(c);
-    assert!(rig.app.nav_history[&tab].move_pending(now), "still the first move");
+    assert!(rig.app.scoped.nav_history[&tab].move_pending(now), "still the first move");
 }
 
 #[test]
@@ -250,9 +250,9 @@ fn clicking_the_cursor_page_or_an_evicted_one_does_nothing() {
     let tab = rig.tab();
     let d = rig.screen(page_id(&rig, tab, 3)).center();
     rig.click(d);
-    assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "the cursor page");
+    assert!(!rig.app.scoped.nav_history[&tab].move_pending(std::time::Instant::now()), "the cursor page");
     rig.app.trail_pick(tab, 99);
-    assert!(!rig.app.nav_history[&tab].move_pending(std::time::Instant::now()), "an index past the end");
+    assert!(!rig.app.scoped.nav_history[&tab].move_pending(std::time::Instant::now()), "an index past the end");
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn dragging_a_page_onto_empty_canvas_opens_it_as_a_card_there() {
     assert_eq!(spawn.parent, Some(tab), "opened from the tab whose trail it came from");
     let world = rig.app.graph_screen_point_to_world(to);
     assert!((spawn.pos - world).length() < 1.0, "placed at the release point");
-    assert_eq!(rig.app.nav_history[&tab].export()["entries"], 4, "the trail is unchanged");
+    assert_eq!(rig.app.scoped.nav_history[&tab].export()["entries"], 4, "the trail is unchanged");
 }
 
 #[test]
@@ -314,7 +314,7 @@ fn the_strip_page_tooltip_is_the_full_url_and_fit_frames_the_strip() {
     let mut rig = forked();
     let tab = rig.tab();
     let h = NavHistory::visited(&["https://example.com/a", "https://example.com/b"]);
-    rig.app.nav_history.insert(tab, h);
+    rig.app.scoped.nav_history.insert(tab, h);
     rig.frame(vec![], egui::Modifiers::NONE);
     let entry = pages(&rig).remove(1);
     let mut tip = None;
@@ -351,7 +351,7 @@ fn right_clicking_a_page_opens_the_same_menu_as_the_popup_rows_and_open_as_card_
 fn a_menu_for_a_page_that_is_gone_closes() {
     let mut rig = forked();
     let tab = rig.tab();
-    let unknown = page_card(&rig.app.nav_history[&tab], 99);
+    let unknown = page_card(&rig.app.scoped.nav_history[&tab], 99);
     rig.app.menus.trail_menu = Some((unknown, egui::pos2(10.0, 10.0)));
     rig.frame(vec![], egui::Modifiers::NONE);
     assert!(rig.app.menus.trail_menu.is_none(), "a serial no page has names no page");
@@ -373,11 +373,11 @@ fn a_page_evicted_at_the_cap_retires_only_its_own_id() {
     let tab = rig.tab();
     let urls: Vec<String> = (0..50).map(|i| format!("/p{i}")).collect();
     let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-    rig.app.nav_history.insert(tab, NavHistory::visited(&refs));
+    rig.app.scoped.nav_history.insert(tab, NavHistory::visited(&refs));
     rig.frame(vec![], egui::Modifiers::NONE);
     let before: Vec<CardId> = pages(&rig).into_iter().map(|c| c.id).collect();
     assert_eq!(before.len(), 50);
-    let h = rig.app.nav_history.get_mut(&tab).unwrap();
+    let h = rig.app.scoped.nav_history.get_mut(&tab).unwrap();
     let now = std::time::Instant::now();
     h.observe("/new", "", true, false, now);
     h.observe("/new", "", false, false, now);
@@ -488,7 +488,7 @@ fn text_of_a_card_under_the_strip_stays_behind_it_and_the_strip_label_keeps_its_
         crate::store::model::Kind::Tab,
         crate::session_sync::tests::sleeping_tab("https://under.test/", "UNDERNEATH"),
     );
-    let label = rig.app.nav_history[&tab].tree()[0].label.clone();
+    let label = rig.app.scoped.nav_history[&tab].tree()[0].label.clone();
     let (mut overlapped, mut label_heights) = (false, Vec::new());
     for zoom in [0.8_f32, 1.0, 2.0] {
         rig.app.graph.pending_zoom = Some(zoom);
@@ -630,7 +630,7 @@ fn titles_behind_later_cards(
 
 /// The heights of the strip's first label where it shows inside its page.
 fn strip_label_heights(rig: &Rig, shapes: &[egui::epaint::ClippedShape]) -> Vec<f32> {
-    let label = rig.app.nav_history[&rig.tab()].tree()[0].label.clone();
+    let label = rig.app.scoped.nav_history[&rig.tab()].tree()[0].label.clone();
     let page0 = rig.app.graph_world_rect_to_screen(pages(rig)[0].rect);
     shown_text(shapes, &label)
         .into_iter()

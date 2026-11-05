@@ -18,7 +18,7 @@ fn opened_from(path: &std::path::Path) -> (App, NodeId, NodeId, Peer) {
     let (child, peer) = live_tab(&mut app, ViewKind::Webview2, "https://c/");
     app.edit_parent(child, Some(parent));
     assert!(app.save_session());
-    app.nav_history.insert(child, NavHistory::visited(&["https://c/"]));
+    app.scoped.nav_history.insert(child, NavHistory::visited(&["https://c/"]));
     app.focus_tab(child);
     (app, parent, child, peer)
 }
@@ -33,7 +33,7 @@ fn back_at_the_root_focuses_the_parent_and_forward_returns() {
     assert_eq!(app.trail_enabled(child), (true, false));
     app.navigate_history(child, Dir::Back);
     assert_eq!(app.focused, Some(parent));
-    assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child));
+    assert_eq!(app.scoped.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child));
     assert_eq!(app.trail_enabled(parent), (false, true));
     app.navigate_history(parent, Dir::Forward);
     assert_eq!(app.focused, Some(child));
@@ -60,7 +60,7 @@ fn back_to_a_note_leaves_the_item_view_and_selects_it() {
     app.navigate_history(child, Dir::Back);
     assert!(app.transition.is_some(), "on its way to the Graph view");
     assert!(app.interaction.selected.len() == 1 && app.interaction.selected.contains(&CardId::from(note)));
-    assert!(!app.nav_history.contains_key(&note), "a non-tab parent gets no trail");
+    assert!(!app.scoped.nav_history.contains_key(&note), "a non-tab parent gets no trail");
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn forward_after_back_to_a_closed_parent_returns_to_the_child() {
     app.close_node(parent);
     app.navigate_history(child, Dir::Back);
     assert_eq!(app.focused, Some(parent), "the parent reopened");
-    assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child), "left_to survived");
+    assert_eq!(app.scoped.nav_history.get(&parent).and_then(|h| h.left_to()), Some(child), "left_to survived");
     assert_eq!(app.trail_enabled(parent), (false, true));
     app.navigate_history(parent, Dir::Forward);
     assert_eq!(app.focused, Some(child));
@@ -151,7 +151,7 @@ fn forward_on_the_parent_reopens_a_closed_child() {
     let child = add(&mut app, Kind::Tab, sleeping_tab("https://c/", "C"));
     app.edit_parent(child, Some(parent));
     assert!(app.save_session());
-    app.nav_history.entry(parent).or_default().set_left_to(Some(child));
+    app.scoped.nav_history.entry(parent).or_default().set_left_to(Some(child));
     app.close_node(child);
     assert!(app.trail_enabled(parent).1, "a closed child is still live");
     app.navigate_history(parent, Dir::Forward);
@@ -171,7 +171,7 @@ fn the_parents_own_forward_wins_over_left_to() {
     assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("https://p1/".into()));
     h.observe("https://p1/", "", false, false, now);
     h.set_left_to(Some(child));
-    app.nav_history.insert(parent, h);
+    app.scoped.nav_history.insert(parent, h);
     app.focus_tab(parent);
     app.navigate_history(parent, Dir::Forward);
     assert_eq!(app.focused, Some(parent), "stays on the parent");
@@ -186,7 +186,7 @@ fn a_stale_left_to_is_cleared() {
     assert!(app.save_session());
     assert!(!app.trail_enabled(parent).1, "the child no longer names this parent");
     app.navigate_history(parent, Dir::Forward);
-    assert_eq!(app.nav_history.get(&parent).and_then(|h| h.left_to()), None);
+    assert_eq!(app.scoped.nav_history.get(&parent).and_then(|h| h.left_to()), None);
     assert_eq!(app.focused, Some(parent));
 }
 
@@ -217,7 +217,7 @@ fn tab_with_a_sibling(name: &str) -> (App, NodeId, Peer) {
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
     h.observe("https://a/", "", false, true, now);
     h.observe("https://c/", "", false, false, now);
-    app.nav_history.insert(tab, h);
+    app.scoped.nav_history.insert(tab, h);
     (app, tab, peer)
 }
 
@@ -266,7 +266,7 @@ fn alt_left_goes_back_and_alt_right_goes_forward_on_the_focused_tab() {
         "Alt+Left steps the tab back to a: {sent:?}"
     );
     // The engine reports the arrival; Forward is now offered and Alt+Right takes it.
-    let h = app.nav_history.get_mut(&tab).unwrap();
+    let h = app.scoped.nav_history.get_mut(&tab).unwrap();
     h.observe("https://a/", "", false, true, Instant::now() + std::time::Duration::from_secs(1));
     shortcut_frame(&mut app, egui::Key::ArrowRight, egui::Modifiers::ALT);
     let sent = peer.sent();
@@ -289,11 +289,11 @@ fn a_plain_move_records_what_navigate_tab_records() {
 #[test]
 fn open_as_card_opens_a_child_tab_and_leaves_the_trail() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-promote");
-    let before = app.nav_history[&tab].branches(Dir::Back);
+    let before = app.scoped.nav_history[&tab].branches(Dir::Back);
     app.open_branch_as_card(tab, 1, None);
     let spawn = &app.test_spawns.last().unwrap().0;
     assert_eq!((spawn.url.as_str(), spawn.parent), ("https://b/", Some(tab)));
-    assert_eq!(app.nav_history[&tab].branches(Dir::Back), before);
+    assert_eq!(app.scoped.nav_history[&tab].branches(Dir::Back), before);
 }
 
 /// Every leaf shape in `output`, flattened.
@@ -381,7 +381,7 @@ fn clicking_a_page_moves_the_tab_and_closes_the_popup() {
     assert_eq!(app.menus.open_popup, None, "a pick closes the popup");
     assert!(peer.sent().iter().any(|m| matches!(m, HostToView::Navigate { url, .. } if url == "https://b/")));
     // The engine reports the arrival: the cursor is at b, so c is now its sibling.
-    let h = app.nav_history.get_mut(&tab).unwrap();
+    let h = app.scoped.nav_history.get_mut(&tab).unwrap();
     h.observe("https://b/", "", false, false, Instant::now() + std::time::Duration::from_secs(1));
     assert_eq!(h.branches(Dir::Back), [(2, "https://c/".to_string())]);
 }
@@ -436,7 +436,7 @@ fn the_popup_recentres_on_every_opening_and_not_in_between() {
 fn a_one_page_trail_opens_a_small_valid_popup() {
     let mut app = app_on(&session("trail-popup-one"), 1);
     let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://a/");
-    app.nav_history.insert(tab, NavHistory::visited(&["https://a/"]));
+    app.scoped.nav_history.insert(tab, NavHistory::visited(&["https://a/"]));
     app.menus.open_popup = Some(AnchoredPopup::BackBranches);
     for _ in 0..3 {
         popup_run(&mut app, tab, vec![]);
@@ -452,7 +452,7 @@ fn a_long_trail_clamps_the_popup_and_starts_on_the_cursor_page() {
     let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
     let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
     let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-    app.nav_history.insert(tab, NavHistory::visited(&refs));
+    app.scoped.nav_history.insert(tab, NavHistory::visited(&refs));
     app.menus.open_popup = Some(AnchoredPopup::BackBranches);
     for _ in 0..3 {
         popup_run(&mut app, tab, vec![]);
@@ -476,7 +476,7 @@ fn the_trail_changing_under_an_open_popup_redraws_its_cards() {
     // A replaced history is a new trail: its slot is new, so every old id names nothing.
     let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
     let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-    app.nav_history.insert(tab, NavHistory::visited(&refs));
+    app.scoped.nav_history.insert(tab, NavHistory::visited(&refs));
     let cards = crate::trail::strip::trail_cards(&app, tab, egui::Pos2::ZERO);
     assert_eq!(cards.len(), 50);
     assert_ne!(cards[1].id, old[1].id, "the new trail has its own slot, so the old ids are retired");
@@ -648,7 +648,7 @@ fn the_popup_recentres_when_the_trail_is_renumbered_under_it() {
     let (mut app, tab) = long_trail_popup("trail-popup-recentre-epoch");
     let urls: Vec<String> = (0..52).map(|i| format!("https://example.test/p{i}")).collect();
     let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-    app.nav_history.insert(tab, NavHistory::visited(&refs));
+    app.scoped.nav_history.insert(tab, NavHistory::visited(&refs));
     for _ in 0..3 {
         popup_run(&mut app, tab, vec![]);
     }
@@ -662,7 +662,7 @@ fn long_trail_popup(name: &str) -> (App, NodeId) {
     let (tab, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://0/");
     let urls: Vec<String> = (0..12).map(|i| format!("https://example.test/page-{i}")).collect();
     let refs: Vec<&str> = urls.iter().map(String::as_str).collect();
-    app.nav_history.insert(tab, NavHistory::visited(&refs));
+    app.scoped.nav_history.insert(tab, NavHistory::visited(&refs));
     app.menus.open_popup = Some(AnchoredPopup::BackBranches);
     for _ in 0..3 {
         popup_run(&mut app, tab, vec![]);

@@ -33,6 +33,49 @@ pub(crate) enum Removal {
     Remote,
 }
 
+/// App state keyed by a node id that goes when the node does (`NodeScoped::forget`, from `App::forget_id`).
+#[derive(Default)]
+pub(crate) struct NodeScoped {
+    /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
+    pub(crate) pending_sleeps: HashMap<NodeId, sleep_state::PendingSleep>,
+    /// Scroll positions of woken tabs, restored once their first load finishes.
+    pub(crate) saved_scroll: HashMap<NodeId, sleep_state::SavedScroll>,
+    /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
+    pub(crate) nav_history: HashMap<NodeId, trail::history::NavHistory>,
+    /// The view each level was left at (`None` the top level), restored on the way back and written to personal
+    /// state (`LocalState::levels`). The level in view lives in `camera` and `groups_collapsed` (`live_level_view`),
+    /// so its entry here, if any, is stale until the next switch saves it.
+    pub(crate) level_views: BTreeMap<Option<NodeId>, local_state::LevelView>,
+    /// `(tab_id, draft_name)` while a tab's menu shows "New Jar..."'s name field in place of its items, the way
+    /// `renaming_group` does for a group. Committing creates the jar and picks it for the tab (`NodeAction::NewJar`).
+    pub(crate) naming_jar: Option<(NodeId, String)>,
+    /// `(group_id, draft_name)` once renaming has started -- either the
+    /// toolbar's group-name button (only shown while `current_group` is
+    /// `Some`) or the top-level right-click context menu's own "Rename"
+    /// (see `node_menu`) sets this the same way. A real
+    /// `egui::TextEdit` replaces whichever plain button/menu row started
+    /// it until Enter commits or Escape cancels. Transient UI state, not
+    /// the group's name (`Mirror::name`).
+    pub(crate) renaming_group: Option<(NodeId, String)>,
+}
+
+impl NodeScoped {
+    /// Drops `id`, a node removed for good, from every table and draft naming it.
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        let Self { pending_sleeps, saved_scroll, nav_history, level_views, naming_jar, renaming_group } = self;
+        level_views.remove(&Some(id));
+        pending_sleeps.remove(&id);
+        saved_scroll.remove(&id);
+        nav_history.remove(&id);
+        if naming_jar.as_ref().is_some_and(|(t, _)| *t == id) {
+            *naming_jar = None;
+        }
+        if renaming_group.as_ref().is_some_and(|(g, _)| *g == id) {
+            *renaming_group = None;
+        }
+    }
+}
+
 impl App {
     /// A fresh node id: the journal's counter (contract "Actors and ids"),
     /// or this launch's fallback actor without one.
@@ -184,20 +227,11 @@ impl App {
     pub(crate) fn forget_id(&mut self, id: NodeId) {
         self.spawns.forget(id);
         self.doc.forget(id);
-        self.level_views.remove(&Some(id));
-        self.pending_sleeps.remove(&id);
-        // The held answer is dropped, not cancelled: `pending_sleeps` is already gone, so nothing awaits it.
+        self.scoped.forget(id);
+        // `scoped` goes first: its `pending_sleeps` is gone, so the cookie hold dropped here awaits nothing.
         self.cookies.forget(id);
-        self.saved_scroll.remove(&id);
-        self.nav_history.remove(&id);
         self.page_tab_gate.forget(id);
         self.forget_jar_memory(id);
-        if self.naming_jar.as_ref().is_some_and(|(t, _)| *t == id) {
-            self.naming_jar = None;
-        }
-        if self.renaming_group.as_ref().is_some_and(|(g, _)| *g == id) {
-            self.renaming_group = None;
-        }
         self.menus.node_menu.forget(id);
         self.interaction.forget(CardId::from(id));
         self.link.forget(id);

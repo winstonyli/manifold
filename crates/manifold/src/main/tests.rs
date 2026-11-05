@@ -12,24 +12,24 @@ fn forget_id_clears_every_id_keyed_table() {
     let (t, u) = (node(1), node(2));
     let (tc, uc) = (card(1), card(2));
     app.spawns.skip_convert.insert(t, true);
-    app.pending_sleeps.insert(t, sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
+    app.scoped.pending_sleeps.insert(t, sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
     let default = default_jar_id(&mut app);
     app.cookies.jar_tabs.insert(t, (default, jar::TabCookies::default()));
     app.cookies.jar_reseed.insert(t);
     app.cookies.cookie_holds.insert(t, (now, tabs::Held::Snapshot(ViewKind::Webview2, String::new())));
     app.cookies.jar_pulls.insert(t, now);
     app.cookies.jar_silent.insert(t, 1);
-    app.saved_scroll.insert(t, sleep_state::SavedScroll::new(0.0, 1.0));
-    app.saved_scroll.insert(u, sleep_state::SavedScroll::new(0.0, 1.0));
-    app.nav_history.insert(t, trail::history::NavHistory::default());
+    app.scoped.saved_scroll.insert(t, sleep_state::SavedScroll::new(0.0, 1.0));
+    app.scoped.saved_scroll.insert(u, sleep_state::SavedScroll::new(0.0, 1.0));
+    app.scoped.nav_history.insert(t, trail::history::NavHistory::default());
     app.spawns.navigated_from.insert(t, ("https://a.test/".into(), now, false));
     for _ in 0..page_tab_gate::POPUP_BURST {
         app.page_tab_gate.admit(t, true, now);
     }
     app.spawns.tab_crashes.insert(t, vec![now]);
     app.interaction.selected.extend([tc, uc]);
-    app.naming_jar = Some((t, String::new()));
-    app.renaming_group = Some((t, String::new()));
+    app.scoped.naming_jar = Some((t, String::new()));
+    app.scoped.renaming_group = Some((t, String::new()));
     app.menus.node_menu.open(t, egui::Pos2::ZERO);
     app.spawns.pending_respawn_focus = Some(t);
     app.interaction.peek_suppressed = Some(tc);
@@ -38,24 +38,40 @@ fn forget_id_clears_every_id_keyed_table() {
     app.link.connect_drag = Some(t);
     app.interaction.hovered = Some(tc);
 
-    app.level_views.insert(Some(t), crate::local_state::LevelView::default());
-    app.level_views.insert(Some(u), crate::local_state::LevelView::default());
+    app.doc.hidden_local.insert(t, crate::local_state::LocalNode::default());
+    app.doc.hidden_local.insert(u, crate::local_state::LocalNode::default());
+    app.scoped.level_views.insert(Some(t), crate::local_state::LevelView::default());
+    app.scoped.level_views.insert(Some(u), crate::local_state::LevelView::default());
     app.forget_id(t);
 
-    assert!(app.spawns.skip_convert.is_empty() && app.pending_sleeps.is_empty());
+    assert!(app.spawns.skip_convert.is_empty() && app.scoped.pending_sleeps.is_empty());
     assert!(
         app.cookies.jar_tabs.is_empty() && app.cookies.jar_reseed.is_empty() && app.cookies.cookie_holds.is_empty()
     );
     assert!(app.cookies.jar_pulls.is_empty() && app.cookies.jar_silent.is_empty());
-    assert!(!app.saved_scroll.contains_key(&t) && app.saved_scroll.contains_key(&u), "only t's entry goes");
-    assert!(app.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty());
+    assert!(
+        !app.scoped.saved_scroll.contains_key(&t) && app.scoped.saved_scroll.contains_key(&u),
+        "only t's entry goes"
+    );
+    assert!(
+        app.scoped.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty()
+    );
     assert_eq!(app.page_tab_gate.admit(t, true, now), page_tab_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected, HashSet::from([uc]));
-    assert!(app.naming_jar.is_none() && app.renaming_group.is_none() && app.menus.node_menu.open.is_none());
+    assert!(
+        app.scoped.naming_jar.is_none() && app.scoped.renaming_group.is_none() && app.menus.node_menu.open.is_none()
+    );
     assert!(app.spawns.pending_respawn_focus.is_none() && app.interaction.peek_suppressed.is_none());
     assert!(app.interaction.dragging.is_none() && app.link.connecting.is_none() && app.link.connect_drag.is_none());
     assert!(app.interaction.hovered.is_none());
-    assert!(!app.level_views.contains_key(&Some(t)) && app.level_views.contains_key(&Some(u)), "only t's view goes");
+    assert!(
+        !app.doc.hidden_local.contains_key(&t) && app.doc.hidden_local.contains_key(&u),
+        "only t's hidden state goes"
+    );
+    assert!(
+        !app.scoped.level_views.contains_key(&Some(t)) && app.scoped.level_views.contains_key(&Some(u)),
+        "only t's view goes"
+    );
 }
 
 /// App fields whose type names a node or card id that `forget_id` does not name, each with why. Groups that own
@@ -91,7 +107,7 @@ fn every_id_field_of_app_is_forgotten_or_excused() {
         .collect();
     assert!(fields.len() > 50, "App's fields were found ({})", fields.len());
     let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
-    assert!(body.contains("self.pending_sleeps") || body.contains("self.scoped"), "forget_id's body was found");
+    assert!(body.contains("self.scoped.pending_sleeps") || body.contains("self.scoped"), "forget_id's body was found");
     let named = |name: &str| {
         let needle = format!("self.{name}");
         body.match_indices(&needle).any(|(at, _)| {
@@ -412,7 +428,7 @@ fn a_sleeping_tab_never_needs_a_switch_and_a_deleted_jar_switches_to_default() {
     assert!(!app.will_switch(t), "asleep: it spawns into the new jar");
     app.cookies.jar_reseed.insert(t);
     assert!(!app.will_switch(t), "asleep: a reseed spawns into the cleared jar anyway");
-    assert!(app.pending_sleeps.is_empty(), "the sweeps after each jar change asked nothing of it");
+    assert!(app.scoped.pending_sleeps.is_empty(), "the sweeps after each jar change asked nothing of it");
     // A host spawned with Work whose jar is then deleted must head for Default.
     app.cookies.jar_tabs.insert(t, (work, jar::TabCookies::default()));
     app.remove_remotely_deleted(work);
@@ -508,14 +524,14 @@ fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
     let mut app = App::default();
     app.cookies.jar_pulls.insert(node(3), std::time::Instant::now());
     // Sleep, then swap: only the swap stays parked, and the sleep's pending entry is gone (no timeout sleep).
-    app.pending_sleeps.insert(
+    app.scoped.pending_sleeps.insert(
         node(3),
         sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
     );
     assert!(app.hold_for_cookies(node(3), sleep_answer()).is_none());
     assert!(app.hold_for_cookies(node(3), swap_answer()).is_none());
     assert!(matches!(app.cookies.cookie_holds[&node(3)].1, tabs::Held::Snapshot(..)));
-    assert!(app.pending_sleeps.is_empty(), "the cancelled sleep left nothing behind");
+    assert!(app.scoped.pending_sleeps.is_empty(), "the cancelled sleep left nothing behind");
     // Swap, then sleep: only the sleep stays parked.
     assert!(app.hold_for_cookies(node(3), sleep_answer()).is_none());
     assert!(matches!(app.cookies.cookie_holds[&node(3)].1, tabs::Held::PageState(..)));
@@ -526,13 +542,15 @@ fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
 fn a_respawn_drops_a_held_answer_meant_for_the_old_host() {
     let mut app = App::default();
     app.cookies.jar_pulls.insert(node(3), std::time::Instant::now());
-    app.pending_sleeps.insert(
+    app.scoped.pending_sleeps.insert(
         node(3),
         sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
     );
     assert!(app.hold_for_cookies(node(3), sleep_answer()).is_none());
     app.clear_cookie_state(node(3)); // what a spawn result for the same id does first
-    assert!(app.cookies.cookie_holds.is_empty() && app.cookies.jar_pulls.is_empty() && app.pending_sleeps.is_empty());
+    assert!(
+        app.cookies.cookie_holds.is_empty() && app.cookies.jar_pulls.is_empty() && app.scoped.pending_sleeps.is_empty()
+    );
     app.release_expired_cookie_holds();
     app.release_cookie_hold(node(3)); // nothing left to run against the new host
 }

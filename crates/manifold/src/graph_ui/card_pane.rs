@@ -54,7 +54,7 @@ impl App {
     /// Whether the pane shows the rename field for `id`: the one draft (`renaming_group`) is this card's and its
     /// menu, which would show the same field, is not open on it.
     pub(crate) fn pane_renaming(&self, id: NodeId) -> bool {
-        self.renaming_group.as_ref().is_some_and(|(of, _)| *of == id)
+        self.scoped.renaming_group.as_ref().is_some_and(|(of, _)| *of == id)
             && self.menus.node_menu.open.as_ref().map(|(of, _)| *of) != Some(id)
     }
 
@@ -63,7 +63,7 @@ impl App {
     fn pane_header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<GraphAction>, id: NodeId) {
         if self.pane_renaming(id) {
             let focus = crate::popups::take_focus(&mut self.pending_focus, crate::popups::FocusTarget::GroupRename);
-            let Some((_, draft)) = self.renaming_group.as_mut() else { return };
+            let Some((_, draft)) = self.scoped.renaming_group.as_mut() else { return };
             let field = crate::theme::toolbar_field(ui, |ui| {
                 ui.add(crate::theme::field_edit(draft).desired_width(f32::INFINITY))
             });

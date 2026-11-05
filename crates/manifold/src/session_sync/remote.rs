@@ -455,14 +455,14 @@ impl App {
         // A note comes back idle: the box it was typed in is gone, and its text was committed.
         let local = LocalNode { editing: false, ..self.local_node(id, node) };
         // A closed tab keeps its trail (trail spec decision 10); `unshow` -> `forget_id` would drop it.
-        let trail = self.nav_history.remove(&id);
+        let trail = self.scoped.nav_history.remove(&id);
         self.unshow(id);
         self.doc.mirror.forget_node(id);
         self.layout.remove(&id);
         self.doc.hidden_local.insert(id.to_owned(), local);
         if let Some(mut trail) = trail {
             trail.set_left_to(None);
-            self.nav_history.insert(id.to_owned(), trail);
+            self.scoped.nav_history.insert(id.to_owned(), trail);
         }
     }
 

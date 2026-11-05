@@ -148,9 +148,9 @@ impl App {
                         label.on_hover_text(hover);
                     }
                 } else if i + 1 == crumb_count {
-                    let is_renaming = self.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
+                    let is_renaming = self.scoped.renaming_group.as_ref().is_some_and(|(rid, _)| rid == id);
                     if is_renaming {
-                        if let Some((_, draft)) = &mut self.renaming_group {
+                        if let Some((_, draft)) = &mut self.scoped.renaming_group {
                             let response = toolbar_field(ui, |ui| ui.add(field_edit(draft).desired_width(140.0)));
                             if take_focus(&mut self.pending_focus, FocusTarget::GroupRename) {
                                 response.request_focus();

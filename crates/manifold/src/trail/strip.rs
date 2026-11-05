@@ -44,7 +44,7 @@ pub(crate) fn is_page_id(id: CardId) -> bool {
 fn live_page(app: &App, id: CardId) -> Option<(NodeId, usize)> {
     let key = id.key().filter(|_| is_page_id(id))?;
     let (slot, serial) = ((key >> 32) as u32, key as u32);
-    let (tab, history) = app.nav_history.iter().find(|(_, h)| h.slot().get() == slot)?;
+    let (tab, history) = app.scoped.nav_history.iter().find(|(_, h)| h.slot().get() == slot)?;
     Some((*tab, history.index_of(serial)?))
 }
 
@@ -154,7 +154,7 @@ impl App {
         }
         let tab = self.focused?;
         let on_level = self.card_rect(tab).is_some() && self.in_level(tab);
-        (on_level && self.nav_history.get(&tab).is_some_and(|h| h.tree().len() > 1)).then_some(tab)
+        (on_level && self.scoped.nav_history.get(&tab).is_some_and(|h| h.tree().len() > 1)).then_some(tab)
     }
 }
 
@@ -218,7 +218,7 @@ impl App {
 /// Tab `tab`'s page cards, their bounding box's top-left at `origin`: the strip hangs it under the tab's card, the Back
 /// and Forward popups use their own origin. Empty when the tab has no trail.
 pub(crate) fn trail_cards(app: &App, tab: NodeId, origin: egui::Pos2) -> Vec<CardEntry> {
-    let Some(history) = app.nav_history.get(&tab) else { return Vec::new() };
+    let Some(history) = app.scoped.nav_history.get(&tab) else { return Vec::new() };
     let pages = history.tree();
     let kind = CardKind { ty: TYPE_TRAIL_PAGE, tags: crate::caps::TagSet::EMPTY };
     pages
@@ -236,7 +236,7 @@ pub(crate) fn trail_cards(app: &App, tab: NodeId, origin: egui::Pos2) -> Vec<Car
 /// The edges between `tab`'s pages (`rect_of` finds a card's rect by id); those on the path to the cursor are
 /// highlighted.
 pub(crate) fn trail_edges(app: &App, tab: NodeId, rect_of: &dyn Fn(CardId) -> Option<egui::Rect>) -> Vec<LevelEdge> {
-    let Some(history) = app.nav_history.get(&tab) else { return Vec::new() };
+    let Some(history) = app.scoped.nav_history.get(&tab) else { return Vec::new() };
     let pages = history.tree();
     pages
         .iter()
@@ -273,7 +273,8 @@ impl VirtualSource for TrailSource {
     }
 
     fn paint_body(&self, app: &App, ui: &mut egui::Ui, pass: &mut CardPass, entry: &CardEntry) -> CardBody {
-        let page = live_page(app, entry.id).and_then(|(tab, i)| app.nav_history.get(&tab)?.tree().into_iter().nth(i));
+        let page =
+            live_page(app, entry.id).and_then(|(tab, i)| app.scoped.nav_history.get(&tab)?.tree().into_iter().nth(i));
         if let Some(page) = &page {
             let full = app.graph.detail.content();
             paint_trail_page(ui.painter(), pass, entry.rect, page, ui.rect_contains_pointer(entry.rect), full);

@@ -426,6 +426,7 @@ impl App {
         }
         // A level's view is kept while its group is shown or the document still holds it; the level in view's is live.
         let mut levels: BTreeMap<Option<NodeId>, LevelView> = self
+            .scoped
             .level_views
             .iter()
             .filter(|(level, _)| {
@@ -515,8 +516,8 @@ impl App {
         }
 
         // The level in view takes its view now; the others wait in `level_views` for a switch (`enter_level`).
-        self.level_views = state.levels;
-        let view = self.level_views.get(&self.current_group).copied().unwrap_or_default();
+        self.scoped.level_views = state.levels;
+        let view = self.scoped.level_views.get(&self.current_group).copied().unwrap_or_default();
         self.groups_collapsed = view.collapsed;
         if let Some(rect) = view.camera_rect() {
             self.camera.jump_to(rect);

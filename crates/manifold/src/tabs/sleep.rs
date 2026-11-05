@@ -26,10 +26,10 @@ impl App {
             gpu.free_tab_texture(id);
         }
         // A scroll left from an earlier wake that never finished loading is stale.
-        self.saved_scroll.remove(&id);
+        self.scoped.saved_scroll.remove(&id);
         if let Some((x, y)) = scroll {
             if x != 0.0 || y != 0.0 {
-                self.saved_scroll.insert(id, SavedScroll::new(x, y));
+                self.scoped.saved_scroll.insert(id, SavedScroll::new(x, y));
             }
         }
         self.save_session();
@@ -45,7 +45,7 @@ impl App {
         let open = self.showing_tab_view() && self.focused == Some(id);
         // A request nobody answered must not block a new one.
         self.expire_pending_sleeps(std::time::Instant::now());
-        if open || self.split_tab == Some(id) || self.pending_sleeps.contains_key(&id) {
+        if open || self.split_tab == Some(id) || self.scoped.pending_sleeps.contains_key(&id) {
             return false;
         }
         if self.nodes.get(&id).and_then(|n| n.as_tab()).is_none() {
@@ -57,7 +57,7 @@ impl App {
         }
         let Some(tab) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) else { return false };
         tab.tab.send(&HostToView::QueryPageState);
-        self.pending_sleeps.insert(id, PendingSleep { why, sent: std::time::Instant::now() });
+        self.scoped.pending_sleeps.insert(id, PendingSleep { why, sent: std::time::Instant::now() });
         true
     }
 
@@ -65,7 +65,7 @@ impl App {
     /// form (and restarts that tab's idle clock); otherwise the tab sleeps,
     /// keeping its scroll position for the wake.
     pub(crate) fn finish_sleep(&mut self, id: NodeId, state: PageState) {
-        let Some(pending) = self.pending_sleeps.remove(&id) else { return };
+        let Some(pending) = self.scoped.pending_sleeps.remove(&id) else { return };
         match sleep_state::verdict(pending.why, &state) {
             Verdict::Stay => self.idle_clock.restart(id, std::time::Instant::now()),
             Verdict::Sleep => {
@@ -81,13 +81,14 @@ impl App {
     /// sweep (a waiting jar switch is asked again by the next sweep).
     pub(super) fn expire_pending_sleeps(&mut self, now: std::time::Instant) {
         let dead: Vec<(NodeId, SleepWhy)> = self
+            .scoped
             .pending_sleeps
             .iter()
             .filter(|(_, p)| sleep_state::expired(p, now))
             .map(|(id, p)| (*id, p.why))
             .collect();
         for (id, why) in dead {
-            self.pending_sleeps.remove(&id);
+            self.scoped.pending_sleeps.remove(&id);
             match why {
                 SleepWhy::Manual => {
                     self.sleep_now(id, None);

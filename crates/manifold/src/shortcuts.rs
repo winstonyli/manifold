@@ -300,7 +300,7 @@ impl App {
     /// already renaming.
     pub(crate) fn rename_current_group_shortcut(&mut self) {
         let Some(group_id) = self.current_group else { return };
-        if self.renaming_group.is_some() || self.current_json_node().is_some() {
+        if self.scoped.renaming_group.is_some() || self.current_json_node().is_some() {
             return;
         }
         if !self.is_container(group_id) {
@@ -308,7 +308,7 @@ impl App {
         }
         // name rule: the field edits the stored name
         let name = self.doc.mirror.name(group_id).to_owned();
-        self.renaming_group = Some((group_id, name));
+        self.scoped.renaming_group = Some((group_id, name));
         self.pending_focus = Some(FocusTarget::GroupRename);
     }
 

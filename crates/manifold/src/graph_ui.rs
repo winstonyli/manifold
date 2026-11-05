@@ -338,7 +338,7 @@ impl App {
             GraphAction::LeaveGroup => {
                 let parent = self.group_of(self.current_group);
                 self.switch_group_level(parent);
-                self.renaming_group = None;
+                self.scoped.renaming_group = None;
             }
             GraphAction::Drop { id, target } => self.apply_drop(id, target),
         }

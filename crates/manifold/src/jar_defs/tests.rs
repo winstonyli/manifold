@@ -530,7 +530,7 @@ fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
     let mut app = App::default();
     let t = crate::card_id::testutil::node(1);
     assert!(!app.host_change_pending(t));
-    app.pending_sleeps.insert(
+    app.scoped.pending_sleeps.insert(
         t,
         crate::sleep_state::PendingSleep {
             why: crate::sleep_state::SleepWhy::JarSwitch,
@@ -538,7 +538,7 @@ fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
         },
     );
     assert!(app.host_change_pending(t));
-    app.pending_sleeps.clear();
+    app.scoped.pending_sleeps.clear();
     app.cookies.jar_pulls.insert(t, std::time::Instant::now());
     let held = crate::tabs::Held::Snapshot(crate::process_manager::ViewKind::Cef, "http://x/".into());
     assert!(app.hold_for_cookies(t, held).is_none());

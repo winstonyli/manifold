@@ -711,6 +711,7 @@ impl App {
         let bounds = cards.iter().fold(egui::Rect::NOTHING, |b, e| b.union(e.rect));
         let view = (bounds.size() + egui::Vec2::splat(2.0 * POPUP_PAD)).clamp(POPUP_MIN, POPUP_MAX);
         let cursor = self
+            .scoped
             .nav_history
             .get(&tab)
             .and_then(|h| h.tree().iter().position(|p| p.cursor))
@@ -721,7 +722,7 @@ impl App {
             _ => crate::graph_ui::GraphCamera::new(),
         };
         // An eviction renumbers the pages under an open popup: the old framing means nothing, so recentre.
-        let epoch = self.nav_history.get(&tab).map_or(0, |h| h.epoch());
+        let epoch = self.scoped.nav_history.get(&tab).map_or(0, |h| h.epoch());
         let epoch_key = egui::Id::new(("trail_popup_epoch", which));
         let seen_epoch = ui.ctx().data_mut(|d| {
             let seen = d.get_temp::<u32>(epoch_key);

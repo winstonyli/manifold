@@ -256,7 +256,7 @@ fn personal_state_applies_the_level_in_views_camera_and_keeps_the_others() {
     assert_eq!(app.current_group, Some(g));
     assert_eq!(Some(app.camera.rect), inside.camera_rect());
     assert!(!app.groups_collapsed, "g's toggle, not the top level's");
-    assert_eq!(app.level_views[&None], top, "kept for the switch back");
+    assert_eq!(app.scoped.level_views[&None], top, "kept for the switch back");
     assert_eq!(app.local_state().levels, levels, "written back as read");
     let ahead = world_rect(0.0, 0.0, 50.0, 50.0);
     app.camera.ease_to(ahead);
@@ -270,8 +270,8 @@ fn personal_state_drops_the_views_of_levels_the_document_no_longer_holds() {
     let mut app = app_on(&temp_dir("level-views-prune").join("session.mnf"), 1);
     let (g, _) = group_with_note(&mut app);
     let gone = NodeId { actor: ActorId(7), counter: 1 };
-    app.level_views.insert(Some(g), LevelView { camera: None, collapsed: true });
-    app.level_views.insert(Some(gone), LevelView { camera: None, collapsed: true });
+    app.scoped.level_views.insert(Some(g), LevelView { camera: None, collapsed: true });
+    app.scoped.level_views.insert(Some(gone), LevelView { camera: None, collapsed: true });
     let levels = app.local_state().levels;
     assert!(levels.contains_key(&Some(g)), "a shown group keeps its view");
     assert!(!levels.contains_key(&Some(gone)), "an id the document doesn't hold is dropped");
@@ -408,7 +408,7 @@ fn leaving_mid_ease_saves_where_the_ease_was_going() {
     let fit = app.fit_all_nodes_scene_rect();
     assert!(app.camera.tween.is_some(), "still easing: no frame has run");
     app.switch_group_level(None);
-    assert_eq!(app.level_views[&Some(g)].camera_rect(), Some(fit));
+    assert_eq!(app.scoped.level_views[&Some(g)].camera_rect(), Some(fit));
 }
 
 #[test]
@@ -416,7 +416,7 @@ fn a_saved_view_that_misses_the_level_falls_back_to_fit_all() {
     let mut app = app_on(&temp_dir("level-views-miss").join("session.mnf"), 1);
     let (g, _) = group_with_note(&mut app);
     let far = world_rect(1.0e6, 1.0e6, 1.0e6 + 100.0, 1.0e6 + 100.0);
-    app.level_views.insert(Some(g), LevelView::new(far, true));
+    app.scoped.level_views.insert(Some(g), LevelView::new(far, true));
     app.switch_group_level(Some(g));
     assert_eq!(eased_to(&app), Some(app.fit_all_nodes_scene_rect()));
     assert!(app.groups_collapsed, "the toggle still comes back");
@@ -430,8 +430,8 @@ fn deleting_the_level_in_view_leaves_no_view_for_it() {
     app.switch_group_level(Some(g));
     app.take_out(g, crate::node_store::Removal::Local);
     assert_eq!(app.current_group, None);
-    assert!(!app.level_views.contains_key(&Some(g)));
-    assert!(app.level_views.contains_key(&None), "the top level's view was saved on the way in");
+    assert!(!app.scoped.level_views.contains_key(&Some(g)));
+    assert!(app.scoped.level_views.contains_key(&None), "the top level's view was saved on the way in");
 }
 
 /// Teardown saves nothing, and the replaced session's level views and toggle go with it.
@@ -442,11 +442,11 @@ fn opening_a_session_drops_the_old_sessions_level_views() {
     app.camera.jump_to(world_rect(7.0, 7.0, 77.0, 77.0));
     app.switch_group_level(Some(g));
     app.groups_collapsed = true;
-    assert!(app.level_views.contains_key(&None), "the top level's view was saved on the way in");
+    assert!(app.scoped.level_views.contains_key(&None), "the top level's view was saved on the way in");
     let json =
         JsonDoc { nodes: vec![json_node("t", Kind::Tab, serde_json::json!({ "url": "https://new/" }))], local: None };
     app.replace_running_session(&json, crate::store::json::Trust::Own);
-    assert!(app.level_views.is_empty(), "no level of the old session survives, the top level's included");
+    assert!(app.scoped.level_views.is_empty(), "no level of the old session survives, the top level's included");
     assert!(!app.groups_collapsed);
     assert_eq!(
         app.local_state().levels.keys().copied().collect::<Vec<_>>(),
@@ -504,7 +504,7 @@ fn leaving_a_level_before_its_framing_settled_saves_no_camera() {
     app.camera.frame_restored = true;
     app.groups_collapsed = true;
     app.switch_group_level(Some(g));
-    assert_eq!(app.level_views[&None], LevelView { camera: None, collapsed: true });
+    assert_eq!(app.scoped.level_views[&None], LevelView { camera: None, collapsed: true });
 }
 
 /// Closing the level in view (`leave_hidden`, then `hide_node`) keeps no view for it: a reopen fits it.
@@ -514,7 +514,7 @@ fn closing_the_level_in_view_leaves_no_view_for_it() {
     let (g, _) = group_with_note(&mut app);
     app.switch_group_level(Some(g));
     app.leave_hidden(g);
-    assert!(app.level_views.contains_key(&Some(g)), "saved on the way out");
+    assert!(app.scoped.level_views.contains_key(&Some(g)), "saved on the way out");
     app.hide_node(g);
-    assert!(!app.level_views.contains_key(&Some(g)));
+    assert!(!app.scoped.level_views.contains_key(&Some(g)));
 }

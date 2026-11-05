@@ -725,9 +725,9 @@ impl App {
             return;
         };
         let mut config = node_menu_config(&view, self.headless);
-        let naming = self.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
+        let naming = self.scoped.naming_jar.as_ref().is_some_and(|(tid, _)| *tid == id);
         let mut frozen_draft = view.renaming.clone();
-        let rename = match (&mut self.renaming_group, &mut self.naming_jar) {
+        let rename = match (&mut self.scoped.renaming_group, &mut self.scoped.naming_jar) {
             (Some((gid, draft)), _) if live && *gid == id => {
                 Some((draft, take_focus(&mut self.pending_focus, FocusTarget::GroupRename), None))
             }
@@ -776,8 +776,13 @@ impl App {
     /// field reporting it (a right-click on empty graph, a change of group level, the tab gone) and another node's menu
     /// opening. Enter, Escape and a click away are the field's own (`NewJar`, `CancelNewJar`).
     fn drop_stray_jar_name(&mut self) {
-        if self.naming_jar.as_ref().is_some_and(|(tid, _)| self.menus.node_menu.open.map(|(id, _)| id) != Some(*tid)) {
-            self.naming_jar = None;
+        if self
+            .scoped
+            .naming_jar
+            .as_ref()
+            .is_some_and(|(tid, _)| self.menus.node_menu.open.map(|(id, _)| id) != Some(*tid))
+        {
+            self.scoped.naming_jar = None;
         }
     }
 
@@ -808,7 +813,7 @@ impl App {
                 // name rule: drawn by display_name in the MoveTo rows
                 .map(|&other| (other, self.doc.mirror.name(other).to_owned()))
                 .collect(),
-            renaming: [&self.renaming_group, &self.naming_jar]
+            renaming: [&self.scoped.renaming_group, &self.scoped.naming_jar]
                 .into_iter()
                 .flatten()
                 .find(|(of, _)| *of == id)
@@ -896,7 +901,7 @@ impl App {
     /// field closes, and a group takes the clean name (`edit_name`). A name with nothing left once cleaned, or an id
     /// that isn't a group, changes nothing. The caller saves.
     pub(crate) fn commit_rename(&mut self, id: NodeId, name: &str) {
-        self.renaming_group = None;
+        self.scoped.renaming_group = None;
         let clean = crate::names::clean_name(name);
         // A group or jar always has a name (an empty draft changes nothing); any other node's name is an override of
         // its derived label, which an empty draft clears.
@@ -975,11 +980,11 @@ impl App {
             NodeAction::Rename => {
                 // name rule: the field edits the stored name
                 let name = self.doc.mirror.name(id).to_owned();
-                self.renaming_group = Some((id, name));
+                self.scoped.renaming_group = Some((id, name));
                 self.pending_focus = Some(FocusTarget::GroupRename);
             }
             NodeAction::CommitRename(name) => self.commit_rename(id, &name),
-            NodeAction::CancelRename => self.renaming_group = None,
+            NodeAction::CancelRename => self.scoped.renaming_group = None,
             NodeAction::ToggleMute => self.toggle_muted(id),
             NodeAction::RetryMissingFile => self.retry_missing_file(id),
             NodeAction::OpenInDefaultViewKind => self.wake_tab(id, self.settings.value.default_starting_view_kind),
@@ -1002,17 +1007,17 @@ impl App {
             NodeAction::OpenPage(_) | NodeAction::MenuBack => {}
             NodeAction::SetJar(jar) => self.set_jar_edge(id, jar),
             NodeAction::StartNewJar => {
-                self.naming_jar = Some((id, String::new()));
+                self.scoped.naming_jar = Some((id, String::new()));
                 self.pending_focus = Some(FocusTarget::JarName);
             }
             NodeAction::NewJar(name) => {
-                self.naming_jar = None;
+                self.scoped.naming_jar = None;
                 if !crate::names::clean_name(&name).is_empty() {
                     let jar = self.create_jar(&name, self.jar_placement_beside(id));
                     self.set_jar_edge(id, Some(jar));
                 }
             }
-            NodeAction::CancelNewJar => self.naming_jar = None,
+            NodeAction::CancelNewJar => self.scoped.naming_jar = None,
             NodeAction::ClearJarCookies => {
                 self.offer_confirm(Confirm::Jar(JarConfirm::Clear(id)));
             }

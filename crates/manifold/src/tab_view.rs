@@ -124,7 +124,7 @@ impl App {
         let mut actions = ItemToolbarActions::default();
         let (can_go_back, can_go_forward) = self.trail_enabled(focused_id);
         let (back_fork, forward_fork) =
-            self.nav_history.get(&focused_id).map_or((false, false), |h| (h.back_fork(), h.forward_fork()));
+            self.scoped.nav_history.get(&focused_id).map_or((false, false), |h| (h.back_fork(), h.forward_fork()));
         let mut back_marker: Option<egui::Response> = None;
         let mut forward_marker: Option<egui::Response> = None;
         toolbar_chip(ui, |ui| {
