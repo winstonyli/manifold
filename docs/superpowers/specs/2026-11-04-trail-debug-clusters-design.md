@@ -1,10 +1,10 @@
 ---
-status: draft
+status: approved 2026-11-04 (user, q3)
 ---
 
 # Trail and debug clusters (LAY2, LAY6)
 
-Plan item: `docs/superpowers/plans/2026-11-04-restructuring-cleanup.md`, LAY2 and LAY6, with decisions p1, q1, r1 (2026-11-04). This is a layout change: no behavior, no stored format, no crate graph change.
+Plan item: `docs/superpowers/plans/2026-11-04-restructuring-cleanup.md`, LAY2 and LAY6, with decisions p1, q3 (reopened from q1), r1 (2026-11-04). This is a layout change: no behavior, no stored format, no crate graph change.
 
 ## Goal
 
@@ -18,9 +18,9 @@ crates/manifold/src/
   trail/history.rs  + history/tests.rs   from nav_history.rs (1490)
   trail/nav.rs      + nav/tests.rs       from trail_nav.rs (941)
   trail/strip.rs    + strip/tests.rs     from trail_strip.rs (1032)
-  debug.rs                       types, parse_line, print_help, MAX_WAIT_SECS, parse_secs   (q1)
-  debug/verbs.rs                 Verb, row helpers, parsers, VERBS
-  debug/reader.rs                run_reader_op, spawn_stdin_reader, Waiters, HeadlessDebug, impl App, debug_key_event
+  debug.rs                       types (Job, DebugJob, ReaderOp, Line, Parsed), Verb and its row helpers, parse_line, print_help, MAX_WAIT_SECS, parse_secs   (q3)
+  debug/verbs.rs                 the parsers, VERBS, and the four debug_* App helpers beside their rows
+  debug/reader.rs                run_reader_op, spawn_stdin_reader, Waiters, HeadlessDebug, run_debug_job, debug_key_event
   debug/export.rs   + export/tests.rs    from debug_export.rs (693)
   debug/input.rs                 from event_loop/debug_input.rs (168)
   debug/tests.rs                 debug_control's test block (400): one file, since its tests drive `parse_line` over `VERBS`
@@ -59,12 +59,8 @@ Phases: **LAY2 first**, then **LAY6 after ARC1** (r1). The two do not depend on 
 
 - **Glob root imports (rule 4).** The one non-mechanical edit; a missed `use super::*;` fails to compile, so it cannot ship silently.
 - **Branch `parked/idle-repaint-hook`** (625 behind main, 1 ahead) touches `event_loop.rs`, `main.rs` and `trail_nav.rs`; the overlap is mod lines and one trail_nav line. Weak evidence of no collision; say so when merging.
-- **Visibility cost of the three-way debug split (open, see Decision pending).** About 20 items cross the `debug`/`verbs`/`reader` boundaries and gain `pub(super)`: `Verb`'s fields (`usage`, `doc`, `pointer`, `parse`) read by `parse_line` and `print_help`; `Verb::word`, `VERBS`, `Parsed`, `Job`; `DebugJob.run` (read by `run_debug_job` in `reader.rs`) and `DebugJob::quit` -> `quit` (`verbs.rs`); `debug_key_event` (called from `verbs.rs:133`, defined in `reader.rs`); the four private `impl App` helpers `debug_move_to_group`, `debug_set_note_text`, `debug_move_node`, `debug_close_node` (`debug_control.rs:1187-1221`, called by `VERBS` closures and by tests); and the parsers `debug/tests.rs` calls (`parse_click`, `parse_add_file`, `parse_move_node`, `parse_rename`, `parse_use_jar`, `parse_zoom_pct`, `split_id`, `row`). The modules also depend on each other in a cycle (legal in Rust).
+- **Visibility (q3).** `verbs.rs` reads `Verb`, `Parsed`, `Job` and `row`/`pointer_row` from `debug.rs`; `debug.rs` reads `VERBS` and the parsers the tests call from `verbs.rs`; `reader.rs` reads `DebugJob`, `ReaderOp`, `Line`, `parse_line`; `verbs.rs` calls `quit` and `debug_key_event`. Roughly 6 to 10 items gain `pub(super)`, found by the compiler; the four `debug_*` helpers and the parsers that `debug/tests.rs` calls are `pub(super)` (visible in `debug` and its children, so the tests see them). The `debug`/`verbs`/`reader` modules refer to each other (legal in Rust).
 - **ARC1 ordering.** If ARC1 slips, LAY6 waits or edits the scanner path (r1/r2).
-
-## Decision pending
-
-q1 (three-way) was chosen before this visibility cost was known. Alternative q3: `debug.rs` (types, `parse_line`, `print_help`, the `Verb` table machinery) + `debug/verbs.rs` (parsers, `VERBS` and the four `debug_*` helpers, so they stay beside their rows) + `debug/reader.rs` (reader, `Waiters`, `HeadlessDebug`, `debug_key_event`), with the tests in `debug/tests.rs`; this removes the helper, parser and `Verb`-field crossings and leaves about 6 `pub(super)` items. The plan waits for the choice.
 
 ## Out of scope
 
