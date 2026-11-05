@@ -107,6 +107,23 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **ARC2. One background-worker primitive** for favicon, redirect, image and PDF fetch/decode: new `worker.rs` `Pool<K,J,R>` (per-key dedupe, worker/throttle cap, panic-to-failure), delete `net::Throttle`. ~250 lines edited, net ~-150. Independent. **Own plan** (shared helper). Second survey recommended before design: the four users' guards differ in details the survey summarised.
 
+**ARC2 second survey, 2026-11-05** (read-only; code read at `bb5d14fb`, nine claims checked by three skeptics, workflow `wf_50a038f4-770`, none refuted, two corrected). The four differ as follows:
+
+| | favicon | redirect | image | PDF |
+|---|---|---|---|---|
+| Threads | one per job, cap 4 | one per job, cap 4 | 2 fixed, shared queue | 2 fixed, shared queue |
+| Slot frees | in `tick` | in `tick` | when the job ends | when the job ends |
+| Repeat request | dropped (origin) | dropped (node id) | runs again | runs again |
+| Panic | `None` | `body: None` | `Err` naming the file | none: the worker dies |
+| Cancel | none | none | none | queued mark, or kills the child |
+| Result | origin, image | whole job, body | id, `Result` | id, `Result` |
+
+Corrections to the item above: "panic-to-failure" is not what all four do (PDF has no guard), and per-key dedupe would be a regression for image and PDF. `reload_fetched_node` (`fetched.rs`) re-requests the same id without cancelling, because the file at that path was just replaced, so the repeat must run. The pool cannot share one cap or queue either: a redirect can hold a slot about 13 minutes.
+
+Defects found, from reading only (no test reproduces them yet): (1) a PDF render panic kills its worker with no result, so the card spins for ever, and once both workers are dead `request` drops jobs silently (panic sources are few: thread-spawn failure and unreviewed callees); (2) two jobs for one id can finish in either order and results carry no job identity, so an old result or `Err` can overwrite the new state; (3) in PDF `State`, a second `begin` overwrites the first `Cancel` and the first `finish` removes the second's, so that render can't be cancelled; (4) `Err("cancelled")` is toasted as "Couldn't open PDF" if a node with that id exists by then (session teardown then reload of the same ids); (5) `cancel` of a queued PDF then `request` leaves two queue entries. Unused: `ImageDecoder::pending` is read only under `cfg(test)`, and `RedirectFetcher::request`'s bool only by tests.
+
+Not subsumed by a pool: `SuggestionFetcher`, JSON search, `search/service.rs`, `view_install` downloads, tab spawn (`tabs.rs`; keyed but uncapped, reports through the event proxy). Queued favicon and redirect jobs start only from `tick`, which a modal file dialog stops and headless mode runs only sporadically. Design options and the choice go in the item's own spec.
+
 **ARC3. Jar: one owner for `jars` and its spawn-thread snapshot (`JarState`), `jar_defs` into `jar/`.** File move follows LAY5 (`jar/defs/...`, d3a); ARC3's flat path is revisit-later. State half: `App::jars` (`main.rs:319`) into `jar::CookieState` renamed `JarState` with the only mutators that write both the map and `jar_snapshots`. 4 files moved + 1 deleted, ~60 path lines, ~80 logic lines. **Own plan.** **File half (LAY5) Done 2026-11-05:** `jar_defs.rs` -> `jar/defs.rs`, `jar_defs/{label,lifecycle,tests}.rs` -> `jar/defs/` (100% renames), `pub(crate) mod defs;` in `jar.rs`, `mod jar_defs;` out of `main.rs`; 17 files, 37 lines of paths, no logic; 2033 tests = before under `^jar_defs::` -> `jar::defs::`; `cargo lint`, gate tests ok. State half stays in PARKED "Shared-owner refactors".
 
 **ARC5 / LAY8. Sleep lifecycle.** Decided d3b: LAY8 files-only move now; the ARC5 `SleepState` grouping stays with the ARC1 state batch. `idle_clock`, `pending_sleeps`, `saved_scroll` -> `SleepState`; files `idle_sleep.rs` + `sleep_state.rs` + `tabs/sleep.rs`. **LAY8 Done 2026-11-05:** `sleep_state.rs` -> `tabs/sleep/state.rs`, `idle_sleep.rs` -> `tabs/sleep/idle.rs` (100% renames; `pub(crate) mod idle; state;` in `tabs/sleep.rs`, `tabs::sleep` made `pub(crate)`); 2033 tests = before under the two prefix maps; no `tier.rs` change. Not done: the ARC5 state half. ARC5's top-level `sleep/` is revisit-later; requires ARC1 for the state half.
