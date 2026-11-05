@@ -36,6 +36,8 @@ mod labels;
 mod launch_forms;
 #[cfg(windows)]
 mod layout;
+#[cfg(test)]
+mod limits;
 #[cfg(windows)]
 mod link;
 mod nonce;
