@@ -1,5 +1,5 @@
 ---
-status: draft (review round 1 applied: slim-check shapes and `jars`, excuse lists, `LinkGesture`, `GpuState` order, main.rs cost)
+status: approved 2026-11-04 (user)
 ---
 
 # Compile-checked node-id forgetting (ARC1)
@@ -23,7 +23,7 @@ Plan item: `docs/superpowers/plans/2026-11-04-restructuring-cleanup.md`, ARC1, w
 | Struct | Today | Change |
 |---|---|---|
 | `SpawnTracker` (`tabs.rs`) | has `forget` | destructure all 12 fields; `spawning`, `remote_in_flight`, `wakes_in_flight`, `host_loads` excused (spawn lifecycle), `tab_spawns_in_flight`, `tabs_spawned_waiters`, `session_generation` `_` |
-| `CookieState` (`jar.rs`) | `forget` returns the held answer | destructure all 8; `jar_dirty`, `jar_snapshots`, `jar_last_pull` excused with "forgotten by `App::forget_jar_memory`" (file I/O, stays an `App` method) |
+| `CookieState` (`jar.rs`) | `forget` returns the held answer | destructure all 8; `jar_dirty`, `jar_snapshots` excused with "forgotten by `App::forget_jar_memory`" (file I/O, stays an `App` method); `jar_last_pull` excused as a round timestamp, not per node |
 | `GraphInteraction` (`graph_nav.rs`) | `forget(CardId)` | destructure all 11; `drag_moved`, `pending_new_node`, `drag_origin` (ids, taken by `apply_drop`), `rect_select_start`, `label_section` excused with their reasons |
 | `NodeMenu`, `MenuPopups` (`popups/menus.rs`) | `NodeMenu::forget` | destructure `NodeMenu` (`fade` excused: its frozen copy fades out); `MenuPopups` has no id-keyed forget, `trail_menu` is a virtual card id |
 | `PageTabGate` | has `forget` | destructure (one field) |
