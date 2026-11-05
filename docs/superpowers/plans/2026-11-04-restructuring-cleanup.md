@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Restructuring cleanup (2026-11-04)
@@ -95,7 +95,7 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **LAY9. Split impl-block bulk out of `card.rs` (630-line `impl App` 1012-1641 -> `card/frame.rs`) and `gpu.rs` (render passes).** No path changes; ~1100 lines moved, ~20 lines of logic (`pub(super)` on helpers). Independent.
 
-**ARC11. Rename `json_file.rs`.** Done by LAY10 (d3c): `json_file.rs` -> `profile/file.rs`; not a separate item.
+**ARC11. Rename `json_file.rs`.** Same as LAY10 (d3c), parked with it: `json_file.rs` -> `profile/file.rs`; not a separate item.
 
 ### State ownership (ARC)
 
@@ -142,3 +142,5 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 - Generalising `debug_control` verbs, `shortcuts`, `settings_rows`, gate `STAGES`, unifying `Kind`/`CardKind`/`ViewKind` matches: already tables, or the match counts do not repeat across files.
 - Engines crate, `session_sync` etc. as crates, `names` crate, `net` crate, gate-release split, lib/bin split, merging protocol/pages/hosts: dependencies or `impl App` coupling make them worse (CRT rejected list).
 - **REP7 Decided against 2026-11-04** (move two decision-type specs to `docs/decisions/`): leaves 13 dangling frozen cites for a small convention gain. **REP8 Decided against 2026-11-04** (CLAUDE.md "Branches" duplicates README:385-392, checked): CLAUDE.md must work without following a link.
+
+**Closed 2026-11-04.** Done: REP1, REP2, REP3, REP5, REP6, TST1, CRT4, LAY2, LAY6, ARC1. Every other item is parked with a trigger in `PARKED.md` "Restructuring leftovers (2026-11-04)". Whole-branch review: one Opus pass over `3880fc29~1..HEAD`, seven findings, all fixed (`d2415185`, `48d52b75`).
