@@ -100,10 +100,10 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         }
     }
     if let Some(rel) = in_src {
-        if rel.contains('/') {
-            return light("a module directory on no list".into());
-        }
-        if let Some(b) = rel.strip_suffix(".rs") {
+        // The first path component names the module, as a file or a folder; a source file inside either is judged by it.
+        let first = rel.split('/').next().unwrap_or("");
+        let b = first.strip_suffix(".rs").unwrap_or(first);
+        if rel.ends_with(".rs") {
             if UI_FILES.contains(&b) {
                 return if read(p).is_some_and(|t| imports_core(&t)) {
                     light(format!("{b} is on the ui list but imports a core module"))
@@ -112,6 +112,9 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
                 };
             }
             return light(format!("{b} is on neither the ui nor the full list"));
+        }
+        if rel.contains('/') {
+            return light("a module directory on no list".into());
         }
     }
     if p.starts_with("scripts/") || p.starts_with(".githooks/") || p.starts_with(".github/") {
@@ -240,6 +243,16 @@ mod tests {
             assert_eq!(tier_of(&[p], &[]), "TIER full", "{p}");
         }
         assert_eq!(tier_of(&["src/link_gestures/tests.rs"], &[]), "TIER light");
+    }
+
+    #[test]
+    fn a_ui_module_is_ui_as_a_file_or_a_folder() {
+        for p in ["src/theme.rs", "src/theme/tests.rs", "src/graph_layout/tests.rs"] {
+            assert_eq!(tier_of(&[p], &[(p, "use egui;")]), "TIER ui", "{p}");
+        }
+        assert_eq!(tier_of(&["src/theme/tests.rs"], &[("src/theme/tests.rs", "use crate::session::S;")]), "TIER light");
+        assert_eq!(tier_of(&["src/main/tests.rs"], &[]), "TIER light");
+        assert_eq!(tier_of(&["src/theme/fixture.json"], &[]), "TIER light");
     }
 
     #[test]
