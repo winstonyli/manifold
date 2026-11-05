@@ -209,6 +209,46 @@ fn teardown_cancels_pending_pdf_renders() {
     assert!(!app.workers.pdf_renderer.is_cancelled(note), "only PDFs are marked");
 }
 
+/// A session replaced by one with the same ids: the old render's "cancelled" is not news for the new card.
+#[test]
+#[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
+fn a_cancelled_render_says_nothing_to_a_card_that_took_its_id() {
+    use crate::pdf::render::{PdfRenderResult, PdfRenderer};
+    use std::sync::{mpsc, Arc, Mutex};
+    let (started_tx, started) = mpsc::channel();
+    let (release_tx, release) = mpsc::channel::<()>();
+    let release = Arc::new(Mutex::new(release));
+    let mut app = App::default();
+    app.workers.pdf_renderer = PdfRenderer::with_render(move |path: &str, _| {
+        if path == "old.pdf" {
+            started_tx.send(()).unwrap();
+            let _ = release.lock().unwrap().recv();
+            return Err("cancelled".into());
+        }
+        Ok(PdfRenderResult { width: 1, height: 1, page_count: 1, rgba: Vec::new() })
+    });
+    let pdf = add(&mut app, Kind::Pdf, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
+    let patience = std::time::Duration::from_secs(20);
+    app.workers.pdf_renderer.request(pdf, "old.pdf".into());
+    started.recv_timeout(patience).unwrap();
+    app.workers.pdf_renderer.cancel(pdf);
+    app.workers.pdf_renderer.request(pdf, "new.pdf".into());
+    release_tx.send(()).unwrap();
+
+    let outcome = |app: &App| app.nodes[&pdf].as_pdf().and_then(|p| p.outcome.as_ref().map(|o| o.is_ok()));
+    let end = std::time::Instant::now() + patience;
+    while outcome(&app).is_none() && std::time::Instant::now() < end {
+        app.finish_image_decodes();
+    }
+    // The old result is either on its way or dropped, and a drop leaves nothing to wait on.
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while app.toasts.save_toast_queue.is_empty() && std::time::Instant::now() < end {
+        app.finish_image_decodes();
+    }
+    assert!(app.toasts.save_toast_queue.is_empty(), "{:?}", app.toasts.save_toast_queue);
+    assert_eq!(outcome(&app), Some(true), "the new render stands");
+}
+
 /// Wave 2 (teardown order): replacing the session queues a delete for every live non-jar node of the document and
 /// for every link (saved or not), leaves nothing to create, and leaves the mirror no links.
 #[test]

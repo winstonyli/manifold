@@ -87,12 +87,23 @@ pub struct PdfRenderer {
 
 impl PdfRenderer {
     pub fn new() -> Self {
+        Self::with_render(render)
+    }
+
+    /// `new` with `render` as the renderer; tests swap in a stub.
+    pub(crate) fn with_render(
+        render: impl Fn(&str, manifold_view_protocol::render::Inbox) -> Result<PdfRenderResult, String>
+            + Clone
+            + Send
+            + 'static,
+    ) -> Self {
         let (tx, queue) = mpsc::channel::<(NodeId, String)>();
         let (result_tx, rx) = mpsc::channel();
         let queue = Arc::new(Mutex::new(queue));
         let state = Arc::new(State::default());
         for _ in 0..WORKERS {
-            let (queue, result_tx, state) = (Arc::clone(&queue), result_tx.clone(), Arc::clone(&state));
+            let (queue, result_tx, state, render) =
+                (Arc::clone(&queue), result_tx.clone(), Arc::clone(&state), render.clone());
             thread::spawn(move || loop {
                 // The lock is held only while waiting for the next request, never while rendering.
                 let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
@@ -179,6 +190,17 @@ mod tests {
             state.begin(node(2), manifold_view_protocol::render::channel().0),
             "a later request for the same id still renders"
         );
+    }
+
+    /// Two renders of one id overlap (`reload_fetched_node`): the first finishing must leave the second cancellable.
+    #[test]
+    #[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
+    fn a_finished_render_leaves_a_later_render_of_its_id_cancellable() {
+        let state = State::default();
+        assert!(state.begin(node(3), manifold_view_protocol::render::channel().0));
+        assert!(state.begin(node(3), manifold_view_protocol::render::channel().0));
+        state.finish(node(3));
+        assert_eq!(state.running_ids(), [node(3)], "the second render still runs");
     }
 
     #[test]

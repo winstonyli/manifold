@@ -27,15 +27,20 @@ pub struct ImageDecoder {
 
 impl ImageDecoder {
     pub fn new() -> Self {
+        Self::with_decode(decode)
+    }
+
+    /// `new` with `decode` as the decoder; tests swap in a stub.
+    fn with_decode(decode: impl Fn(&str) -> Result<Decoded, String> + Clone + Send + 'static) -> Self {
         let (tx, queue) = mpsc::channel::<(NodeId, String)>();
         let (result_tx, rx) = mpsc::channel();
         let queue = Arc::new(Mutex::new(queue));
         for _ in 0..WORKERS {
-            let (queue, result_tx) = (Arc::clone(&queue), result_tx.clone());
+            let (queue, result_tx, decode) = (Arc::clone(&queue), result_tx.clone(), decode.clone());
             thread::spawn(move || loop {
                 // The lock is held only while waiting for the next request, never while decoding.
                 let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
-                if result_tx.send((id, guarded(&path, decode))).is_err() {
+                if result_tx.send((id, guarded(&path, &decode))).is_err() {
                     return;
                 }
             });
@@ -125,6 +130,43 @@ mod tests {
         assert_eq!((good.width, good.height, good.rgba.len()), (3, 2, 24));
         assert!(done[0].1.as_ref().is_err_and(|e| e.starts_with("Couldn't open image bad.png: ")));
         assert!(done[1].1.is_err());
+    }
+
+    /// A reload re-requests a node while its old decode still runs: the old one finishing last must not win.
+    #[test]
+    #[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
+    fn the_newest_request_for_a_node_decides_its_image() {
+        let (started_tx, started) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel::<()>();
+        let release = Arc::new(Mutex::new(release));
+        let decoder = ImageDecoder::with_decode(move |path: &str| {
+            if path == "old" {
+                started_tx.send(()).unwrap();
+                let _ = release.lock().unwrap().recv();
+            }
+            Ok(Decoded { width: if path == "old" { 1 } else { 2 }, height: 1, rgba: Vec::new() })
+        });
+        let patience = std::time::Duration::from_secs(20);
+        decoder.request(node(1), "old".into());
+        started.recv_timeout(patience).unwrap();
+        decoder.request(node(1), "new".into());
+
+        let mut widths = Vec::new();
+        let mut take = |decoder: &ImageDecoder| {
+            widths.extend(decoder.tick().into_iter().map(|(_, r)| r.unwrap().width));
+            widths.clone()
+        };
+        let end = std::time::Instant::now() + patience;
+        while !take(&decoder).contains(&2) && std::time::Instant::now() < end {
+            std::thread::yield_now();
+        }
+        release_tx.send(()).unwrap();
+        // The old result is either on its way or dropped, and a drop leaves nothing to wait on.
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while !take(&decoder).contains(&1) && std::time::Instant::now() < end {
+            std::thread::yield_now();
+        }
+        assert_eq!(take(&decoder).last(), Some(&2), "the newest request's image stays");
     }
 
     #[test]
