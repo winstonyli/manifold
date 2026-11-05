@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Groups as scopes, the nested layout and the hard anchor
