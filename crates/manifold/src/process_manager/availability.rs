@@ -25,11 +25,11 @@ pub(super) fn run_in_place_from(host: &Host, exe_dir: &Path, dev_folders: bool) 
 }
 
 /// Whether the in-place lookup looks in dev build folders: only in a build that pins no hosts (a dev build). A release
-/// (`host_pin::embedded`) runs a host from beside `manifold.exe` or from its hash-pinned download, never from a folder
+/// (`view_install::host_pin::embedded`) runs a host from beside `manifold.exe` or from its hash-pinned download, never from a folder
 /// found by walking up: any user can create a folder in a drive root, so the walk could reach a host nobody pinned, and
 /// a host in place skips the hash check.
 fn walks_dev_folders() -> bool {
-    !crate::host_pin::embedded()
+    !crate::view_install::host_pin::embedded()
 }
 
 /// Where to find each view-host's executable: the host that runs in place (`run_in_place`), else where it is installed

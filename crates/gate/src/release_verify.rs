@@ -61,7 +61,7 @@ pub(crate) fn manifest_files(manifest: &str) -> Result<Vec<Pinned>, String> {
 
 /// What keeps `entries` (a parsed manifest) from pinning exactly the host table's files for a release built on
 /// `running`: each file a `Download` row pins under its platform that the manifest lacks, then each file the manifest
-/// lists that no row pins there. Stricter than `Host::pinned_under`, the check `host_pin::parse` makes: a host under
+/// lists that no row pins there. Stricter than `Host::pinned_under`, the check `view_install::host_pin::parse` makes: a host under
 /// another OS's platform (`cef` under `linux-x64` in a Windows release) is a gap here.
 pub(crate) fn manifest_gaps(entries: &[Pinned], running: Os) -> Vec<String> {
     let mut expected = Vec::new();
@@ -185,7 +185,7 @@ mod tests {
             "webkit/windows-x64 manifold-view-webkitgtk: not pinned by the host table",
         ];
         assert_eq!(manifest_gaps(&moved, windows), want);
-        // CEF is built for whichever OS runs it, so pinned_under alone (host_pin::parse's check) accepts it under
+        // CEF is built for whichever OS runs it, so pinned_under alone (view_install::host_pin::parse's check) accepts it under
         // linux-x64; a Windows release does not pin it there.
         assert_eq!(manifold_hosts::CEF.pinned_under("linux-x64"), Some(vec!["manifold-view-cef".to_owned()]));
         let mut linux_cef = windows_release();

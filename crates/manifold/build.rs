@@ -2,11 +2,11 @@
 //! `manifold.exe` when its variable (`Host::embed_var`: `MANIFOLD_WEBVIEW2_HOST`, `MANIFOLD_PDFIUM_HOST`) names a
 //! file and the target is Windows (`release.yml` sets them; the extraction sets no execute bit, so the embed is a
 //! Windows mechanism). Every other build embeds an empty stub, so dev builds, the gate and Linux CI use the hosts in
-//! place. `embedded_host.rs` includes the generated `OUT_DIR/embedded.rs`: one `(id, bytes, sha256)` entry per row,
+//! place. `view_install/embedded_host.rs` includes the generated `OUT_DIR/embedded.rs`: one `(id, bytes, sha256)` entry per row,
 //! in `ALL`'s order, the bytes from `OUT_DIR/<id>-host.bin` and the lowercase hex SHA-256 as a literal (empty for the
 //! stub). Only a row's `id`, `delivery` and `embed_var()` are read here, never a method taking an OS: `Os::here()`
 //! would be the build machine, not the target. `MANIFOLD_HOST_PINS` names the manifest of the downloadable hosts a
-//! release carries; it is copied to `OUT_DIR/host-pins.json` for `host_pin.rs` (empty without it).
+//! release carries; it is copied to `OUT_DIR/host-pins.json` for `view_install/host_pin.rs` (empty without it).
 
 use manifold_hosts::Delivery;
 use sha2::{Digest, Sha256};

@@ -142,7 +142,7 @@ fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<Pd
     command.arg(path);
     let frame = manifold_view_protocol::render::run_child(command, LABEL, RENDER_TIMEOUT, inbox, |command| {
         // A just-extracted exe can be held for a moment by a scanner: the same retry the WebView2 spawn has.
-        let child = crate::embedded_host::spawn_fresh(command)?;
+        let child = crate::view_install::embedded_host::spawn_fresh(command)?;
         crate::process_manager::contain_view_process(&child);
         Ok(child)
     })?;

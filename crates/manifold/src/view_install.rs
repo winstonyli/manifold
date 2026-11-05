@@ -10,8 +10,8 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use crate::host_pin::Component as HostFile;
 use crate::process_manager::ViewKind;
+use crate::view_install::host_pin::Component as HostFile;
 
 use manifold_hosts::{Delivery, Os, CEF, CEF_RUNTIME_DIR};
 use manifold_view_protocol::transport::to_hex;
@@ -176,7 +176,7 @@ pub(crate) fn host_platform(kind: ViewKind) -> &'static str {
 /// The host files this build pins for `kind` on this platform; empty for an engine that is not downloaded.
 pub(crate) fn host_components(kind: ViewKind) -> &'static [HostFile] {
     if downloads(kind) {
-        crate::host_pin::components_for(kind, host_platform(kind))
+        host_pin::components_for(kind, host_platform(kind))
     } else {
         &[]
     }
@@ -1199,6 +1199,9 @@ impl crate::App {
         }
     }
 }
+
+pub(crate) mod embedded_host;
+pub(crate) mod host_pin;
 
 #[cfg(test)]
 mod tests;

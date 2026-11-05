@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::embedded_host;
+use crate::view_install::embedded_host;
 use crate::view_install::{
     downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
     RuntimeOnDisk, ViewStatus,
@@ -935,7 +935,7 @@ pub(crate) struct Prepared {
     env: Vec<(&'static str, std::ffi::OsString)>,
     cache_dir: Option<PathBuf>,
     profile_slot: Option<usize>,
-    /// The exe was just extracted from the copy embedded in `manifold.exe` (`embedded_host::spawn_fresh`).
+    /// The exe was just extracted from the copy embedded in `manifold.exe` (`view_install::embedded_host::spawn_fresh`).
     fresh: bool,
 }
 
@@ -1160,7 +1160,7 @@ use webkit::{webkit_env, webkit_shell_command};
 mod tests;
 
 /// The PDF view exe: in place beside `manifold.exe` when built there (dev trees, the gate; `run_in_place`), else the
-/// copy embedded in this build, extracted on first use (`embedded_host::ensure`). `None` when neither exists.
+/// copy embedded in this build, extracted on first use (`view_install::embedded_host::ensure`). `None` when neither exists.
 pub(crate) fn pdf_view_exe() -> std::io::Result<Option<std::path::PathBuf>> {
     if let Some(exe) = run_in_place(&manifold_hosts::PDFIUM) {
         return Ok(Some(exe));

@@ -240,7 +240,14 @@ mod tests {
 
     #[test]
     fn core_modules_and_their_test_dirs_are_full() {
-        for p in ["src/view_install/tests.rs", "src/process_manager/tests.rs", "src/jar/tests.rs", "src/net.rs"] {
+        for p in [
+            "src/view_install/tests.rs",
+            "src/process_manager/tests.rs",
+            "src/jar/tests.rs",
+            "src/net.rs",
+            "src/view_install/host_pin.rs",
+            "src/view_install/embedded_host.rs",
+        ] {
             assert_eq!(tier_of(&[p], &[]), "TIER full", "{p}");
         }
         assert_eq!(tier_of(&["src/link_gestures/tests.rs"], &[]), "TIER light");

@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn every_entry_of_the_written_manifest_is_one_the_app_accepts() {
-        // Spec R6: a manifest manifest_gaps passes also passes host_pin::parse, whose check is Host::pinned_under.
+        // Spec R6: a manifest manifest_gaps passes also passes view_install::host_pin::parse, whose check is Host::pinned_under.
         let entries = written_manifest("agreement");
         assert_eq!(entries.len(), 5);
         for e in &entries {

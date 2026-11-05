@@ -468,10 +468,15 @@ fn a_host_that_exits_with_a_fatal_line_is_reported_by_that_line() {
 const HASH: &str = "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c";
 
 /// Servo's pinned host: the exe and the two ANGLE DLLs it needs beside it (1 + 2 + 90 MB).
-static SERVO_FILES: [crate::host_pin::Component; 3] = [
-    crate::host_pin::Component { file: "libEGL.dll", url: "http://x/egl", size: 1_000_000, sha256: HASH },
-    crate::host_pin::Component { file: "libGLESv2.dll", url: "http://x/gles", size: 2_000_000, sha256: HASH },
-    crate::host_pin::Component {
+static SERVO_FILES: [crate::view_install::host_pin::Component; 3] = [
+    crate::view_install::host_pin::Component { file: "libEGL.dll", url: "http://x/egl", size: 1_000_000, sha256: HASH },
+    crate::view_install::host_pin::Component {
+        file: "libGLESv2.dll",
+        url: "http://x/gles",
+        size: 2_000_000,
+        sha256: HASH,
+    },
+    crate::view_install::host_pin::Component {
         file: "manifold-view-servo.exe",
         url: "http://x/servo",
         size: 90_000_000,
@@ -481,8 +486,12 @@ static SERVO_FILES: [crate::host_pin::Component; 3] = [
 const SERVO_SIZE: u64 = 93_000_000;
 
 /// CEF's pinned host (0.7 MB) and the platform's runtime archive.
-static CEF_FILES: [crate::host_pin::Component; 1] =
-    [crate::host_pin::Component { file: "manifold-view-cef.exe", url: "http://x/cef", size: 700_000, sha256: HASH }];
+static CEF_FILES: [crate::view_install::host_pin::Component; 1] = [crate::view_install::host_pin::Component {
+    file: "manifold-view-cef.exe",
+    url: "http://x/cef",
+    size: 700_000,
+    sha256: HASH,
+}];
 
 fn servo_plan() -> Result<Plan, String> {
     Ok(Plan { host: &SERVO_FILES, runtime: None })
@@ -513,7 +522,7 @@ fn view_kinds_that_are_not_downloaded_are_installed_where_the_os_can_run_them() 
 }
 
 /// WebKit's host is the Linux ELF, pinned for linux-x64 whichever OS runs manifold (WSL runs it on Windows).
-static WEBKIT_FILES: [crate::host_pin::Component; 1] = [crate::host_pin::Component {
+static WEBKIT_FILES: [crate::view_install::host_pin::Component; 1] = [crate::view_install::host_pin::Component {
     file: "manifold-view-webkitgtk",
     url: "http://x/webkit",
     size: 7_000_000,
