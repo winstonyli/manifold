@@ -1,5 +1,5 @@
 //! The document and everything that tracks its sync with the store, held apart from the UI so `App`'s other
-//! `impl`s reach it through one name. Its id-holding fields are covered by `every_id_keyed_field_is_forgotten_or_excused`.
+//! `impl`s reach it through one name. Its id-holding fields are forgotten by `Doc::forget`, which destructures `Doc` exhaustively.
 
 use std::collections::HashMap;
 
@@ -46,5 +46,27 @@ impl Default for Doc {
             store_recovered: false,
             label_ms: 0,
         }
+    }
+}
+
+impl Doc {
+    /// Drops `id`, a node being removed for good, from the state it leaves in the document.
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        let Self {
+            // A hide re-inserts its entry after this; every permanent removal drops it.
+            hidden_local,
+            journal: _,
+            replica: _,
+            fallback_ids: _,
+            // Each removing caller takes the node out of the mirror itself.
+            mirror: _,
+            // The `pending*` queues: the save's `editable` filter drops a deleted node's ops; `held_text` is pruned for
+            // non-editing notes at save, and teardown clears it.
+            writes: _,
+            local_persist: _,
+            store_recovered: _,
+            label_ms: _,
+        } = self;
+        hidden_local.remove(&id);
     }
 }

@@ -116,9 +116,11 @@ impl NodeMenu {
 
     /// Drops the menu `id` has open: it is gone.
     pub(crate) fn forget(&mut self, id: NodeId) {
-        if self.open.as_ref().is_some_and(|(n, _)| *n == id) {
-            self.open = None;
-            self.page = None;
+        // `fade` is the closing menu's frozen copy: it fades out whatever happens to the node.
+        let Self { open, page, fade: _ } = self;
+        if open.as_ref().is_some_and(|(n, _)| *n == id) {
+            *open = None;
+            *page = None;
         }
     }
 }

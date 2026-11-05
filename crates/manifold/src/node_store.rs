@@ -169,24 +169,25 @@ impl App {
     }
 
     /// Everything a permanently removed node leaves behind that carries no order: per-id tables, the gestures and
-    /// latches naming it, its GPU textures. Called by every permanent removal (`take_out`,
-    /// `merge_groups`, `teardown_running_session`); `main.rs`'s
-    /// `every_id_keyed_field_is_forgotten_or_excused` fails if an id-holding App field is in neither this nor its
-    /// `NOT_FORGOTTEN` list. Deliberately not here:
-    /// - `wakes_in_flight`: a tab closed while waking needs it, so the landing commits its delete;
-    /// - `spawning`, `remote_in_flight`, `host_loads`: the spawn lifecycle owns them;
-    /// - the `pending*` save queues: the save's `editable` filter drops a deleted node's ops;
-    /// - `layout`, `held_text`: pruned to live nodes at every save.
+    /// latches naming it, its GPU textures. Called by every permanent removal: `take_out` (through `unshow`,
+    /// node_store.rs), `teardown_running_session` and `forget_deleted`. `hide_node` runs it too (through `unshow`) and
+    /// then re-inserts its `hidden_local` entry. Each group that owns id-keyed state forgets it in a `forget` that
+    /// destructures `Self` exhaustively (`SpawnTracker`, `CookieState`, `GraphInteraction`, `NodeMenu`, `PageTabGate`,
+    /// `LinkGesture`, `Doc`), so a new field fails to compile until it is handled or excused there;
+    /// `every_id_field_of_app_is_forgotten_or_excused` (`main/tests.rs`) covers `App`'s own fields. Deliberately not
+    /// here:
+    /// - `undo` (`UndoHistory`): its entries keep their ids so Reopen works;
+    /// - `layout`, `node_order`, `focused`, `split_tab`, `viewed_image`, `current_group`: see `EXCUSED` in that test.
     ///
     /// Never call it for a crash respawn or an engine swap: those are temporary, and keep `tab_crashes`,
     /// `nav_history` and `saved_scroll`.
     pub(crate) fn forget_id(&mut self, id: NodeId) {
         self.spawns.forget(id);
-        // A hide re-inserts its entry after this; every permanent removal drops it.
-        self.doc.hidden_local.remove(&id);
+        self.doc.forget(id);
         self.level_views.remove(&Some(id));
         self.pending_sleeps.remove(&id);
-        self.clear_cookie_state(id);
+        // The held answer is dropped, not cancelled: `pending_sleeps` is already gone, so nothing awaits it.
+        self.cookies.forget(id);
         self.saved_scroll.remove(&id);
         self.nav_history.remove(&id);
         self.page_tab_gate.forget(id);
@@ -199,11 +200,9 @@ impl App {
         }
         self.menus.node_menu.forget(id);
         self.interaction.forget(CardId::from(id));
-        self.forget_connect_source(id);
+        self.link.forget(id);
         if let Some(gpu) = &mut self.gpu {
-            gpu.free_tab_thumbnail(id);
-            gpu.free_tab_texture(id);
-            gpu.free_image(id);
+            gpu.forget(id);
         }
     }
 }

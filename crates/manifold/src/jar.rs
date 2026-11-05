@@ -463,11 +463,23 @@ impl CookieState {
     /// Drops tab `id`'s host from the per-tab tables (it closed, or a new host replaces it): its `jar_tabs` entry, pull
     /// bookkeeping and reseed mark. Returns the held answer, if any, for the caller to cancel (`App::cancel_held`).
     pub(crate) fn forget(&mut self, id: NodeId) -> Option<(std::time::Instant, crate::tabs::Held)> {
-        self.jar_tabs.remove(&id);
-        self.jar_reseed.remove(&id);
-        self.jar_pulls.remove(&id);
-        self.jar_silent.remove(&id);
-        self.cookie_holds.remove(&id)
+        let Self {
+            jar_tabs,
+            jar_reseed,
+            jar_pulls,
+            jar_silent,
+            cookie_holds,
+            // `App::forget_jar_memory` saves a dirty jar (file I/O, so it stays an `App` method), then drops its snapshot.
+            jar_dirty: _,
+            jar_snapshots: _,
+            // A round timestamp, not per node.
+            jar_last_pull: _,
+        } = self;
+        jar_tabs.remove(&id);
+        jar_reseed.remove(&id);
+        jar_pulls.remove(&id);
+        jar_silent.remove(&id);
+        cookie_holds.remove(&id)
     }
 }
 

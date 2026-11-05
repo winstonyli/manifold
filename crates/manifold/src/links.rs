@@ -39,6 +39,23 @@ impl LinkGesture {
         self.retarget = None;
         self.connecting.take()
     }
+
+    /// Ends pick-target mode when `id` is its source or the card a connect-drag started on: the card is gone.
+    pub(crate) fn forget(&mut self, id: NodeId) {
+        let Self {
+            connecting,
+            connect_drag,
+            // Cleared by `end`.
+            retarget: _,
+            // Set each frame by the graph pass.
+            retarget_preview: _,
+            // A link id, taken at release only if still hovered.
+            line_press: _,
+        } = self;
+        if connecting.as_ref().is_some_and(|&(from, _)| from == id) || *connect_drag == Some(id) {
+            self.end();
+        }
+    }
 }
 
 /// Why `App::connect` refused.
@@ -378,13 +395,6 @@ impl App {
                     Err(_) => RetargetOutcome::Refused,
                 }
             }
-        }
-    }
-
-    /// Ends pick-target mode, and a connect-drag, when `id`, a card being removed, is its source.
-    pub(crate) fn forget_connect_source(&mut self, id: NodeId) {
-        if self.link.connecting.as_ref().is_some_and(|&(from, _)| from == id) || self.link.connect_drag == Some(id) {
-            self.cancel_connect();
         }
     }
 

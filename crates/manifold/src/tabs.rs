@@ -99,14 +99,31 @@ impl SpawnTracker {
     /// Drops `id`, a node being removed for good, from the per-tab state that is not about a spawn in flight.
     /// `spawning`, `remote_in_flight`, `wakes_in_flight` and `host_loads` are not here: the spawn lifecycle owns them.
     pub(crate) fn forget(&mut self, id: NodeId) {
-        self.skip_convert.remove(&id);
-        self.navigated_from.remove(&id);
-        self.tab_crashes.remove(&id);
-        if self.pending_respawn_focus == Some(id) {
-            self.pending_respawn_focus = None;
+        let Self {
+            skip_convert,
+            navigated_from,
+            tab_crashes,
+            pending_respawn_focus,
+            pending_trail_focus,
+            // The spawn lifecycle owns these: the landing or the teardown removes them. `wakes_in_flight` is read by a
+            // tab closed while waking, so the landing commits its delete; `host_loads` expires by `shares_url_change`.
+            spawning: _,
+            remote_in_flight: _,
+            wakes_in_flight: _,
+            host_loads: _,
+            // Not per node.
+            tab_spawns_in_flight: _,
+            tabs_spawned_waiters: _,
+            session_generation: _,
+        } = self;
+        skip_convert.remove(&id);
+        navigated_from.remove(&id);
+        tab_crashes.remove(&id);
+        if *pending_respawn_focus == Some(id) {
+            *pending_respawn_focus = None;
         }
-        if self.pending_trail_focus == Some(id) {
-            self.pending_trail_focus = None;
+        if *pending_trail_focus == Some(id) {
+            *pending_trail_focus = None;
         }
     }
 

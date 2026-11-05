@@ -61,7 +61,8 @@ impl PageTabGate {
 
     /// Forget a closed tab.
     pub(crate) fn forget(&mut self, source: NodeId) {
-        self.by_source.remove(&source);
+        let Self { by_source } = self;
+        by_source.remove(&source);
     }
 }
 

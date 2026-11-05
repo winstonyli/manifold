@@ -75,24 +75,41 @@ pub(crate) struct GraphInteraction {
 }
 
 impl GraphInteraction {
-    /// Drops `id`, a node being removed, from the state that names a single node. `drag_moved` and `pending_new_node`
-    /// are not here: a gone id in `drag_moved` is skipped at release, and the pending card names no node.
+    /// Drops `id`, a node being removed, from the state that names a single node.
     pub(crate) fn forget(&mut self, id: CardId) {
-        if self.dragging == Some(id) {
-            self.dragging = None;
+        let Self {
+            dragging,
+            hovered,
+            peek_suppressed,
+            focus_new_note,
+            selected,
+            pane_card,
+            // Ends with the drag; a gone id is skipped at release.
+            drag_moved: _,
+            // Taken by `apply_drop`; a drop with no effect discards it.
+            drag_origin: _,
+            // A screen point.
+            rect_select_start: _,
+            // Reset whenever the pane shows no cards.
+            label_section: _,
+            // The pending card names no node.
+            pending_new_node: _,
+        } = self;
+        if *dragging == Some(id) {
+            *dragging = None;
         }
-        if self.hovered == Some(id) {
-            self.hovered = None;
+        if *hovered == Some(id) {
+            *hovered = None;
         }
-        if self.peek_suppressed == Some(id) {
-            self.peek_suppressed = None;
+        if *peek_suppressed == Some(id) {
+            *peek_suppressed = None;
         }
-        if self.focus_new_note.as_ref().is_some_and(|(n, _)| *n == id) {
-            self.focus_new_note = None;
+        if focus_new_note.as_ref().is_some_and(|(n, _)| *n == id) {
+            *focus_new_note = None;
         }
-        self.selected.remove(&id);
-        if id.node().is_some() && self.pane_card == id.node() {
-            self.pane_card = None;
+        selected.remove(&id);
+        if id.node().is_some() && *pane_card == id.node() {
+            *pane_card = None;
         }
     }
 }

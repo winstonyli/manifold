@@ -1098,7 +1098,7 @@ fn a_connect_drag_ends_with_its_mode_and_with_its_source() {
     app.cancel_connect();
     assert!(app.link.connect_drag.is_none());
     app.start_connect_drag(a);
-    app.forget_connect_source(a);
+    app.link.forget(a);
     assert!(app.link.connect_drag.is_none() && app.link.connecting.is_none(), "its source removed");
     app.start_connect_drag(a);
     app.end_stale_connect(false);

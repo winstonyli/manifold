@@ -759,6 +759,14 @@ impl GpuState {
         self.thumbnails.get(&tab_id).map(|t| (t.width, t.height))
     }
 
+    /// Frees everything held for node `id`, a node removed for good. The order matters: `free_tab_texture` reads
+    /// `thumbs_dirty`, which the thumbnail free removes first.
+    pub fn forget(&mut self, id: NodeId) {
+        self.free_tab_thumbnail(id);
+        self.free_tab_texture(id);
+        self.free_image(id);
+    }
+
     /// Must be called when a tab closes — `egui_wgpu::Renderer` doesn't
     /// know about manually-registered native textures on its own, so
     /// unlike egui's own font/image-loader textures (freed automatically
