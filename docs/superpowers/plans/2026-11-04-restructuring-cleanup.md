@@ -47,7 +47,7 @@ Decisions (2026-11-04, user):
 - **d3f** README log -> `docs/devlog.md`.
 - **d4** REP7 and REP8 decided against (see Considered and rejected).
 
-Order: not yet chosen.
+Order (user, k1, 2026-11-04): docs first (REP2, REP1, REP3, REP5: done), then CRT4, then TST1 with the `tier.rs` rule folded into LAY2 and LAY6, then ARC1. Status `active`.
 
 ## Items
 
@@ -57,11 +57,19 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **REP2. Move still-open facts out of README "Known limitations" into PARKED.** README:573-820 holds 131 bullets, 37 Fixed/Superseded; the rest are mostly descriptive but an unknown number are open (one confirmed: "Open: WebView2's user-data folder ..."). Open or deferred ones become PARKED entries (what/why/trigger/evidence/status); the rest stay as log text. Size: 2-3 files, ~10-20 PARKED lines. Requires nothing; enables REP1. No collision.
 
+**Done 2026-11-04** (`PARKED.md` commit after `6d377a39`; triage run `wf_25098db3-ff6`, 8 readers + 14 skeptics): all 132 bullets classified (53 fixed, 14 superseded, 51 descriptive, 12 open, 2 deferred; the survey's 131/37 was low). 9 PARKED entries added under "Open limitations found in the README"; 2 of the open were already parked (Restore touches own file paths; Deferred 2b-6 directions), 1 refuted (:587, cause never found, not reproduced: stays log text), 1 refuted (:770 handled by code and a test). Actual size within the estimate (~14 PARKED lines became 9 entries).
+
 **REP1. Split README into live reference and a dev log.** `README.md` 97-119 ("Reading the entries"), 120-384 ("Running"), 522-572 (Refactor candidates x2, Considered and rejected), 573-820 (Known limitations) -> `docs/devlog.md`; README keeps the rest (~140 KB of 600 KB). README is already two documents (its own header at :97 calls everything from "Running" a dated log whose names are not maintained; headings checked at 97/120/522/537/563/573). Reach by section title: "Known limitations" live 2 (`crates/manifold-view-cef/src/main.rs:138` comment, `PARKED.md:21`), README self 4, frozen 6 lines; "Headless mode" and "Runtime-file placement" STAY and are cited live (CHANGELOG, CLAUDE.md, debug_control.rs, main.rs, theme.rs, gate sync_deps.rs, availability.rs). About 6 in-README links re-pointed. Size: ~565 lines moved verbatim, ~10 edited. Requires REP2; enables REP6. Collides: 0 lines.
+
+**Done 2026-11-04** (`d2e15145`): README 820 -> 232 lines; `docs/devlog.md` 592 lines, 587 moved verbatim (diffed against the original), a 4-line header. Live cites re-pointed: `manifold-view-cef/src/main.rs:138`, `PARKED.md:21`, `gpu.rs:4`, `session.rs:9`, plus a pointer sentence in README line 5. The README-reading test `the_readme_names_every_step` passes (run `2026-11-04-readme-step-test`). Old-name grep over code and living docs returns only frozen history. Not done: README:42 (REP6).
 
 **REP3. ROADMAP.md: stop restating shipped and parked items.** v0.9/v0.10 "Shipped:" lines, "Label leftovers", "Properties 4b" and two "in PARKED.md" bullets deleted; keep header plus "no milestone planned". 1 file, ~10 lines. Independent.
 
+**Done 2026-11-04** (`6d377a39`): ROADMAP is the header plus "No milestone is planned."; every dropped leftover was checked present in PARKED (grep of all six).
+
 **REP5. Spec status.** `docs/superpowers/specs/2026-11-01-scopes-nested-layout-anchor-design.md` front matter `status: draft` -> `active` (two of three slices shipped; slice 3 is a PARKED item). 1 line. The 133-file census otherwise clean (131 done, 1 superseded-by).
+
+**Done 2026-11-04** (`6d377a39`): `status: done`; slice 3's wait is in the spec's own decision line 267 and PARKED "Nested bottom-up settle".
 
 **REP6. README "Module layout" layer-spike paragraph to one home.** README:42's ~1,100-char "Parked (spike 2026-10-10)" sentence and its dated figures -> PARKED.md:22 entry as evidence; README keeps one link sentence. Must follow the layer Decide (d1) and TST1 (README:42 also states the test rule).
 
