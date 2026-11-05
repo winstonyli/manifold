@@ -40,9 +40,9 @@ use winit::event_loop::EventLoopProxy;
 
 use super::*;
 use crate::event_loop::UserEvent;
-use crate::nav_history::Dir;
 use crate::process_manager::ViewKind;
 use crate::sleep_state::SleepWhy;
+use crate::trail::history::Dir;
 
 /// What one parsed line does on the UI thread.
 pub(crate) type Job = Box<dyn FnOnce(&mut App, &ActiveEventLoop) + Send>;

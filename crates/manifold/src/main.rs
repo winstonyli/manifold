@@ -54,7 +54,6 @@ mod links;
 mod local_state;
 mod mirror;
 mod names;
-mod nav_history;
 mod net;
 mod node;
 mod node_menu;
@@ -88,8 +87,7 @@ mod tabs;
 mod telemetry;
 mod text;
 mod theme;
-mod trail_nav;
-mod trail_strip;
+mod trail;
 mod tree_layout;
 mod undo;
 mod url_parts;
@@ -322,7 +320,7 @@ struct App {
     /// Scroll positions of woken tabs, restored once their first load finishes.
     saved_scroll: HashMap<NodeId, sleep_state::SavedScroll>,
     /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
-    nav_history: HashMap<NodeId, nav_history::NavHistory>,
+    nav_history: HashMap<NodeId, trail::history::NavHistory>,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
     /// drop_batch`, so several dropped in the same frame fan out instead of
@@ -458,7 +456,7 @@ struct Loaded {
     settings_fingerprint: Option<u64>,
     bookmarks: Vec<bookmarks::Bookmark>,
     history: Vec<history::HistoryEntry>,
-    nav_history: HashMap<NodeId, nav_history::NavHistory>,
+    nav_history: HashMap<NodeId, trail::history::NavHistory>,
     search_dir: Option<std::path::PathBuf>,
     favicon_dir: Option<std::path::PathBuf>,
     content_dir: Option<std::path::PathBuf>,
@@ -478,7 +476,7 @@ impl Loaded {
             settings_fingerprint: settings::fingerprint(),
             bookmarks,
             history,
-            nav_history: nav_history::load(),
+            nav_history: trail::history::load(),
             search_dir: profile::search_dir(),
             favicon_dir: profile::favicon_cache_dir(),
             content_dir: profile::content_dir(),
@@ -525,7 +523,7 @@ impl App {
             level_views: BTreeMap::new(),
             current_group: None,
             json_level: None,
-            virtual_sources: vec![std::rc::Rc::new(trail_strip::TrailSource)],
+            virtual_sources: vec![std::rc::Rc::new(trail::strip::TrailSource)],
             renaming_group: None,
             naming_jar: None,
             confirm: None,

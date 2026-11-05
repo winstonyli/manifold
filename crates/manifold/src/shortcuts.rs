@@ -221,9 +221,9 @@ impl App {
             Shortcut::ShortcutsHelp => self.menus.shortcuts_help_open = !self.menus.shortcuts_help_open,
             Shortcut::Back | Shortcut::Forward => {
                 let dir = if shortcut == Shortcut::Back {
-                    crate::nav_history::Dir::Back
+                    crate::trail::history::Dir::Back
                 } else {
-                    crate::nav_history::Dir::Forward
+                    crate::trail::history::Dir::Forward
                 };
                 if let Some(id) = self.focused {
                     self.navigate_history(id, dir);

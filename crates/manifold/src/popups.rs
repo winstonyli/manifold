@@ -2,8 +2,8 @@
 //! `popup_frame`, and the rest by name: `menus`, `confirm`, `find_bar`, `shortcuts_help`.
 
 use super::*;
-use crate::nav_history::Dir;
 use crate::store::model::Kind;
+use crate::trail::history::Dir;
 
 mod confirm;
 mod dropdowns;
@@ -13,7 +13,7 @@ mod popup_frame;
 mod shortcuts_help;
 
 pub(crate) use confirm::*;
-#[cfg(test)] // the trail popup's tests (`trail_nav`) place it by `popup_start_rect`
+#[cfg(test)] // the trail popup's tests (`trail::nav`) place it by `popup_start_rect`
 pub(crate) use dropdowns::*;
 pub(crate) use find_bar::*;
 pub(crate) use menus::*;

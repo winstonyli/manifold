@@ -143,7 +143,7 @@ pub const TYPE_DOWNLOAD: &str = "application/octet-stream";
 /// Every virtual card's type starts with this: a card drawn from other state, with no node (spec
 /// 2026-10-16-virtual-cards-design.md).
 pub const TYPE_VIRTUAL_PREFIX: &str = "application/vnd.manifold.virtual.";
-/// Never stored: a page of the focused tab's trail strip (`trail_strip`). It sits under `TYPE_VIRTUAL_PREFIX`, so only
+/// Never stored: a page of the focused tab's trail strip (`trail::strip`). It sits under `TYPE_VIRTUAL_PREFIX`, so only
 /// its exact row's abilities (drag-out) apply.
 pub const TYPE_TRAIL_PAGE: &str = "application/vnd.manifold.virtual.trail-page";
 /// Never stored: the kind of a JSON level's cards (`level::level_items_from`), drawn by `draw_json_level`. Its row

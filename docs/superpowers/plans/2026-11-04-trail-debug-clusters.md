@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Trail and debug clusters Implementation Plan

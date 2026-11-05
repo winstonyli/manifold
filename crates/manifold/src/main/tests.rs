@@ -21,7 +21,7 @@ fn forget_id_clears_every_id_keyed_table() {
     app.cookies.jar_silent.insert(t, 1);
     app.saved_scroll.insert(t, sleep_state::SavedScroll::new(0.0, 1.0));
     app.saved_scroll.insert(u, sleep_state::SavedScroll::new(0.0, 1.0));
-    app.nav_history.insert(t, nav_history::NavHistory::default());
+    app.nav_history.insert(t, trail::history::NavHistory::default());
     app.spawns.navigated_from.insert(t, ("https://a.test/".into(), now, false));
     for _ in 0..page_tab_gate::POPUP_BURST {
         app.page_tab_gate.admit(t, true, now);

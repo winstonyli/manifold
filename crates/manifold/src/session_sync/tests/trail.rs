@@ -138,14 +138,14 @@ fn a_closed_tab_keeps_its_trail_across_a_save_ctrl_shift_t_and_a_restart() {
     let mut app = app_on(&dir.join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.nav_history.insert(tab, crate::trail::history::NavHistory::visited(&["https://a/", "https://b/"]));
     app.close_node(tab);
     assert!(!app.nodes.contains_key(&tab));
     assert!(app.nav_history.contains_key(&tab), "the hide and the close's save kept it");
     let file = dir.join("tab-history.json");
     let (nodes, journal) = (&app.nodes, app.doc.journal.as_ref());
-    crate::nav_history::save_to(&mut app.nav_history, |id| keep_trail(nodes, journal, id), Some(&file));
-    assert!(crate::nav_history::load_from(&file).contains_key(&tab), "a restart keeps it");
+    crate::trail::history::save_to(&mut app.nav_history, |id| keep_trail(nodes, journal, id), Some(&file));
+    assert!(crate::trail::history::load_from(&file).contains_key(&tab), "a restart keeps it");
     app.reopen_closed_shortcut();
     assert!(app.nodes.contains_key(&tab));
     assert!(app.nav_history.get(&tab).is_some_and(|h| h.can_go_back()), "Ctrl+Shift+T keeps it");
@@ -156,7 +156,7 @@ fn deleting_a_shown_tab_drops_its_trail_at_once() {
     let mut app = app_on(&temp_dir("sync-trail-delete").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.nav_history.insert(tab, crate::trail::history::NavHistory::visited(&["https://a/", "https://b/"]));
     app.destroy_node(tab);
     assert!(!app.nav_history.contains_key(&tab));
 }
@@ -184,7 +184,7 @@ fn a_session_replace_clears_stashed_trails() {
     let mut app = app_on(&temp_dir("sync-trail-teardown").join("session.mnf"), 1);
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
     assert!(app.save_session());
-    app.nav_history.insert(tab, crate::nav_history::NavHistory::visited(&["https://a/", "https://b/"]));
+    app.nav_history.insert(tab, crate::trail::history::NavHistory::visited(&["https://a/", "https://b/"]));
     app.close_node(tab);
     assert!(app.nav_history.contains_key(&tab));
     app.teardown_running_session();

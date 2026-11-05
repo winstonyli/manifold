@@ -2,8 +2,8 @@
 //! toolbar, address bar and the spawned engine's content pane).
 
 use super::*;
-use crate::nav_history::Dir;
 use crate::store::model::NodeId;
+use crate::trail::history::Dir;
 
 /// The "back to Graph" control every non-Graph item view shares (today,
 /// only Tab view; see the design spec's "item-view shared chip" layer).

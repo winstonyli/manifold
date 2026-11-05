@@ -491,7 +491,7 @@ mod tests {
     #[test]
     fn export_state_gives_each_trail() {
         let mut app = App::default();
-        app.nav_history.insert(node(1), crate::nav_history::NavHistory::visited(&["a", "b"]));
+        app.nav_history.insert(node(1), crate::trail::history::NavHistory::visited(&["a", "b"]));
         let state = app.export_state();
         let trail = &state["trail"][node(1).to_string()];
         assert_eq!(

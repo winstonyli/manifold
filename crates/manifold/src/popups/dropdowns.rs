@@ -702,11 +702,12 @@ impl App {
             Dir::Back => AnchoredPopup::BackBranches,
             Dir::Forward => AnchoredPopup::ForwardBranches,
         };
-        let cards = crate::trail_strip::trail_cards(self, tab, egui::Pos2::ZERO);
+        let cards = crate::trail::strip::trail_cards(self, tab, egui::Pos2::ZERO);
         if cards.is_empty() {
             return;
         }
-        let edges = crate::trail_strip::trail_edges(self, tab, &|id| cards.iter().find(|e| e.id == id).map(|e| e.rect));
+        let edges =
+            crate::trail::strip::trail_edges(self, tab, &|id| cards.iter().find(|e| e.id == id).map(|e| e.rect));
         let bounds = cards.iter().fold(egui::Rect::NOTHING, |b, e| b.union(e.rect));
         let view = (bounds.size() + egui::Vec2::splat(2.0 * POPUP_PAD)).clamp(POPUP_MIN, POPUP_MAX);
         let cursor = self
@@ -804,7 +805,7 @@ impl App {
             });
         self.menus.trail_canvas = Some((which, camera));
         // A fading or closed popup leaves no hover behind: its page ids are the strip's too.
-        if self.menus.open_popup != Some(which) && self.interaction.hovered.is_some_and(crate::trail_strip::is_page_id)
+        if self.menus.open_popup != Some(which) && self.interaction.hovered.is_some_and(crate::trail::strip::is_page_id)
         {
             self.interaction.hovered = None;
         }
