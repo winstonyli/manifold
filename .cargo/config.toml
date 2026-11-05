@@ -4,3 +4,11 @@
 # a dev-machine win -- don't delete the .obj files or ship this PDB anywhere.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "link-arg=/DEBUG:FASTLINK"]
+
+# The crate sets CI, the pre-commit hook and CLAUDE.md run. A new crate is in `lint` and `unit` unless it is excluded here.
+# Excluded: Servo (about 33 minutes to build), CEF (its build needs the CEF download) and WebKitGTK (Linux only).
+[alias]
+lint = "clippy --workspace --exclude manifold-view-servo --exclude manifold-view-cef --exclude manifold-view-webkitgtk --all-targets"
+unit = "test --workspace --exclude manifold-view-servo --exclude manifold-view-cef --exclude manifold-view-webkitgtk"
+# Linux: the crates that compile there without GTK; catches cfg(windows) leaks.
+unit-linux = "test -p manifold -p manifold-hosts -p manifold-view-protocol"
