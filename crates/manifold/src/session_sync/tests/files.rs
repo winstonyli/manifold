@@ -370,7 +370,7 @@ fn teardown_forgets_the_old_tabs_per_id_state() {
     let mut app = App::default();
     let t = add(&mut app, Kind::Tab, sleeping_tab("https://a.test/", "a"));
     let now = std::time::Instant::now();
-    app.scoped.saved_scroll.insert(t, crate::sleep_state::SavedScroll::new(0.0, 1.0));
+    app.scoped.saved_scroll.insert(t, crate::tabs::sleep::state::SavedScroll::new(0.0, 1.0));
     app.spawns.tab_crashes.insert(t, vec![now]);
     app.spawns.skip_convert.insert(t, true);
     app.cookies.jar_pulls.insert(t, now);

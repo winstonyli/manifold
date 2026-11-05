@@ -532,8 +532,8 @@ fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
     assert!(!app.host_change_pending(t));
     app.scoped.pending_sleeps.insert(
         t,
-        crate::sleep_state::PendingSleep {
-            why: crate::sleep_state::SleepWhy::JarSwitch,
+        crate::tabs::sleep::state::PendingSleep {
+            why: crate::tabs::sleep::state::SleepWhy::JarSwitch,
             sent: std::time::Instant::now(),
         },
     );

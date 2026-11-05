@@ -148,7 +148,7 @@ pub struct Settings {
     /// Minutes a background tab may sit out of sight before it goes back to
     /// sleep (`App::request_sleep`); `None` (the default) never does. Applies to
     /// tabs already open, unlike the new-tab defaults above. See
-    /// `idle_sleep`.
+    /// `tabs::sleep::idle`.
     #[serde(default)]
     pub idle_sleep_minutes: Option<u32>,
     /// A CEF runtime directory the user supplied instead of downloading one (`view_install::state::

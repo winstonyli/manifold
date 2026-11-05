@@ -27,7 +27,7 @@ crates/manifold/src/
   view_install/{host_pin,embedded_host,state,download,unpack,remove,ui}.rs [LAY4; cef_pin/cef_platform go to manifold-hosts, CRT5]
   debug.rs + debug/{verbs,reader,export,input}.rs                          [LAY6]
   settings/{page,rows}.rs ; links/gestures.rs ; pdf/render.rs ; profile/file.rs (from json_file) ; graph_ui/{layout,nav,deselect}.rs [LAY7, LAY10, LAY11 done 2026-11-05]
-  tabs/sleep/{state,idle}.rs       from sleep_state, idle_sleep             [LAY8; d3b]
+  tabs/sleep/{state,idle}.rs       from sleep_state, idle_sleep             [LAY8 done 2026-11-05; d3b]
   store.rs                         from store/mod.rs                        [LAY12 done 2026-11-05]
 crates/gate/src/{harness,sites,release}/  16 support files; the ~29 flows stay flat [ARC10; d3d]
 crates/manifold-store/ (opt.)      session store as a crate                 [CRT1, Own plan]
@@ -109,7 +109,7 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **ARC3. Jar: one owner for `jars` and its spawn-thread snapshot (`JarState`), `jar_defs` into `jar/`.** File move follows LAY5 (`jar/defs/...`, d3a); ARC3's flat path is revisit-later. State half: `App::jars` (`main.rs:319`) into `jar::CookieState` renamed `JarState` with the only mutators that write both the map and `jar_snapshots`. 4 files moved + 1 deleted, ~60 path lines, ~80 logic lines. **Own plan.** **File half (LAY5) Done 2026-11-05:** `jar_defs.rs` -> `jar/defs.rs`, `jar_defs/{label,lifecycle,tests}.rs` -> `jar/defs/` (100% renames), `pub(crate) mod defs;` in `jar.rs`, `mod jar_defs;` out of `main.rs`; 17 files, 37 lines of paths, no logic; 2033 tests = before under `^jar_defs::` -> `jar::defs::`; `cargo lint`, gate tests ok. State half stays in PARKED "Shared-owner refactors".
 
-**ARC5 / LAY8. Sleep lifecycle.** Decided d3b: LAY8 files-only move now; the ARC5 `SleepState` grouping stays with the ARC1 state batch. `idle_clock`, `pending_sleeps`, `saved_scroll` -> `SleepState`; files `idle_sleep.rs` + `sleep_state.rs` + `tabs/sleep.rs`. ARC5's top-level `sleep/` is revisit-later; requires ARC1 for the state half.
+**ARC5 / LAY8. Sleep lifecycle.** Decided d3b: LAY8 files-only move now; the ARC5 `SleepState` grouping stays with the ARC1 state batch. `idle_clock`, `pending_sleeps`, `saved_scroll` -> `SleepState`; files `idle_sleep.rs` + `sleep_state.rs` + `tabs/sleep.rs`. **LAY8 Done 2026-11-05:** `sleep_state.rs` -> `tabs/sleep/state.rs`, `idle_sleep.rs` -> `tabs/sleep/idle.rs` (100% renames; `pub(crate) mod idle; state;` in `tabs/sleep.rs`, `tabs::sleep` made `pub(crate)`); 2033 tests = before under the two prefix maps; no `tier.rs` change. Not done: the ARC5 state half. ARC5's top-level `sleep/` is revisit-later; requires ARC1 for the state half.
 
 **ARC6. Node creation moves from `fetched.rs` (759) to `node_store.rs` (209).** `placement`, `place_node`, `place_group`, `insert_*` (~270 lines, `fetched.rs:77-225`). 0 logic. Independent. Must follow ARC1 (scanner paths).
 

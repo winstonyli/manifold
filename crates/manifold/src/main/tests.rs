@@ -12,7 +12,9 @@ fn forget_id_clears_every_id_keyed_table() {
     let (t, u) = (node(1), node(2));
     let (tc, uc) = (card(1), card(2));
     app.spawns.skip_convert.insert(t, true);
-    app.scoped.pending_sleeps.insert(t, sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: now });
+    app.scoped
+        .pending_sleeps
+        .insert(t, tabs::sleep::state::PendingSleep { why: tabs::sleep::state::SleepWhy::Manual, sent: now });
     let default = default_jar_id(&mut app);
     app.cookies.jar_tabs.insert(t, (default, jar::TabCookies::default()));
     app.cookies.jar_reseed.insert(t);
@@ -21,8 +23,8 @@ fn forget_id_clears_every_id_keyed_table() {
     app.cookies.cookie_holds.insert(t, (now, tabs::Held::PageState(state)));
     app.cookies.jar_pulls.insert(t, now);
     app.cookies.jar_silent.insert(t, 1);
-    app.scoped.saved_scroll.insert(t, sleep_state::SavedScroll::new(0.0, 1.0));
-    app.scoped.saved_scroll.insert(u, sleep_state::SavedScroll::new(0.0, 1.0));
+    app.scoped.saved_scroll.insert(t, tabs::sleep::state::SavedScroll::new(0.0, 1.0));
+    app.scoped.saved_scroll.insert(u, tabs::sleep::state::SavedScroll::new(0.0, 1.0));
     app.scoped.nav_history.insert(t, trail::history::NavHistory::default());
     app.spawns.navigated_from.insert(t, ("https://a.test/".into(), now, false));
     for _ in 0..page_tab_gate::POPUP_BURST {
@@ -529,7 +531,7 @@ fn a_second_hold_cancels_the_first_so_the_latest_request_wins() {
     // Sleep, then swap: only the swap stays parked, and the sleep's pending entry is gone (no timeout sleep).
     app.scoped.pending_sleeps.insert(
         node(3),
-        sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        tabs::sleep::state::PendingSleep { why: tabs::sleep::state::SleepWhy::Manual, sent: std::time::Instant::now() },
     );
     assert!(app.hold_for_cookies(node(3), sleep_answer()).is_none());
     assert!(app.hold_for_cookies(node(3), swap_answer()).is_none());
@@ -547,7 +549,7 @@ fn a_respawn_drops_a_held_answer_meant_for_the_old_host() {
     app.cookies.jar_pulls.insert(node(3), std::time::Instant::now());
     app.scoped.pending_sleeps.insert(
         node(3),
-        sleep_state::PendingSleep { why: sleep_state::SleepWhy::Manual, sent: std::time::Instant::now() },
+        tabs::sleep::state::PendingSleep { why: tabs::sleep::state::SleepWhy::Manual, sent: std::time::Instant::now() },
     );
     assert!(app.hold_for_cookies(node(3), sleep_answer()).is_none());
     app.clear_cookie_state(node(3)); // what a spawn result for the same id does first

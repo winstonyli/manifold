@@ -37,9 +37,9 @@ pub(crate) enum Removal {
 #[derive(Default)]
 pub(crate) struct NodeScoped {
     /// Sleep requests awaiting the engine's `PageState` answer, by tab id.
-    pub(crate) pending_sleeps: HashMap<NodeId, sleep_state::PendingSleep>,
+    pub(crate) pending_sleeps: HashMap<NodeId, tabs::sleep::state::PendingSleep>,
     /// Scroll positions of woken tabs, restored once their first load finishes.
-    pub(crate) saved_scroll: HashMap<NodeId, sleep_state::SavedScroll>,
+    pub(crate) saved_scroll: HashMap<NodeId, tabs::sleep::state::SavedScroll>,
     /// Each tab's trail (`nav_history`): its pages as a tree, kept across an engine replacement, a close and a restart.
     pub(crate) nav_history: HashMap<NodeId, trail::history::NavHistory>,
     /// The view each level was left at (`None` the top level), restored on the way back and written to personal

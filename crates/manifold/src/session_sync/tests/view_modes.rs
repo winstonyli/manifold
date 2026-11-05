@@ -57,7 +57,7 @@ fn a_tab_put_to_sleep_mid_swap_keeps_the_target() {
     let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     assert!(app.save_session());
     app.start_swap_to(tab, ViewKind::Cef);
-    assert!(app.request_sleep(tab, crate::sleep_state::SleepWhy::Manual), "a sleep is not refused mid-swap");
+    assert!(app.request_sleep(tab, crate::tabs::sleep::state::SleepWhy::Manual), "a sleep is not refused mid-swap");
     app.finish_sleep(tab, manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false });
     assert_eq!(app.nodes[&tab].as_unloaded().unwrap().state, UnloadedState::Sleeping, "asleep");
     assert_eq!(app.doc.mirror.view_kind(tab), ViewKind::Cef);

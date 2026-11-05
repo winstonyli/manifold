@@ -4,11 +4,11 @@
 use super::*;
 use crate::store::model::NodeId;
 use manifold_view_protocol::PageState;
-use sleep_state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
+use sleep::state::{PendingSleep, SavedScroll, SleepWhy, Verdict};
 
 mod jar_pull;
 mod page_text;
-mod sleep;
+pub(crate) mod sleep;
 mod spawn_result;
 mod visibility;
 pub(crate) use jar_pull::Held;
@@ -782,7 +782,7 @@ impl App {
 
     /// Puts every live tab whose jar changed and that is not busy, focused or showing to sleep; it wakes into the
     /// new jar (spec table). Runs after a local jar change, a remote batch (`apply_remote`) and each idle sweep, so a
-    /// waiting tab switches once it qualifies. A dirty form keeps it awake (`sleep_state::verdict`).
+    /// waiting tab switches once it qualifies. A dirty form keeps it awake (`sleep::state::verdict`).
     pub(crate) fn sweep_jar_switches(&mut self) {
         let todo: Vec<NodeId> = self
             .tab_idle_views()
@@ -790,8 +790,8 @@ impl App {
             .filter_map(|v| {
                 let (had, now, reseed) = self.pending_jar_switch(v.id)?;
                 let focused = self.focused == Some(v.id);
-                let verdict = sleep_state::jar_switch(Some(had), now, reseed, v.busy(), focused);
-                (verdict == sleep_state::JarSwitch::SleepNow).then_some(v.id)
+                let verdict = sleep::state::jar_switch(Some(had), now, reseed, v.busy(), focused);
+                (verdict == sleep::state::JarSwitch::SleepNow).then_some(v.id)
             })
             .collect();
         for id in todo {

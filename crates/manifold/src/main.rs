@@ -30,7 +30,6 @@ mod graph_ui;
 mod groups;
 mod history;
 mod identity;
-mod idle_sleep;
 mod image_decode;
 mod image_view;
 mod input;
@@ -62,7 +61,6 @@ mod session_files;
 mod session_sync;
 mod settings;
 mod shortcuts;
-mod sleep_state;
 #[cfg(test)]
 mod src_scan;
 mod store;
@@ -277,7 +275,7 @@ struct App {
     /// closes out from under the split -- see `close_split`.
     split_tab: Option<NodeId>,
     /// When each live tab was last on screen, for idle auto-sleep.
-    idle_clock: idle_sleep::IdleClock,
+    idle_clock: tabs::sleep::idle::IdleClock,
     /// Page text: load-end timers and awaited answers (`tabs::page_text`).
     page_text: tabs::PageTextTracker,
     /// The page text log (`search`).
@@ -495,7 +493,7 @@ impl App {
             viewed_image: None,
             image_view: ImageViewState::default(),
             split_tab: None,
-            idle_clock: idle_sleep::IdleClock::default(),
+            idle_clock: tabs::sleep::idle::IdleClock::default(),
             page_text: Default::default(),
             search: search::Search::open(search_dir.as_deref()),
             jars,

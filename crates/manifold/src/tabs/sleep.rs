@@ -2,6 +2,9 @@
 
 use super::*;
 
+pub(crate) mod idle;
+pub(crate) mod state;
+
 impl App {
     /// Second half of "Sleep": shuts a live tab's engine down and keeps its
     /// card, as the unloaded tab a restore makes (`UnloadedState::Sleeping`):
@@ -66,7 +69,7 @@ impl App {
     /// keeping its scroll position for the wake.
     pub(crate) fn finish_sleep(&mut self, id: NodeId, state: PageState) {
         let Some(pending) = self.scoped.pending_sleeps.remove(&id) else { return };
-        match sleep_state::verdict(pending.why, &state) {
+        match state::verdict(pending.why, &state) {
             Verdict::Stay => self.idle_clock.restart(id, std::time::Instant::now()),
             Verdict::Sleep => {
                 self.sleep_now(id, Some((state.scroll_x, state.scroll_y)));
@@ -84,7 +87,7 @@ impl App {
             .scoped
             .pending_sleeps
             .iter()
-            .filter(|(_, p)| sleep_state::expired(p, now))
+            .filter(|(_, p)| state::expired(p, now))
             .map(|(id, p)| (*id, p.why))
             .collect();
         for (id, why) in dead {
@@ -98,7 +101,7 @@ impl App {
         }
     }
 
-    /// Idle auto-sleep (`idle_sleep`): updates every live tab's clock and
+    /// Idle auto-sleep (`idle`): updates every live tab's clock and
     /// asks those out of sight for `limit` to sleep (`request_sleep`). `limit`
     /// is the setting's `idle_sleep_minutes`, or the headless `IDLESWEEP`'s
     /// seconds.
@@ -117,7 +120,7 @@ impl App {
     }
 
     /// What the idle and jar-switch sweeps need to know about each live tab.
-    pub(super) fn tab_idle_views(&self) -> Vec<crate::idle_sleep::TabIdleView> {
+    pub(super) fn tab_idle_views(&self) -> Vec<idle::TabIdleView> {
         let on_screen = self.showing_tab_view().then_some(self.focused).flatten();
         // A download card's parent is the tab it came from; it is in flight until the engine finishes or fails it.
         let downloading: std::collections::HashSet<NodeId> = self
@@ -130,7 +133,7 @@ impl App {
             .iter()
             .filter_map(|(id, n)| {
                 let t = n.as_tab()?;
-                Some(crate::idle_sleep::TabIdleView {
+                Some(idle::TabIdleView {
                     id: *id,
                     on_screen: on_screen == Some(*id) || self.split_tab == Some(*id),
                     audio_playing: t.audio_playing,

@@ -3,8 +3,8 @@
 use super::*;
 use crate::caps::JAR_EDGE;
 use crate::jar::defs::{JarConfirm, JarLabel};
-use crate::sleep_state::SleepWhy;
 use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
+use crate::tabs::sleep::state::SleepWhy;
 
 /// Something done to one node, from its right-click menu or its card's
 /// own buttons, applied by `App::apply_node_action`.

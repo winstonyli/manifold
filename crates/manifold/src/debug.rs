@@ -46,7 +46,7 @@ use winit::event_loop::EventLoopProxy;
 use super::*;
 use crate::event_loop::UserEvent;
 use crate::process_manager::ViewKind;
-use crate::sleep_state::SleepWhy;
+use crate::tabs::sleep::state::SleepWhy;
 use crate::trail::history::Dir;
 use verbs::{quit, VERBS};
 

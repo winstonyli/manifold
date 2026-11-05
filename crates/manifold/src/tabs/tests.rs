@@ -108,9 +108,9 @@ fn unanswered_requests_are_settled_after_the_timeout() {
     for (id, why) in [(node(1), SleepWhy::Manual), (node(2), SleepWhy::Idle), (node(3), SleepWhy::JarSwitch)] {
         app.scoped.pending_sleeps.insert(id, PendingSleep { why, sent: t0 });
     }
-    app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
+    app.expire_pending_sleeps(t0 + tabs::sleep::state::PENDING_TIMEOUT - std::time::Duration::from_millis(1));
     assert_eq!(app.scoped.pending_sleeps.len(), 3);
-    app.expire_pending_sleeps(t0 + sleep_state::PENDING_TIMEOUT);
+    app.expire_pending_sleeps(t0 + tabs::sleep::state::PENDING_TIMEOUT);
     assert!(app.scoped.pending_sleeps.is_empty());
 }
 
