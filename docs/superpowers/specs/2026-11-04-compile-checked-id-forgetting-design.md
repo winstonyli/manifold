@@ -1,5 +1,5 @@
 ---
-status: approved 2026-11-04 (user)
+status: done
 ---
 
 # Compile-checked node-id forgetting (ARC1)
