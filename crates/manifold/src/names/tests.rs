@@ -440,7 +440,7 @@ const ALLOWED: [&str; 23] = [
     "omnibar.rs",
     "search/sync.rs",
     "session_sync/edits.rs",
-    "settings_page.rs",
+    "settings/page.rs",
     "shortcuts.rs",
     "virtual_source.rs",
 ];

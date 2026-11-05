@@ -317,6 +317,8 @@ impl Settings {
         crate::json_file::save(self, path, SETTINGS.what);
     }
 }
+pub(crate) mod page;
+pub(crate) mod rows;
 
 #[cfg(test)]
 mod tests {

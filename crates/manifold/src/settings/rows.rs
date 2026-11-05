@@ -2,8 +2,8 @@
 //! (`App::build_settings_page`) and the omnibar searches them (`matching`), so a setting is findable by what it is
 //! called and by the words people use for it.
 
-use super::*;
-use crate::settings_page::SettingsRequests;
+use crate::settings::page::SettingsRequests;
+use crate::*;
 
 pub(crate) struct SettingRow {
     pub(crate) id: &'static str,

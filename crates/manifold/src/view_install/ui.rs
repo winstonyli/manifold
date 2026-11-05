@@ -104,7 +104,7 @@ impl crate::App {
     pub(crate) fn invalidate_cef_dir_check(&self) {
         *self.view_ui.cef_dir_check.borrow_mut() = None;
         self.view_ui.view_status_cache.borrow_mut().clear();
-        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        crate::settings::page::forget_disk_cache(&self.egui_ctx);
     }
 
     /// Set (or clear, for an empty path) the bring-your-own CEF directory: save it, drop the cached
@@ -191,7 +191,7 @@ impl crate::App {
         let removed = remove_view_files(&dir, kind, host_components(kind), running, installing);
         // Even a failed removal may have deleted some of it: the Settings page reads the disk again.
         crate::process_manager::forget_on_disk();
-        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        crate::settings::page::forget_disk_cache(&self.egui_ctx);
         match removed {
             Ok(()) => {
                 // A recorded failure described the files just deleted.
@@ -231,7 +231,7 @@ impl crate::App {
         if !finished.is_empty() {
             self.view_ui.view_status_cache.borrow_mut().clear();
             // An install (or a cancelled one's leftovers) changed what the Settings page shows from disk.
-            crate::settings_page::forget_disk_cache(&self.egui_ctx);
+            crate::settings::page::forget_disk_cache(&self.egui_ctx);
             crate::process_manager::forget_on_disk();
         }
         for kind in finished {

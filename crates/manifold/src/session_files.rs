@@ -91,7 +91,7 @@ impl App {
             return;
         }
         // The Settings page lists saves and sizes: read them again next frame, whatever happens below.
-        crate::settings_page::forget_disk_cache(&self.egui_ctx);
+        crate::settings::page::forget_disk_cache(&self.egui_ctx);
         let Some(path) = self.named_session_path_or_toast(&name) else { return };
         if !self.save_session() {
             self.queue_toast("The saved copy may miss recent edits: the session couldn't be saved first".into());

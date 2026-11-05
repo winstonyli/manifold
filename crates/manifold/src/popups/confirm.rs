@@ -195,7 +195,7 @@ Importing replaces every currently open tab.",
                     }
                     Confirm::SessionDelete(name) => {
                         session::delete_named(&name);
-                        crate::settings_page::forget_disk_cache(ui.ctx());
+                        crate::settings::page::forget_disk_cache(ui.ctx());
                     }
                 }
             }

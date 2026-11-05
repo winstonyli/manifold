@@ -195,7 +195,7 @@ pub(crate) fn rows(corpus: &impl Corpus, text: &str, suggestions: &[String]) -> 
             .take(ROW_CAP)
             .map(|(title, url)| Row::History { url, title }),
     );
-    out.extend(crate::settings_rows::matching(text).into_iter().take(ROW_CAP).map(|r| Row::Setting {
+    out.extend(crate::settings::rows::matching(text).into_iter().take(ROW_CAP).map(|r| Row::Setting {
         id: r.id,
         title: r.title,
         section: r.section,

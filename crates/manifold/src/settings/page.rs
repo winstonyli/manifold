@@ -1,7 +1,7 @@
 //! The Settings page: its sections, the requests they collect, and the
 //! deferred effects and popups that run after the scroll area.
 
-use super::*;
+use crate::*;
 
 /// Space above the first and below the last section of the settings page.
 const PAGE_PAD: f32 = 12.0;
@@ -42,7 +42,7 @@ pub(crate) struct SettingsState {
     pub(crate) home_page_draft: Option<String>,
     /// The Download folder field's text while it's being edited (`settings_download_folder_row`).
     pub(crate) download_dir_draft: Option<String>,
-    /// The Settings row to scroll to and outline, for one frame (`settings_page::draw_setting_rows`).
+    /// The Settings row to scroll to and outline, for one frame (`settings::page::draw_setting_rows`).
     pub(crate) focus: Option<&'static str>,
 }
 
@@ -133,12 +133,12 @@ impl App {
         self.build_settings_popups(ui, &req);
     }
 
-    /// Draws `settings_rows::rows()`: a heading where the section changes (the first has no rule above it), a gap
+    /// Draws `settings::rows::rows()`: a heading where the section changes (the first has no rule above it), a gap
     /// between rows, and for the row `SettingsState::focus` names, a scroll to it and an outline for this frame.
     fn draw_setting_rows(&mut self, ui: &mut egui::Ui, req: &mut SettingsRequests) {
         let focus = self.settings.focus.take();
         let mut section = "";
-        for row in crate::settings_rows::rows() {
+        for row in crate::settings::rows::rows() {
             if row.section != section {
                 if section.is_empty() {
                     ui.label(heading_text(ui.visuals(), row.section));

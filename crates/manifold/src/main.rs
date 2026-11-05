@@ -67,8 +67,6 @@ mod session;
 mod session_files;
 mod session_sync;
 mod settings;
-mod settings_page;
-mod settings_rows;
 mod shortcuts;
 mod sleep_state;
 #[cfg(test)]
@@ -383,8 +381,8 @@ struct App {
     /// Find-in-page, for the focused tab only. See `FindState`.
     find: FindState,
 
-    /// The user's settings and the Settings page's state (see `settings_page::SettingsState`).
-    settings: settings_page::SettingsState,
+    /// The user's settings and the Settings page's state (see `settings::page::SettingsState`).
+    settings: settings::page::SettingsState,
     /// Flat `(title, url)` list, loaded once at startup and persisted to
     /// `%APPDATA%\manifold\bookmarks.json` on every change — see
     /// `bookmarks.rs`. Listed by `App::build_bookmarks_popup`.
@@ -539,7 +537,7 @@ impl App {
             page_tab_gate: page_tab_gate::PageTabGate::default(),
             content_index: None,
             find: FindState::default(),
-            settings: settings_page::SettingsState {
+            settings: settings::page::SettingsState {
                 value: settings,
                 fingerprint: settings_fingerprint,
                 ..Default::default()
