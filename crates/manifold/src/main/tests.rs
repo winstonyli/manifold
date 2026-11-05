@@ -16,7 +16,9 @@ fn forget_id_clears_every_id_keyed_table() {
     let default = default_jar_id(&mut app);
     app.cookies.jar_tabs.insert(t, (default, jar::TabCookies::default()));
     app.cookies.jar_reseed.insert(t);
-    app.cookies.cookie_holds.insert(t, (now, tabs::Held::Snapshot(ViewKind::Webview2, String::new())));
+    // `PageState` is the hold `cancel_held` would act on: forgetting must leave no pending sleep behind.
+    let state = manifold_view_protocol::PageState { scroll_x: 0.0, scroll_y: 0.0, dirty_form: false };
+    app.cookies.cookie_holds.insert(t, (now, tabs::Held::PageState(state)));
     app.cookies.jar_pulls.insert(t, now);
     app.cookies.jar_silent.insert(t, 1);
     app.scoped.saved_scroll.insert(t, sleep_state::SavedScroll::new(0.0, 1.0));
@@ -106,7 +108,8 @@ fn every_id_field_of_app_is_forgotten_or_excused() {
         .filter_map(|l| l.split_once(": "))
         .collect();
     assert!(fields.len() > 50, "App's fields were found ({})", fields.len());
-    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
+    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }");
+    let body = body.into_iter().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
     assert!(body.contains("self.scoped"), "forget_id's body was found");
     let named = |name: &str| {
         let needle = format!("self.{name}");
