@@ -59,7 +59,7 @@ pub(crate) enum Confirm {
     /// An engine download or removal.
     View(ViewConfirm),
     /// A Settings jar action that signs tabs out or loses a jar or its logins.
-    Jar(crate::jar_defs::JarConfirm),
+    Jar(crate::jar::defs::JarConfirm),
     /// A named session's delete from Settings.
     SessionDelete(String),
     /// A picked session file staged for "Import Session..." (or headless `IMPORTSESSION`): shows its tab count
@@ -185,8 +185,8 @@ Importing replaces every currently open tab.",
                         self.start_view_install(kind);
                     }
                     Confirm::View(ViewConfirm::Remove(kind)) => self.remove_view(kind),
-                    Confirm::Jar(crate::jar_defs::JarConfirm::Clear(key)) => self.clear_jar_cookies(key),
-                    Confirm::Jar(crate::jar_defs::JarConfirm::Ephemeral(id)) => {
+                    Confirm::Jar(crate::jar::defs::JarConfirm::Clear(key)) => self.clear_jar_cookies(key),
+                    Confirm::Jar(crate::jar::defs::JarConfirm::Ephemeral(id)) => {
                         self.set_jar_ephemeral(id, true);
                         self.save_session();
                     }
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn a_confirm_opens_only_while_none_is_up() {
         let mut app = App::default();
-        let jar = crate::jar_defs::JarConfirm::Clear(crate::store::model::NodeId {
+        let jar = crate::jar::defs::JarConfirm::Clear(crate::store::model::NodeId {
             actor: crate::store::model::ActorId(1),
             counter: 1,
         });

@@ -324,10 +324,10 @@ fn ephemeral_on_leaves_a_locked_jars_files_alone() {
 fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
     let (dir, mut app, work) = jar_saved_earlier("jar-ephemeral-confirm");
     app.request_jar_ephemeral(work, true);
-    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar_defs::JarConfirm::Ephemeral(work))));
+    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar::defs::JarConfirm::Ephemeral(work))));
     assert!(!app.jar_defs()[&work].ephemeral, "nothing happens until confirmed");
     assert!(jar::Jar::path(&dir, work).exists());
-    let (title, detail, button) = app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).unwrap();
+    let (title, detail, button) = app.jar_confirm_text(jar::defs::JarConfirm::Ephemeral(work)).unwrap();
     assert_eq!((title.as_str(), button), ("Make Work ephemeral?", "Make Ephemeral"));
     assert!(detail.contains("deleted from disk now") && detail.contains("until Manifold quits"), "{detail}");
     app.confirm = None;
@@ -337,7 +337,7 @@ fn ephemeral_on_asks_first_only_when_the_jar_has_a_saved_file() {
     app.request_jar_ephemeral(home, false);
     assert!(!app.jar_defs()[&home].ephemeral);
     app.set_jar_ephemeral(work, true);
-    assert!(app.jar_confirm_text(jar_defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
+    assert!(app.jar_confirm_text(jar::defs::JarConfirm::Ephemeral(work)).is_none(), "already ephemeral");
 }
 
 fn jar_saves(app: &App) -> usize {
@@ -412,7 +412,7 @@ fn ephemeral_on_asks_first_for_a_jar_whose_cookies_are_not_saved_yet() {
     app.cookies.jar_tabs.insert(node(1), (key, jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies(node(1), SID));
     app.request_jar_ephemeral(work, true);
-    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar_defs::JarConfirm::Ephemeral(work))));
+    assert_eq!(app.confirm, Some(popups::Confirm::Jar(jar::defs::JarConfirm::Ephemeral(work))));
 }
 
 #[test]

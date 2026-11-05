@@ -64,7 +64,7 @@ pub(crate) fn paint_jar_chip(
     painter: &egui::Painter,
     at: egui::Pos2,
     max_width: f32,
-    chip: &crate::jar_defs::JarChip,
+    chip: &crate::jar::defs::JarChip,
     font: egui::FontId,
     text: egui::Color32,
     warn: egui::Color32,
@@ -91,7 +91,7 @@ pub(crate) fn paint_jar_chip(
     let marker = chip.name.marker_text().map(|m| {
         painter.layout_job(egui::text::LayoutJob::single_section(
             m,
-            crate::jar_defs::JarLabel::marker_format(font.size, weak),
+            crate::jar::defs::JarLabel::marker_format(font.size, weak),
         ))
     });
     let lead = jar_dots_width(arrow.as_deref()) - 2.0 * R;
@@ -123,7 +123,7 @@ pub(crate) fn paint_jar_chip(
 /// The arrow between a waiting switch's two dots (`paint_jar_dots`); `None` unless the tab waits to switch.
 pub(crate) fn jar_chip_arrow(
     painter: &egui::Painter,
-    chip: &crate::jar_defs::JarChip,
+    chip: &crate::jar::defs::JarChip,
     font: egui::FontId,
     text: egui::Color32,
 ) -> Option<std::sync::Arc<egui::Galley>> {
@@ -142,7 +142,7 @@ pub(crate) fn paint_jar_dots(
     painter: &egui::Painter,
     mut x: f32,
     cy: f32,
-    chip: &crate::jar_defs::JarChip,
+    chip: &crate::jar::defs::JarChip,
     arrow: Option<std::sync::Arc<egui::Galley>>,
     text: egui::Color32,
     warn: egui::Color32,
@@ -172,7 +172,7 @@ pub(super) fn push_jar_chip(
     world: egui::Pos2,
     offset: egui::Vec2,
     max_width: f32,
-    chip: crate::jar_defs::JarChip,
+    chip: crate::jar::defs::JarChip,
     warn: egui::Color32,
 ) {
     let key = jar_chip_key(id);

@@ -382,7 +382,7 @@ fn a_hidden_character_is_appended_in_the_marker_style() {
     assert_eq!(job.sections[0].format, format);
     assert_eq!(job.sections[2].format, format);
     let hidden = &job.sections[1].format;
-    assert_eq!(hidden.font_id, egui::FontId::monospace(13.0 * crate::jar_defs::MARKER_SCALE));
+    assert_eq!(hidden.font_id, egui::FontId::monospace(13.0 * crate::jar::defs::MARKER_SCALE));
     assert_eq!(hidden.color, egui::Color32::GRAY);
 }
 
@@ -429,8 +429,8 @@ const ALLOWED: [&str; 23] = [
     "graph_ui/card_pane.rs",
     "graph_nav.rs",
     "groups.rs",
-    "jar_defs/label.rs",
-    "jar_defs/lifecycle.rs",
+    "jar/defs/label.rs",
+    "jar/defs/lifecycle.rs",
     "json/level.rs",
     "labels.rs",
     "main.rs",

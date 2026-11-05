@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::jar_defs::JarDef;
+use crate::jar::defs::JarDef;
 use crate::json::view::JsonView;
 use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;

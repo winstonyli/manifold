@@ -38,7 +38,6 @@ mod image_decode;
 mod image_view;
 mod input;
 mod jar;
-mod jar_defs;
 mod json;
 mod json_file;
 mod labels;

@@ -42,10 +42,10 @@ fn a_jar_chip_keeps_its_marker_while_the_name_shrinks() {
 #[test]
 fn a_painted_jar_chip_draws_the_marker_whole() {
     let ctx = crate::theme::testutil::ctx(true);
-    let chip = crate::jar_defs::JarChip {
-        name: crate::jar_defs::JarLabel {
+    let chip = crate::jar::defs::JarChip {
+        name: crate::jar::defs::JarLabel {
             name: "A rather long jar name".into(),
-            marker: Some(crate::jar_defs::JarMarker::Fragment("3f2a".into())),
+            marker: Some(crate::jar::defs::JarMarker::Fragment("3f2a".into())),
         },
         color: egui::Color32::RED,
         following: false,
@@ -97,7 +97,7 @@ fn a_painted_jar_chip_draws_the_marker_whole() {
 fn the_jar_dots_show_a_waiting_switch() {
     let ctx = crate::theme::testutil::ctx(true);
     for will_switch in [false, true] {
-        let chip = crate::jar_defs::JarChip {
+        let chip = crate::jar::defs::JarChip {
             name: "Home".into(),
             color: egui::Color32::RED,
             following: false,
@@ -139,8 +139,8 @@ fn the_jar_dots_show_a_waiting_switch() {
 #[test]
 fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
     let ctx = crate::theme::testutil::ctx(true);
-    let chip = crate::jar_defs::JarChip {
-        name: crate::jar_defs::JarLabel { name: "Work".into(), marker: None },
+    let chip = crate::jar::defs::JarChip {
+        name: crate::jar::defs::JarLabel { name: "Work".into(), marker: None },
         color: egui::Color32::RED,
         following: false,
         missing: false,
@@ -183,7 +183,7 @@ fn a_painted_jar_chip_can_be_hit_until_it_stops_being_painted() {
 #[test]
 fn a_painted_jar_chip_stays_inside_its_width() {
     let ctx = crate::theme::testutil::ctx(true);
-    let chip = crate::jar_defs::JarChip {
+    let chip = crate::jar::defs::JarChip {
         name: "A rather long jar name".into(),
         color: egui::Color32::RED,
         following: false,
@@ -217,8 +217,8 @@ fn a_painted_jar_chip_stays_inside_its_width() {
 #[test]
 fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
     let ctx = crate::theme::testutil::ctx(true);
-    let chip = crate::jar_defs::JarChip {
-        name: crate::jar_defs::JarLabel { name: "Wo\u{200B}rk".into(), marker: None },
+    let chip = crate::jar::defs::JarChip {
+        name: crate::jar::defs::JarLabel { name: "Wo\u{200B}rk".into(), marker: None },
         color: egui::Color32::RED,
         following: false,
         missing: false,
@@ -244,7 +244,7 @@ fn a_jar_chip_shows_a_hidden_character_as_a_placeholder() {
     let name = galleys.iter().find(|g| g.text() == "Wo⟦200B⟧rk");
     let name = name.unwrap_or_else(|| panic!("{:?}", galleys.iter().map(|g| g.text()).collect::<Vec<_>>()));
     let hidden = name.job.sections.iter().find(|s| s.format.font_id.family == egui::FontFamily::Monospace);
-    assert_eq!(hidden.expect("a monospace placeholder").format.font_id.size, 11.0 * crate::jar_defs::MARKER_SCALE);
+    assert_eq!(hidden.expect("a monospace placeholder").format.font_id.size, 11.0 * crate::jar::defs::MARKER_SCALE);
 }
 
 /// Name rules: a group card's header draws its stored name through the display rule (placeholders, collapsed

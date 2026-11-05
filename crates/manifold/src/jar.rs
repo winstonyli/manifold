@@ -539,5 +539,7 @@ impl TabCookies {
     }
 }
 
+pub(crate) mod defs;
+
 #[cfg(test)]
 mod tests;

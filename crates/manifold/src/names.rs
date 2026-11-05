@@ -442,7 +442,7 @@ pub(crate) fn append_name(
             NameSeg::Hidden(c) => job.append(
                 &placeholder(c),
                 0.0,
-                crate::jar_defs::JarLabel::marker_format(format.font_id.size, hidden_color),
+                crate::jar::defs::JarLabel::marker_format(format.font_id.size, hidden_color),
             ),
         }
     }

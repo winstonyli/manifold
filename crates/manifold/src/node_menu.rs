@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::caps::JAR_EDGE;
-use crate::jar_defs::{JarConfirm, JarLabel};
+use crate::jar::defs::{JarConfirm, JarLabel};
 use crate::sleep_state::SleepWhy;
 use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_GROUP, TYPE_JAR, TYPE_JSON, TYPE_NOTE, TYPE_TAB};
 

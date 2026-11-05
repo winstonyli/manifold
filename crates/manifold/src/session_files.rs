@@ -324,7 +324,7 @@ impl App {
     ///   tabs' `jar` and groups' `default_jar` to that id (and, for a
     ///   `Trust::Foreign` file, dropped any naming a jar outside it).
     ///   Same-named jars
-    ///   are told apart by their labels (`jar_defs::named_jar_label`).
+    ///   are told apart by their labels (`jar::defs::named_jar_label`).
     ///
     /// - A Link is created only when its `from` and `to` each name a card in
     ///   the same batch or a live one; otherwise it is skipped, so no junk

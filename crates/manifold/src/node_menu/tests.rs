@@ -5,7 +5,7 @@ use crate::store::model::{TYPE_IMAGE, TYPE_JSON, TYPE_PDF};
 
 /// The Default jar's label.
 fn built_in() -> JarLabel {
-    JarLabel { name: "Default".into(), marker: Some(crate::jar_defs::JarMarker::BuiltIn) }
+    JarLabel { name: "Default".into(), marker: Some(crate::jar::defs::JarMarker::BuiltIn) }
 }
 
 /// The Default jar's label, making the Default first.
@@ -639,7 +639,7 @@ fn the_jar_menu_draws_markers_in_their_own_style() {
         (italic, markers)
     };
     assert_eq!(row("Default built-in"), (true, vec![" built-in".to_string()]));
-    let frag = crate::jar_defs::jar_fragment(w1, &app.jar_defs()).unwrap();
+    let frag = crate::jar::defs::jar_fragment(w1, &app.jar_defs()).unwrap();
     assert_eq!(row(&format!("Work #{frag}")), (false, vec![format!(" #{frag}")]));
     assert_eq!(row("Work · #3f2a"), (false, vec![]), "the typed look-alike is all name");
 }
@@ -983,7 +983,7 @@ fn make_ephemeral_on_a_jar_card_with_a_saved_file_asks_first() {
     let jar = crate::session_sync::tests::add_jar(&mut app, "Work");
     std::fs::write(dir.join(format!("{jar}.json")), b"x").unwrap();
     app.apply_node_action(&egui::Context::default(), jar, NodeAction::SetJarEphemeral(true));
-    assert_eq!(app.confirm, Some(crate::popups::Confirm::Jar(crate::jar_defs::JarConfirm::Ephemeral(jar))));
+    assert_eq!(app.confirm, Some(crate::popups::Confirm::Jar(crate::jar::defs::JarConfirm::Ephemeral(jar))));
 }
 
 #[test]

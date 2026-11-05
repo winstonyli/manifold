@@ -21,7 +21,7 @@ README.md                      live reference only (Architecture, Prerequisites,
 docs/devlog.md                 NEW (d3f): README "Reading the entries" + Running + Refactor candidates x2 + Considered and rejected + Known limitations
 crates/manifold/src/
   (every test block >= 250 lines)  foo.rs -> foo.rs + foo/tests.rs        [TST1]
-  jar.rs + jar/defs.rs, jar/defs/{lifecycle,label,tests}.rs   from jar_defs  [LAY5; d3a]
+  jar.rs + jar/defs.rs, jar/defs/{lifecycle,label,tests}.rs   from jar_defs  [LAY5 done 2026-11-05; d3a]
   trail/{history,nav,strip}.rs     from nav_history, trail_nav, trail_strip [LAY2]
   json/{view,level,ui,edit}.rs     from json_view, json_level, json_level_ui, json_edit [LAY3]
   view_install/{host_pin,embedded_host,state,download,unpack,remove,ui}.rs [LAY4; cef_pin/cef_platform go to manifold-hosts, CRT5]
@@ -107,7 +107,7 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **ARC2. One background-worker primitive** for favicon, redirect, image and PDF fetch/decode: new `worker.rs` `Pool<K,J,R>` (per-key dedupe, worker/throttle cap, panic-to-failure), delete `net::Throttle`. ~250 lines edited, net ~-150. Independent. **Own plan** (shared helper). Second survey recommended before design: the four users' guards differ in details the survey summarised.
 
-**ARC3. Jar: one owner for `jars` and its spawn-thread snapshot (`JarState`), `jar_defs` into `jar/`.** File move follows LAY5 (`jar/defs/...`, d3a); ARC3's flat path is revisit-later. State half: `App::jars` (`main.rs:319`) into `jar::CookieState` renamed `JarState` with the only mutators that write both the map and `jar_snapshots`. 4 files moved + 1 deleted, ~60 path lines, ~80 logic lines. **Own plan.**
+**ARC3. Jar: one owner for `jars` and its spawn-thread snapshot (`JarState`), `jar_defs` into `jar/`.** File move follows LAY5 (`jar/defs/...`, d3a); ARC3's flat path is revisit-later. State half: `App::jars` (`main.rs:319`) into `jar::CookieState` renamed `JarState` with the only mutators that write both the map and `jar_snapshots`. 4 files moved + 1 deleted, ~60 path lines, ~80 logic lines. **Own plan.** **File half (LAY5) Done 2026-11-05:** `jar_defs.rs` -> `jar/defs.rs`, `jar_defs/{label,lifecycle,tests}.rs` -> `jar/defs/` (100% renames), `pub(crate) mod defs;` in `jar.rs`, `mod jar_defs;` out of `main.rs`; 17 files, 37 lines of paths, no logic; 2033 tests = before under `^jar_defs::` -> `jar::defs::`; `cargo lint`, gate tests ok. State half stays in PARKED "Shared-owner refactors".
 
 **ARC5 / LAY8. Sleep lifecycle.** Decided d3b: LAY8 files-only move now; the ARC5 `SleepState` grouping stays with the ARC1 state batch. `idle_clock`, `pending_sleeps`, `saved_scroll` -> `SleepState`; files `idle_sleep.rs` + `sleep_state.rs` + `tabs/sleep.rs`. ARC5's top-level `sleep/` is revisit-later; requires ARC1 for the state half.
 
