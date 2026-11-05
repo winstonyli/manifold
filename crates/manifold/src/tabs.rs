@@ -537,7 +537,7 @@ impl App {
             .filter(|&p| in_group(p) && self.nodes.contains_key(&p))
             .or_else(|| self.nodes.keys().copied().find(|&id| in_group(id)))
             .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
-        let pos = pos.unwrap_or_else(|| parent_pos + graph_layout::spawn_jitter(id));
+        let pos = pos.unwrap_or_else(|| parent_pos + graph_ui::layout::spawn_jitter(id));
         let spawn = TabSpawn::new(id, url.to_string(), kind, pos, purpose, self.settings.value.zoom_factor);
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id

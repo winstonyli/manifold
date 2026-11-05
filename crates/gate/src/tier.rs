@@ -18,7 +18,7 @@ const UI_FILES: &[&str] = &[
     "bookmarks",
     "click_count",
     "failure_toasts",
-    "graph_layout",
+    "graph_ui/layout",
     "history",
     "image_view",
     "input",
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_ui_module_is_ui_as_a_file_or_a_folder() {
-        for p in ["src/theme.rs", "src/theme/tests.rs", "src/graph_layout/tests.rs"] {
+        for p in ["src/theme.rs", "src/theme/tests.rs", "src/graph_ui/layout/tests.rs"] {
             assert_eq!(tier_of(&[p], &[(p, "use egui;")]), "TIER ui", "{p}");
         }
         assert_eq!(tier_of(&["src/theme/tests.rs"], &[("src/theme/tests.rs", "use crate::session::S;")]), "TIER light");

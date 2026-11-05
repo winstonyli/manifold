@@ -427,7 +427,7 @@ const ALLOWED: [&str; 23] = [
     "closed.rs",
     "debug/export.rs",
     "graph_ui/card_pane.rs",
-    "graph_nav.rs",
+    "graph_ui/nav.rs",
     "groups.rs",
     "jar/defs/label.rs",
     "jar/defs/lifecycle.rs",

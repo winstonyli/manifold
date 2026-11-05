@@ -147,7 +147,7 @@ impl App {
     /// The one-time first-launch experience for a brand-new install -- see
     /// `Settings::has_shown_first_launch_demo`'s own doc comment for
     /// exactly when this fires instead of `spawn_root_tab`. A small,
-    /// hand-arranged graph -- fixed positions, not `graph_layout::
+    /// hand-arranged graph -- fixed positions, not `graph_ui::layout::
     /// spawn_jitter`, unlike every other multi-node spawn in this file --
     /// since this is the one place a deliberately curated first impression
     /// matters more than avoiding a few lines of manual layout. Fully
@@ -181,7 +181,7 @@ impl App {
 
         let group_pos = egui::vec2(300.0, 0.0);
         let group_id = self.place_group(None, "Try grouping", Placement { group: None, pos: group_pos });
-        // A small fixed offset, not `graph_layout::spawn_jitter` -- its
+        // A small fixed offset, not `graph_ui::layout::spawn_jitter` -- its
         // radius is calibrated to spread a new tab away from a busy live
         // layout (see its own doc comment), which is far too large for
         // "nestle just barely off-center inside a two-member group" and
@@ -301,7 +301,7 @@ impl App {
         // member's file position is already relative to its own (possibly
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
-        let pos = crate::graph_layout::GRAPH_WORLD_CENTER + crate::graph_layout::spawn_jitter(root);
+        let pos = crate::graph_ui::layout::GRAPH_WORLD_CENTER + crate::graph_ui::layout::spawn_jitter(root);
         let root = ImportRoot { group: self.insertion_group(), pos: Some(pos) };
         self.materialize_imported(imported, Some(root), false);
         self.save_session();

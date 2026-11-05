@@ -47,7 +47,7 @@
 //! logged, and then the two download views won't match), and the address bar's suggestions come from the local
 //! `suggest::Server`. Later runs showed two more: a view's toast outlived it and showed in the next view's shot or not
 //! by timing (`reset` sends `CLEARTOASTS`), and the graph layout summed forces in an order set by each launch's random
-//! actor, so cards settled a ulp apart (`graph_layout::ExactSum`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! actor, so cards settled a ulp apart (`graph_ui::layout::ExactSum`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;

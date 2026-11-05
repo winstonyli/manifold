@@ -8,9 +8,12 @@ use crate::store::model::{NodeId, TYPE_DOWNLOAD, TYPE_JSON, TYPE_NOTE, TYPE_TAB}
 mod camera;
 mod card_pane;
 mod cards;
+mod deselect;
 mod hints;
 mod keys;
+pub(crate) mod layout;
 mod marquee;
+pub(crate) mod nav;
 mod overlays;
 mod right_panel;
 mod scene;

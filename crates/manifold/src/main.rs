@@ -16,7 +16,6 @@ mod crash_report;
 mod debug;
 #[cfg(test)]
 mod deleted_names;
-mod deselect;
 mod disambiguate;
 mod doc;
 mod download_failure;
@@ -27,8 +26,6 @@ mod failure_toasts;
 mod favicon_fetch;
 mod fetched;
 mod gpu;
-mod graph_layout;
-mod graph_nav;
 mod graph_ui;
 mod groups;
 mod history;
@@ -114,7 +111,7 @@ use card_id::CardId;
 use card_kind::*;
 use debug::DebugJob;
 use gpu::GpuState;
-use graph_nav::GraphInteraction;
+use graph_ui::nav::GraphInteraction;
 use graph_ui::*;
 use identity::*;
 use image_view::*;
@@ -215,7 +212,7 @@ struct App {
     /// members (tabs/downloads/notes/images/PDFs/JSON, and other groups) in
     /// place of that level's -- the same "swap which set of nodes this view
     /// renders" idea `ViewMode::Item`/`Graph` already is, just recursively, and
-    /// reusing that same flat `graph_layout::step` simulation rather than a
+    /// reusing that same flat `graph_ui::layout::step` simulation rather than a
     /// second nested one running inside the group's own node. It has no
     /// runtime state of its own (`Runtime::None`): its name (`Mirror::name`,
     /// written by `App::edit_name`; a new group's is seeded by

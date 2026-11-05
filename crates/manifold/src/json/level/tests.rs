@@ -141,7 +141,7 @@ fn placement_leaves_a_json_level_and_uses_the_outer_group() {
     assert!(app.json_level.is_none());
     assert_eq!(
         at.pos,
-        graph_layout::GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(node(5)),
+        graph_ui::layout::GRAPH_WORLD_CENTER + graph_ui::layout::spawn_jitter(node(5)),
         "no pos: jittered spawn"
     );
     let explicit = egui::vec2(3.0, 4.0);

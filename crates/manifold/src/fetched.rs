@@ -76,7 +76,7 @@ impl App {
     /// left first, so the node lands in the level the user then sees.
     pub(crate) fn placement(&mut self, id: NodeId, pos: Option<egui::Vec2>) -> Placement {
         self.leave_json_level();
-        let pos = pos.unwrap_or_else(|| graph_layout::GRAPH_WORLD_CENTER + graph_layout::spawn_jitter(id));
+        let pos = pos.unwrap_or_else(|| graph_ui::layout::GRAPH_WORLD_CENTER + graph_ui::layout::spawn_jitter(id));
         Placement { group: self.current_group, pos }
     }
 
@@ -162,7 +162,7 @@ impl App {
         }
         let node_pos = self.layout_pos(tab_id);
         let id = self.alloc_node_id();
-        let pos = node_pos + graph_layout::spawn_jitter(id);
+        let pos = node_pos + graph_ui::layout::spawn_jitter(id);
         let payload = Runtime::Download(DownloadPayload::started(path, total_bytes));
         self.place_node(Some(id), Kind::Download, payload, Placement { group: node_group, pos });
         self.seed_source_url(id, url);

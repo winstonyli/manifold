@@ -1,7 +1,7 @@
 //! Graph navigation: fit and bounds, settle, focus movement, group lookup, drops and merges.
 
-use super::*;
 use crate::store::model::{Anchor, NodeId};
+use crate::*;
 
 /// One card's group, parent and anchor, as `membership_snapshot` records them.
 pub(crate) type Membership = (NodeId, Option<NodeId>, Option<NodeId>, Option<Anchor>);
@@ -10,7 +10,7 @@ pub(crate) type Membership = (NodeId, Option<NodeId>, Option<NodeId>, Option<Anc
 #[derive(Default)]
 pub(crate) struct GraphInteraction {
     /// Graph view: the node currently being dragged (pinned in the physics
-    /// sim — see `graph_layout::step`'s `pinned` parameter) and the node
+    /// sim — see `graph_ui::layout::step`'s `pinned` parameter) and the node
     /// currently hovered (drives the peek-preview popup).
     pub(crate) dragging: Option<CardId>,
     /// Every node the current drag is moving (a lone card, or the whole
@@ -604,7 +604,7 @@ impl App {
         const SETTLE_DT: f32 = 1.0 / 60.0;
 
         // Each level node is collected once: `edges` is a plain `Vec`, so a duplicated pass would feed every spring
-        // edge to `graph_layout::step` twice and double the spring strength.
+        // edge to `graph_ui::layout::step` twice and double the spring strength.
         // Starts from the document, at rest: a held card from its anchor point (`Mirror::held`), any other from its
         // document pos, so the result depends only on the document and the cards' sizes, not on earlier settles; an
         // unplaced node starts where it is drawn. Writes the layout only (`App::layout`): physics never writes the
@@ -627,13 +627,13 @@ impl App {
             .collect();
 
         for _ in 0..SETTLE_ITERATIONS {
-            graph_layout::step_sized(
+            graph_ui::layout::step_sized(
                 &mut positions,
                 &mut velocities,
                 &edges,
                 &held,
                 &sizes,
-                graph_layout::GRAPH_WORLD_CENTER,
+                graph_ui::layout::GRAPH_WORLD_CENTER,
                 SETTLE_DT,
             );
         }
@@ -643,7 +643,7 @@ impl App {
 
     /// The `(opener, opened)` pairs that pull on each other in the layout: the level's edges whose table row has
     /// `affects_layout` (today `opened-from`, stored as `parent`). A link is not one, so it never moves a card.
-    pub(crate) fn spring_edges(&self) -> Vec<graph_layout::Edge> {
+    pub(crate) fn spring_edges(&self) -> Vec<graph_ui::layout::Edge> {
         if !crate::caps::edges().row(crate::caps::OPENED_FROM).is_some_and(|row| row.affects_layout()) {
             return Vec::new();
         }
@@ -651,7 +651,7 @@ impl App {
         self.nodes
             .keys()
             .filter(|id| live(**id))
-            .filter_map(|id| self.opened_from(*id).map(|p| graph_layout::Edge { from: p, to: *id, weight: 1.0 }))
+            .filter_map(|id| self.opened_from(*id).map(|p| graph_ui::layout::Edge { from: p, to: *id, weight: 1.0 }))
             .filter(|e| live(e.from))
             .collect()
     }

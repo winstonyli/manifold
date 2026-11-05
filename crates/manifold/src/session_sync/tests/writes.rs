@@ -1137,7 +1137,7 @@ fn a_jar_is_a_card_that_round_trips_with_its_position_and_group() {
 
 #[test]
 fn a_stored_card_without_a_position_lands_jittered_around_the_world_center() {
-    use crate::graph_layout::{spawn_jitter, GRAPH_WORLD_CENTER};
+    use crate::graph_ui::layout::{spawn_jitter, GRAPH_WORLD_CENTER};
     // What `fields_of` hands over for a node whose POS was never written: the absent value.
     let unplaced = fields_of(&Node::typed(Kind::Jar));
     assert_eq!(unplaced.get(&field::POS), Some(&FieldValue::Pos(None)));
