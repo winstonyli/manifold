@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Compile-checked node-id forgetting Implementation Plan

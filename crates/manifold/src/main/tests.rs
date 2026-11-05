@@ -58,119 +58,62 @@ fn forget_id_clears_every_id_keyed_table() {
     assert!(!app.level_views.contains_key(&Some(t)) && app.level_views.contains_key(&Some(u)), "only t's view goes");
 }
 
-/// C1: App fields that can hold a node id, but that `forget_id` deliberately leaves alone, each with why. A
-/// field of an id-holding type that is in neither place fails `every_id_keyed_field_is_forgotten_or_excused`.
-const NOT_FORGOTTEN: &[(&str, &str)] = &[
-    ("node_order", "removed with `nodes` by each caller (kind-specific order)"),
+/// App fields whose type names a node or card id that `forget_id` does not name, each with why. Groups that own
+/// id-keyed state are not here: their `forget` destructures `Self` exhaustively (`SpawnTracker::forget`, ...).
+const EXCUSED: &[(&str, &str)] = &[
+    ("node_order", "removed with `nodes` by each caller (kind-specific order); `unshow` takes it"),
     ("layout", "pruned to live nodes at every save (`layout.retain`)"),
-    ("doc.writes.held_text", "pruned to live nodes at every save (`held_text.retain`)"),
     ("current_group", "`take_out` switches level"),
     ("focused", "`unshow`'s focus, split and view-mode logic"),
     ("split_tab", "`unshow`'s focus, split and view-mode logic"),
-    ("viewed_image", "`remove_remotely_deleted`; `image_view` resets it when the image is gone"),
-    ("link.connecting", "via `forget_connect_source`"),
-    ("link.connect_drag", "via `forget_connect_source`"),
-    ("spawns.wakes_in_flight", "spawn lifecycle: a tab closed while waking needs it so the landing commits its delete"),
-    ("spawns.spawning", "spawn lifecycle: the landing or teardown removes it"),
-    ("spawns.remote_in_flight", "spawn lifecycle: replayed after the landing"),
-    ("spawns.host_loads", "spawn lifecycle: expired by `shares_url_change`, cleared at teardown"),
-    ("interaction.drag_moved", "ends with the drag; a gone id is skipped at release"),
-    ("link.line_press", "a link id, taken at release only if still hovered"),
-    ("page_input.native_drag_tab", "taken at the button-up"),
-    ("menus.node_menu.fade", "the closing menu's fade copy, set from `node_menu` each frame it is open"),
-    ("menus.trail_menu", "a virtual card id (never a node id), closed by `build_trail_menu` when its page is gone"),
-    ("confirm", "a jar confirm is dropped by `confirm_text` once its jar is gone; the rest hold names and engines"),
-    ("workers.favicon_resolved", "origins, not node ids"),
-    ("graph.settled_key", "a level fingerprint, rebuilt when it differs"),
-    ("debug.debug_address_bar_typing", "typed text, not a node id"),
-    ("debug.pending_screenshot", "a file path, not a node id"),
-    ("debug.pending_print_to_pdf", "a file path, not a node id"),
-    ("toasts.save_toast", "a message, not a node id"),
-    ("toasts.undo", "lives one toast; its ids are checked on use (a member must still be where the dissolve left it)"),
-    ("view_ui.cef_dir_draft", "a path draft, not a node id"),
-    ("settings.home_page_draft", "a url draft, not a node id"),
-    ("settings.download_dir_draft", "a path draft, not a node id"),
-    ("list_popups.renaming_bookmark_folder", "a bookmark folder, not a node id"),
-    ("list_popups.history_matches_cache", "a history query, not a node id"),
+    ("viewed_image", "`unshow` clears it with the Item view; `image_view` resets when the image is gone"),
+    ("jars", "removed by `forget_jar_memory`, which `forget_id` calls"),
 ];
 
-/// C1: a new App table that can hold a node id must be decided: forgotten by `forget_id` (permanent removal)
-/// or excused in `NOT_FORGOTTEN` with why. The drift this replaces was five hand-written lists.
+/// C1: a new `App` field whose type mentions a node or card id must be decided: named in `forget_id`'s body (a
+/// group's `forget` call counts: the group destructures itself) or excused in `EXCUSED` with why. The scan sees
+/// only `App`'s direct fields; a new group struct whose type hides its ids is the destructures' job, and stays
+/// until ARC7 groups the loose item-view fields.
 #[test]
-fn every_id_keyed_field_is_forgotten_or_excused() {
-    /// A struct held by `App` (`App.<prefix>`): its source file, its header line, and the id-forgetting method
-    /// (`forget`) it may have; its fields are named `<prefix>.<field>` in `NOT_FORGOTTEN`.
-    const GROUPS: [(&str, &str, &str); 17] = [
-        ("doc", include_str!("../doc.rs"), "pub(crate) struct Doc {"),
-        ("doc.writes", include_str!("../session_sync/writes.rs"), "pub(crate) struct PendingWrites {"),
-        ("cookies", include_str!("../jar.rs"), "pub(crate) struct CookieState {"),
-        ("link", include_str!("../links.rs"), "pub(crate) struct LinkGesture {"),
-        ("interaction", include_str!("../graph_nav.rs"), "pub(crate) struct GraphInteraction {"),
-        ("spawns", include_str!("../tabs.rs"), "pub(crate) struct SpawnTracker {"),
-        ("pacing", include_str!("../event_loop/pacing.rs"), "pub(crate) struct FramePacing {"),
-        ("debug", include_str!("../debug_control.rs"), "pub(crate) struct HeadlessDebug {"),
-        ("toasts", include_str!("../failure_toasts.rs"), "pub(crate) struct Toasts {"),
-        ("menus", include_str!("../popups/menus.rs"), "pub(crate) struct MenuPopups {"),
-        ("menus.node_menu", include_str!("../popups/menus.rs"), "pub(crate) struct NodeMenu {"),
-        ("list_popups", include_str!("../history.rs"), "pub(crate) struct ListPopupsUi {"),
-        ("view_ui", include_str!("../view_install.rs"), "pub(crate) struct ViewInstallUi {"),
-        ("page_input", include_str!("../event_loop.rs"), "pub(crate) struct PageInput {"),
-        ("workers", include_str!("../event_loop/fetchers.rs"), "pub(crate) struct Workers {"),
-        ("graph", include_str!("../graph_ui.rs"), "pub(crate) struct GraphUi {"),
-        ("settings", include_str!("../settings_page.rs"), "pub(crate) struct SettingsState {"),
-    ];
+fn every_id_field_of_app_is_forgotten_or_excused() {
     fn block<'a>(source: &'a str, header: &str, end: &str) -> Vec<&'a str> {
         source.lines().skip_while(|l| !l.trim_start().starts_with(header)).skip(1).take_while(|l| *l != end).collect()
     }
-    fn fields<'a>(lines: &[&'a str]) -> Vec<(&'a str, &'a str)> {
-        lines
-            .iter()
-            .map(|l| l.trim().trim_start_matches("pub(crate) "))
-            .filter(|l| !l.starts_with("//") && !l.starts_with('#'))
-            .filter_map(|l| l.split_once(": "))
-            .collect()
-    }
-    let mut all: Vec<(String, &str)> = fields(&block(include_str!("../main.rs"), "struct App {", "}"))
-        .into_iter()
-        .map(|(n, t)| (n.to_string(), t))
-        .collect();
-    assert!(all.len() > 50, "App's fields were found ({})", all.len());
-    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
-    assert!(body.contains("self.pending_sleeps"), "forget_id's body was found");
-    let mentions = |haystack: &str, path: &str| {
-        let needle = format!("self.{path}");
-        haystack
-            .match_indices(&needle)
-            .any(|(at, _)| !haystack[at + needle.len()..].starts_with(|c: char| c == '_' || c.is_ascii_alphanumeric()))
+    let names_an_id = |ty: &str| {
+        ty.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|word| word == "NodeId" || word == "CardId")
     };
-    // A group's fields count as forgotten when `forget_id` names them as `self.<group>.<field>` or the group's own
-    // `forget` method (which `forget_id` calls) names them as `self.<field>`.
-    let mut forgotten_by_group = Vec::new();
-    for (prefix, source, header) in GROUPS {
-        let lines = block(source, header, "}");
-        assert!(!lines.is_empty(), "{header} was found");
-        let forget = block(source, "pub(crate) fn forget(", "    }").join("\n");
-        for (name, ty) in fields(&lines) {
-            if mentions(&forget, name) {
-                forgotten_by_group.push(format!("{prefix}.{name}"));
-            }
-            all.push((format!("{prefix}.{name}"), ty));
-        }
-    }
-    const ID_SHAPES: [&str; 5] = ["HashMap<NodeId", "HashSet<NodeId", "Option<NodeId", "Option<(NodeId", "Vec<NodeId"];
-    let mut undecided = Vec::new();
-    for (name, ty) in &all {
-        if !ID_SHAPES.iter().any(|shape| ty.contains(shape)) {
-            continue;
-        }
-        let excused = NOT_FORGOTTEN.iter().any(|&(n, _)| n == name);
-        let forgotten = mentions(&body, name) || forgotten_by_group.contains(name);
-        if forgotten == excused {
-            let why = if excused { "both forgotten and excused" } else { "neither forgotten nor excused" };
-            undecided.push(format!("{name}: {why}"));
-        }
-    }
+    let app = block(include_str!("../main.rs"), "struct App {", "}");
+    let fields: Vec<(&str, &str)> = app
+        .iter()
+        .map(|l| l.trim().trim_start_matches("pub(crate) "))
+        .filter(|l| !l.starts_with("//") && !l.starts_with('#'))
+        .filter_map(|l| l.split_once(": "))
+        .collect();
+    assert!(fields.len() > 50, "App's fields were found ({})", fields.len());
+    let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
+    assert!(body.contains("self.pending_sleeps") || body.contains("self.scoped"), "forget_id's body was found");
+    let named = |name: &str| {
+        let needle = format!("self.{name}");
+        body.match_indices(&needle).any(|(at, _)| {
+            !body[at + needle.len()..].chars().next().is_some_and(|c| c == '_' || c.is_ascii_alphanumeric())
+        })
+    };
+    let undecided: Vec<String> = fields
+        .iter()
+        .filter(|(_, ty)| names_an_id(ty))
+        .filter_map(|(name, _)| {
+            let (forgotten, excused) = (named(name), EXCUSED.iter().any(|&(n, _)| n == *name));
+            (forgotten == excused)
+                .then(|| format!("{name}: {}", if excused { "both forgotten and excused" } else { "neither" }))
+        })
+        .collect();
     assert!(undecided.is_empty(), "decide each App field: {undecided:?}");
+    for &(name, _) in EXCUSED {
+        assert!(
+            fields.iter().any(|(n, ty)| *n == name && names_an_id(ty)),
+            "EXCUSED lists {name}, which is not an id field"
+        );
+    }
 }
 
 #[test]
