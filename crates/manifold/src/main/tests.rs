@@ -107,7 +107,7 @@ fn every_id_field_of_app_is_forgotten_or_excused() {
         .collect();
     assert!(fields.len() > 50, "App's fields were found ({})", fields.len());
     let body = block(include_str!("../node_store.rs"), "pub(crate) fn forget_id(", "    }").join("\n");
-    assert!(body.contains("self.scoped.pending_sleeps") || body.contains("self.scoped"), "forget_id's body was found");
+    assert!(body.contains("self.scoped"), "forget_id's body was found");
     let named = |name: &str| {
         let needle = format!("self.{name}");
         body.match_indices(&needle).any(|(at, _)| {

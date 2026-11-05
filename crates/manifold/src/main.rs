@@ -209,7 +209,7 @@ struct App {
     /// group already uses, skipping the 2x2 member-thumbnail grid. A denser
     /// overview for a level with many/large groups, purely a rendering
     /// toggle -- doesn't touch membership at all. The level in view's own:
-    /// each level keeps its toggle in `level_views` while out of view and in
+    /// each level keeps its toggle in `scoped.level_views` while out of view and in
     /// personal state across restarts (`LocalState::levels`).
     groups_collapsed: bool,
     /// State keyed by a node id that goes when the node does (`NodeScoped::forget`, from `App::forget_id`).

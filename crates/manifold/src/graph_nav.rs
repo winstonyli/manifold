@@ -90,7 +90,7 @@ impl GraphInteraction {
             drag_origin: _,
             // A screen point.
             rect_select_start: _,
-            // Reset whenever the pane shows no cards.
+            // Reset when the pane leaves Cards; its ids are label nodes, not removed here.
             label_section: _,
             // The pending card names no node.
             pending_new_node: _,
