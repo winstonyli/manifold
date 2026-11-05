@@ -36,7 +36,7 @@ pub(crate) struct LocalState<K = NodeId> {
     #[serde(default, serialize_with = "levels_by_key", deserialize_with = "lenient_levels")]
     pub levels: BTreeMap<Option<K>, LevelView>,
     /// Per node, by live id.
-    #[serde(default, deserialize_with = "crate::json_file::lenient_map")]
+    #[serde(default, deserialize_with = "crate::profile::file::lenient_map")]
     pub nodes: BTreeMap<K, LocalNode>,
     /// Copy path on a JSON level gives the accessor form
     /// (`users[0].name`) rather than a JSON Pointer.

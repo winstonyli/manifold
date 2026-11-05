@@ -68,7 +68,7 @@ impl ImageDecoder {
 /// image: left alone it would kill the worker thread, and the node would wait for a result forever.
 fn guarded(path: &str, decode: impl FnOnce(&str) -> Result<Decoded, String>) -> Result<Decoded, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(path))).unwrap_or_else(|_| {
-        let name = crate::json_file::file_name(std::path::Path::new(path));
+        let name = crate::profile::file::file_name(std::path::Path::new(path));
         eprintln!("image: decoder panicked on {path}");
         Err(format!("Couldn't open image {name}: the decoder crashed"))
     })
@@ -78,7 +78,7 @@ fn guarded(path: &str, decode: impl FnOnce(&str) -> Result<Decoded, String>) -> 
 /// `insert_content` already did), scaled to fit a texture.
 fn decode(path: &str) -> Result<Decoded, String> {
     let failed = |err: &dyn std::fmt::Display| {
-        let name = crate::json_file::file_name(std::path::Path::new(path));
+        let name = crate::profile::file::file_name(std::path::Path::new(path));
         eprintln!("image: couldn't open {path}: {err}");
         format!("Couldn't open image {name}: {err}")
     };

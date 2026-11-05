@@ -23,7 +23,7 @@ pub(crate) fn save_dialog_with_toast(
 /// Group site (headless `EXPORTGROUP`, the node menu's own "Export
 /// Group..." and the popup's), matching the old per-group export file's
 /// own save, which likewise only logged. `what` names the file's kind for
-/// the log line, matching `json_file::load`'s own `what`.
+/// the log line, matching `profile::file::load`'s own `what`.
 pub(crate) fn write_json_export<T: serde::Serialize>(json: &T, path: &std::path::Path, what: &str) {
     let written = serde_json::to_string_pretty(json).map_err(|e| e.to_string()).and_then(|text| {
         if let Some(dir) = path.parent() {
@@ -49,6 +49,6 @@ mod tests {
         assert!(!path.exists(), "the write went around crate::store::atomic::replace");
         crate::store::atomic::block_for_test(&path, false);
         write_json_export(&json, &path, "group");
-        assert_eq!(crate::json_file::load::<crate::store::json::JsonDoc>(&path, "group"), Ok(json));
+        assert_eq!(crate::profile::file::load::<crate::store::json::JsonDoc>(&path, "group"), Ok(json));
     }
 }

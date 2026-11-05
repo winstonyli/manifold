@@ -145,7 +145,7 @@ impl App {
                         continue;
                     };
                     eprintln!("pdf: couldn't open {path}: {err}");
-                    let name = crate::json_file::file_name(std::path::Path::new(&path));
+                    let name = crate::profile::file::file_name(std::path::Path::new(&path));
                     let err = format!("Couldn't open PDF {name}: {err}");
                     self.queue_toast(err.clone());
                     if let Some(pdf) = self.nodes.get_mut(&id).and_then(|n| n.as_pdf_mut()) {

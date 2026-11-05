@@ -424,7 +424,7 @@ pub(super) const VERBS: &[Verb] = &[
         job(move |app, _| app.write_text_of(id, std::path::Path::new(&path)))
     }),
     row("IMPORTSESSION path", "Load a session from `path`", |rest| {
-        with_text(rest, |app, path| match crate::json_file::load(std::path::Path::new(&path), "session") {
+        with_text(rest, |app, path| match crate::profile::file::load(std::path::Path::new(&path), "session") {
             Ok(json) => app.confirm = Some(Confirm::Import(Box::new(json))),
             Err(err) => app.queue_toast(err),
         })
@@ -496,7 +496,7 @@ pub(super) const VERBS: &[Verb] = &[
         })
     }),
     row("IMPORTGROUP path", "Import a group from `path`", |rest| {
-        with_text(rest, |app, path| match crate::json_file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
+        with_text(rest, |app, path| match crate::profile::file::load::<store::json::JsonDoc>(std::path::Path::new(&path), "group") {
             Ok(json) => app.import_group_json(&json),
             Err(err) => app.queue_toast(err),
         })

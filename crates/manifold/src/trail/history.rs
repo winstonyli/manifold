@@ -11,7 +11,7 @@
 //! The trees are saved to `tab-history.json`, keyed by node id: machine-local, not part of the shared session store
 //! (a trail changes on every navigation; the store shares only user-started URL changes).
 
-use crate::json_file::ProfileFile;
+use crate::profile::file::ProfileFile;
 use crate::store::model::NodeId;
 use crate::url_parts::UrlParts;
 use std::collections::{HashMap, HashSet};
@@ -95,7 +95,7 @@ pub(crate) struct TrailPage {
 /// What `tab-history.json` holds: a tree per tab. A key that is not a node id names no tab of this build; it is
 /// dropped, and so from the next save.
 #[derive(Default, serde::Deserialize)]
-struct SavedTrees(#[serde(deserialize_with = "crate::json_file::lenient_map")] HashMap<NodeId, Saved>);
+struct SavedTrees(#[serde(deserialize_with = "crate::profile::file::lenient_map")] HashMap<NodeId, Saved>);
 
 /// What `tab-history.json` holds for one tab.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -711,7 +711,8 @@ pub(crate) fn load() -> HashMap<NodeId, NavHistory> {
 }
 
 pub(crate) fn load_from(path: &Path) -> HashMap<NodeId, NavHistory> {
-    let SavedTrees(saved) = crate::json_file::load_or_move_aside(path, FILE.what).ok().flatten().unwrap_or_default();
+    let SavedTrees(saved) =
+        crate::profile::file::load_or_move_aside(path, FILE.what).ok().flatten().unwrap_or_default();
     saved
         .into_iter()
         .filter(|(_, s)| s.valid())
@@ -743,7 +744,7 @@ pub(crate) fn save_to(lists: &mut HashMap<NodeId, NavHistory>, keep: impl Fn(Nod
         .filter(|(_, h)| h.entries.len() > 1)
         .map(|(&id, h)| (id, Saved { entries: h.entries.clone(), at: h.at }))
         .collect();
-    crate::json_file::save(&saved, path, FILE.what);
+    crate::profile::file::save(&saved, path, FILE.what);
     lists.values_mut().for_each(|h| h.dirty = false);
 }
 

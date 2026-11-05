@@ -199,7 +199,7 @@ impl ImagePayload {
 
 /// A locally-added PDF, rendered as its own graph node -- the third new
 /// kind built on the unified model. Unlike an image, rendering a PDF page
-/// is genuinely slow the first time (`pdf_render::PdfRenderer` may need to
+/// is genuinely slow the first time (`pdf::render::PdfRenderer` may need to
 /// download and cache a real `pdfium.dll` before it can render anything at
 /// all), so `outcome` starts `None` (rendering in the
 /// background) and is filled in once `PdfRenderer::tick` reports a result

@@ -455,9 +455,9 @@ impl App {
             Runtime::Image(p) if missing(&p.path) => return p.error = Some(error),
             Runtime::Json(p) if missing(p.path()) => return p.error = Some(error),
             Runtime::Pdf(p) if missing(&p.path) => return p.outcome = Some(Err(error)),
-            Runtime::Json(p) => crate::json_file::file_name(std::path::Path::new(p.path())),
+            Runtime::Json(p) => crate::profile::file::file_name(std::path::Path::new(p.path())),
             Runtime::Image(ImagePayload { path, .. }) | Runtime::Pdf(PdfPayload { path, .. }) => {
-                crate::json_file::file_name(std::path::Path::new(path))
+                crate::profile::file::file_name(std::path::Path::new(path))
             }
             _ => return,
         };
@@ -492,7 +492,7 @@ impl App {
             }
             ContentSource::Web { url, body: WebBody::File { kind, path } } => (Some(url), kind, path),
             ContentSource::Local(path) => {
-                let name = crate::json_file::file_name(&path);
+                let name = crate::profile::file::file_name(&path);
                 let head = content::read_head(&path).map_err(|err| {
                     let err = format!("Couldn't open {name}: {err}");
                     self.queue_toast(err.clone());
@@ -638,7 +638,7 @@ impl App {
         group: Option<NodeId>,
     ) -> Result<(), String> {
         // Toasted here, not by callers -- see `insert_image_node_with_id`.
-        let value = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
+        let value = match crate::profile::file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
             Ok(value) => value,
             Err(err) => {
                 self.queue_toast(err.clone());

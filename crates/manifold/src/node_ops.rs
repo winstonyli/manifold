@@ -93,7 +93,8 @@ impl App {
     /// Makes inline card `id` a file card again on `path` (the undo of a detach): the file is read afresh, and a level
     /// open on the card is rebuilt from it.
     pub(crate) fn rebuild_file_json(&mut self, id: NodeId, path: String) {
-        let (value, error) = match crate::json_file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON") {
+        let (value, error) = match crate::profile::file::load::<serde_json::Value>(std::path::Path::new(&path), "JSON")
+        {
             Ok(value) => (value.into(), None),
             Err(err) => (Default::default(), Some(err)),
         };

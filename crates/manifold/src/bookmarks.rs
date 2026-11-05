@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use crate::json_file::ProfileFile;
+use crate::profile::file::ProfileFile;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Bookmark {
@@ -34,7 +34,7 @@ pub fn load() -> (Vec<Bookmark>, Option<String>) {
 /// Bookmarks..." settings-popup button reads back whatever "Export
 /// Bookmarks..." wrote.
 pub fn load_from(path: &Path) -> Result<Vec<Bookmark>, String> {
-    crate::json_file::load(path, FILE.what)
+    crate::profile::file::load(path, FILE.what)
 }
 
 pub fn save(bookmarks: &[Bookmark]) {
@@ -43,5 +43,5 @@ pub fn save(bookmarks: &[Bookmark]) {
 
 /// Same write as `save`, just to an arbitrary path.
 pub fn save_to(bookmarks: &[Bookmark], path: &Path) {
-    crate::json_file::save(bookmarks, path, FILE.what);
+    crate::profile::file::save(bookmarks, path, FILE.what);
 }

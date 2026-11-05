@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize as _;
 
-use crate::json_file::ProfileFile;
 use crate::process_manager::{view_kind_serde, ViewKind};
+use crate::profile::file::ProfileFile;
 
 /// Which search engine `resolve_navigation_url`/the autocomplete dropdown's
 /// "Search for X" rows actually navigate to. Deliberately separate from
@@ -300,7 +300,7 @@ fn conflict_path_in(dir: &std::path::Path, secs: u64) -> PathBuf {
 impl Settings {
     /// No `%APPDATA%` or no `settings.json`: defaults. An unreadable one
     /// also gives defaults, but is moved aside first and reported as the
-    /// `Err` half (see `json_file::load_or_move_aside`) -- a broken settings
+    /// `Err` half (see `profile::file::load_or_move_aside`) -- a broken settings
     /// file should never stop the browser from starting.
     pub fn load() -> (Self, Option<String>) {
         SETTINGS.load()
@@ -314,7 +314,7 @@ impl Settings {
     /// save_settings` to redirect a fingerprint-conflicted save to `settings::
     /// conflict_path()` instead of overwriting the real `settings.json`.
     pub fn save_to(&self, path: &std::path::Path) {
-        crate::json_file::save(self, path, SETTINGS.what);
+        crate::profile::file::save(self, path, SETTINGS.what);
     }
 }
 pub(crate) mod page;

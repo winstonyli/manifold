@@ -65,7 +65,7 @@ impl App {
             connect_ring: self
                 .link
                 .retarget_preview
-                .map(|outcome| crate::link_gestures::retarget_look(outcome, ui.visuals()).ring),
+                .map(|outcome| crate::links::gestures::retarget_look(outcome, ui.visuals()).ring),
             show_order: self.graph.card_nav_active || self.graph.hints_revealed,
             order: &tab_order,
             any_focused: false,

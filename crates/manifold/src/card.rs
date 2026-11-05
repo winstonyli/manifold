@@ -1426,7 +1426,7 @@ impl App {
             .node()
             .filter(|_| stored && (is_hovered || self.link.connect_drag.is_some()) && self.shows_link_handles())
         {
-            let handles = crate::link_gestures::link_handle_rects(rect, pass.zoom_scale, self.graph.detail);
+            let handles = crate::links::gestures::link_handle_rects(rect, pass.zoom_scale, self.graph.detail);
             for (side, handle) in handles {
                 let handle_response = ui
                     .interact(handle, egui::Id::new(("link_handle", side, card)), egui::Sense::DRAG)
@@ -1434,7 +1434,7 @@ impl App {
                     .on_hover_text("Drag to another card to link them");
                 handle_hovered |= handle_response.hovered();
                 let active = handle_response.hovered() || handle_response.dragged();
-                crate::link_gestures::paint_link_handle(ui, handle, active, inv_zoom);
+                crate::links::gestures::paint_link_handle(ui, handle, active, inv_zoom);
                 if handle_response.drag_started() {
                     self.start_connect_drag(id);
                 }

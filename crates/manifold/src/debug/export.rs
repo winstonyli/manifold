@@ -253,7 +253,7 @@ impl App {
             .map(|edge| {
                 let on_screen = |t: f32| {
                     let world = match edge.curve {
-                        crate::level::EdgeCurve::Bow => crate::link_gestures::bow_point(edge.from, edge.to, t),
+                        crate::level::EdgeCurve::Bow => crate::links::gestures::bow_point(edge.from, edge.to, t),
                         crate::level::EdgeCurve::Horizontal => edge.from.lerp(edge.to, t),
                     };
                     self.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min
@@ -282,7 +282,7 @@ impl App {
             .filter(|item| item.origin == Origin::Stored && self.shows_link_handles())
             .map(|item| {
                 let sides: Map<String, Value> =
-                    crate::link_gestures::link_handle_rects(item.rect, zoom_scale, self.graph.detail)
+                    crate::links::gestures::link_handle_rects(item.rect, zoom_scale, self.graph.detail)
                         .into_iter()
                         .map(|(side, rect)| (side.key().to_string(), rect_json(self.graph_world_rect_to_screen(rect))))
                         .collect();

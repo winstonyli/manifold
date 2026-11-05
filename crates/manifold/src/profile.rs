@@ -179,6 +179,8 @@ pub fn view_data_dir() -> Option<PathBuf> {
     Some(choose_app_strategy(args).ok()?.data_dir())
 }
 
+pub(crate) mod file;
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;

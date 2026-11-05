@@ -564,7 +564,7 @@ impl App {
         // neither, so it would just hang forever with no
         // way to test it here. `EXPORTSESSION`/
         // `IMPORTSESSION` debug commands call
-        // `export_session_to`/`json_file::load` directly with an
+        // `export_session_to`/`profile::file::load` directly with an
         // explicit path instead, bypassing the dialog
         // entirely (import still stages into
         // `Confirm::Import` same as a real file pick would,
@@ -658,7 +658,7 @@ impl App {
         }
         if req.import_requested {
             if let Some(path) = rfd::FileDialog::new().add_filter("Session", &["json"]).pick_file() {
-                match crate::json_file::load(&path, "session") {
+                match crate::profile::file::load(&path, "session") {
                     Ok(json) => {
                         self.confirm = Some(Confirm::Import(Box::new(json)));
                         self.close_settings_page();

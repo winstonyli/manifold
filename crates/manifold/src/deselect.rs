@@ -156,7 +156,7 @@ mod tests {
         rig.frame(vec![], egui::Modifiers::NONE);
         let edges = rig.app.level_edges();
         let edge = edges.iter().find(|e| e.link == Some(link)).expect("drawn");
-        let world = crate::link_gestures::bow_point(edge.from, edge.to, 0.5);
+        let world = crate::links::gestures::bow_point(edge.from, edge.to, 0.5);
         let on = rig.app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
         rig.click(on);
         assert!(rig.app.links_naming(a).is_empty(), "the click deleted the link");

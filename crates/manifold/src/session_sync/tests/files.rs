@@ -343,7 +343,7 @@ fn export_session_is_written_through_the_atomic_replace() {
     assert!(!path.exists(), "the write went around store::atomic::replace");
     crate::store::atomic::block_for_test(&path, false);
     assert!(app.export_session_to(&path));
-    let written: JsonDoc = crate::json_file::load(&path, "session").unwrap();
+    let written: JsonDoc = crate::profile::file::load(&path, "session").unwrap();
     assert_eq!(written.nodes, app.export_session_json().unwrap().nodes);
 }
 

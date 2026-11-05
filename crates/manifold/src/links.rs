@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 
 use crate::caps::{Scope, Storage, LINK, OPENED_FROM};
-use crate::link_gestures::{DragEnd, LinkRetarget};
+use crate::links::gestures::{DragEnd, LinkRetarget};
 use crate::store::model::{field, FieldValue, Kind, NodeId};
 use crate::App;
 
@@ -471,6 +471,8 @@ impl App {
             .collect()
     }
 }
+
+pub(crate) mod gestures;
 
 #[cfg(test)]
 mod tests {

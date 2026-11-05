@@ -95,3 +95,5 @@ pub fn write_image_as_pdf(image_path: &Path, pdf_path: &Path) -> Result<(), Stri
 
     std::fs::write(pdf_path, pdf).map_err(|err| format!("failed to write {}: {err}", pdf_path.display()))
 }
+
+pub(crate) mod render;

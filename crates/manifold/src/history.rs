@@ -3,7 +3,7 @@
 //! file just means empty, never fails to start" posture `settings.rs`/
 //! `bookmarks.rs` already have (a corrupt one is moved aside first).
 
-use crate::json_file::ProfileFile;
+use crate::profile::file::ProfileFile;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {

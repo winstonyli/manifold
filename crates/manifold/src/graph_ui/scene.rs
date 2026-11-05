@@ -21,7 +21,7 @@ pub(crate) fn paint_edges(ui: &egui::Ui, viewport: egui::Rect, edges: &[LevelEdg
         // viewport, but that's a rare, cheap-to-tolerate false
         // negative, not a visible edge going missing.
         let bounds = match edge.curve {
-            EdgeCurve::Bow => crate::link_gestures::bow_bounds(edge.from, edge.to),
+            EdgeCurve::Bow => crate::links::gestures::bow_bounds(edge.from, edge.to),
             EdgeCurve::Horizontal => egui::Rect::from_two_pos(edge.from, edge.to),
         };
         if !bounds.intersects(viewport) {
@@ -30,9 +30,9 @@ pub(crate) fn paint_edges(ui: &egui::Ui, viewport: egui::Rect, edges: &[LevelEdg
         let stroke = match edge.kind {
             EdgeKind::Link => {
                 let width = if edge.highlight {
-                    crate::link_gestures::LINK_HOVER_STROKE_PX
+                    crate::links::gestures::LINK_HOVER_STROKE_PX
                 } else {
-                    crate::link_gestures::LINK_STROKE_PX
+                    crate::links::gestures::LINK_STROKE_PX
                 };
                 egui::Stroke::new(width * inv_zoom, accent(ui.visuals()))
             }
@@ -47,7 +47,7 @@ pub(crate) fn paint_edges(ui: &egui::Ui, viewport: egui::Rect, edges: &[LevelEdg
         match edge.curve {
             EdgeCurve::Bow => {
                 let dash = matches!(edge.kind, EdgeKind::Link | EdgeKind::Jar).then_some(inv_zoom);
-                crate::link_gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
+                crate::links::gestures::paint_bow(ui.painter(), edge.from, edge.to, stroke, dash);
             }
             EdgeCurve::Horizontal => crate::level::paint_horizontal_edge(ui.painter(), edge.from, edge.to, stroke),
         }
@@ -261,7 +261,7 @@ impl App {
                 edge.highlight |= edge.link.is_some() && edge.link == line_hover;
             }
             // The link being retargeted is not drawn: its rubber band stands for it.
-            crate::link_gestures::without_retargeted(&mut edges, self.link.retarget.as_ref());
+            crate::links::gestures::without_retargeted(&mut edges, self.link.retarget.as_ref());
             paint_edges(ui, self.camera.rect, &edges, inv_zoom);
 
             if self.json_level.is_some() {
@@ -278,7 +278,7 @@ impl App {
                 // For a dragged link end, what the release there would do: the band and ring show it.
                 self.link.retarget_preview = self.retarget_preview(&connect_end);
                 let connect_target = match connect_end {
-                    crate::link_gestures::DragEnd::Card(target) => Some(target),
+                    crate::links::gestures::DragEnd::Card(target) => Some(target),
                     _ => None,
                 };
                 self.draw_graph_cards(
@@ -356,7 +356,7 @@ impl App {
                     transform,
                 )
             } else {
-                crate::link_gestures::DragEnd::Abandoned
+                crate::links::gestures::DragEnd::Abandoned
             };
             self.end_connect_drag(end);
         }

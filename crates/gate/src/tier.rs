@@ -24,7 +24,7 @@ const UI_FILES: &[&str] = &[
     "input",
     "json/ui",
     "json/view",
-    "pdf_render",
+    "pdf/render",
     "rgba",
     "shortcuts",
     "theme",
@@ -250,7 +250,7 @@ mod tests {
         ] {
             assert_eq!(tier_of(&[p], &[]), "TIER full", "{p}");
         }
-        assert_eq!(tier_of(&["src/link_gestures/tests.rs"], &[]), "TIER light");
+        assert_eq!(tier_of(&["src/links/gestures/tests.rs"], &[]), "TIER light");
     }
 
     #[test]

@@ -37,7 +37,7 @@ impl CardEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EdgeCurve {
-    /// `link_gestures::paint_bow`'s sideways bow between facing card sides, for every edge between stored nodes
+    /// `links::gestures::paint_bow`'s sideways bow between facing card sides, for every edge between stored nodes
     /// (`from` and `to` are the side midpoints). `EdgeKind` tells a link (dashed) from a `parent` link (solid).
     Bow,
     /// Leaves and enters horizontally: a JSON level's row-to-card links.
@@ -207,7 +207,7 @@ impl App {
 
     /// The current level's edges, in `node_order` (not hash order): each stored node's `parent` link, then each Link node, whose two ends are both on
     /// this level, then each `jar` edge whose two ends are. Between stored nodes an edge runs between the facing side midpoints of the two cards
-    /// (`link_gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
+    /// (`links::gestures::facing_sides`), not their centres. Link lines come in `link_ids` order, so the last of two on one pair is the greater id
     /// (`nearest_link`'s tie rule).
     pub(crate) fn level_edges(&self) -> Vec<LevelEdge> {
         self.level_edges_from(&self.level_items())
@@ -248,7 +248,7 @@ impl App {
             let parent_id = self.opened_from(id)?;
             self.nodes.get(&parent_id).filter(|_| self.in_level(parent_id))?;
             let (from, to) =
-                crate::link_gestures::facing_ends(rect_of(CardId::from(parent_id))?, rect_of(CardId::from(id))?);
+                crate::links::gestures::facing_ends(rect_of(CardId::from(parent_id))?, rect_of(CardId::from(id))?);
             Some(LevelEdge {
                 from,
                 to,
@@ -269,7 +269,7 @@ impl App {
                 return None;
             }
             let (from_end, to_end) =
-                crate::link_gestures::facing_ends(rect_of(CardId::from(from))?, rect_of(CardId::from(to))?);
+                crate::links::gestures::facing_ends(rect_of(CardId::from(from))?, rect_of(CardId::from(to))?);
             Some(LevelEdge {
                 from: from_end,
                 to: to_end,
@@ -286,7 +286,8 @@ impl App {
         let jars = self.node_order.iter().copied().filter(|&id| self.in_level(id)).filter_map(|id| {
             let jar = self.doc.mirror.jar(id)?;
             self.nodes.get(&jar).filter(|_| self.in_level(jar))?;
-            let (from, to) = crate::link_gestures::facing_ends(rect_of(CardId::from(id))?, rect_of(CardId::from(jar))?);
+            let (from, to) =
+                crate::links::gestures::facing_ends(rect_of(CardId::from(id))?, rect_of(CardId::from(jar))?);
             Some(LevelEdge {
                 from,
                 to,
@@ -523,7 +524,7 @@ mod tests {
         assert_eq!(edges.len(), 1);
         let rect = |id: NodeId| node_card_rect(app.layout_pos(id), &app.nodes[&id].runtime);
         let (p, c) = (rect(P), rect(C));
-        assert_eq!((edges[0].from, edges[0].to), crate::link_gestures::facing_ends(p, c));
+        assert_eq!((edges[0].from, edges[0].to), crate::links::gestures::facing_ends(p, c));
         assert_eq!(edges[0].from, p.right_center(), "c lies mostly to the right of p: p's right side");
         assert_eq!(edges[0].to, c.left_center(), "and c's left side");
         assert_eq!(edges[0].curve, EdgeCurve::Bow);

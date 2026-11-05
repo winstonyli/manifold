@@ -187,20 +187,20 @@ fn export_state_lists_the_level_edges_with_their_link() {
     // a's right side to b's left side, bowed: the curve's t = 0.5 point, not the straight segment's middle.
     let (ra, rb) = (app.card_rect(a).unwrap(), app.card_rect(b).unwrap());
     let (from, to) = (ra.right_center(), rb.left_center());
-    let world = crate::link_gestures::bow_point(from, to, 0.5);
+    let world = crate::links::gestures::bow_point(from, to, 0.5);
     assert!((world - from.lerp(to, 0.5)).length() > 1.0, "the bow moves the middle off the chord");
     let mid = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
     let screen: Vec<f64> = edges[0]["screen"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
     assert!((screen[0] as f32 - mid.x).abs() < 0.01 && (screen[1] as f32 - mid.y).abs() < 0.01, "{screen:?}");
     for (key, t) in [("near_from", 0.2), ("near_to", 0.8)] {
-        let world = crate::link_gestures::bow_point(from, to, t);
+        let world = crate::links::gestures::bow_point(from, to, t);
         let want = app.graph_world_rect_to_screen(egui::Rect::from_min_max(world, world)).min;
         let got: Vec<f64> = edges[0][key].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
         assert!((got[0] as f32 - want.x).abs() < 0.01 && (got[1] as f32 - want.y).abs() < 0.01, "{key}: {got:?}");
     }
     assert!(state["retarget"].is_null());
     app.start_connect_drag(a);
-    app.link.retarget = Some(crate::link_gestures::LinkRetarget { link, fixed_is_from: true });
+    app.link.retarget = Some(crate::links::gestures::LinkRetarget { link, fixed_is_from: true });
     assert_eq!(app.export_state()["retarget"], link.to_string());
 }
 
@@ -221,8 +221,8 @@ fn export_state_gives_each_linkable_card_its_handle_rects() {
     let r: Vec<f32> = handles["right"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap() as f32).collect();
     let card = app.graph_world_rect_to_screen(app.card_rect(a).unwrap());
     assert!((egui::pos2((r[0] + r[2]) / 2.0, (r[1] + r[3]) / 2.0) - card.right_center()).length() < 0.01);
-    assert!((r[2] - r[0] - crate::link_gestures::HANDLE_SHORT_PX).abs() < 0.01, "16 points across the edge");
-    assert!((r[3] - r[1] - crate::link_gestures::HANDLE_LONG_PX).abs() < 0.01, "28 points along it");
+    assert!((r[2] - r[0] - crate::links::gestures::HANDLE_SHORT_PX).abs() < 0.01, "16 points across the edge");
+    assert!((r[3] - r[1] - crate::links::gestures::HANDLE_LONG_PX).abs() < 0.01, "28 points along it");
     assert!(state["connect_drag"].is_null() && state["dragging"].is_null());
     app.start_connect_drag(a);
     let state = app.export_state();
