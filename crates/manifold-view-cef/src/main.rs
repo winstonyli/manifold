@@ -135,7 +135,7 @@ fn main() {
         // The `sandbox` cargo feature is off (it needs a separate bootstrap
         // process this project doesn't bundle), so CEF must be told not to
         // expect one, or it CHECK()-fails at startup. Renderers run
-        // unsandboxed: README, Known limitations.
+        // unsandboxed: PARKED.md, "CEF tabs run with `--no-sandbox`".
         no_sandbox: true as _,
         ..Default::default()
     };

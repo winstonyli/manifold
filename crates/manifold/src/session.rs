@@ -6,7 +6,7 @@
 //!
 //! Only the graph's *shape* is portable across a restart — page state
 //! (localStorage, IndexedDB, scroll position; cookies persist in jars) is not, the same
-//! "known v1 limitation" the README already documents for an engine swap;
+//! "known v1 limitation" `docs/devlog.md` already documents for an engine swap;
 //! a restored tab is a fresh navigation to its last known url, not a
 //! resumed one.
 

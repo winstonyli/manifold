@@ -1,7 +1,7 @@
 use crate::store::model::NodeId;
 use std::collections::{HashMap, HashSet};
 /// The present mode asked for: `Immediate` shows a frame without queueing it behind a vsync (key to screen 33 ms against
-/// 100 for `Fifo`, README "View latency, measured"); the event loop then caps its own frame rate (`GpuState::present_blocks`).
+/// 100 for `Fifo`, `docs/devlog.md` "View latency, measured"); the event loop then caps its own frame rate (`GpuState::present_blocks`).
 /// The surface falls back to `Fifo`, which every backend supports, when it lacks the mode.
 const PREFERRED_PRESENT_MODE: wgpu::PresentMode = wgpu::PresentMode::Immediate;
 
