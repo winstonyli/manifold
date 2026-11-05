@@ -1,5 +1,5 @@
 ---
-status: approved 2026-11-04 (user, q3)
+status: done
 ---
 
 # Trail and debug clusters (LAY2, LAY6)
