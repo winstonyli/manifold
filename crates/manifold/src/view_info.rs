@@ -24,8 +24,8 @@ pub(crate) fn engine_line(kind: ViewKind) -> String {
 /// What the disk holds of `kind`'s downloadable parts, for the headless `VIEWSTATE` and `EXPORTSTATE`:
 /// "host ready", and for CEF also "runtime missing" (Ready, Missing or Stale each). A host speaking another protocol
 /// is named by that instead of "host ready": "host protocol 7, manifold 8", or "host unstamped".
-pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::OnDisk) -> String {
-    use crate::view_install::RuntimeOnDisk;
+pub(crate) fn on_disk_text(kind: ViewKind, disk: crate::view_install::state::OnDisk) -> String {
+    use crate::view_install::state::RuntimeOnDisk;
     let word = |part: RuntimeOnDisk| match part {
         RuntimeOnDisk::Ready => "ready",
         RuntimeOnDisk::Missing => "missing",
@@ -413,7 +413,7 @@ mod tests {
 
     #[test]
     fn the_disk_text_names_the_parts_the_view_has() {
-        use crate::view_install::{OnDisk, RuntimeOnDisk};
+        use crate::view_install::state::{OnDisk, RuntimeOnDisk};
         let disk = OnDisk { host: RuntimeOnDisk::Ready, runtime: RuntimeOnDisk::Stale, skew: None };
         assert_eq!(on_disk_text(ViewKind::Servo, disk), "host ready");
         assert_eq!(on_disk_text(ViewKind::Cef, disk), "host ready, runtime stale");

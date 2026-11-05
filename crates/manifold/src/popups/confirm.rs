@@ -128,15 +128,19 @@ impl App {
                 } else {
                     "Download"
                 };
-                let detail = download_detail(kind, &crate::view_install::missing_system_libs(kind));
+                let detail = download_detail(kind, &crate::view_install::state::missing_system_libs(kind));
                 (download_confirm_title(verb, kind, &size), detail, verb, false)
             }
-            Confirm::View(ViewConfirm::Remove(kind)) if crate::view_install::installed_paths(*kind).is_empty() => (
-                format!("Clear {} leftovers?", view_label(*kind)),
-                "Deletes the partial download and install leftovers.".to_string(),
-                "Clear",
-                true,
-            ),
+            Confirm::View(ViewConfirm::Remove(kind))
+                if crate::view_install::remove::installed_paths(*kind).is_empty() =>
+            {
+                (
+                    format!("Clear {} leftovers?", view_label(*kind)),
+                    "Deletes the partial download and install leftovers.".to_string(),
+                    "Clear",
+                    true,
+                )
+            }
             Confirm::View(ViewConfirm::Remove(kind)) => (
                 format!("Remove {}?", view_label(*kind)),
                 "Deletes the downloaded files. You can download them again later.".to_string(),

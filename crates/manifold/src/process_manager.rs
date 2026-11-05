@@ -12,11 +12,10 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::view_install::download::verify_installed_host;
 use crate::view_install::embedded_host;
-use crate::view_install::{
-    downloads, has_runtime, host_components, host_state, plan_for, runtime_state, verify_installed_host, OnDisk, Plan,
-    RuntimeOnDisk, ViewStatus,
-};
+use crate::view_install::state::{host_state, runtime_state, OnDisk, RuntimeOnDisk};
+use crate::view_install::{downloads, has_runtime, host_components, plan_for, Plan, ViewStatus};
 use manifold_hosts::{Host, Os, CEF};
 use manifold_view_protocol::host_env;
 use manifold_view_protocol::transport::{self, LocalTransport};
@@ -100,7 +99,7 @@ impl ViewKind {
                 tags: TagSet::of(&[Tag::Servo]),
                 link: HostLink::PipesShm,
                 starting_default: true,
-                missing_system_libs: crate::view_install::missing_vc_runtime,
+                missing_system_libs: crate::view_install::state::missing_vc_runtime,
                 download_note: "",
                 prepare: prepare_plain,
                 color: egui::Color32::from_rgb(255, 138, 80),
@@ -593,7 +592,7 @@ fn ensure_host_copy(custom_dir: &Path, host_exe: &Path) -> std::io::Result<PathB
 }
 
 /// The CEF host exe to copy next to a runtime that has no host: beside `manifold.exe` in a packaged build, else the
-/// `cef-runtime/` copy a dev build keeps, else the one `view_install::install_host` downloaded into `engine-hosts/`.
+/// `cef-runtime/` copy a dev build keeps, else the one `view_install::unpack::install_host` downloaded into `engine-hosts/`.
 fn shipped_cef_host() -> PathBuf {
     sibling_host(ViewKind::Cef)
         .or_else(|| view_hosts_dir().map(|dir| CEF.installed_in(Os::here(), &dir)).filter(|path| path.exists()))

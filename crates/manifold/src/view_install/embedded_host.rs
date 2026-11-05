@@ -64,7 +64,7 @@ pub(crate) fn ensure_with(host: &Host, hosts_dir: &Path, bytes: &[u8], sha256: &
 
     let aside = sibling_with_suffix(&dest, ".old");
     let _ = std::fs::remove_file(&aside);
-    if crate::view_install::sha256_file(&dest).is_ok_and(|have| have.eq_ignore_ascii_case(sha256)) {
+    if crate::view_install::download::sha256_file(&dest).is_ok_and(|have| have.eq_ignore_ascii_case(sha256)) {
         return Ok(Some(dest));
     }
 
@@ -72,7 +72,7 @@ pub(crate) fn ensure_with(host: &Host, hosts_dir: &Path, bytes: &[u8], sha256: &
     let temp = sibling_with_suffix(&dest, &format!(".{}-{n}.tmp", std::process::id()));
     let result = (|| {
         std::fs::write(&temp, bytes).map_err(|e| wrap(&format!("could not write {file} for"), e))?;
-        let written = crate::view_install::sha256_file(&temp)
+        let written = crate::view_install::download::sha256_file(&temp)
             .map_err(|e| wrap("could not read back", io::Error::other(e.to_string())))?;
         if !written.eq_ignore_ascii_case(sha256) {
             return Err(wrap(
@@ -297,7 +297,7 @@ mod tests {
             let hosts = temp_dir("embed_real");
             let dest = ensure(host, &hosts).unwrap().unwrap();
             assert_eq!(dest, host.installed_in(Os::here(), &hosts));
-            assert_eq!(crate::view_install::sha256_file(&dest).unwrap(), sha256);
+            assert_eq!(crate::view_install::download::sha256_file(&dest).unwrap(), sha256);
             assert_eq!(std::fs::metadata(&dest).unwrap().len(), bytes.len() as u64);
         }
     }

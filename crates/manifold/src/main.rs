@@ -354,8 +354,8 @@ struct App {
     right_panel_width: f32,
     /// Bookmarks and history popup state (see `history::ListPopupsUi`).
     list_popups: history::ListPopupsUi,
-    /// Engine install jobs, failures and the Settings drafts for them (see `view_install::ViewInstallUi`).
-    view_ui: view_install::ViewInstallUi,
+    /// Engine install jobs, failures and the Settings drafts for them (see `view_install::ui::ViewInstallUi`).
+    view_ui: view_install::ui::ViewInstallUi,
     /// Open menus and popups (see `popups::MenuPopups`).
     menus: popups::MenuPopups,
     /// Toast state (see `failure_toasts::Toasts`).
@@ -530,7 +530,7 @@ impl App {
             json_ui: json::ui::JsonLevelUi::default(),
             right_panel_width: 260.0,
             list_popups: history::ListPopupsUi::default(),
-            view_ui: view_install::ViewInstallUi::default(),
+            view_ui: view_install::ui::ViewInstallUi::default(),
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             undo: undo::UndoHistory::default(),

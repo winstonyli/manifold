@@ -151,7 +151,7 @@ pub struct Settings {
     /// `idle_sleep`.
     #[serde(default)]
     pub idle_sleep_minutes: Option<u32>,
-    /// A CEF runtime directory the user supplied instead of downloading one (`view_install::
+    /// A CEF runtime directory the user supplied instead of downloading one (`view_install::state::
     /// validate_custom`); used for launches only while it validates.
     #[serde(default)]
     pub cef_directory: Option<String>,

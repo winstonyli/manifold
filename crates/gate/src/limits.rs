@@ -19,7 +19,6 @@ const PROD_ALLOWED: &[(&str, usize)] = &[
     ("manifold/src/gpu.rs", 1542),
     ("manifold/src/store/journal.rs", 1492),
     ("gate/src/smoke.rs", 1305),
-    ("manifold/src/view_install.rs", 1207),
 ];
 /// Inline test blocks at or over `TEST_BLOCK_LIMIT` today, with the block's line count.
 const TEST_ALLOWED: &[(&str, usize)] = &[

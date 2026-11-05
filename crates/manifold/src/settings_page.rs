@@ -409,7 +409,7 @@ impl App {
             });
             // What this engine has installed (host files, CEF's runtime): present means Remove and a size line.
             let runtime = cached(ui.ctx(), ("view_runtime", kind), DISK_CACHE_AGE, || {
-                Some(crate::view_install::installed_paths(kind)).filter(|paths| !paths.is_empty())
+                Some(crate::view_install::remove::installed_paths(kind)).filter(|paths| !paths.is_empty())
             });
             match &state {
                 ViewStatus::Installed | ViewStatus::UpdateNeeded { .. } if runtime.is_some() => {
@@ -429,7 +429,7 @@ impl App {
             // Leftovers (a kept `.part`, a failed install's `.tmp`) can exist with no runtime; they get a
             // button too, since nothing else would ever delete them.
             let leftovers = cached(ui.ctx(), ("view_leftovers", kind), DISK_CACHE_AGE, || {
-                crate::view_install::kind_has_leftovers(kind)
+                crate::view_install::remove::kind_has_leftovers(kind)
             });
             let removable = (runtime.is_some() || leftovers) && !matches!(state, ViewStatus::Installing { .. });
             if matches!(state, ViewStatus::Installed | ViewStatus::Custom(_)) && !removable {
@@ -486,7 +486,7 @@ impl App {
             Some((dir, Ok(()))) => {
                 let note = crate::cef_pin::pin_for_platform().and_then(|pin| {
                     cached(ui.ctx(), ("cef_newer_than_tested", &dir), DISK_CACHE_AGE, || {
-                        crate::view_install::newer_than_tested(&dir, pin)
+                        crate::view_install::state::newer_than_tested(&dir, pin)
                     })
                 });
                 if let Some(note) = note {
@@ -792,7 +792,7 @@ impl App {
 /// `dir`'s size, recomputed at most every few seconds (egui memory) so the Settings page doesn't walk the
 /// runtime's files on every frame.
 fn cached_dir_size(ctx: &egui::Context, dir: &std::path::Path) -> u64 {
-    cached(ctx, ("view_dir_size", dir), DISK_CACHE_AGE, || crate::view_install::dir_size(dir))
+    cached(ctx, ("view_dir_size", dir), DISK_CACHE_AGE, || crate::view_install::remove::dir_size(dir))
 }
 
 /// How long the page's disk reads (`cached`) are reused before they are read again.

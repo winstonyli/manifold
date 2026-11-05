@@ -46,7 +46,7 @@ egui-phosphor = { version = "0.14.0", default-features = false }
 egui-wgpu = "0.36.2"
 egui-winit = "0.36.2"
 # Cross-platform per-user data dir (XDG on Linux, Known Folders on Windows, Application Support on macOS), for the
-# profile folder and the downloaded hosts (`profile.rs`, `view_install.rs`).
+# profile folder and the downloaded hosts (`profile.rs`, `view_install/`).
 etcetera = "0.11"
 euclid = "0.22.14"
 # Hasher for `NodeMap` (`node.rs`): the keys are never untrusted, so the map skips SipHash's DoS resistance.

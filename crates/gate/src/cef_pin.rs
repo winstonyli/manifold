@@ -5,7 +5,7 @@
 //! computes the SHA-256 (the index has none), deletes the temp file (`CEF_PIN_KEEP=1` keeps it), and replaces that
 //! platform's `// BEGIN <id>` block in cef_pin.rs, adding it and its `pin_for` arm when new. Other platforms' blocks
 //! stay. Platforms: windows64 (default), linux64, macosx64, macosarm64. Re-pin every pinned platform to the same CEF
-//! build after a `cef` crate bump (see `the_pin_matches_the_cef_crates_version` in view_install.rs).
+//! build after a `cef` crate bump (see `the_pin_matches_the_cef_crates_version` in view_install/tests.rs).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;

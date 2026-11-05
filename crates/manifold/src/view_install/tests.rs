@@ -7,9 +7,21 @@ fn unpacked_files_keep_exec_bits_but_never_setuid_or_group_write() {
 }
 
 use super::*;
+use super::{download::*, remove::*, state::*, unpack::*};
+use crate::process_manager::ViewKind;
 use crate::store::testutil::temp_dir;
+use crate::view_install::host_pin::Component as HostFile;
+use manifold_hosts::{Os, CEF};
+use manifold_view_protocol::transport::to_hex;
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 use std::io::BufRead;
+use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 const PIN: Pin = Pin { version: "1.0", url: "http://x/a", size: 10, sha1: "aa", sha256: "bb" };
 

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # View-host cluster: `view_install/` (LAY4)
