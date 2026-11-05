@@ -9,7 +9,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use crate::jar_defs::JarDef;
-use crate::json_view::JsonView;
+use crate::json::view::JsonView;
 use crate::labels::{LabelDef, LABELS_KEY};
 use crate::process_manager::ViewKind;
 use crate::session_sync::{color_of, pos_in, pos_value, view_kind_of, Fields};

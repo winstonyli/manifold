@@ -11,7 +11,7 @@ use super::*;
 pub(crate) enum Origin {
     /// A stored node's card.
     Stored,
-    /// A JSON level's card (`json_level.rs`): no node behind it.
+    /// A JSON level's card (`json/level.rs`): no node behind it.
     Json,
     /// A card a `VirtualSource` of this name supplies (`virtual_source.rs`): no node behind it.
     Virtual(&'static str),
@@ -227,10 +227,11 @@ impl App {
                 .filter_map(|(i, (card, rect))| {
                     let (parent, row) = card.parent?;
                     let from_rect = level.rects[parent];
-                    let row_y = from_rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row as f32 + 0.5);
+                    let row_y =
+                        from_rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (row as f32 + 0.5);
                     Some(LevelEdge {
                         from: egui::pos2(from_rect.right(), row_y),
-                        to: egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT / 2.0),
+                        to: egui::pos2(rect.left(), rect.top() + json::view::HEADER_HEIGHT / 2.0),
                         from_id: level.card_id(parent),
                         to_id: level.card_id(i),
                         curve: EdgeCurve::Horizontal,
@@ -307,7 +308,7 @@ impl App {
     pub(crate) fn layout_current_level(&mut self) {
         if let Some(level) = self.json_level.as_mut() {
             if self.nodes.get(&level.node_id).and_then(|n| n.as_json()).is_some() {
-                level.relayout(self.doc.mirror.view(level.node_id).unwrap_or(&crate::json_view::NO_VIEW));
+                level.relayout(self.doc.mirror.view(level.node_id).unwrap_or(&crate::json::view::NO_VIEW));
             }
             return;
         }

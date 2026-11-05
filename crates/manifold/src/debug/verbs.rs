@@ -573,7 +573,7 @@ pub(super) const VERBS: &[Verb] = &[
         })
     }),
     row("JSONEDIT op pointer [args]", "Edit the open inline JSON level: set <ptr> <json>, add <ptr> <key> <json>, insert <ptr> <index> <json>, remove <ptr>, rename <ptr> <to>, move <ptr> <to>; `root` is the root pointer", |rest| {
-        match crate::json_edit::parse_json_edit(rest) {
+        match crate::json::edit::parse_json_edit(rest) {
             Ok(op) => job(move |app, _| {
                 let Some(id) = app.json_level.as_ref().map(|level| level.node_id) else {
                     return eprintln!("JSONEDIT: no JSON level is open");

@@ -147,7 +147,7 @@ impl App {
                         // A JSON level entered from the keyboard: its root card takes focus (`draw_json_level`),
                         // sparing the toolbar's ~17 Tab stops.
                         if kind.ty == TYPE_JSON && !card.response.double_clicked() {
-                            ui.data_mut(|d| d.insert_temp(crate::json_level_ui::json_focus_root_key(), true));
+                            ui.data_mut(|d| d.insert_temp(crate::json::ui::json_focus_root_key(), true));
                         }
                         pass.actions.push(GraphAction::EnterGroup(id))
                     }

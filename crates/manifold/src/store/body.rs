@@ -12,7 +12,7 @@ use serde_json::{Map, Value};
 use super::model::{ActorId, NodeId};
 use super::tree::{resolved, Leaf, Seg, Tree, TreePath};
 use super::tree_json::{leaf_json, number_leaf, MAX_DEPTH};
-use crate::json_view::{child_pointer, pointer_tokens};
+use crate::json::view::{child_pointer, pointer_tokens};
 
 pub const INLINE_MAX_LEAVES: usize = 10_000;
 

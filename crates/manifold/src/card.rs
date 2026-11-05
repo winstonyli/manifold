@@ -83,7 +83,7 @@ pub(crate) const TAB_HEADER_POINTS: f32 =
 /// The strip a card too short for the header (`tab_has_header`) gets along its bottom instead, in screen points.
 pub(crate) const TAB_STRIP_POINTS: f32 = 18.0;
 /// Header F's layout, in screen points from the card's top-left. `paint_card_header` and the JSON
-/// preview's own header (`json_level_ui::paint_json_content`) both place their text from these.
+/// preview's own header (`json::ui::paint_json_content`) both place their text from these.
 /// The space left of the icon and between it and the text, equal so the icon sits centered between the card's
 /// edge and the title.
 const HEADER_PAD: f32 = 8.0;
@@ -258,7 +258,7 @@ pub(crate) const PDF_PENDING_NODE_SIZE: egui::Vec2 = egui::vec2(150.0, 90.0);
 
 /// A JSON error card's fixed box -- there's no root to preview, just the
 /// missing-file card. A file-backed Json card is sized by
-/// `json_view::preview_size` instead (see `node_card_size`).
+/// `json::view::preview_size` instead (see `node_card_size`).
 pub(crate) const JSON_NODE_SIZE: egui::Vec2 = egui::vec2(160.0, 90.0);
 
 /// Dims the card at `rect` with one canvas-colored scrim (`scrim`), pushed as a deferred overlay so it paints last (on
@@ -947,7 +947,7 @@ pub(crate) fn node_card_size(runtime: &Runtime) -> egui::Vec2 {
         Runtime::Pdf(pdf) => pdf_card_size(pdf),
         // A file's own card previews its root (spec "The card at the
         // parent level"); an error card keeps the small box.
-        Runtime::Json(json) if json.error.is_none() => crate::json_view::preview_size(&json.value),
+        Runtime::Json(json) if json.error.is_none() => crate::json::view::preview_size(&json.value),
         Runtime::Json(_) => JSON_NODE_SIZE,
         // A group has no runtime of its own.
         Runtime::None => GROUP_NODE_SIZE,

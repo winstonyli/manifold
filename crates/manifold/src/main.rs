@@ -41,11 +41,8 @@ mod image_view;
 mod input;
 mod jar;
 mod jar_defs;
-mod json_edit;
+mod json;
 mod json_file;
-mod json_level;
-mod json_level_ui;
-mod json_view;
 mod labels;
 mod level;
 mod link_gestures;
@@ -130,7 +127,7 @@ use graph_ui::*;
 use identity::*;
 use image_view::*;
 use input::*;
-use json_level::{JsonEdit, JsonLevel};
+use json::level::{JsonEdit, JsonLevel};
 use level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, LevelScan, Origin};
 use links::LinkGesture;
 use manifold_view_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
@@ -353,8 +350,8 @@ struct App {
     /// `--debug-commands`: a real window driven by debug commands. It tells egui it has focus, as headless does,
     /// so scripted keys reach egui without the OS giving the window the foreground.
     debug_commands: bool,
-    /// JSON level view settings (see `json_level_ui::JsonLevelUi`).
-    json_ui: json_level_ui::JsonLevelUi,
+    /// JSON level view settings (see `json::ui::JsonLevelUi`).
+    json_ui: json::ui::JsonLevelUi,
     /// The right panel's width (`App::build_right_panel`), shared by the JSON outline and the card pane.
     right_panel_width: f32,
     /// Bookmarks and history popup state (see `history::ListPopupsUi`).
@@ -532,7 +529,7 @@ impl App {
             graph: Default::default(),
             headless: false,
             debug_commands: false,
-            json_ui: json_level_ui::JsonLevelUi::default(),
+            json_ui: json::ui::JsonLevelUi::default(),
             right_panel_width: 260.0,
             list_popups: history::ListPopupsUi::default(),
             view_ui: view_install::ViewInstallUi::default(),

@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::json_view::{child_pointer, last_key, parent_pointer, pointer_tokens};
+use crate::json::view::{child_pointer, last_key, parent_pointer, pointer_tokens};
 use crate::store::body::{
     self, between, elements, initial_order, pointer_path, tree_to_value, value_to_tree_at, Element, INLINE_MAX_LEAVES,
 };
@@ -412,7 +412,7 @@ impl App {
         let in_object = parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_object);
         let text = match on {
             EditWhat::Key if in_object => last_key(&pointer),
-            EditWhat::Value => crate::json_view::scalar_text(value),
+            EditWhat::Value => crate::json::view::scalar_text(value),
             EditWhat::Key => None,
         };
         let Some(buffer) = text else { return };

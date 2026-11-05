@@ -4,12 +4,12 @@
 
 use serde_json::Value;
 
-use super::*;
 use crate::card::card_focus_ring;
 use crate::identity::Identity;
-use crate::json_edit::{json_menu_rows, type_default, EditWhat, JsonOp, JsonType, RowEdit};
-use crate::json_level::{CopyWhat, JsonEdit};
-use crate::json_view::{self, Card};
+use crate::json::edit::{json_menu_rows, type_default, EditWhat, JsonOp, JsonType, RowEdit};
+use crate::json::level::{CopyWhat, JsonEdit};
+use crate::json::view::Card;
+use crate::*;
 
 /// Text height in world units (painted at `12 x zoom` screen points).
 const TEXT_SIZE: f32 = 12.0;
@@ -152,10 +152,10 @@ pub(crate) fn row_parts(parent: &Value, key: &str, value: &Value) -> RowParts {
     RowParts {
         key: (!in_array).then(|| key.to_string()),
         index: in_array.then(|| key.to_string()),
-        label: if in_array && kind == ValueKind::Container { json_view::label(value) } else { None },
-        value: json_view::display_text(value),
+        label: if in_array && kind == ValueKind::Container { json::view::label(value) } else { None },
+        value: json::view::display_text(value),
         kind,
-        port: json_view::is_card(value),
+        port: json::view::is_card(value),
     }
 }
 
@@ -181,9 +181,9 @@ pub(crate) fn header_parts(root: &Value, card: &Card, root_name: &str) -> Header
         } else {
             egui_phosphor::light::BRACKETS_CURLY
         },
-        title: json_view::card_title(root, &card.pointer, root_name),
-        label: if card.collapsed { json_view::label(value) } else { None },
-        count: json_view::display_text(value),
+        title: json::view::card_title(root, &card.pointer, root_name),
+        label: if card.collapsed { json::view::label(value) } else { None },
+        count: json::view::display_text(value),
         count_kind: value_kind(value),
         source: None,
     }
@@ -260,7 +260,7 @@ pub(crate) struct CardLook<'a> {
     /// edges to show a dot for.
     pub(crate) ports: bool,
     /// The Json card's preview at its parent's level: header F's look and height
-    /// (`json_view::PREVIEW_HEADER_HEIGHT`), not the level cards' one-line header.
+    /// (`json::view::PREVIEW_HEADER_HEIGHT`), not the level cards' one-line header.
     pub(crate) preview: bool,
 }
 
@@ -276,7 +276,7 @@ fn paint_json_frame(
     let rounding = CARD_RADIUS * inv_zoom;
     painter.rect_filled(rect, rounding, fill);
     if let Some(tint) = tint {
-        let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), json_view::HEADER_HEIGHT));
+        let header = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), json::view::HEADER_HEIGHT));
         painter.rect_filled(header, rounding, tint.gamma_multiply(0.35));
     }
     painter.rect_stroke(rect, rounding, egui::Stroke::new(border.0 * inv_zoom, border.1), egui::StrokeKind::Inside);
@@ -297,9 +297,9 @@ pub(crate) fn paint_json_content(
     more: usize,
     look: &CardLook,
 ) {
-    use json_view::ROW_HEIGHT;
+    use json::view::ROW_HEIGHT;
     // The preview's header is header F's 40 screen points, whatever the zoom; the level's is world-sized.
-    let header_height = if look.preview { TAB_HEADER_POINTS * look.inv_zoom } else { json_view::HEADER_HEIGHT };
+    let header_height = if look.preview { TAB_HEADER_POINTS * look.inv_zoom } else { json::view::HEADER_HEIGHT };
     let pal = look.palette;
     let row_rect = |row: usize| {
         egui::Rect::from_min_size(
@@ -310,7 +310,7 @@ pub(crate) fn paint_json_content(
     // The `+ N earlier` row, above the window's rows when it starts past the first entry.
     let lead = usize::from(skip > 0);
     // Window rows: `shown.start` is the window's first drawn entry row, entry `skip + shown.start`.
-    let shown = json_view::visible_rows(rect.top() + header_height + lead as f32 * ROW_HEIGHT, rows, look.visible);
+    let shown = json::view::visible_rows(rect.top() + header_height + lead as f32 * ROW_HEIGHT, rows, look.visible);
     if !look.preview && lead + rows + usize::from(more > 0) > 0 {
         painter.hline(
             rect.x_range(),
@@ -426,7 +426,7 @@ pub(crate) fn paint_json_content(
     }
     let first = shown.start;
     for (row, (key, child)) in
-        json_view::entries_from(value, skip + first).take(shown.len()).enumerate().map(|(i, e)| (lead + first + i, e))
+        json::view::entries_from(value, skip + first).take(shown.len()).enumerate().map(|(i, e)| (lead + first + i, e))
     {
         let r = row_rect(row);
         let y = r.center().y;
@@ -513,19 +513,19 @@ pub(crate) fn json_focus_root_key() -> egui::Id {
 /// What a double click at `x` (world units from the card's left edge) on the row at `pointer` edits: an object
 /// member's key when it lands in the key column, else a scalar's value; nothing on a container's value.
 pub(crate) fn edit_target(root: &Value, pointer: &str, x: f32) -> Option<EditWhat> {
-    let in_object = json_view::parent_pointer(pointer).and_then(|p| root.pointer(p)).is_some_and(Value::is_object);
+    let in_object = json::view::parent_pointer(pointer).and_then(|p| root.pointer(p)).is_some_and(Value::is_object);
     if in_object && x < PAD + KEY_WIDTH {
         Some(EditWhat::Key)
     } else {
-        json_view::scalar_text(root.pointer(pointer)?).map(|_| EditWhat::Value)
+        json::view::scalar_text(root.pointer(pointer)?).map(|_| EditWhat::Value)
     }
 }
 
 /// Where the text box for `edit` sits (world): over the row's key column, or over the rest of the row.
-fn edit_rect(level: &crate::json_level::JsonLevel, edit: &RowEdit) -> Option<egui::Rect> {
+fn edit_rect(level: &crate::json::level::JsonLevel, edit: &RowEdit) -> Option<egui::Rect> {
     let row = level.entry_rect(&edit.pointer)?;
     let in_array =
-        json_view::parent_pointer(&edit.pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+        json::view::parent_pointer(&edit.pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
     let (left, right) = (row.left() + PAD, row.right() - PAD);
     Some(match edit.on {
         EditWhat::Key => {
@@ -580,11 +580,11 @@ impl App {
         &self,
         refs: &std::collections::BTreeMap<String, NodeId>,
         value: &Value,
-        card: &json_view::Card,
+        card: &json::view::Card,
     ) -> Vec<(usize, Chip)> {
         refs.iter()
             .filter_map(|(pointer, &target)| {
-                let row = json_view::row_of(value, &card.pointer, pointer, card.skip..card.skip + card.rows)?;
+                let row = json::view::row_of(value, &card.pointer, pointer, card.skip..card.skip + card.rows)?;
                 let missing = !self.nodes.contains_key(&target);
                 let named = self.doc.mirror.name(target);
                 let text = if missing {
@@ -672,7 +672,7 @@ impl App {
             let selected_row = level
                 .selected
                 .as_deref()
-                .and_then(|s| json_view::row_of(value, &card.pointer, s, card.skip..card.skip + card.rows));
+                .and_then(|s| json::view::row_of(value, &card.pointer, s, card.skip..card.skip + card.rows));
             // This card's hit rows, cut to the rows it shows.
             let hit_rows: &[usize] = level.search.hit_rows.get(&card.pointer).map_or(&[][..], |rows| {
                 &rows[rows.partition_point(|&r| r < card.skip)..rows.partition_point(|&r| r < card.skip + card.rows)]
@@ -730,8 +730,8 @@ impl App {
                 edits.push(JsonEdit::Select(card.pointer.clone()));
             }
             let at = response.interact_pointer_pos().or(response.hover_pos());
-            let in_header = at.is_some_and(|p| p.y < rect.top() + json_view::HEADER_HEIGHT);
-            if response.double_clicked() && in_header && json_view::entry_count(value) > 0 {
+            let in_header = at.is_some_and(|p| p.y < rect.top() + json::view::HEADER_HEIGHT);
+            if response.double_clicked() && in_header && json::view::entry_count(value) > 0 {
                 edits.push(JsonEdit::Toggle(card.pointer.clone()));
             } else if response.double_clicked() && editable {
                 // The first click of the pair already selected the row; the second opens its box.
@@ -768,7 +768,7 @@ impl App {
                 .filter(|_| !response.dragged())
                 .and_then(|p| level.row_at(i, p))
                 .and_then(|p| level.value.pointer(&p))
-                .and_then(json_view::scalar_text)
+                .and_then(json::view::scalar_text)
                 .map(|t| {
                     if t.chars().count() > TOOLTIP_MAX_CHARS {
                         format!("{}…", t.chars().take(TOOLTIP_MAX_CHARS).collect::<String>())
@@ -873,13 +873,13 @@ impl App {
         let is_card = card.is_some();
         // Only a card with entries collapses, as with a header double-click:
         // a scalar or empty root has nothing to hide.
-        let has_entries = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
+        let has_entries = level.value.pointer(&pointer).is_some_and(|v| json::view::entry_count(v) > 0);
         let collapsed = card.filter(|_| has_entries).map(|c| c.collapsed);
         let view = self.doc.mirror.view(level.node_id);
         let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
         let value = level.value.pointer(&pointer).cloned().unwrap_or(Value::Null);
         let parent_is_array =
-            json_view::parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+            json::view::parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
         let rows = json_menu_rows(self.json_editable(level.node_id), &value, pointer.is_empty(), parent_is_array);
         let doc = level.value.clone();
         let mut close = false;
@@ -922,7 +922,7 @@ impl App {
                     });
                     continue;
                 }
-                let op = crate::json_edit::menu_op(row, &doc, &pointer);
+                let op = crate::json::edit::menu_op(row, &doc, &pointer);
                 if ui.add_enabled(op.is_some(), egui::Button::new(row)).clicked() {
                     edit = op.map(|(op, next)| JsonEdit::Op(op, next));
                     close = true;
@@ -1069,7 +1069,7 @@ impl App {
                     ui.set_height(row_height);
                     ui.add_space(row.depth as f32 * 12.0);
                     let open = searching || level.outline.open.contains(&row.pointer);
-                    if json_view::is_card(value) && !searching {
+                    if json::view::is_card(value) && !searching {
                         let caret =
                             if open { egui_phosphor::light::CARET_DOWN } else { egui_phosphor::light::CARET_RIGHT };
                         let caret_button = ui.add_sized(CARET_SIZE, egui::Button::new(caret).frame(false));
@@ -1081,8 +1081,8 @@ impl App {
                         // Same footprint as the caret, spacing included.
                         ui.allocate_exact_size(CARET_SIZE, egui::Sense::hover());
                     }
-                    let parent = json_view::parent_pointer(&row.pointer).and_then(|p| level.value.pointer(p));
-                    let (name, color) = match (parent, json_view::last_key(&row.pointer)) {
+                    let parent = json::view::parent_pointer(&row.pointer).and_then(|p| level.value.pointer(p));
+                    let (name, color) = match (parent, json::view::last_key(&row.pointer)) {
                         (Some(parent), Some(key)) if parent.is_array() => (key, pal.muted),
                         (_, Some(key)) => (key, pal.key),
                         (_, None) => (root_name.clone(), ui.visuals().text_color()),
@@ -1094,14 +1094,14 @@ impl App {
                     if rest_borderless(ui, |ui| ui.add(egui::Button::selectable(selected, text))).clicked() {
                         clicked = Some(row.pointer.clone());
                     }
-                    if let Some(label) = parent.filter(|p| p.is_array()).and_then(|_| json_view::label(value)) {
+                    if let Some(label) = parent.filter(|p| p.is_array()).and_then(|_| json::view::label(value)) {
                         ui.add(egui::Label::new(egui::RichText::new(label).color(pal.muted)).truncate());
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let kind = value_kind(value);
                         let color = if kind == ValueKind::Container { pal.muted } else { pal.of(kind) };
                         ui.add(
-                            egui::Label::new(egui::RichText::new(json_view::display_text(value)).color(color))
+                            egui::Label::new(egui::RichText::new(json::view::display_text(value)).color(color))
                                 .truncate(),
                         );
                     });
@@ -1131,7 +1131,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::json_view::{default_expanded, visible_cards, JsonView};
+    use crate::json::view::{default_expanded, visible_cards, JsonView};
 
     /// The texts one level card paints, in order: header, rows, `+ N more`.
     fn painted_texts(value: &Value, card: &Card, visible: egui::Rect) -> Vec<String> {
@@ -1168,7 +1168,7 @@ mod tests {
                 ports: true,
                 preview: false,
             };
-            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(json_view::CARD_WIDTH, card.height()));
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(json::view::CARD_WIDTH, card.height()));
             let header = header_parts(value, card, "f.json");
             paint_json_content(
                 ui.painter(),
@@ -1202,7 +1202,7 @@ mod tests {
                 _ => None,
             })
         };
-        let row_centre = |row: usize| json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row as f32 + 0.5);
+        let row_centre = |row: usize| json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (row as f32 + 0.5);
         let near = |y: Option<f32>, row: usize| y.is_some_and(|y| (y - row_centre(row)).abs() < 1.0);
         assert!(near(centre("+ 40 earlier"), 0), "{:?}", centre("+ 40 earlier"));
         assert!(near(centre("\"v40\""), 1) && near(centre("\"v59\""), 20));
@@ -1218,7 +1218,7 @@ mod tests {
                 })
                 .collect()
         };
-        let row_top = |row: usize| json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * row as f32;
+        let row_top = |row: usize| json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * row as f32;
         assert_eq!(fill_top(SEARCH_HIT.gamma_multiply(0.18)), [row_top(1 + 50 - 40)]);
         assert_eq!(
             fill_top(crate::theme::testutil::ctx(true).global_style().visuals.selection.bg_fill.gamma_multiply(0.22)),

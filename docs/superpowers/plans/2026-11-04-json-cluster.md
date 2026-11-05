@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # JSON cluster Implementation Plan

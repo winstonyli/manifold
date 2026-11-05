@@ -9,7 +9,7 @@ use crate::store::model::{ActorId, NodeId};
 /// The bit of `lo` that marks a non-node card.
 const NON_NODE: u64 = 1 << 63;
 
-/// The name JSON-level cards use as their source (`json_level.rs`); no `VirtualSource` may take it.
+/// The name JSON-level cards use as their source (`json/level.rs`); no `VirtualSource` may take it.
 pub(crate) const JSON_SOURCE: &str = "json";
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]

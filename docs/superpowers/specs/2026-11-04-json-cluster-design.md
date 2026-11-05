@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # JSON cluster: `json_*` -> `json/` (LAY3)

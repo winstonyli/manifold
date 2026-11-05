@@ -431,7 +431,7 @@ const ALLOWED: [&str; 23] = [
     "groups.rs",
     "jar_defs/label.rs",
     "jar_defs/lifecycle.rs",
-    "json_level.rs",
+    "json/level.rs",
     "labels.rs",
     "main.rs",
     "mirror.rs",
@@ -444,10 +444,10 @@ const ALLOWED: [&str; 23] = [
     "shortcuts.rs",
     "virtual_source.rs",
 ];
-/// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json_level_ui.rs`), a thread's
+/// Files whose `.name` is some other name: a cookie's (`jar.rs`), a string literal (`json/ui.rs`), a thread's
 /// (`process_manager/view_io.rs`, `search/service.rs`), a tracing field's or span's (`telemetry.rs`).
 const OTHER_NAMES: [&str; 5] =
-    ["jar.rs", "json_level_ui.rs", "process_manager/view_io.rs", "search/service.rs", "telemetry.rs"];
+    ["jar.rs", "json/ui.rs", "process_manager/view_io.rs", "search/service.rs", "telemetry.rs"];
 const RULE_MARKS: [&str; 8] = [
     "display_name(",
     "clean_name(",

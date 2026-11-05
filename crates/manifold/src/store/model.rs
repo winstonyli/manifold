@@ -283,7 +283,7 @@ pub mod field {
     // them keeps them raw, like any field a type does not list.
     pub const TEXT: u32 = 10;
     pub const PATH: u32 = 11;
-    /// A Json node's view overrides (`json_view::JsonView`), compact JSON; "" when none.
+    /// A Json node's view overrides (`json::view::JsonView`), compact JSON; "" when none.
     pub const VIEW: u32 = 14;
     /// The `jar` edge of a tab or group: the `Kind::Jar` node it uses; absent to inherit (`App::effective_jar`).
     /// Never reuse 16 and 17 (`RESERVED`).

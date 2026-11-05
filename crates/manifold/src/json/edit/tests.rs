@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 
 use super::*;
-use crate::json_level::JsonEdit;
+use crate::json::level::JsonEdit;
 use crate::store::body::{tree_to_value, value_to_tree};
 use crate::store::model::field;
 
@@ -461,7 +461,7 @@ fn op_then_opens_the_next_edit_after_the_op_landed() {
 
 #[test]
 fn menu_rows_become_ops_with_the_edit_to_open_next() {
-    use crate::json_edit::{menu_op, EditWhat};
+    use crate::json::edit::{menu_op, EditWhat};
     let doc = json!({"a": 1, "new": 2, "l": [10, 20]});
     let row = |r: &str, p: &str| menu_op(r, &doc, p);
     // The first free name, then a key edit on it.
@@ -601,7 +601,7 @@ fn a_chip_to_an_unrenamed_card_shows_its_listed_label() {
 
 #[test]
 fn a_follow_up_box_on_a_new_row_past_the_page_is_revealed() {
-    use crate::json_edit::menu_op;
+    use crate::json::edit::menu_op;
     let (mut app, id) = card(json!({"l": (0..100).collect::<Vec<_>>()}));
     open_level(&mut app, id);
     let doc = app.json_level.as_ref().unwrap().value.as_ref().clone();

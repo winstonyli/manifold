@@ -410,7 +410,7 @@ fn every_card_body_draws_a_header() {
     pub(crate) fn ",
             )
             .unwrap_or(rest.len())];
-        // The JSON preview's header is drawn by `json_level_ui::paint_json_content`, which
+        // The JSON preview's header is drawn by `json::ui::paint_json_content`, which
         // `CardLook::preview` switches to F.
         let json_preview = name == "json" && body.contains("TAB_HEADER_POINTS");
         assert!(json_preview || markers.iter().any(|m| body.contains(m)), "paint_{name}_body draws no card header");
@@ -633,8 +633,8 @@ fn node_card_size_matches_each_kinds_card() {
         Runtime::Json(JsonPayload::file("a.json".into(), value.into(), error.map(Into::into)))
     };
     let five = serde_json::json!({"a": 1, "b": 2, "c": 3, "d": 4, "e": 5});
-    assert_eq!(node_card_size(&json(five.clone(), None)), crate::json_view::preview_size(&five));
-    assert_eq!(node_card_size(&json(serde_json::json!({}), None)).x, crate::json_view::PREVIEW_CARD_WIDTH);
+    assert_eq!(node_card_size(&json(five.clone(), None)), crate::json::view::preview_size(&five));
+    assert_eq!(node_card_size(&json(serde_json::json!({}), None)).x, crate::json::view::PREVIEW_CARD_WIDTH);
     // An error card keeps the small size.
     assert_eq!(node_card_size(&json(five, Some("missing"))), JSON_NODE_SIZE);
     assert_eq!(

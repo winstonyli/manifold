@@ -8,10 +8,10 @@ use crate::store::model::NodeId;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 
-use super::*;
 use crate::card_id::{fnv64, JSON_SOURCE};
-use crate::json_edit::{EditWhat, JsonOp, RowEdit};
-use crate::json_view::{self, Card, JsonView, OutlineRow, SearchResult};
+use crate::json::edit::{EditWhat, JsonOp, RowEdit};
+use crate::json::view::{Card, JsonView, OutlineRow, SearchResult};
+use crate::*;
 
 pub(crate) struct JsonLevel {
     /// The Json node shown.
@@ -20,7 +20,7 @@ pub(crate) struct JsonLevel {
     pub(crate) value: Arc<serde_json::Value>,
     /// Nodes in `value`, for choosing a worker search.
     pub(crate) nodes: usize,
-    /// `json_view::default_expanded`, fixed for this value.
+    /// `json::view::default_expanded`, fixed for this value.
     pub(crate) expanded: HashSet<String>,
     pub(crate) cards: Vec<Card>,
     /// World rects, one per card.
@@ -61,7 +61,7 @@ pub(crate) struct Outline {
 pub(crate) struct Search {
     pub(crate) query: String,
     pub(crate) result: Option<SearchResult>,
-    /// The result's hits as rows (`json_view::hit_rows_by_parent`): sorted entry indices per parent card. Set with
+    /// The result's hits as rows (`json::view::hit_rows_by_parent`): sorted entry indices per parent card. Set with
     /// `result` (`set_result`), so a frame never scans a card's rows for hits.
     pub(crate) hit_rows: HashMap<String, Vec<usize>>,
     /// The match Enter or ↓ is on.
@@ -84,7 +84,7 @@ impl Drop for Search {
 impl Search {
     /// Sets the result and the hit rows built from it, together.
     pub(crate) fn set_result(&mut self, root: &serde_json::Value, result: Option<SearchResult>) {
-        self.hit_rows = result.as_ref().map(|r| json_view::hit_rows_by_parent(root, &r.hits)).unwrap_or_default();
+        self.hit_rows = result.as_ref().map(|r| json::view::hit_rows_by_parent(root, &r.hits)).unwrap_or_default();
         self.result = result;
     }
 }
@@ -123,10 +123,10 @@ pub(crate) enum CopyWhat {
 
 impl JsonLevel {
     fn new(node_id: NodeId, value: Arc<serde_json::Value>, view: &JsonView) -> Self {
-        let expanded = json_view::default_expanded(&value);
+        let expanded = json::view::default_expanded(&value);
         let mut level = Self {
             node_id,
-            nodes: json_view::count_nodes(&value),
+            nodes: json::view::count_nodes(&value),
             value,
             expanded,
             cards: Vec::new(),
@@ -147,8 +147,8 @@ impl JsonLevel {
 
     /// Recomputes the visible cards and their rects from `view`.
     pub(crate) fn relayout(&mut self, view: &JsonView) {
-        self.cards = json_view::visible_cards(&self.value, view, &self.expanded);
-        let positions = json_view::tree_layout(&self.cards, view);
+        self.cards = json::view::visible_cards(&self.value, view, &self.expanded);
+        let positions = json::view::tree_layout(&self.cards, view);
         self.rects =
             self.cards.iter().zip(positions).map(|(card, pos)| egui::Rect::from_min_size(pos, card.size())).collect();
         self.index = self.cards.iter().enumerate().map(|(i, card)| (card.pointer.clone(), i)).collect();
@@ -167,17 +167,17 @@ impl JsonLevel {
     /// `None` on its header or its `+ N more` row.
     pub(crate) fn row_at(&self, card: usize, world: egui::Pos2) -> Option<String> {
         let rect = self.rects.get(card)?;
-        let offset = world.y - rect.top() - json_view::HEADER_HEIGHT;
+        let offset = world.y - rect.top() - json::view::HEADER_HEIGHT;
         if offset < 0.0 || !rect.contains(world) {
             return None;
         }
-        let row = (offset / json_view::ROW_HEIGHT) as usize;
+        let row = (offset / json::view::ROW_HEIGHT) as usize;
         let c = &self.cards[card];
         let row = row.checked_sub(c.lead())?; // the `+ N earlier` row (`?`, not `let … else`: clippy::question_mark)
         let pointer = &c.pointer;
         let value = self.value.pointer(pointer)?;
-        let (key, _) = json_view::entries_from(value, c.skip).take(c.rows).nth(row)?;
-        Some(json_view::child_pointer(pointer, &key))
+        let (key, _) = json::view::entries_from(value, c.skip).take(c.rows).nth(row)?;
+        Some(json::view::child_pointer(pointer, &key))
     }
 
     /// Where the entry at `pointer` is drawn (world): its own card if it
@@ -186,16 +186,16 @@ impl JsonLevel {
         if let Some(&i) = self.index.get(pointer) {
             return Some(self.rects[i]);
         }
-        let parent = json_view::parent_pointer(pointer)?;
+        let parent = json::view::parent_pointer(pointer)?;
         let card = *self.index.get(parent)?;
-        let row = json_view::entry_index(self.value.pointer(parent)?, &json_view::last_key(pointer)?)?;
+        let row = json::view::entry_index(self.value.pointer(parent)?, &json::view::last_key(pointer)?)?;
         let c = &self.cards[card];
         if row < c.skip || row >= c.skip + c.rows {
             return None;
         }
         let rect = self.rects[card];
-        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (row - c.skip + c.lead()) as f32;
-        Some(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), json_view::ROW_HEIGHT)))
+        let top = rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (row - c.skip + c.lead()) as f32;
+        Some(egui::Rect::from_min_size(egui::pos2(rect.left(), top), egui::vec2(rect.width(), json::view::ROW_HEIGHT)))
     }
 
     /// The topmost card under `world`: later cards draw on top.
@@ -206,15 +206,15 @@ impl JsonLevel {
     /// Whether `world` is on card `card`'s `+ N more` row.
     pub(crate) fn more_row_at(&self, card: usize, world: egui::Pos2) -> bool {
         let (Some(rect), Some(c)) = (self.rects.get(card), self.cards.get(card)) else { return false };
-        let top = rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (c.lead() + c.rows) as f32;
+        let top = rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (c.lead() + c.rows) as f32;
         c.more > 0 && rect.contains(world) && world.y >= top
     }
 
     /// Whether `world` is on card `card`'s `+ N earlier` row.
     pub(crate) fn earlier_row_at(&self, card: usize, world: egui::Pos2) -> bool {
         let (Some(rect), Some(c)) = (self.rects.get(card), self.cards.get(card)) else { return false };
-        let top = rect.top() + json_view::HEADER_HEIGHT;
-        c.skip > 0 && rect.contains(world) && world.y >= top && world.y < top + json_view::ROW_HEIGHT
+        let top = rect.top() + json::view::HEADER_HEIGHT;
+        c.skip > 0 && rect.contains(world) && world.y >= top && world.y < top + json::view::ROW_HEIGHT
     }
 }
 
@@ -271,7 +271,7 @@ impl App {
         // `self.json_level` can be borrowed mutably alongside it.
         let Some(id) = self.current_group else { return };
         let Some(json) = self.nodes.get(&id).and_then(|n| n.as_json()) else { return };
-        let view = self.doc.mirror.view(id).unwrap_or(&json_view::NO_VIEW);
+        let view = self.doc.mirror.view(id).unwrap_or(&json::view::NO_VIEW);
         match &mut self.json_level {
             Some(level) if level.node_id == id => {
                 if level.stale {
@@ -305,12 +305,12 @@ impl App {
     /// rows stay where their pointers still resolve, a search restarts on the new value (cancelling a worker's), the
     /// cards are laid out again. No level for `id` open: nothing to do.
     pub(crate) fn swap_json_value(&mut self, id: NodeId, value: Arc<serde_json::Value>) {
-        let view = self.doc.mirror.view(id).unwrap_or(&json_view::NO_VIEW);
+        let view = self.doc.mirror.view(id).unwrap_or(&json::view::NO_VIEW);
         let refs = self.nodes.get(&id).and_then(|n| n.as_json()).map(|p| p.refs.clone()).unwrap_or_default();
         let Some(level) = self.json_level.as_mut().filter(|l| l.node_id == id) else { return };
         level.refs = refs;
-        level.nodes = json_view::count_nodes(&value);
-        level.expanded = json_view::default_expanded(&value);
+        level.nodes = json::view::count_nodes(&value);
+        level.expanded = json::view::default_expanded(&value);
         level.value = value;
         if level.selected.as_ref().is_some_and(|p| level.value.pointer(p).is_none()) {
             level.selected = None;
@@ -339,7 +339,7 @@ impl App {
         level.relayout(view);
         let query = level.search.query.clone();
         if cancelled {
-            self.queue_toast(crate::json_edit::EDIT_CHANGED.to_owned());
+            self.queue_toast(crate::json::edit::EDIT_CHANGED.to_owned());
         }
         self.set_json_search(query);
     }
@@ -385,11 +385,11 @@ impl App {
                 self.reveal_json(&pointer);
             }
             JsonEdit::Toggle(pointer) => {
-                self.edit_json_view(|view, _, expanded| json_view::toggle(view, expanded, &pointer))
+                self.edit_json_view(|view, _, expanded| json::view::toggle(view, expanded, &pointer))
             }
-            JsonEdit::More(pointer) => self.edit_json_view(|view, _, _| json_view::show_more(view, &pointer)),
+            JsonEdit::More(pointer) => self.edit_json_view(|view, _, _| json::view::show_more(view, &pointer)),
             JsonEdit::Earlier(pointer) => {
-                self.edit_json_view(|view, value, _| json_view::show_earlier(value, view, &pointer))
+                self.edit_json_view(|view, value, _| json::view::show_earlier(value, view, &pointer))
             }
             JsonEdit::Moved(pointer, top_left) => {
                 self.edit_json_view(|view, _, _| view.entry(&pointer).pos = Some([top_left.x, top_left.y]))
@@ -424,9 +424,9 @@ impl App {
         let level = self.json_level.as_ref()?;
         let value = level.value.pointer(pointer)?;
         Some(match what {
-            CopyWhat::Value => json_view::copy_value_text(value),
-            CopyWhat::Key => json_view::last_key(pointer).unwrap_or_default(),
-            CopyWhat::Path if self.json_ui.json_accessor_paths => json_view::accessor_path(&level.value, pointer),
+            CopyWhat::Value => json::view::copy_value_text(value),
+            CopyWhat::Key => json::view::last_key(pointer).unwrap_or_default(),
+            CopyWhat::Path if self.json_ui.json_accessor_paths => json::view::accessor_path(&level.value, pointer),
             CopyWhat::Path => pointer.to_string(),
         })
     }
@@ -441,20 +441,20 @@ impl App {
         let generation = level.search.generation.fetch_add(1, Ordering::Relaxed) + 1;
         level.search.set_result(&level.value, None); // the old query's matches mustn't show or step while this one runs
         if !query.is_empty() {
-            if level.nodes > json_view::WORKER_SEARCH_NODES {
+            if level.nodes > json::view::WORKER_SEARCH_NODES {
                 let (tx, rx) = mpsc::channel();
                 let (value, q, current) = (level.value.clone(), query.clone(), level.search.generation.clone());
                 std::thread::spawn(move || {
                     let stale = || current.load(Ordering::Relaxed) != generation;
                     // A cancelled worker drops `tx`: `receive_json_search`
                     // clears `pending` on `Disconnected`.
-                    if let Some(result) = json_view::search_with(&value, &q, &stale) {
+                    if let Some(result) = json::view::search_with(&value, &q, &stale) {
                         let _ = tx.send(result); // the level may be gone; a closed channel is fine
                     }
                 });
                 level.search.pending = Some((query.clone(), rx));
             } else {
-                let result = json_view::search(&level.value, &query);
+                let result = json::view::search(&level.value, &query);
                 level.search.set_result(&level.value, Some(result));
             }
         }
@@ -469,7 +469,7 @@ impl App {
         let Some(level) = self.json_level.as_mut() else { return };
         if level.outline.dirty {
             let keep = level.search.result.as_ref().map(|r| &r.keep);
-            level.outline.rows = json_view::outline_rows(&level.value, &level.outline.open, keep);
+            level.outline.rows = json::view::outline_rows(&level.value, &level.outline.open, keep);
             level.outline.dirty = false;
         }
     }
@@ -522,7 +522,7 @@ impl App {
     pub(crate) fn toggle_json_selection(&mut self) {
         let Some(level) = self.json_level.as_ref() else { return };
         let Some(pointer) = level.selected.clone() else { return };
-        if level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0) {
+        if level.value.pointer(&pointer).is_some_and(|v| json::view::entry_count(v) > 0) {
             self.apply_json_edit(JsonEdit::Toggle(pointer));
         }
     }
@@ -532,14 +532,14 @@ impl App {
     pub(crate) fn open_json_selection(&mut self, open: bool) {
         let Some(level) = self.json_level.as_mut() else { return };
         let Some(pointer) = level.selected.clone() else { return };
-        let is_container = level.value.pointer(&pointer).is_some_and(|v| json_view::entry_count(v) > 0);
+        let is_container = level.value.pointer(&pointer).is_some_and(|v| json::view::entry_count(v) > 0);
         if open {
             if is_container && level.outline.open.insert(pointer) {
                 level.outline.dirty = true;
             }
         } else if level.outline.open.remove(&pointer) {
             level.outline.dirty = true;
-        } else if let Some(parent) = json_view::parent_pointer(&pointer).map(str::to_string) {
+        } else if let Some(parent) = json::view::parent_pointer(&pointer).map(str::to_string) {
             self.apply_json_edit(JsonEdit::Select(parent));
         }
     }
@@ -551,11 +551,11 @@ impl App {
         // A dry run first, so selecting an already-visible entry doesn't save.
         let changed = self.json_level.as_ref().filter(|_| self.current_json_node().is_some()).is_some_and(|level| {
             let mut view = self.doc.mirror.view(level.node_id).cloned().unwrap_or_default();
-            json_view::reveal(&level.value, &mut view, &level.expanded, pointer)
+            json::view::reveal(&level.value, &mut view, &level.expanded, pointer)
         });
         if changed {
             self.edit_json_view(|view, value, expanded| {
-                json_view::reveal(value, view, expanded, pointer);
+                json::view::reveal(value, view, expanded, pointer);
             });
         }
         let Some(level) = self.json_level.as_mut() else { return };
@@ -570,8 +570,8 @@ impl App {
         // every kept row open regardless.
         let mut ancestor = String::new();
         let mut opened = level.outline.open.insert(String::new());
-        for token in json_view::pointer_tokens(json_view::parent_pointer(pointer).unwrap_or("")) {
-            ancestor = json_view::child_pointer(&ancestor, &token);
+        for token in json::view::pointer_tokens(json::view::parent_pointer(pointer).unwrap_or("")) {
+            ancestor = json::view::child_pointer(&ancestor, &token);
             opened |= level.outline.open.insert(ancestor.clone());
         }
         if opened && level.search.result.is_none() {
@@ -594,8 +594,8 @@ impl App {
                 // Where a click lands on the `+ N earlier` row (window points), for a script to aim at.
                 let earlier = (card.skip > 0).then(|| {
                     let row = egui::Rect::from_min_size(
-                        egui::pos2(rect.left(), rect.top() + json_view::HEADER_HEIGHT),
-                        egui::vec2(rect.width(), json_view::ROW_HEIGHT),
+                        egui::pos2(rect.left(), rect.top() + json::view::HEADER_HEIGHT),
+                        egui::vec2(rect.width(), json::view::ROW_HEIGHT),
                     );
                     let c = self.graph_world_rect_to_screen(row).center();
                     [c.x, c.y]

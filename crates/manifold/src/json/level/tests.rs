@@ -244,8 +244,9 @@ fn rows_are_hit_by_their_world_position() {
     app.switch_group_level(Some(j));
     let level = app.json_level.as_ref().unwrap();
     let root = level.rects[0];
-    let row =
-        |i: f32| egui::pos2(root.center().x, root.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (i + 0.5));
+    let row = |i: f32| {
+        egui::pos2(root.center().x, root.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (i + 0.5))
+    };
     assert_eq!(level.row_at(0, row(0.0)), Some("/a".into()));
     assert_eq!(level.row_at(0, row(1.0)), Some("/b".into()));
     assert_eq!(
@@ -265,7 +266,7 @@ fn a_moved_window_is_hit_below_its_earlier_row() {
     let (card, rect) = (&level.cards[0], level.rects[0]);
     assert_eq!((card.skip, card.rows, card.more, card.lead()), (40, 20, 40, 1));
     let row = |i: usize| {
-        egui::pos2(rect.center().x, rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * (i as f32 + 0.5))
+        egui::pos2(rect.center().x, rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * (i as f32 + 0.5))
     };
     assert!(level.earlier_row_at(0, row(0)) && !level.earlier_row_at(0, row(1)));
     assert_eq!(level.row_at(0, row(0)), None, "the earlier row is not an entry");
@@ -274,8 +275,8 @@ fn a_moved_window_is_hit_below_its_earlier_row() {
     assert_eq!(level.row_at(0, row(21)), None, "the more row is not an entry");
     assert!(level.more_row_at(0, row(21)) && !level.more_row_at(0, row(20)));
     let top = |p: &str| level.entry_rect(p).map(|r| r.top());
-    assert_eq!(top("/40"), Some(rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT));
-    assert_eq!(top("/59"), Some(rect.top() + json_view::HEADER_HEIGHT + json_view::ROW_HEIGHT * 20.0));
+    assert_eq!(top("/40"), Some(rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT));
+    assert_eq!(top("/59"), Some(rect.top() + json::view::HEADER_HEIGHT + json::view::ROW_HEIGHT * 20.0));
     assert_eq!((top("/39"), top("/60")), (None, None), "outside the window");
 }
 
@@ -476,7 +477,7 @@ fn selecting_pans_only_to_an_entry_out_of_view() {
     let level = app.json_level.as_ref().unwrap();
     let root = level.rects[level.index[""]];
     let row = level.entry_rect("/a").unwrap();
-    assert!(root.contains_rect(row) && row.height() == json_view::ROW_HEIGHT, "a row on its parent's card");
+    assert!(root.contains_rect(row) && row.height() == json::view::ROW_HEIGHT, "a row on its parent's card");
     app.camera.jump_to(root.expand(10.0));
     app.apply_json_edit(JsonEdit::Select(String::new()));
     app.apply_json_edit(JsonEdit::Select("/a".into()));
@@ -513,8 +514,8 @@ fn keys_walk_the_outline_and_expand_cards() {
     assert_eq!(selected(&app).as_deref(), Some(""));
     // Enter toggles the selected container's card.
     let collapsed = |app: &App| {
-        json_view::is_collapsed(
-            app.doc.mirror.view(J).unwrap_or(&json_view::NO_VIEW),
+        json::view::is_collapsed(
+            app.doc.mirror.view(J).unwrap_or(&json::view::NO_VIEW),
             &app.json_level.as_ref().unwrap().expanded,
             "/a",
         )
@@ -548,7 +549,7 @@ fn search_steps_through_matches_and_filters_the_outline() {
 
 #[test]
 fn a_big_value_is_searched_on_a_worker() {
-    let big: Vec<u32> = (0..json_view::WORKER_SEARCH_NODES as u32 + 1).collect();
+    let big: Vec<u32> = (0..json::view::WORKER_SEARCH_NODES as u32 + 1).collect();
     let (mut app, j) = app_with_json("worker", &serde_json::to_string(&big).unwrap());
     app.switch_group_level(Some(j));
     app.set_json_search("99999".into());
@@ -568,7 +569,7 @@ fn a_big_value_is_searched_on_a_worker() {
 /// check rather than walking the rest of a big value.
 #[test]
 fn leaving_the_level_stops_its_worker() {
-    let items: Vec<String> = (0..json_view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
+    let items: Vec<String> = (0..json::view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
     let (mut app, j) = app_with_json("leave", &serde_json::to_string(&items).unwrap());
     app.switch_group_level(Some(j));
     app.set_json_search("v".into());
@@ -581,14 +582,14 @@ fn leaving_the_level_stops_its_worker() {
         checks.set(checks.get() + 1);
         generation.load(Ordering::Relaxed) != started
     };
-    assert!(json_view::search_with(&value, "v", &stale).is_none(), "a worker of the left level stops");
+    assert!(json::view::search_with(&value, "v", &stale).is_none(), "a worker of the left level stops");
     assert_eq!(checks.get(), 1, "at its first check");
 }
 
 /// While a worker searches, the previous query's result is gone.
 #[test]
 fn a_pending_search_hides_the_previous_result() {
-    let items: Vec<String> = (0..json_view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
+    let items: Vec<String> = (0..json::view::WORKER_SEARCH_NODES + 10).map(|i| format!("v{i}")).collect();
     let (mut app, j) = app_with_json("pending", &serde_json::to_string(&items).unwrap());
     app.switch_group_level(Some(j));
     app.set_json_search("v1".into());
@@ -656,7 +657,7 @@ fn an_unreadable_view_is_never_overwritten() {
     app.edit_view(j, "[1]");
     app.switch_group_level(Some(j));
     app.apply_json_edit(JsonEdit::Toggle("/a".into()));
-    // A live drag moves the card's rect frame by frame (`json_level_ui`); the refused drop must put it back.
+    // A live drag moves the card's rect frame by frame (`json::ui`); the refused drop must put it back.
     let a = app.json_level.as_ref().unwrap().index["/a"];
     let laid = app.json_level.as_ref().unwrap().rects[a];
     let dropped = laid.translate(egui::vec2(300.0, 0.0));
@@ -697,7 +698,7 @@ fn a_json_level_card_has_no_ability_through_its_own_row() {
 }
 
 fn level_of(node: NodeId, json: &str) -> JsonLevel {
-    JsonLevel::new(node, Arc::new(serde_json::from_str(json).unwrap()), &crate::json_view::NO_VIEW)
+    JsonLevel::new(node, Arc::new(serde_json::from_str(json).unwrap()), &crate::json::view::NO_VIEW)
 }
 
 /// Every card of a level has its own non-node id.
@@ -722,7 +723,7 @@ fn a_cards_id_is_unchanged_when_a_sibling_is_expanded() {
     let b = level.index["/b"];
     let (id, before) = (level.card_id(b), level.cards.len());
     level.expanded.remove("/a");
-    level.relayout(&crate::json_view::NO_VIEW);
+    level.relayout(&crate::json::view::NO_VIEW);
     assert!(level.cards.len() < before, "collapsing /a hides its children");
     let moved = level.index["/b"];
     assert_eq!(level.card_id(moved), id);
@@ -759,7 +760,7 @@ fn a_remote_body_change_swaps_the_open_levels_value() {
 fn a_file_level_cannot_open_an_edit() {
     let (mut app, j) = app_with_json("no-edit", r#"{"a": 1}"#);
     app.switch_group_level(Some(j));
-    app.apply_json_edit(JsonEdit::Begin("/a".into(), crate::json_edit::EditWhat::Value));
+    app.apply_json_edit(JsonEdit::Begin("/a".into(), crate::json::edit::EditWhat::Value));
     assert!(app.json_level.as_ref().unwrap().edit.is_none());
     assert_eq!(app.json_level_state()["editable"], serde_json::json!(false));
 }

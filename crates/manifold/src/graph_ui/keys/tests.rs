@@ -50,7 +50,7 @@ fn ctrl_z_on_a_json_level_undoes_an_edit() {
     app.view_mode = ViewMode::Graph;
     app.current_group = Some(id);
     app.sync_json_level();
-    let op = crate::json_edit::JsonOp::Set { pointer: "/a".into(), value: serde_json::json!(2) };
+    let op = crate::json::edit::JsonOp::Set { pointer: "/a".into(), value: serde_json::json!(2) };
     app.edit_json(id, op).unwrap();
     assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!({"a": 2}));
     let ctx = egui::Context::default();

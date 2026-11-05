@@ -22,8 +22,8 @@ const UI_FILES: &[&str] = &[
     "history",
     "image_view",
     "input",
-    "json_level_ui",
-    "json_view",
+    "json/ui",
+    "json/view",
     "pdf_render",
     "rgba",
     "shortcuts",
@@ -100,17 +100,18 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         }
     }
     if let Some(rel) = in_src {
-        // The first path component names the module, as a file or a folder; a source file inside either is judged by it.
-        let first = rel.split('/').next().unwrap_or("");
-        let b = first.strip_suffix(".rs").unwrap_or(first);
-        if rel.ends_with(".rs") {
-            if UI_FILES.contains(&b) {
+        // A UI entry is a module path, as a file or a folder; a source file at or under it is judged by it.
+        if let Some(key) = rel.strip_suffix(".rs") {
+            if let Some(b) =
+                UI_FILES.iter().find(|e| key == **e || key.strip_prefix(**e).is_some_and(|r| r.starts_with('/')))
+            {
                 return if read(p).is_some_and(|t| imports_core(&t)) {
                     light(format!("{b} is on the ui list but imports a core module"))
                 } else {
                     (Tier::Ui, format!("{b}: drawing or input, no core import"))
                 };
             }
+            let b = key.split('/').next().unwrap_or(key);
             return light(format!("{b} is on neither the ui nor the full list"));
         }
         if rel.contains('/') {
@@ -253,6 +254,16 @@ mod tests {
         assert_eq!(tier_of(&["src/theme/tests.rs"], &[("src/theme/tests.rs", "use crate::session::S;")]), "TIER light");
         assert_eq!(tier_of(&["src/main/tests.rs"], &[]), "TIER light");
         assert_eq!(tier_of(&["src/theme/fixture.json"], &[]), "TIER light");
+    }
+
+    #[test]
+    fn a_ui_entry_can_name_a_file_inside_a_cluster() {
+        for p in ["src/json/ui.rs", "src/json/ui/tests.rs", "src/json/view.rs", "src/json/view/tests.rs"] {
+            assert_eq!(tier_of(&[p], &[(p, "use egui;")]), "TIER ui", "{p}");
+        }
+        for p in ["src/json/level.rs", "src/json/level/tests.rs", "src/json/edit.rs", "src/json.rs"] {
+            assert_eq!(tier_of(&[p], &[(p, "use egui;")]), "TIER light", "{p}");
+        }
     }
 
     #[test]
