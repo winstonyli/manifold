@@ -33,7 +33,7 @@ const UI_FILES: &[&str] = &[
 ];
 
 /// A file or folder of one of these under the source folder is the sync, store, mirror, session, engine or network
-/// core (`store` is a folder only).
+/// core.
 const CORE_MODULES: &[&str] = &[
     "session_sync",
     "mirror",
@@ -45,6 +45,7 @@ const CORE_MODULES: &[&str] = &[
     "redirect_fetch",
     "favicon_fetch",
     "jar",
+    "store",
 ];
 
 /// `crate::<one of these>` in a file makes it core code.
@@ -95,7 +96,7 @@ pub fn classify(path: &str, src: &str, read: &dyn Fn(&str) -> Option<String>) ->
         let first = rel.split('/').next().unwrap_or("");
         let is_dir = rel.contains('/');
         let stem = first.strip_suffix(".rs").filter(|_| !is_dir).unwrap_or(first);
-        if (CORE_MODULES.contains(&stem) && (is_dir || first.ends_with(".rs"))) || (is_dir && first == "store") {
+        if CORE_MODULES.contains(&stem) && (is_dir || first.ends_with(".rs")) {
             return full("sync, store, mirror, session, engine or network core");
         }
     }
@@ -218,6 +219,7 @@ mod tests {
     fn the_strictest_path_wins() {
         assert_eq!(tier_of(&["README.md", "docs/x.md"], &[]), "TIER ui");
         assert_eq!(tier_of(&["src/store/journal.rs"], &[]), "TIER full");
+        assert_eq!(tier_of(&["src/store.rs"], &[]), "TIER full");
         assert_eq!(
             tier_of(&["README.md", "src/main.rs", "crates/manifold-view-protocol/src/lib.rs"], &[]),
             "TIER full"
