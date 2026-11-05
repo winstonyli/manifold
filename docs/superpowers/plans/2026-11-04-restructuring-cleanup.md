@@ -71,7 +71,7 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **Done 2026-11-04** (`6d377a39`): `status: done`; slice 3's wait is in the spec's own decision line 267 and PARKED "Nested bottom-up settle".
 
-**REP6. README "Module layout" layer-spike paragraph to one home.** README:42's ~1,100-char "Parked (spike 2026-10-10)" sentence and its dated figures -> PARKED.md:22 entry as evidence; README keeps one link sentence. Must follow the layer Decide (d1) and TST1 (README:42 also states the test rule).
+**REP6. README "Module layout" layer-spike paragraph to one home.** README:42's ~1,100-char "Parked (spike 2026-10-10)" sentence and its dated figures -> PARKED.md:22 entry as evidence; README keeps one link sentence. Must follow the layer Decide (d1) and TST1 (README:42 also states the test rule). **Done 2026-11-04:** the spike's detail moved into the PARKED entry (now also naming decision d1); README:42 keeps one link sentence.
 
 ### Tests and layout inside `crates/manifold/src`
 
