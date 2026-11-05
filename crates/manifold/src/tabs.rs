@@ -49,7 +49,7 @@ pub(crate) struct SpawnTracker {
     /// whether the engine has reported loading since (`App::reported_url`).
     pub(crate) navigated_from: HashMap<NodeId, (String, std::time::Instant, bool)>,
 
-    pub(crate) tabs_spawned_waiters: crate::debug_control::Waiters,
+    pub(crate) tabs_spawned_waiters: crate::debug::Waiters,
 
     /// Bumped by `replace_running_session`. A tab spawn carries the value it
     /// started under, and `handle_tab_spawn_result` drops a result from an

@@ -1,13 +1,13 @@
 //! The headless debug commands' input: window events fed by a probe, idle waiters and the timed click.
 
-use super::*;
+use crate::*;
 
 impl App {
     /// Feeds a synthetic `WindowEvent` through the exact same handling real
     /// OS input goes through (`Self::window_event`) — used by
     /// `handle_debug_command` for mouse commands, so headless mouse-driven
     /// testing exercises real egui hit-testing/rendering-timing rather than
-    /// bypassing it (see `debug_control`'s doc comment for why this matters:
+    /// bypassing it (see `debug`'s doc comment for why this matters:
     /// it's the only way headless testing could have caught the dropdown
     /// click-swallowing bug fixed in the autocomplete feature). A no-op if
     /// the window doesn't exist yet (shouldn't happen in practice — commands
@@ -64,7 +64,7 @@ impl App {
     /// window draws only when asked. `ready` runs only while someone waits.
     fn release_when(
         &mut self,
-        waiters: fn(&mut Self) -> &mut crate::debug_control::Waiters,
+        waiters: fn(&mut Self) -> &mut crate::debug::Waiters,
         ready: impl FnOnce(&mut Self) -> bool,
     ) {
         if waiters(self).is_empty() {

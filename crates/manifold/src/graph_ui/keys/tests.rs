@@ -21,7 +21,7 @@ fn undo_chords_read_as_undo_or_redo() {
     let press = |key, modifiers| {
         let ctx = egui::Context::default();
         let mut raw = egui::RawInput::default();
-        raw.events.push(crate::debug_control::debug_key_event(key, modifiers));
+        raw.events.push(crate::debug::debug_key_event(key, modifiers));
         let mut out = Vec::new();
         let mut full = ctx.run_ui(raw, |ui| {
             out.push(ui.input_mut(super::undo_chord));
@@ -55,7 +55,7 @@ fn ctrl_z_on_a_json_level_undoes_an_edit() {
     assert_eq!(*app.json_level.as_ref().unwrap().value, serde_json::json!({"a": 2}));
     let ctx = egui::Context::default();
     let mut raw = egui::RawInput::default();
-    raw.events.push(crate::debug_control::debug_key_event(egui::Key::Z, egui::Modifiers::COMMAND));
+    raw.events.push(crate::debug::debug_key_event(egui::Key::Z, egui::Modifiers::COMMAND));
     let mut full = ctx.run_ui(raw, |ui| app.handle_undo_keys(ui));
     full.textures_delta.clear();
     app.sync_json_level();

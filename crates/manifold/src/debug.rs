@@ -31,6 +31,9 @@
 //! asynchronously and can take 30 s or more headless; `WAITTABS` waits for them, since until the focused tab has
 //! spawned, commands that need it (e.g. `ADDDOWNLOAD`) do nothing.
 
+mod export;
+mod input;
+
 use std::io::BufRead;
 use std::str::SplitWhitespace;
 
@@ -523,7 +526,7 @@ const VERBS: &[Verb] = &[
     row("EXPORTSESSION path", "Save the current session to `path`", |rest| {
         with_text(rest, |app, path| app.export_session_to(std::path::Path::new(&path)))
     }),
-    row("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON (see debug_export.rs)", |rest| {
+    row("EXPORTSTATE path", "Write view, address bar and dropdown state to `path` as JSON (see debug/export.rs)", |rest| {
         with_text(rest, |app, path| app.write_export_state(std::path::Path::new(&path)))
     }),
     row("TEXTOF id path", "Write the page text stored for tab `id` to `path`, or `none` (see tabs/page_text.rs)", |rest| {

@@ -1,5 +1,5 @@
 //! EXPORTSTATE as the checks read it: a thin wrapper over the JSON with accessors for the cards, tabs, groups,
-//! positions, labels and the bbox. The producer is `App::export_state` (debug_control.rs, doc comment on `ExportState`).
+//! positions, labels and the bbox. The producer is `App::export_state` (debug/export.rs, doc comment on `ExportState`).
 
 use serde_json::Value;
 

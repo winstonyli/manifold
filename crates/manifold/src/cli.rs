@@ -11,7 +11,7 @@ use crate::store::json::{self, JsonDoc};
 use crate::store::model::ActorId;
 
 /// Every flag this build reads, and whether it takes a value (`--profile-dir` also as `--profile-dir=<dir>`). The
-/// readers: `run` below, `main` (`--headless`, `--debug-commands`), `profile::dir_from` and `debug_control`
+/// readers: `run` below, `main` (`--headless`, `--debug-commands`), `profile::dir_from` and `debug`
 /// (`--script`). A flag added to any of them goes here too.
 const FLAGS: [(&str, bool); 8] = [
     ("--headless", false),

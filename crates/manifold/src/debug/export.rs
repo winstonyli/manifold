@@ -17,7 +17,7 @@
 //!
 //! The file is replaced atomically (`store::atomic::replace`), so a test may read it as soon as it exists.
 
-use super::*;
+use crate::*;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 

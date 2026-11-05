@@ -3,11 +3,10 @@
 //! the engine processes' messages.
 
 use super::*;
-use crate::debug_control::debug_key_event;
+use crate::debug::debug_key_event;
 use crate::tabs::{AfterCrash, Held, LeftClosed};
 use winit::window::Icon;
 
-mod debug_input;
 mod fetchers;
 mod frame;
 mod pacing;

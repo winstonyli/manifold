@@ -549,7 +549,7 @@ impl App {
     /// `handle_graph_keys`' real-keyboard arrow handling and the headless
     /// `GRAPHLEFT`/`GRAPHRIGHT`/`GRAPHDOWN` debug commands (a real
     /// `WindowEvent::KeyboardInput` can't be synthesized from application
-    /// code -- see `debug_control`'s own doc comment -- so headless mode
+    /// code -- see `debug`'s own doc comment -- so headless mode
     /// calls this directly instead).
     pub(crate) fn move_graph_focus(&mut self, dir: egui::Vec2) {
         let from_at_level =

@@ -1,7 +1,7 @@
 //! One `manifold --headless` instance the runner drives (the old scripts/lib.sh `launch_headless`/`send`/`wait_file`,
 //! the old scripts/winpid.sh, the start/stop pattern of the old scripts/link-probe.sh).
 //!
-//! The protocol (debug_control.rs `spawn_stdin_reader`): commands are lines on the app's stdin; there is NO response
+//! The protocol (debug.rs `spawn_stdin_reader`): commands are lines on the app's stdin; there is NO response
 //! channel. Results come back as files the app writes (`EXPORTSTATE`, `EXPORTSESSION`, `SCREENSHOT`), so every wait
 //! here is a poll with a deadline. `WAITTABS`, `WAITIDLE`, `SLEEP` and `SCREENSHOT` block inside the app's stdin
 //! reader (60 s default, 30 s for a screenshot), so later lines simply wait in the pipe; a line is never batched with

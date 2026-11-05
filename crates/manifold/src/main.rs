@@ -13,8 +13,7 @@ mod click_count;
 mod closed;
 mod content;
 mod crash_report;
-mod debug_control;
-mod debug_export;
+mod debug;
 #[cfg(test)]
 mod deleted_names;
 mod deselect;
@@ -124,7 +123,7 @@ use suggestions::{looks_like_url, resolve_navigation_url, SuggestionFetcher};
 use card::*;
 use card_id::CardId;
 use card_kind::*;
-use debug_control::DebugJob;
+use debug::DebugJob;
 use gpu::GpuState;
 use graph_nav::GraphInteraction;
 use graph_ui::*;
@@ -348,7 +347,7 @@ struct App {
     /// visually contends with the user's own screen (project memory's
     /// `SetForegroundWindow`/foreground-lock gotchas), while still
     /// rendering normally. Driven entirely by `DebugCommand`s read from
-    /// stdin instead of real OS input. See `debug_control`'s doc comment
+    /// stdin instead of real OS input. See `debug`'s doc comment
     /// for the full rationale and the text-command protocol.
     headless: bool,
     /// `--debug-commands`: a real window driven by debug commands. It tells egui it has focus, as headless does,
@@ -368,8 +367,8 @@ struct App {
     toasts: failure_toasts::Toasts,
     /// Undo and redo history of drops and folds (see `undo::UndoHistory`).
     undo: undo::UndoHistory,
-    /// Headless debug-control state (see `debug_control::HeadlessDebug`).
-    debug: debug_control::HeadlessDebug,
+    /// Headless debug-control state (see `debug::HeadlessDebug`).
+    debug: debug::HeadlessDebug,
     /// Frame pacing: minimize and idle state (see `event_loop::FramePacing`).
     pacing: event_loop::FramePacing,
     /// A focus request waiting for its `TextEdit` to be built (see
@@ -540,7 +539,7 @@ impl App {
             menus: popups::MenuPopups::default(),
             toasts: failure_toasts::Toasts::default(),
             undo: undo::UndoHistory::default(),
-            debug: debug_control::HeadlessDebug::default(),
+            debug: debug::HeadlessDebug::default(),
             pacing: event_loop::FramePacing::default(),
             pending_focus: None,
             page_tab_gate: page_tab_gate::PageTabGate::default(),
@@ -639,7 +638,7 @@ fn main() {
         ..App::load()
     };
     if headless || debug_commands {
-        debug_control::spawn_stdin_reader(event_loop.create_proxy());
+        debug::spawn_stdin_reader(event_loop.create_proxy());
     }
 
     event_loop.run_app(&mut app).expect("run event loop");
