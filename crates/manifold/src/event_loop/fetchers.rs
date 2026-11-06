@@ -31,7 +31,7 @@ impl Workers {
         Self {
             favicon_fetcher: FaviconFetcher::new(favicon_dir),
             pdf_renderer: PdfRenderer::new(),
-            image_decoder: ImageDecoder::new(),
+            image_decoder: ImageDecoder::new(crate::image_decode::decode),
             redirect_fetcher: RedirectFetcher::new(content_dir),
             favicon_resolved: HashSet::new(),
         }

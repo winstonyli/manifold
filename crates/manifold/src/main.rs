@@ -80,6 +80,7 @@ mod view_modes;
 mod viewport;
 mod virtual_source;
 mod walk;
+mod worker;
 mod zoom_chip;
 
 use crate::store::model::NodeId;

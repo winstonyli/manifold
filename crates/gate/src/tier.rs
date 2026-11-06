@@ -44,6 +44,7 @@ const CORE_MODULES: &[&str] = &[
     "view_install",
     "redirect_fetch",
     "favicon_fetch",
+    "worker",
     "jar",
     "store",
 ];

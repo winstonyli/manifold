@@ -1,13 +1,15 @@
 //! Background decoding of an image node's file (`ImagePayload`): a card is placed at once and its pixels arrive
-//! later, as `PdfRenderer` does for a PDF page. Two workers share one queue, so a few big photos decode in parallel
-//! and leave most cores free; the app takes finished images once a frame (`tick`) and uploads them itself.
+//! later, as `PdfRenderer` does for a PDF page. A `worker::Pool` runs at most two decodes at once, so a few big photos
+//! decode in parallel and leave most cores free; the app takes finished images once a frame (`tick`) and uploads
+//! them itself.
 
+use crate::profile::file::file_name;
 use crate::store::model::NodeId;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use crate::worker::Pool;
+use std::path::Path;
 
-const WORKERS: usize = 2;
+/// Decodes running at once.
+const MAX_DECODES: usize = 2;
 
 pub struct Decoded {
     pub width: u32,
@@ -15,77 +17,59 @@ pub struct Decoded {
     pub rgba: Vec<u8>,
 }
 
-/// A finished decode for node `id`; the error reads as a toast ("Couldn't open image name: why").
-pub type Finished = (NodeId, Result<Decoded, String>);
-
 pub struct ImageDecoder {
-    tx: mpsc::Sender<(NodeId, String)>,
-    rx: mpsc::Receiver<Finished>,
-    /// Requests whose result `tick` has not yet returned.
-    pending: Arc<AtomicUsize>,
+    /// Keyed by node; the job is the file's path. A panic inside the decoder (a bug on a hostile file) comes back
+    /// as `None`, for that one image.
+    pool: Pool<NodeId, String, Result<Decoded, String>>,
 }
 
 impl ImageDecoder {
-    pub fn new() -> Self {
-        Self::with_decode(decode)
+    /// `decode` fails with a bare reason; `Workers::new` passes `decode`, tests a stub.
+    pub(crate) fn new(decode: impl Fn(&str) -> Result<Decoded, String> + Send + Sync + 'static) -> Self {
+        Self { pool: Pool::new(MAX_DECODES, move |path: &String| decode(path)) }
     }
 
-    /// `new` with `decode` as the decoder; tests swap in a stub.
-    fn with_decode(decode: impl Fn(&str) -> Result<Decoded, String> + Clone + Send + 'static) -> Self {
-        let (tx, queue) = mpsc::channel::<(NodeId, String)>();
-        let (result_tx, rx) = mpsc::channel();
-        let queue = Arc::new(Mutex::new(queue));
-        for _ in 0..WORKERS {
-            let (queue, result_tx, decode) = (Arc::clone(&queue), result_tx.clone(), decode.clone());
-            thread::spawn(move || loop {
-                // The lock is held only while waiting for the next request, never while decoding.
-                let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
-                if result_tx.send((id, guarded(&path, &decode))).is_err() {
-                    return;
-                }
-            });
-        }
-        Self { tx, rx, pending: Arc::default() }
-    }
-
-    /// Queues `path`'s decode for node `id`. A node deleted meanwhile is the caller's to ignore (`tick`'s results
-    /// name their node).
+    /// Queues `path`'s decode for node `id`, replacing any earlier one for it: the newest request decides the image.
+    /// A node deleted meanwhile is the caller's to cancel (`Workers::cancel_node`).
     pub fn request(&self, id: NodeId, path: String) {
-        self.pending.fetch_add(1, Ordering::SeqCst);
-        let _ = self.tx.send((id, path));
+        self.pool.cancel(&id);
+        self.pool.request(id, path);
     }
 
-    /// Every decode finished since the last call.
-    pub fn tick(&self) -> Vec<Finished> {
-        let done: Vec<Finished> = self.rx.try_iter().collect();
-        self.pending.fetch_sub(done.len(), Ordering::SeqCst);
-        done
+    /// Every decode finished since the last call. An error reads as a toast ("Couldn't open image name: why").
+    pub fn tick(&self) -> Vec<(NodeId, Result<Decoded, String>)> {
+        self.pool
+            .tick()
+            .into_iter()
+            .map(|(id, path, result)| {
+                let result = result.unwrap_or_else(|| {
+                    eprintln!("image: decoder panicked on {path}");
+                    Err("the decoder crashed".into())
+                });
+                (id, result.map_err(|why| format!("Couldn't open image {}: {why}", file_name(Path::new(&path)))))
+            })
+            .collect()
     }
 
     /// How many requests have not been returned by `tick` yet.
     #[cfg(test)]
     pub fn pending(&self) -> usize {
-        self.pending.load(Ordering::SeqCst)
+        self.pool.pending()
+    }
+
+    /// See `Pool::wait_for_threads`.
+    #[cfg(test)]
+    pub fn wait_for_threads(&self, n: usize) {
+        self.pool.wait_for_threads(n);
     }
 }
 
-/// Runs `decode` on `path`, turning a panic inside it (a decoder bug on a hostile file) into the error for that one
-/// image: left alone it would kill the worker thread, and the node would wait for a result forever.
-fn guarded(path: &str, decode: impl FnOnce(&str) -> Result<Decoded, String>) -> Result<Decoded, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(path))).unwrap_or_else(|_| {
-        let name = crate::profile::file::file_name(std::path::Path::new(path));
-        eprintln!("image: decoder panicked on {path}");
-        Err(format!("Couldn't open image {name}: the decoder crashed"))
-    })
-}
-
 /// Reads and decodes `path`, by content rather than extension (a lying extension must not defeat the sniff
-/// `insert_content` already did), scaled to fit a texture.
-fn decode(path: &str) -> Result<Decoded, String> {
+/// `insert_content` already did), scaled to fit a texture. Fails with the bare reason: `tick` names the file.
+pub(crate) fn decode(path: &str) -> Result<Decoded, String> {
     let failed = |err: &dyn std::fmt::Display| {
-        let name = crate::profile::file::file_name(std::path::Path::new(path));
         eprintln!("image: couldn't open {path}: {err}");
-        format!("Couldn't open image {name}: {err}")
+        err.to_string()
     };
     let bytes = std::fs::read(path).map_err(|err| failed(&err))?;
     let img = image::load_from_memory(&bytes).map_err(|err| failed(&err))?;
@@ -99,8 +83,9 @@ fn decode(path: &str) -> Result<Decoded, String> {
 mod tests {
     use super::*;
     use crate::card_id::testutil::node;
+    use std::sync::{mpsc, Arc, Mutex};
 
-    fn wait(decoder: &ImageDecoder) -> Vec<Finished> {
+    fn wait(decoder: &ImageDecoder) -> Vec<(NodeId, Result<Decoded, String>)> {
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut done = Vec::new();
         while decoder.pending() > 0 && std::time::Instant::now() < end {
@@ -117,7 +102,7 @@ mod tests {
         image::RgbaImage::new(3, 2).save(&good).unwrap();
         let bad = dir.join("bad.png");
         std::fs::write(&bad, b"not a picture").unwrap();
-        let decoder = ImageDecoder::new();
+        let decoder = ImageDecoder::new(decode);
         decoder.request(node(3), good.to_string_lossy().into_owned());
         decoder.request(node(1), bad.to_string_lossy().into_owned());
         decoder.request(node(2), dir.join("missing.png").to_string_lossy().into_owned());
@@ -128,51 +113,61 @@ mod tests {
         assert_eq!(names, [node(1), node(2), node(3)]);
         let good = done[2].1.as_ref().unwrap();
         assert_eq!((good.width, good.height, good.rgba.len()), (3, 2, 24));
-        assert!(done[0].1.as_ref().is_err_and(|e| e.starts_with("Couldn't open image bad.png: ")));
+        let why = image::load_from_memory(b"not a picture").err().unwrap();
+        assert_eq!(done[0].1.as_ref().err(), Some(&format!("Couldn't open image bad.png: {why}")), "named once");
         assert!(done[1].1.is_err());
     }
 
     /// A reload re-requests a node while its old decode still runs: the old one finishing last must not win.
     #[test]
-    #[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
     fn the_newest_request_for_a_node_decides_its_image() {
         let (started_tx, started) = mpsc::channel();
         let (release_tx, release) = mpsc::channel::<()>();
-        let release = Arc::new(Mutex::new(release));
-        let decoder = ImageDecoder::with_decode(move |path: &str| {
+        let (started_tx, release) = (Mutex::new(started_tx), Arc::new(Mutex::new(release)));
+        let decoder = ImageDecoder::new(move |path: &str| {
             if path == "old" {
-                started_tx.send(()).unwrap();
+                started_tx.lock().unwrap().send(()).unwrap();
                 let _ = release.lock().unwrap().recv();
             }
             Ok(Decoded { width: if path == "old" { 1 } else { 2 }, height: 1, rgba: Vec::new() })
         });
-        let patience = std::time::Duration::from_secs(20);
         decoder.request(node(1), "old".into());
-        started.recv_timeout(patience).unwrap();
+        started.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
         decoder.request(node(1), "new".into());
-
-        let mut widths = Vec::new();
-        let mut take = |decoder: &ImageDecoder| {
-            widths.extend(decoder.tick().into_iter().map(|(_, r)| r.unwrap().width));
-            widths.clone()
-        };
-        let end = std::time::Instant::now() + patience;
-        while !take(&decoder).contains(&2) && std::time::Instant::now() < end {
-            std::thread::yield_now();
-        }
         release_tx.send(()).unwrap();
-        // The old result is either on its way or dropped, and a drop leaves nothing to wait on.
-        let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
-        while !take(&decoder).contains(&1) && std::time::Instant::now() < end {
-            std::thread::yield_now();
-        }
-        assert_eq!(take(&decoder).last(), Some(&2), "the newest request's image stays");
+        decoder.wait_for_threads(0);
+        let widths: Vec<u32> = decoder.tick().into_iter().map(|(_, r)| r.unwrap().width).collect();
+        assert_eq!(widths, [2], "the newest request's image, alone");
+    }
+
+    /// The first decode finished and waits for a `tick` when the second request comes: it must not reach the card.
+    #[test]
+    fn a_repeat_request_replaces_a_finished_decode() {
+        let decoder = ImageDecoder::new(|path: &str| {
+            Ok(Decoded { width: if path == "old" { 1 } else { 2 }, height: 1, rgba: Vec::new() })
+        });
+        decoder.request(node(1), "old".into());
+        decoder.wait_for_threads(0);
+        decoder.request(node(1), "new".into());
+        decoder.wait_for_threads(0);
+        let widths: Vec<u32> = decoder.tick().into_iter().map(|(_, r)| r.unwrap().width).collect();
+        assert_eq!(widths, [2]);
     }
 
     #[test]
     fn a_panicking_decode_is_an_error_for_that_image_only() {
-        let err = guarded("dir/p.png", |_| panic!("boom")).err().unwrap();
-        assert_eq!(err, "Couldn't open image p.png: the decoder crashed");
-        assert!(guarded("x", |_| Ok(Decoded { width: 1, height: 1, rgba: vec![0; 4] })).is_ok());
+        let decoder = ImageDecoder::new(|path: &str| {
+            assert!(path != "dir/p.png", "stub decode panics (expected in this test)");
+            Ok(Decoded { width: 1, height: 1, rgba: vec![0; 4] })
+        });
+        decoder.request(node(1), "dir/p.png".into());
+        decoder.request(node(2), "dir/q.png".into());
+        let mut done = wait(&decoder);
+        done.sort_by_key(|a| a.0);
+        assert_eq!(
+            done[0].1.as_ref().err().map(String::as_str),
+            Some("Couldn't open image p.png: the decoder crashed")
+        );
+        assert!(done[1].1.is_ok());
     }
 }
