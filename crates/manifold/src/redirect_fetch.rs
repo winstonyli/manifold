@@ -228,13 +228,8 @@ mod tests {
         };
         assert!(fetcher.request(job()));
         assert!(!fetcher.request(job()), "already in flight");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut results = Vec::new();
-        while results.is_empty() && std::time::Instant::now() < deadline {
-            results.extend(fetcher.tick());
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert_eq!(results.len(), 1);
+        fetcher.pool.wait_for_threads(0);
+        assert_eq!(fetcher.tick().len(), 1);
         assert!(fetcher.request(job()), "free again once its result is ticked");
     }
 

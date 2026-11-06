@@ -38,7 +38,8 @@ impl Workers {
         }
     }
 
-    /// Node `id` left the live graph: nothing queued or running for it may report.
+    /// Node `id` left the live graph: no image decode or PDF render for it may report. A redirect job still does, and
+    /// `tick_fetchers` checks its target.
     pub(crate) fn cancel_node(&mut self, id: NodeId) {
         self.image_decoder.cancel(id);
         self.pdf_renderer.cancel(id);
@@ -96,7 +97,7 @@ impl App {
         }
 
         for (id, result) in self.workers.image_decoder.tick() {
-            // A node deleted (or already failed and retried) while its decode ran has nothing to receive it.
+            // Only a guard: removing a node cancels its decode (`Workers::cancel_node`).
             if self.nodes.get(&id).and_then(|n| n.as_image()).is_none() {
                 continue;
             }
@@ -119,12 +120,8 @@ impl App {
         }
 
         for (id, result) in self.workers.pdf_renderer.tick() {
-            // The node may have been deleted while this render was still
-            // in flight -- skip a late-arriving result entirely rather
-            // than uploading a texture nothing will ever free (`delete`'s
-            // own `gpu.free_image` already ran, before this result could
-            // possibly have arrived, so a late upload here would be a real
-            // leak, not just wasted work).
+            // Only a guard: removing a node cancels its render (`Workers::cancel_node`), and an upload with no node
+            // would be a texture nothing ever frees.
             if self.nodes.get(&id).and_then(|n| n.as_pdf()).is_none() {
                 continue;
             }

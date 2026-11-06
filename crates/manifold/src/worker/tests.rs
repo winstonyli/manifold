@@ -257,7 +257,7 @@ fn request_racing_a_thread_exit_is_never_stranded() {
     let pool = Pool::new(1, |job: &u32| *job);
     for n in 0..20_000u32 {
         assert!(pool.request(n, n));
-        let end = Instant::now() + Duration::from_secs(2);
+        let end = Instant::now() + PATIENCE;
         let mut got = 0;
         while got == 0 && Instant::now() < end {
             got = pool.tick().len();
