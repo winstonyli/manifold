@@ -1,6 +1,6 @@
 //! One-shot background PDF-to-image rendering for `Runtime::Pdf` --
-//! mirrors `favicon_fetch`'s own "spawn a thread, `mpsc` channel, main loop
-//! `tick()`s it" pattern, but for a one-time render triggered by the user
+//! runs on a `worker::Pool` like `favicon_fetch`'s fetches, with the main loop
+//! `tick()`ing it, but for a one-time render triggered by the user
 //! adding a PDF node, not a per-navigation fetch. The render itself runs in
 //! the `manifold-view-pdfium` process (`manifold_view_protocol::render`), so a PDFium
 //! crash costs one card its preview instead of the app; the first run also
@@ -8,14 +8,15 @@
 //! none of it belongs on the UI thread.
 
 use crate::store::model::NodeId;
-use std::collections::{HashMap, HashSet};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use crate::worker::Pool;
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::time::Duration;
 
-use manifold_view_protocol::render::Cancel;
+use manifold_view_protocol::render::{Cancel, Inbox};
 
-const WORKERS: usize = 2;
+/// Renders running at once.
+const MAX_RENDERS: usize = 2;
 /// Covers the one-time PDFium download as well as a render; a PDF that hangs before its frame costs a worker this long
 /// at most (one that hangs after a bad frame: PARKED "Host protocol stamp").
 const RENDER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -28,124 +29,71 @@ pub struct PdfRenderResult {
     pub rgba: Vec<u8>,
 }
 
-/// Which renders are queued-but-cancelled and which child is running, under one lock so a cancel can't fall between
-/// a worker's check and its registration.
-#[derive(Default)]
-struct State(Mutex<Inner>);
-
-#[derive(Default)]
-struct Inner {
-    cancelled: HashSet<NodeId>,
-    running: HashMap<NodeId, Cancel>,
-}
-
-impl State {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-    /// Node `id` was deleted: skip its render if queued, kill it if running.
-    fn cancel(&self, id: NodeId) {
-        let mut inner = self.lock();
-        match inner.running.get(&id) {
-            Some(running) => running.cancel(),
-            None => {
-                inner.cancelled.insert(id);
-            }
-        }
-    }
-    /// A fresh request: a mark left by deleting an already-rendered PDF must not skip it.
-    fn request(&self, id: NodeId) {
-        self.lock().cancelled.remove(&id);
-    }
-    /// A worker takes `id`: false when it was cancelled while queued, else registers `cancel` for it.
-    fn begin(&self, id: NodeId, cancel: Cancel) -> bool {
-        let mut inner = self.lock();
-        if inner.cancelled.remove(&id) {
-            return false;
-        }
-        inner.running.insert(id, cancel);
-        true
-    }
-    fn finish(&self, id: NodeId) {
-        self.lock().running.remove(&id);
-    }
-    #[cfg(test)]
-    fn running_ids(&self) -> Vec<NodeId> {
-        self.lock().running.keys().copied().collect()
-    }
-    #[cfg(test)]
-    fn is_cancelled(&self, id: NodeId) -> bool {
-        self.lock().cancelled.contains(&id)
-    }
-}
+/// A render's job: the file, and the `Inbox` its `Cancel` (kept in `PdfRenderer::cancels`) talks to. `render` takes
+/// the inbox by value, so the job holds it in a `Cell` for `work`, which only borrows the job, to take out.
+type Job = (String, Cell<Option<Inbox>>);
 
 pub struct PdfRenderer {
-    tx: mpsc::Sender<(NodeId, String)>,
-    rx: mpsc::Receiver<(NodeId, Result<PdfRenderResult, String>)>,
-    state: Arc<State>,
+    pool: Pool<NodeId, Job, Result<PdfRenderResult, String>>,
+    /// The `Cancel` of every live render, UI-thread only: removed when the render's result is delivered or the render
+    /// is cancelled, which is how every live job ends.
+    cancels: HashMap<NodeId, Cancel>,
 }
 
 impl PdfRenderer {
-    pub fn new() -> Self {
-        Self::with_render(render)
+    /// `Workers::new` passes `render`, tests a stub.
+    pub(crate) fn new(render: impl Fn(&str, Inbox) -> Result<PdfRenderResult, String> + Send + Sync + 'static) -> Self {
+        let pool = Pool::new(MAX_RENDERS, move |(path, inbox): &Job| {
+            render(path, inbox.take().expect("a pool runs a job once"))
+        });
+        Self { pool, cancels: HashMap::new() }
     }
 
-    /// `new` with `render` as the renderer; tests swap in a stub.
-    pub(crate) fn with_render(
-        render: impl Fn(&str, manifold_view_protocol::render::Inbox) -> Result<PdfRenderResult, String>
-            + Clone
-            + Send
-            + 'static,
-    ) -> Self {
-        let (tx, queue) = mpsc::channel::<(NodeId, String)>();
-        let (result_tx, rx) = mpsc::channel();
-        let queue = Arc::new(Mutex::new(queue));
-        let state = Arc::new(State::default());
-        for _ in 0..WORKERS {
-            let (queue, result_tx, state, render) =
-                (Arc::clone(&queue), result_tx.clone(), Arc::clone(&state), render.clone());
-            thread::spawn(move || loop {
-                // The lock is held only while waiting for the next request, never while rendering.
-                let Ok((id, path)) = queue.lock().map(|q| q.recv()).unwrap_or(Err(mpsc::RecvError)) else { return };
-                let (cancel, inbox) = manifold_view_protocol::render::channel();
-                if !state.begin(id, cancel) {
-                    continue;
-                }
-                let result = render(&path, inbox);
-                state.finish(id);
-                if result_tx.send((id, result)).is_err() {
-                    return;
-                }
-            });
+    /// Queues a render of `path`'s first page for node `id`, replacing (and killing) any earlier one for it.
+    pub fn request(&mut self, id: NodeId, path: String) {
+        self.cancel(id);
+        let (cancel, inbox) = manifold_view_protocol::render::channel();
+        self.cancels.insert(id, cancel);
+        self.pool.request(id, (path, Cell::new(Some(inbox))));
+    }
+
+    /// Node `id` left the live graph: skip its render if it hasn't started, kill it if it has, drop its result if it
+    /// is done.
+    pub fn cancel(&mut self, id: NodeId) {
+        self.pool.cancel(&id);
+        if let Some(cancel) = self.cancels.remove(&id) {
+            cancel.cancel();
         }
-        Self { tx, rx, state }
     }
 
-    /// Queues a render of `path`'s first page for node `id`.
-    pub fn request(&self, id: NodeId, path: String) {
-        self.state.request(id);
-        let _ = self.tx.send((id, path));
+    /// Every render finished since the last call. A panicking render is an error for its node. A node deleted
+    /// meanwhile gets nothing (`cancel`).
+    pub fn tick(&mut self) -> Vec<(NodeId, Result<PdfRenderResult, String>)> {
+        self.pool
+            .tick()
+            .into_iter()
+            .map(|(id, _, result)| {
+                self.cancels.remove(&id);
+                (id, result.unwrap_or_else(|| Err("the renderer crashed".into())))
+            })
+            .collect()
     }
 
-    /// Node `id` was deleted: skip its render if it hasn't started, kill it if it has.
-    pub fn cancel(&self, id: NodeId) {
-        self.state.cancel(id);
-    }
-
-    /// Whether `id`'s render is marked to be skipped (`session_sync` tests).
+    /// How many renders have not been returned by `tick` yet.
     #[cfg(test)]
-    pub(crate) fn is_cancelled(&self, id: NodeId) -> bool {
-        self.state.is_cancelled(id)
+    pub(crate) fn pending(&self) -> usize {
+        self.pool.pending()
     }
 
-    /// Every render finished since the last call. A result for a node deleted meanwhile is the caller's to ignore.
-    pub fn tick(&self) -> Vec<(NodeId, Result<PdfRenderResult, String>)> {
-        self.rx.try_iter().collect()
+    /// See `Pool::wait_for_threads`.
+    #[cfg(test)]
+    pub(crate) fn wait_for_threads(&self, n: usize) {
+        self.pool.wait_for_threads(n);
     }
 }
 
 /// Runs the PDF view on `path` in its own process.
-fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<PdfRenderResult, String> {
+pub(crate) fn render(path: &str, inbox: Inbox) -> Result<PdfRenderResult, String> {
     let exe = crate::process_manager::pdf_view_exe()
         .map_err(|e| format!("{LABEL} could not be extracted: {e}"))?
         .ok_or_else(|| format!("{LABEL} is not installed: build {}", manifold_hosts::PDFIUM.exe))?;
@@ -169,45 +117,73 @@ fn render(path: &str, inbox: manifold_view_protocol::render::Inbox) -> Result<Pd
 mod tests {
     use super::*;
     use crate::card_id::testutil::node;
+    use std::sync::{mpsc, Mutex};
 
-    #[test]
-    fn a_cancel_before_the_render_starts_skips_it() {
-        let state = State::default();
-        state.cancel(node(1));
-        assert!(!state.begin(node(1), manifold_view_protocol::render::channel().0), "skipped");
-        assert!(state.begin(node(1), manifold_view_protocol::render::channel().0), "the mark was taken once");
-    }
+    const PATIENCE: Duration = Duration::from_secs(20);
 
-    #[test]
-    fn a_cancel_while_running_kills_instead_of_marking_and_a_finish_clears_it() {
-        let state = State::default();
-        assert!(state.begin(node(2), manifold_view_protocol::render::channel().0));
-        state.cancel(node(2));
-        assert!(!state.is_cancelled(node(2)), "a running render is killed, not marked for skipping");
-        state.finish(node(2));
-        assert!(state.running_ids().is_empty());
-        assert!(
-            state.begin(node(2), manifold_view_protocol::render::channel().0),
-            "a later request for the same id still renders"
-        );
+    fn rendered() -> Result<PdfRenderResult, String> {
+        Ok(PdfRenderResult { width: 1, height: 1, page_count: 1, rgba: Vec::new() })
     }
 
     /// Two renders of one id overlap (`reload_fetched_node`): the first finishing must leave the second cancellable.
     #[test]
-    #[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
     fn a_finished_render_leaves_a_later_render_of_its_id_cancellable() {
-        let state = State::default();
-        assert!(state.begin(node(3), manifold_view_protocol::render::channel().0));
-        assert!(state.begin(node(3), manifold_view_protocol::render::channel().0));
-        state.finish(node(3));
-        assert_eq!(state.running_ids(), [node(3)], "the second render still runs");
+        let (started_tx, started) = mpsc::channel();
+        let (release_a, gate_a) = mpsc::channel::<()>();
+        let (release_b, gate_b) = mpsc::channel::<()>();
+        let (started_tx, gate_a, gate_b) = (Mutex::new(started_tx), Mutex::new(gate_a), Mutex::new(gate_b));
+        let mut renderer = PdfRenderer::new(move |path: &str, _| {
+            started_tx.lock().unwrap().send(path.to_string()).unwrap();
+            let gate = if path == "a" { &gate_a } else { &gate_b };
+            let _ = gate.lock().unwrap().recv();
+            rendered()
+        });
+        let id = node(3);
+        renderer.request(id, "a".into());
+        assert_eq!(started.recv_timeout(PATIENCE).unwrap(), "a");
+        renderer.request(id, "b".into());
+        assert_eq!(started.recv_timeout(PATIENCE).unwrap(), "b");
+        drop(release_a);
+        renderer.wait_for_threads(1);
+        assert!(renderer.tick().is_empty());
+        assert!(renderer.cancels.contains_key(&id));
+        renderer.cancel(id);
+        assert!(renderer.cancels.is_empty());
+        assert_eq!(renderer.pending(), 0);
+        drop(release_b);
+    }
+
+    /// Cancelling a queued render and requesting again leaves one job, not two.
+    #[test]
+    fn a_cancelled_queued_render_is_not_queued_twice() {
+        let (started_tx, started) = mpsc::channel();
+        let (release, gate) = mpsc::channel::<()>();
+        let (started_tx, gate) = (Mutex::new(started_tx), Mutex::new(gate));
+        let mut renderer = PdfRenderer::new(move |path: &str, _| {
+            started_tx.lock().unwrap().send(path.to_string()).unwrap();
+            let _ = gate.lock().unwrap().recv();
+            rendered()
+        });
+        renderer.request(node(1), "first".into());
+        renderer.request(node(2), "second".into());
+        for _ in 0..MAX_RENDERS {
+            started.recv_timeout(PATIENCE).unwrap();
+        }
+        renderer.request(node(3), "a".into());
+        renderer.cancel(node(3));
+        renderer.request(node(3), "b".into());
+        drop(release);
+        renderer.wait_for_threads(0);
+        assert_eq!(started.try_iter().collect::<Vec<_>>(), ["b"]);
     }
 
     #[test]
-    fn a_new_request_clears_a_stale_cancel() {
-        let state = State::default();
-        state.cancel(node(2));
-        state.request(node(2));
-        assert!(state.begin(node(2), manifold_view_protocol::render::channel().0));
+    fn a_panicking_render_is_an_error_for_that_node() {
+        let mut renderer = PdfRenderer::new(|_: &str, _| panic!("stub render panics (expected in this test)"));
+        renderer.request(node(1), "p.pdf".into());
+        renderer.wait_for_threads(0);
+        let done = renderer.tick();
+        assert!(matches!(done.as_slice(), [(id, Err(e))] if *id == node(1) && e == "the renderer crashed"));
+        assert!(renderer.cancels.is_empty());
     }
 }

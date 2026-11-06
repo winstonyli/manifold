@@ -36,6 +36,11 @@ impl ImageDecoder {
         self.pool.request(id, path);
     }
 
+    /// Node `id` left the live graph: its decode is skipped if queued, and its result dropped if running or done.
+    pub fn cancel(&self, id: NodeId) {
+        self.pool.cancel(&id);
+    }
+
     /// Every decode finished since the last call. An error reads as a toast ("Couldn't open image name: why").
     pub fn tick(&self) -> Vec<(NodeId, Result<Decoded, String>)> {
         self.pool
@@ -152,6 +157,24 @@ mod tests {
         decoder.wait_for_threads(0);
         let widths: Vec<u32> = decoder.tick().into_iter().map(|(_, r)| r.unwrap().width).collect();
         assert_eq!(widths, [2]);
+    }
+
+    #[test]
+    fn a_cancelled_decode_reports_nothing() {
+        let (started_tx, started) = mpsc::channel();
+        let (release_tx, release) = mpsc::channel::<()>();
+        let (started_tx, release) = (Mutex::new(started_tx), Mutex::new(release));
+        let decoder = ImageDecoder::new(move |_: &str| {
+            started_tx.lock().unwrap().send(()).unwrap();
+            let _ = release.lock().unwrap().recv();
+            Ok(Decoded { width: 1, height: 1, rgba: Vec::new() })
+        });
+        decoder.request(node(1), "p".into());
+        started.recv_timeout(std::time::Duration::from_secs(20)).unwrap();
+        decoder.cancel(node(1));
+        release_tx.send(()).unwrap();
+        decoder.wait_for_threads(0);
+        assert!(decoder.tick().is_empty());
     }
 
     #[test]

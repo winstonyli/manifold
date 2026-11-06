@@ -178,14 +178,13 @@ impl App {
     }
 
     /// Takes `id` out of the live graph without touching the document: its `nodes` entry (a tab's `ViewTab` drops,
-    /// shutting its view host down), a PDF's queued render, its `node_order` slot, the view state naming it
-    /// (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared by the delete paths
-    /// (`take_out`) and the hide path (`hide_node`), which add what each needs. Returns the removed node.
+    /// shutting its view host down), its image decode or PDF render (`Workers::cancel_node`), its `node_order` slot,
+    /// the view state naming it (`focused`, `split_tab`, `viewed_image`, an open find bar), then `forget_id`. Shared
+    /// by the delete paths (`take_out`) and the hide path (`hide_node`), which add what each needs. Returns the
+    /// removed node.
     pub(crate) fn unshow(&mut self, id: NodeId) -> Option<crate::GraphNode> {
         let removed = self.nodes.remove(&id);
-        if removed.as_ref().is_some_and(|n| n.as_pdf().is_some()) {
-            self.workers.pdf_renderer.cancel(id);
-        }
+        self.workers.cancel_node(id);
         self.node_order.retain(|d| *d != id);
         // A split only makes sense paired with its focused tab (`focus_tab`): losing either half clears it.
         if self.split_tab == Some(id) || self.focused == Some(id) {

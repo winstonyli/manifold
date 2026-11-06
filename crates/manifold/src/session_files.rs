@@ -485,11 +485,11 @@ impl App {
     /// links go below). Each
     /// tab's `ViewTab::Drop` shuts its view host down, as `destroy_tab`
     /// relies on, so clearing the map is enough; spawns still in flight are
-    /// dropped when they land (`session_generation`), and a PDF's render
-    /// not yet started is skipped, as `remove_node` does.
+    /// dropped when they land (`session_generation`), and every image
+    /// decode and PDF render is cancelled (`Workers::cancel_node`), as `remove_node` does.
     pub(crate) fn teardown_running_session(&mut self) {
-        for (id, _) in self.nodes.iter().filter(|(_, node)| node.as_pdf().is_some()) {
-            self.workers.pdf_renderer.cancel(*id);
+        for &id in self.nodes.keys() {
+            self.workers.cancel_node(id);
         }
         // The Default jar is the profile's own: the replaced session's cards go, it stays (spec "The Default jar").
         let default = self.default_jar();

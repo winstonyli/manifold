@@ -395,6 +395,7 @@ impl App {
             gpu.free_image(id);
         }
         self.nodes.remove(&id);
+        self.workers.cancel_node(id);
         self.node_order.retain(|n| *n != id);
         let source = ContentSource::Web { url: url.clone(), body };
         let result = self.insert_content(source, id, pos, group);

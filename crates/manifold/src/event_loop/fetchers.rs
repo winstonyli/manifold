@@ -30,11 +30,17 @@ impl Workers {
     pub(crate) fn new(favicon_dir: Option<std::path::PathBuf>, content_dir: Option<std::path::PathBuf>) -> Self {
         Self {
             favicon_fetcher: FaviconFetcher::new(favicon_dir),
-            pdf_renderer: PdfRenderer::new(),
+            pdf_renderer: PdfRenderer::new(crate::pdf::render::render),
             image_decoder: ImageDecoder::new(crate::image_decode::decode),
             redirect_fetcher: RedirectFetcher::new(content_dir),
             favicon_resolved: HashSet::new(),
         }
+    }
+
+    /// Node `id` left the live graph: nothing queued or running for it may report.
+    pub(crate) fn cancel_node(&mut self, id: NodeId) {
+        self.image_decoder.cancel(id);
+        self.pdf_renderer.cancel(id);
     }
 }
 

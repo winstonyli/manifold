@@ -198,20 +198,83 @@ fn exporting_a_group_the_store_lacks_gives_none() {
     assert!(!app.toasts.save_toast_queue.is_empty(), "toasted");
 }
 
-/// Replacing the running session skips the renders of its PDFs that haven't started, as deleting one does.
+/// An `ImageDecoder` whose decodes block until the sender drops, so a job stays live until it is cancelled.
+fn held_decoder() -> (crate::image_decode::ImageDecoder, std::sync::mpsc::Sender<()>) {
+    use crate::image_decode::{Decoded, ImageDecoder};
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let wait = std::sync::Mutex::new(wait);
+    let decoder = ImageDecoder::new(move |_| {
+        let _ = wait.lock().unwrap().recv();
+        Ok(Decoded { width: 1, height: 1, rgba: Vec::new() })
+    });
+    (decoder, release)
+}
+
+/// A new image node with a source url, its decode requested.
+fn a_decoding_image(app: &mut App) -> NodeId {
+    use crate::{content::ContentKind, ContentSource, WebBody};
+    let id = app.alloc_node_id();
+    let body = WebBody::File { kind: ContentKind::Image, path: "a.png".into() };
+    let source = ContentSource::Web { url: "https://x.test/a.png".into(), body };
+    app.insert_content(source, id, egui::Vec2::ZERO, None).unwrap();
+    id
+}
+
+/// Replacing the running session cancels the image decodes and PDF renders of its nodes, as deleting one does.
 #[test]
-fn teardown_cancels_pending_pdf_renders() {
+fn teardown_cancels_image_decodes_and_pdf_renders() {
+    use crate::pdf::render::{PdfRenderResult, PdfRenderer};
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let wait = std::sync::Mutex::new(wait);
+    let (decoder, release_decode) = held_decoder();
     let mut app = App::default();
+    app.workers.image_decoder = decoder;
+    app.workers.pdf_renderer = PdfRenderer::new(move |_, _| {
+        let _ = wait.lock().unwrap().recv();
+        Ok(PdfRenderResult { width: 1, height: 1, page_count: 1, rgba: Vec::new() })
+    });
     let pdf = add(&mut app, Kind::Pdf, Runtime::Pdf(crate::node::PdfPayload { path: "d.pdf".into(), outcome: None }));
-    let note = add(&mut app, Kind::Note, Runtime::Note(NotePayload { text: "n".into(), editing: false }));
+    let image = add(
+        &mut app,
+        Kind::Image,
+        Runtime::Image(crate::node::ImagePayload { path: "i.png".into(), width: 0, height: 0, error: None }),
+    );
+    app.workers.pdf_renderer.request(pdf, "d.pdf".into());
+    app.workers.image_decoder.request(image, "i.png".into());
+    assert_eq!((app.workers.pdf_renderer.pending(), app.workers.image_decoder.pending()), (1, 1));
     app.teardown_running_session();
-    assert!(app.workers.pdf_renderer.is_cancelled(pdf));
-    assert!(!app.workers.pdf_renderer.is_cancelled(note), "only PDFs are marked");
+    assert_eq!((app.workers.pdf_renderer.pending(), app.workers.image_decoder.pending()), (0, 0));
+    drop((release, release_decode));
+}
+
+#[test]
+fn hiding_a_node_cancels_its_decode() {
+    let (decoder, release) = held_decoder();
+    let mut app = App::default();
+    app.workers.image_decoder = decoder;
+    let id = a_decoding_image(&mut app);
+    assert_eq!(app.workers.image_decoder.pending(), 1);
+    app.unshow(id);
+    assert_eq!(app.workers.image_decoder.pending(), 0);
+    drop(release);
+}
+
+/// The reload's content is a JSON file that can't be read, so nothing requests a decode for the id again.
+#[test]
+fn reloading_a_node_cancels_its_decode() {
+    let (decoder, release) = held_decoder();
+    let mut app = App::default();
+    app.workers.image_decoder = decoder;
+    let id = a_decoding_image(&mut app);
+    assert_eq!(app.workers.image_decoder.pending(), 1);
+    let missing = temp_dir("reload-cancels").join("missing.json").to_string_lossy().into_owned();
+    app.reload_fetched_node(id, crate::WebBody::File { kind: crate::content::ContentKind::Json, path: missing });
+    assert_eq!(app.workers.image_decoder.pending(), 0);
+    drop(release);
 }
 
 /// A session replaced by one with the same ids: the old render's "cancelled" is not news for the new card.
 #[test]
-#[ignore = "ARC2: fails until the worker pool lands (PARKED \"Worker pool defect tests\")"]
 fn a_cancelled_render_says_nothing_to_a_card_that_took_its_id() {
     use crate::pdf::render::{PdfRenderResult, PdfRenderer};
     use std::sync::{mpsc, Arc, Mutex};
@@ -219,7 +282,7 @@ fn a_cancelled_render_says_nothing_to_a_card_that_took_its_id() {
     let (release_tx, release) = mpsc::channel::<()>();
     let release = Arc::new(Mutex::new(release));
     let mut app = App::default();
-    app.workers.pdf_renderer = PdfRenderer::with_render(move |path: &str, _| {
+    app.workers.pdf_renderer = PdfRenderer::new(move |path: &str, _| {
         if path == "old.pdf" {
             started_tx.send(()).unwrap();
             let _ = release.lock().unwrap().recv();
@@ -240,11 +303,9 @@ fn a_cancelled_render_says_nothing_to_a_card_that_took_its_id() {
     while outcome(&app).is_none() && std::time::Instant::now() < end {
         app.finish_image_decodes();
     }
-    // The old result is either on its way or dropped, and a drop leaves nothing to wait on.
-    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    while app.toasts.save_toast_queue.is_empty() && std::time::Instant::now() < end {
-        app.finish_image_decodes();
-    }
+    // No thread left, so the old render is over and anything it would say has been said.
+    app.workers.pdf_renderer.wait_for_threads(0);
+    app.finish_image_decodes();
     assert!(app.toasts.save_toast_queue.is_empty(), "{:?}", app.toasts.save_toast_queue);
     assert_eq!(outcome(&app), Some(true), "the new render stands");
 }
