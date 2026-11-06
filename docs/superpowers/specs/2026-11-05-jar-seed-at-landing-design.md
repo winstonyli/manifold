@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Seed a host's cookies when it lands (ARC3)
@@ -95,13 +95,13 @@ Adjusted: the seed assert at `main/tests.rs:300` goes (the line above it now ass
 
 Guard: `jar_snapshots`, `Snapshots` and `seed_clears` join the needles in `deleted_names.rs` (step 2). `APP_FIELDS_MAX` is lowered in step 1.
 
-End to end: the gate's per-tab jar probe (`crates/gate/src/jar.rs:565`) proves a first load stays logged in, so a `full` gate run is the check on real hosts. It runs once at the end, not per step.
+End to end: `gate jar` (`crates/gate/src/jar.rs`) proves a first load stays logged in on real hosts. It is a stage of its own that `gate all` does not run, so it runs once at the end beside the `full` gate, not per step. Both passed at `d9486e44` (runs `2026-11-05-arc3-jar`, `2026-11-05-crt5-arc3-full`).
 
 ## Order of work
 
 1. Move `jars` into `CookieState`, with the `EXCUSED` row and `APP_FIELDS_MAX` in the same commit (`cargo unit` fails otherwise). Mechanical. Own commit.
 2. Add `seed_landed_host` as a stub that keeps today's behaviour, write the tests against it, and watch their assertions fail. Then make it real, remove `seeded` and `seed_clears` from the outcome, and delete everything below. Own commit.
-3. Measure the landing, record it in "Timing change", run lint, `cargo unit`, then the gate at tier `full` (it changes session and engine paths).
+3. Measure the landing, record it in "Timing change", run lint, `cargo unit`, then the gate at tier `full` (it changes session and engine paths) and `gate jar`.
 
 ## End-state fit
 
