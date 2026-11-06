@@ -5,8 +5,6 @@ mod caps;
 mod card;
 mod card_id;
 mod card_kind;
-mod cef_pin;
-mod cef_platform;
 mod chrome_ui;
 mod cli;
 mod click_count;

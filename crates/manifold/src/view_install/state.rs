@@ -70,6 +70,43 @@ pub(crate) fn missing_vc_runtime() -> Vec<&'static str> {
     }
 }
 
+/// CEF's: the libraries `cef::system_libs` names that the system does not list (`ldconfig -p`), so the download can
+/// warn before a host that cannot start. Empty when none are needed, when all are present, or when the listing cannot
+/// be read (unknown is not a warning). The listing is re-read at most every 10 s: the dialog asks every frame.
+pub(crate) fn missing_cef_libs() -> Vec<&'static str> {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, Vec<&'static str>)>> = Mutex::new(None);
+    let needed = cef::system_libs(Os::here());
+    if needed.is_empty() {
+        return Vec::new();
+    }
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, missing)) = cache.as_ref() {
+        if at.elapsed() < Duration::from_secs(10) {
+            return missing.clone();
+        }
+    }
+    let listing = ["ldconfig", "/sbin/ldconfig"]
+        .iter()
+        .find_map(|bin| std::process::Command::new(bin).arg("-p").output().ok().filter(|o| o.status.success()))
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let missing = listing.map_or_else(Vec::new, |text| missing_in_listing(&text, needed));
+    *cache = Some((Instant::now(), missing.clone()));
+    missing
+}
+
+/// The `needed` libraries with no line in an `ldconfig -p` listing (`libnss3.so (libc6,x86-64) => /lib/...`).
+pub(super) fn missing_in_listing(listing: &str, needed: &'static [&'static str]) -> Vec<&'static str> {
+    needed
+        .iter()
+        .copied()
+        .filter(|lib| {
+            !listing.lines().any(|line| line.trim_start().strip_prefix(lib).is_some_and(|rest| rest.starts_with(' ')))
+        })
+        .collect()
+}
+
 /// The file written last by a CEF runtime install; holds the pinned version it installed.
 pub(crate) const MARKER: &str = "ready";
 

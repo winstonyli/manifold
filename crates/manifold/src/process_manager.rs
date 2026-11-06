@@ -121,7 +121,7 @@ impl ViewKind {
                 tags: TagSet::of(&[Tag::Blink, Tag::Bgra, Tag::Jars, Tag::DevTools, Tag::Find]),
                 link: HostLink::PipesShm,
                 starting_default: false,
-                missing_system_libs: || crate::cef_platform::PLATFORM.missing_system_libs(),
+                missing_system_libs: crate::view_install::state::missing_cef_libs,
                 download_note: "",
                 prepare: prepare_cef,
                 color: egui::Color32::from_rgb(66, 133, 244),

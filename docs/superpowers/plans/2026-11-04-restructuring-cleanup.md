@@ -24,7 +24,7 @@ crates/manifold/src/
   jar.rs + jar/defs.rs, jar/defs/{lifecycle,label,tests}.rs   from jar_defs  [LAY5 done 2026-11-05; d3a]
   trail/{history,nav,strip}.rs     from nav_history, trail_nav, trail_strip [LAY2]
   json/{view,level,ui,edit}.rs     from json_view, json_level, json_level_ui, json_edit [LAY3]
-  view_install/{host_pin,embedded_host,state,download,unpack,remove,ui}.rs [LAY4; cef_pin/cef_platform go to manifold-hosts, CRT5]
+  view_install/{host_pin,embedded_host,state,download,unpack,remove,ui}.rs [LAY4; cef_pin/cef_platform went to manifold-hosts, CRT5]
   debug.rs + debug/{verbs,reader,export,input}.rs                          [LAY6]
   settings/{page,rows}.rs ; links/gestures.rs ; pdf/render.rs ; profile/file.rs (from json_file) ; graph_ui/{layout,nav,deselect}.rs [LAY7, LAY10, LAY11 done 2026-11-05]
   tabs/sleep/{state,idle}.rs       from sleep_state, idle_sleep             [LAY8 done 2026-11-05; d3b]
@@ -151,7 +151,7 @@ Not subsumed by a pool: `SuggestionFetcher`, JSON search, `search/service.rs`, `
 
 **CRT3 / ARC10. Directories in `crates/gate/src`.** CRT3: `harness/` (check, http, instance, nonce, session, state, timing, fresh, suggest), `perf/` (ab, profile, trace), `release/` (cef_pin, release_*, sync_deps, tier), 49 files moved, ~258 import + ~45 `mod` lines, ~12 PARKED citations. ARC10: `harness/`, `sites/`, `release/` for 16 files. **Decided d3d: ARC10** (CRT3 not taken). Reach adds `gate/src/cef_pin.rs`, `shots.rs:77` `include_str!`, `tier.rs` lists. Independent of manifold; no branch collision (gate untouched there).
 
-**CRT5. Fold CEF pin/platform tables into `manifold-hosts`.** Decided d3e: go, as its own plan. `PLATFORM` cfg const becomes `fn platform(running: Os)`; Linux job check. **Own plan 2026-11-05** (`docs/superpowers/specs/2026-11-05-cef-tables-in-hosts-design.md`).
+**CRT5. Fold CEF pin/platform tables into `manifold-hosts`.** Decided d3e: go, as its own plan. `PLATFORM` cfg const becomes `fn platform(running: Os)`; Linux job check. **Own plan 2026-11-05** (`docs/superpowers/specs/2026-11-05-cef-tables-in-hosts-design.md`, which drops z1's `archive_name`).
 
 **CRT6, CRT7, CRT8.** `manifold-search` crate (1.4k lines, ~1.6% of the crate; survey says cost may exceed benefit), wire-only `manifold-view-protocol` with a new `manifold-view-host`, `manifold-os` (job, DPAPI x2, process times). All **Own plan**, all require CRT4; CRT6 requires CRT1. Not recommended now: each is a new crate whose gain is modest and unmeasured.
 

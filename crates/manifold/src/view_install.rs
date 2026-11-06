@@ -3,19 +3,10 @@
 
 use crate::process_manager::ViewKind;
 use crate::view_install::host_pin::Component as HostFile;
+use manifold_hosts::cef::{self, Pin};
 use manifold_hosts::{Delivery, Os};
 use std::fmt;
 use std::path::{Path, PathBuf};
-
-/// The CEF build the app downloads: where it lives and how to check it.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Pin {
-    pub(crate) version: &'static str,
-    pub(crate) url: &'static str,
-    pub(crate) size: u64,
-    pub(crate) sha1: &'static str,
-    pub(crate) sha256: &'static str,
-}
 
 /// How an engine is available, as every engine list shows it.
 #[derive(Debug, Clone, PartialEq)]
@@ -40,7 +31,7 @@ pub(crate) enum ViewStatus {
     Unavailable(String),
 }
 
-/// Why CEF's runtime cannot be installed where `cef_pin::pin_for_platform` is `None`.
+/// Why CEF's runtime cannot be installed where `cef::pin` is `None`.
 pub(crate) const NO_PIN_REASON: &str = "no CEF build for this platform yet";
 
 /// Why `kind` cannot be installed in a build whose `host_pin` table has no entry for it (the repo's table is empty;
@@ -115,8 +106,7 @@ pub(crate) fn plan_for(kind: ViewKind) -> Result<Plan, String> {
     if host.is_empty() {
         return Err(no_download_reason(kind));
     }
-    let runtime =
-        if has_runtime(kind) { Some(crate::cef_pin::pin_for_platform().ok_or(NO_PIN_REASON)?.clone()) } else { None };
+    let runtime = if has_runtime(kind) { Some(cef::pin(Os::here()).ok_or(NO_PIN_REASON)?.clone()) } else { None };
     Ok(Plan { host, runtime })
 }
 

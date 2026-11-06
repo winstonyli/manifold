@@ -126,7 +126,7 @@ fn runtime_on_disk(kind: ViewKind) -> RuntimeOnDisk {
     if !has_runtime(kind) || cef_sibling_exe().exists() {
         return RuntimeOnDisk::Ready;
     }
-    match (view_runtime_dir(kind), crate::cef_pin::pin_for_platform()) {
+    match (view_runtime_dir(kind), manifold_hosts::cef::pin(Os::here())) {
         (Some(dir), Some(pin)) => runtime_state(&dir, pin),
         _ => RuntimeOnDisk::Missing,
     }

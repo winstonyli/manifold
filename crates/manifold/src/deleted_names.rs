@@ -22,7 +22,7 @@ fn no_source_names_a_deleted_enum() {
 /// 2026-10-29-host-table-design.md). The per-view host fields, `HostSource`, the `Embedded` enum and its hash
 /// variables, `CefPlatform`'s exe and runtime names and the in-place path helpers are gone. The live
 /// `host_file_names` and `Host::runtime_lib` contain two of the old names, so those needles are `host_file_name(` and
-/// `PLATFORM.runtime_lib`.
+/// `PLATFORM.runtime_lib`. CEF's per-OS facts are `manifold_hosts::cef`'s (spec 2026-11-05-cef-tables-in-hosts-design.md).
 #[test]
 fn no_source_names_a_deleted_host_layout_item() {
     let needles = [
@@ -31,7 +31,9 @@ fn no_source_names_a_deleted_host_layout_item() {
         "PLATFORM.host_exe",
         "PLATFORM.exe_suffix",
         "PLATFORM.runtime_lib",
-        "CefPlatform::runtime_lib",
+        "CefPlatform",
+        "cef_platform",
+        "pin_for_platform",
         "beside_exe",
         "in_place_paths",
         "sibling_binary",

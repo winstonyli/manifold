@@ -9,6 +9,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 use super::{download::*, state::*};
 
+/// The archive's subfolders (under its one top folder) that hold the runtime; flattened on unpack.
+const RUNTIME_DIRS: [&str; 2] = ["Release", "Resources"];
+/// Build leftovers inside the runtime folders: any path with one of these directory names...
+const SKIP_DIRS: [&str; 3] = ["include", "cmake", "libcef_dll"];
+/// ...or ending in one of these file names (compared ignoring case)...
+const SKIP_FILES: [&str; 2] = ["CMakeLists.txt", "debug.log"];
+/// ...or ending in one of these suffixes (Windows import libraries).
+const SKIP_SUFFIXES: [&str; 1] = [".lib"];
+
 /// Where the runtime entry `path` goes under `into`, or None to skip it. The path is `<top>/Release/..`
 /// or `<top>/Resources/..`; both folders flatten into `into`. Errors on any component that could escape:
 /// `..`, a root or prefix, and any name containing `:` (on Windows `C:evil.dll` is a drive-relative name
@@ -29,14 +38,13 @@ pub(super) fn target(path: &Path, into: &Path) -> Result<Option<PathBuf>, Instal
         }
     }
     let [_top, dir, rest @ ..] = names.as_slice() else { return Ok(None) };
-    let platform = &crate::cef_platform::PLATFORM;
-    if !platform.runtime_dirs.iter().any(|d| *dir == *d) || rest.is_empty() {
+    if !RUNTIME_DIRS.iter().any(|d| *dir == *d) || rest.is_empty() {
         return Ok(None);
     }
     let last = rest[rest.len() - 1].to_string_lossy().to_ascii_lowercase();
-    let skipped = rest.iter().any(|n| platform.skip_dirs.iter().any(|s| *n == *s))
-        || platform.skip_files.iter().any(|s| last == s.to_ascii_lowercase())
-        || platform.skip_suffixes.iter().any(|s| last.ends_with(s));
+    let skipped = rest.iter().any(|n| SKIP_DIRS.iter().any(|s| *n == *s))
+        || SKIP_FILES.iter().any(|s| last == s.to_ascii_lowercase())
+        || SKIP_SUFFIXES.iter().any(|s| last.ends_with(s));
     Ok((!skipped).then(|| rest.iter().fold(into.to_path_buf(), |p, n| p.join(n))))
 }
 
@@ -50,9 +58,8 @@ pub(super) fn unpacked_mode(header_mode: u32) -> u32 {
 }
 
 /// Extract the runtime from the CEF `tar.bz2` at `archive` into `into`: the files under `<top>/Release/`
-/// and `<top>/Resources/` (`CefPlatform::runtime_dirs`), flattened into `into`, without the build leftovers
-/// (`CefPlatform::skip_*`; on Windows `*.lib`, `include`, `cmake`, `libcef_dll`, `CMakeLists.txt`,
-/// `debug.log`). Any entry that is a link, or whose path has a `..`,
+/// and `<top>/Resources/` (`RUNTIME_DIRS`), flattened into `into`, without the build leftovers (`SKIP_DIRS`,
+/// `SKIP_FILES`, `SKIP_SUFFIXES`). Any entry that is a link, or whose path has a `..`,
 /// root or prefix component, fails the whole unpack. `MARKER` is written last, holding the pin's version.
 /// `cancel` is checked between entries (`Cancelled`). On error `into` may be half-filled; the caller
 /// discards it.

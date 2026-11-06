@@ -25,7 +25,7 @@ Only `manifold-view-webkitgtk` is Linux-only (no Windows WebKit embedding exists
 | Engine | Windows | Linux | macOS |
 |---|---|---|---|
 | WebView2 (Blink) | native; frames by `Windows.Graphics.Capture`; released | n/a | n/a |
-| CEF (Blink) | released; hash-pinned download | layout checked against the linux64 archive, install never run; no release job, no pin | no `CefPlatform` entry (needs an app-bundle layout), no pin |
+| CEF (Blink) | released; hash-pinned download | layout checked against the linux64 archive, install never run; no release job, no pin | no `cef::pin` entry (needs an app-bundle layout), no pin |
 | Servo | released; hash-pinned download | not restricted by the app; not built or run here | not restricted by the app; not built or run here |
 | WebKit | WSL2 + Ubuntu + `xvfb-run`, TCP frames; the host is downloaded on demand (built in `release.yml` on `ubuntu-22.04`, pinned under `linux-x64`; built and pinned in a dry run, 2026-10-23, see Releases below) | the host builds (CI runs only the app's tests); the app starts it directly over loopback TCP (written 2026-10-23, run only as far as the pure launch tests) | none; the native engine there is WKWebView, a new host that needs off-screen frame capture (unspiked) |
 

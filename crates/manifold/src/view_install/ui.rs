@@ -89,7 +89,7 @@ impl crate::App {
         let configured = self.settings.value.cef_directory.as_deref().filter(|s| !s.trim().is_empty())?;
         let mut cache = self.view_ui.cef_dir_check.borrow_mut();
         if cache.as_ref().is_none_or(|(path, at, _)| path != configured || at.elapsed() > CEF_DIR_CHECK_TTL) {
-            let verdict = match crate::cef_pin::pin_for_platform() {
+            let verdict = match manifold_hosts::cef::pin(manifold_hosts::Os::here()) {
                 Some(pin) => validate_custom(Path::new(configured), pin),
                 None => Err(NO_PIN_REASON.to_string()),
             };

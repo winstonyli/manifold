@@ -128,8 +128,7 @@ fn the_marker_is_installed_for_the_pin_or_a_later_major_and_update_needed_otherw
 #[test]
 fn a_custom_directory_of_the_pins_major_or_later_validates_and_an_earlier_one_does_not() {
     let pin = Pin { version: V152, ..PIN };
-    let dir =
-        |tag: &str, version: &str| custom_dir(tag, Some(&crate::cef_platform::PLATFORM.archive_name(version)), true);
+    let dir = |tag: &str, version: &str| custom_dir(tag, Some(&archive_json_name(version)), true);
     let newer = dir("compat-c154", V154);
     assert_eq!(validate_custom(&newer, &pin), Ok(()));
     assert_eq!(newer_than_tested(&newer, &pin).as_deref(), Some("CEF 154.0.33 is newer than the tested 152.0.6"));
@@ -159,7 +158,12 @@ fn a_runtime_without_angle_dlls_counts_as_installed() {
 
 /// The pin of the platform the tests run on (Windows or Linux).
 fn cef_pin() -> &'static Pin {
-    crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests")
+    cef::pin(Os::here()).expect("a pin on a platform with tests")
+}
+
+/// The name a CEF archive's own `archive.json` carries for `version`.
+fn archive_json_name(version: &str) -> String {
+    format!("cef_binary_{version}_windows64_minimal.tar.bz2")
 }
 
 /// The runtime library's file name on this platform (`Host::runtime_lib`).
@@ -183,7 +187,7 @@ fn custom_dir(tag: &str, archive_name: Option<&str>, dll: bool) -> PathBuf {
 #[test]
 fn a_custom_directory_of_the_pinned_version_validates() {
     let pin = cef_pin();
-    let name = crate::cef_platform::PLATFORM.archive_name(pin.version);
+    let name = archive_json_name(pin.version);
     assert_eq!(validate_custom(&custom_dir("vc1", Some(&name), true), pin), Ok(()));
     // The pin's own sample: a name without the prefix or suffix still reads.
     assert_eq!(validate_custom(&custom_dir("vc1b", Some(pin.version), true), pin), Ok(()));
@@ -191,8 +195,7 @@ fn a_custom_directory_of_the_pinned_version_validates() {
 
 #[test]
 fn a_custom_directory_of_another_version_names_both() {
-    let dir =
-        custom_dir("vc2", Some(&crate::cef_platform::PLATFORM.archive_name("150.1.2+gabc+chromium-150.0.1")), true);
+    let dir = custom_dir("vc2", Some(&archive_json_name("150.1.2+gabc+chromium-150.0.1")), true);
     let err = validate_custom(&dir, cef_pin()).unwrap_err();
     assert!(err.contains("150.1.2+gabc+chromium-150.0.1"), "{err}");
     assert!(err.contains(cef_pin().version), "{err}");
@@ -202,7 +205,7 @@ fn a_custom_directory_of_another_version_names_both() {
 fn a_custom_directory_without_archive_json_or_libcef_is_refused() {
     let pin = cef_pin();
     assert!(validate_custom(&custom_dir("vc3", None, true), pin).unwrap_err().contains("archive.json"));
-    let name = crate::cef_platform::PLATFORM.archive_name(pin.version);
+    let name = archive_json_name(pin.version);
     assert!(validate_custom(&custom_dir("vc4", Some(&name), false), pin).unwrap_err().contains(lib()));
     assert!(validate_custom(&temp_dir("vc5").join("nope"), pin).is_err());
     let bad = custom_dir("vc6", None, true);
@@ -231,7 +234,7 @@ fn a_runtime_we_installed_validates_by_its_marker() {
 #[test]
 fn archive_json_outranks_the_marker() {
     let pin = cef_pin();
-    let other = crate::cef_platform::PLATFORM.archive_name("150.1.2+gabc+chromium-150.0.1");
+    let other = archive_json_name("150.1.2+gabc+chromium-150.0.1");
     let dir = custom_dir("vm4", Some(&other), true);
     std::fs::write(dir.join(MARKER), pin.version).unwrap();
     assert!(validate_custom(&dir, pin).unwrap_err().contains("150.1.2"));
@@ -243,7 +246,7 @@ fn archive_json_outranks_the_marker() {
 #[test]
 fn a_custom_directory_deleted_later_stops_being_custom() {
     let pin = cef_pin();
-    let dir = custom_dir("vc9", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
+    let dir = custom_dir("vc9", Some(&archive_json_name(pin.version)), true);
     let mut app = App::default();
     app.set_cef_directory(dir.to_str().unwrap());
     assert!(app.cef_dir_verdict().unwrap().1.is_ok());
@@ -259,7 +262,7 @@ fn a_custom_directory_deleted_later_stops_being_custom() {
 #[test]
 fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
     let pin = cef_pin();
-    let good = custom_dir("vc7", Some(&crate::cef_platform::PLATFORM.archive_name(pin.version)), true);
+    let good = custom_dir("vc7", Some(&archive_json_name(pin.version)), true);
     let mut app = App::default();
     app.set_cef_directory(good.to_str().unwrap());
     assert_eq!(
@@ -284,7 +287,7 @@ fn a_valid_custom_directory_makes_cef_custom_and_an_invalid_one_does_not() {
         ViewStatus::Unavailable(_)
     ));
 
-    let bad = custom_dir("vc8", Some(&crate::cef_platform::PLATFORM.archive_name("1.0")), true);
+    let bad = custom_dir("vc8", Some(&archive_json_name("1.0")), true);
     app.set_cef_directory(bad.to_str().unwrap());
     assert_eq!(app.custom_cef_dir(), None);
     assert!(app.cef_dir_verdict().unwrap().1.is_err(), "the page shows why");
@@ -631,8 +634,7 @@ fn unpack_keeps_runtime_files_and_drops_leftovers() {
     assert_eq!(std::fs::read(out.join("runtime.bin")).unwrap(), b"dll");
     assert_eq!(std::fs::read(out.join("resources.pak")).unwrap(), b"pak");
     assert!(!out.join("x.h").exists() && !out.join("include").exists());
-    // An import library is a Windows build leftover; elsewhere `.lib` is not special.
-    assert_eq!(!out.join("libcef.lib").exists(), !crate::cef_platform::PLATFORM.skip_suffixes.is_empty());
+    assert!(!out.join("libcef.lib").exists());
     assert_eq!(std::fs::read_to_string(out.join(MARKER)).unwrap(), "9.9");
 }
 
@@ -1092,18 +1094,6 @@ fn one_install_per_view_and_an_embedded_view_downloads_nothing() {
     );
 }
 
-#[test]
-fn the_pin_matches_the_cef_crates_version() {
-    let lock = include_str!("../../../../Cargo.lock");
-    let after = lock.split("name = \"cef\"").nth(1).expect("Cargo.lock has a cef package");
-    let line = after.lines().nth(1).expect("a version line follows the name");
-    let version = line.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')).expect("a version line");
-    // `152.1.0+152.0.6`: the crate's own version, then the CEF build it wraps.
-    let build = version.split_once('+').expect("the cef crate version names its CEF build").1;
-    let pinned = cef_pin().version;
-    assert_eq!(pinned.split('+').next(), Some(build), "the pin is not the CEF build the crate wraps: {pinned}");
-}
-
 /// Verifies and unpacks a real downloaded archive for this platform's pin, timing both:
 /// `MANIFOLD_CEF_ARCHIVE=<archive> MANIFOLD_CEF_UNPACK_TO=<new dir> cargo test -p manifold
 /// unpack_a_real_archive -- --ignored --nocapture`. Ignored: it needs the 172 MB (Windows) or 321 MB
@@ -1402,6 +1392,17 @@ fn missing_files_names_only_what_the_folder_lacks() {
     std::fs::write(dir.join("a.dll"), b"x").unwrap();
     assert_eq!(missing_files(&dir, &["a.dll", "b.dll"]), vec!["b.dll"]);
     assert!(missing_files(&dir, &["a.dll"]).is_empty());
+}
+
+#[test]
+fn a_library_is_missing_unless_the_listing_names_it() {
+    let listing = "2 libs found
+	libnss3.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libnss3.so
+	libnspr4.so.0 (libc6) => /x
+";
+    assert_eq!(missing_in_listing(listing, &["libnss3.so", "libnspr4.so"]), vec!["libnspr4.so"]);
+    assert!(missing_in_listing(listing, &["libnss3.so"]).is_empty());
+    assert_eq!(missing_in_listing("", &["libnss3.so"]), vec!["libnss3.so"]);
 }
 
 #[test]

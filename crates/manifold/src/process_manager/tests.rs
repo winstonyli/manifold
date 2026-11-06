@@ -498,7 +498,7 @@ fn servo_plan() -> Result<Plan, String> {
 }
 
 fn cef_plan() -> Result<Plan, String> {
-    let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+    let pin = manifold_hosts::cef::pin(manifold_hosts::Os::here()).expect("a pin on a platform with tests");
     Ok(Plan { host: &CEF_FILES, runtime: Some(pin.clone()) })
 }
 
@@ -876,7 +876,7 @@ fn the_platform_default_is_the_first_view_the_os_can_run() {
 #[test]
 fn cef_state_follows_disk_then_overrides() {
     use RuntimeOnDisk::{Missing, Ready, Stale};
-    let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+    let pin = manifold_hosts::cef::pin(manifold_hosts::Os::here()).expect("a pin on a platform with tests");
     let host = CEF_FILES[0].size;
     let plan = cef_plan();
     let a =
@@ -943,7 +943,7 @@ fn a_platform_without_a_pin_offers_no_install() {
 
 #[test]
 fn a_stale_marker_is_update_needed_not_a_spawn() {
-    let pin = crate::cef_pin::pin_for_platform().expect("a pin on a platform with tests");
+    let pin = manifold_hosts::cef::pin(manifold_hosts::Os::here()).expect("a pin on a platform with tests");
     let plan = cef_plan();
     let stale = cef_disk(RuntimeOnDisk::Ready, RuntimeOnDisk::Stale);
     let state = view_availability(ViewKind::Cef, &plan, stale, None, None, None);

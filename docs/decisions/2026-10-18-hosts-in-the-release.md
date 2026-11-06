@@ -10,7 +10,7 @@ their names, sizes and SHA-256 hashes (`manifold-vX.Y.Z-windows-x64.host-pins.js
 `MANIFOLD_HOST_PINS=<manifest>`. `build.rs` embeds the manifest and `host_pin.rs` parses it. A host's URL is its own
 release's: `releases/download/v<exe version>/<file>-<platform>`. The hash compiled into the exe stays the trust anchor,
 so an exe can only ever install the exact files its release was built with. The CEF runtime archive (`libcef`, from the
-Spotify CDN) is not our file and keeps its own pin, `cef_pin.rs`, set by `gate cef-pin`.
+Spotify CDN) is not our file and keeps its own pin, in `manifold-hosts`' `cef.rs`, set by `gate cef-pin`.
 
 Since the host table (2026-10-29, `docs/superpowers/specs/2026-10-29-host-table-design.md`, H5), `gate release-pins`
 writes the manifest from the table's downloadable hosts and `release.yml` calls it; the decision itself is unchanged.

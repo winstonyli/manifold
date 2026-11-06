@@ -484,7 +484,7 @@ impl App {
                 ui.add(egui::Label::new(egui::RichText::new(message).small().color(danger(ui.visuals()))).wrap());
             }
             Some((dir, Ok(()))) => {
-                let note = crate::cef_pin::pin_for_platform().and_then(|pin| {
+                let note = manifold_hosts::cef::pin(manifold_hosts::Os::here()).and_then(|pin| {
                     cached(ui.ctx(), ("cef_newer_than_tested", &dir), DISK_CACHE_AGE, || {
                         crate::view_install::state::newer_than_tested(&dir, pin)
                     })
