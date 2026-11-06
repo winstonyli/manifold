@@ -1,11 +1,14 @@
 //! The host table: one row per view host, saying what its exe is called, where a dev tree builds it, how a user
 //! gets it and what must sit beside it, with the file names and paths derived from that. It is the one copy of a
-//! host's layout for the app, its build script and the gate, so they cannot drift apart.
+//! host's layout for the app, its build script and the gate, so they cannot drift apart. `cef` adds what is true of
+//! CEF's own build per OS.
 //!
 //! `std` only, no dependencies (`tests/layout.rs` checks it) and no `cfg`: every answer that depends on the OS takes
 //! the OS manifold runs on (`running`) as an argument, so one test binary checks every OS's answers. A build script
 //! uses only `id`, `delivery` and `embed_var()`, never a method taking an OS: there `Os::here()` would be the build
 //! machine, not the target. Rows are compared by `id` (`Host` holds a `fn`, so it has no `PartialEq`).
+
+pub mod cef;
 
 use std::path::{Path, PathBuf};
 

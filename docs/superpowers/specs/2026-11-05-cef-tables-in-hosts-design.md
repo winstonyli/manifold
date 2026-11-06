@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # CEF's tables move into `manifold-hosts` (CRT5)

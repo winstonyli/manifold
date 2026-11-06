@@ -2,7 +2,7 @@
 //! and who may depend on the table. Plain substring matching on whole lines, leading whitespace trimmed and `#`
 //! comment lines skipped: the leaf has no TOML, YAML or regex parser.
 
-use manifold_hosts::{Delivery, Os, ALL};
+use manifold_hosts::{cef, Delivery, Os, ALL};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -141,4 +141,19 @@ fn only_the_app_and_the_gate_depend_on_the_table_and_it_on_nothing() {
         }
     }
     assert!(read_the_leaf, "crates/manifold-hosts/Cargo.toml was not read");
+}
+
+/// Every pin is the CEF build the `cef` crate wraps, so a crate bump cannot ship with the old runtime.
+#[test]
+fn the_pin_matches_the_cef_crates_version() {
+    let lock = read(&repo().join("Cargo.lock"));
+    let after = lock.split("name = \"cef\"").nth(1).expect("Cargo.lock has a cef package");
+    let line = after.lines().nth(1).expect("a version line follows the name");
+    let version = line.strip_prefix("version = \"").and_then(|v| v.strip_suffix('"')).expect("a version line");
+    // `152.1.0+152.0.6`: the crate's own version, then the CEF build it wraps.
+    let build = version.split_once('+').expect("the cef crate version names its CEF build").1;
+    for os in [Os::Windows, Os::Linux] {
+        let pinned = cef::pin(os).expect("a pin").version;
+        assert_eq!(pinned.split('+').next(), Some(build), "the {os:?} pin is not the build the crate wraps: {pinned}");
+    }
 }
