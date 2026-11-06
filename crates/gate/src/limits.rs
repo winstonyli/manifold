@@ -132,3 +132,20 @@ fn app_does_not_gain_loose_fields() {
     assert!(fields <= APP_FIELDS_MAX, "App has {fields} fields, cap {APP_FIELDS_MAX}: put new state in a group");
     assert!(fields == APP_FIELDS_MAX, "App shrank to {fields} fields: lower APP_FIELDS_MAX");
 }
+
+/// A panic guard in production code means a worker with its own queue: keyed background work goes through
+/// `worker::Pool`, which catches panics once for every job.
+#[test]
+fn catch_unwind_lives_only_in_the_worker_pool() {
+    let mut users = Vec::new();
+    for (path, source) in sources() {
+        if !path.starts_with("manifold/src/") {
+            continue;
+        }
+        let production = source.lines().take(measure(&source).0);
+        if production.filter(|l| !l.trim_start().starts_with("//")).any(|l| l.contains("catch_unwind(")) {
+            users.push(path);
+        }
+    }
+    assert_eq!(users, ["manifold/src/worker.rs"], "catch_unwind belongs to worker.rs alone");
+}
