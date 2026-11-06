@@ -203,9 +203,8 @@ impl ImagePayload {
 /// download and cache a real `pdfium.dll` before it can render anything at
 /// all), so `outcome` starts `None` (rendering in the
 /// background) and is filled in once `PdfRenderer::tick` reports a result
-/// for this node's own id, the same "spawn a thread, `mpsc` channel, main
-/// loop `tick()`s it" pattern `SuggestionFetcher`/`FaviconFetcher` already
-/// use. Only the first page is ever rendered -- no page-navigation UI yet,
+/// for this node's own id, on the same `worker::Pool` the other keyed
+/// fetchers use. Only the first page is ever rendered -- no page-navigation UI yet,
 /// same "start with the simplest useful slice" scope Notes' own initial cut
 /// had for its context menu/drag-into-group (both added in a later step).
 /// Persisted in the session store (`field::PATH`) as just the file
