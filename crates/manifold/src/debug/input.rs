@@ -31,11 +31,12 @@ impl App {
     /// view transition is running, the Graph camera isn't easing or gliding (only a frame that draws the Graph
     /// advances it, so in another view it is not waited on), no address-bar suggestion is on its way, egui did not
     /// ask for the next frame at once (`egui_wants_frame`: a fade, hover easing, smooth scroll or a popup still
-    /// sizing itself), and the focused tab (if any) isn't loading or waking. It must hold for `QUIET_FRAMES` frame
-    /// ends in a row (see `release_idle_waiters`).
+    /// sizing itself), and neither the focused tab nor the split's pane is loading, waking or short of its first frame.
+    /// It must hold for `QUIET_FRAMES` frame ends in a row (see `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
-        let loading = self.focused.as_ref().and_then(|id| self.nodes.get(id)).is_some_and(|n| {
-            n.as_tab().is_some_and(|t| t.loading) || n.as_unloaded().is_some_and(|t| t.state == UnloadedState::Waking)
+        let loading = [self.focused, self.split_tab].iter().flatten().filter_map(|id| self.nodes.get(id)).any(|n| {
+            n.as_tab().is_some_and(|t| t.loading || !t.tab.first_frame.framed())
+                || n.as_unloaded().is_some_and(|t| t.state == UnloadedState::Waking)
         });
         !self.debug_input_pending()
             && self.transition.is_none()
@@ -151,7 +152,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use crate::session_sync::tests::{add, sleeping_tab};
+    use crate::process_manager::ViewKind;
+    use crate::session_sync::tests::{add, live_tab, sleeping_tab};
     use crate::store::model::Kind;
     use crate::view_modes::ViewMode;
     use crate::App;
@@ -179,5 +181,19 @@ mod tests {
         assert!(app.debug_idle(), "asleep, nothing will wake it");
         app.wake_focused();
         assert!(!app.debug_idle(), "its engine is starting");
+    }
+
+    /// A pane with no frame yet draws its placeholder, and nothing asks for a frame while the engine paints
+    /// (`shots-aa`, 2026-11-06: `tabview-split` was shot with an empty pane once `SLEEP` stopped covering for it).
+    #[test]
+    fn a_split_pane_holds_idle_until_its_first_frame() {
+        let mut app = App::default();
+        let (id, _peer) = live_tab(&mut app, ViewKind::Webview2, "https://a/");
+        app.split_tab = Some(id);
+        assert!(!app.debug_idle(), "its page hasn't painted");
+        let now = std::time::Instant::now();
+        app.note_tab_frame(id, now);
+        app.sync_tab_visibility(false, now + std::time::Duration::from_secs(1));
+        assert!(app.debug_idle(), "its first frame settled");
     }
 }
