@@ -95,7 +95,7 @@ Adjusted: the seed assert at `main/tests.rs:300` goes (the line above it now ass
 
 Guard: `jar_snapshots`, `Snapshots` and `seed_clears` join the needles in `deleted_names.rs` (step 2). `APP_FIELDS_MAX` is lowered in step 1.
 
-End to end: `gate jar` (`crates/gate/src/jar.rs`) proves a first load stays logged in on real hosts. It is a stage of its own that `gate all` does not run, so it runs once at the end beside the `full` gate, not per step. Both passed at `d9486e44` (runs `2026-11-05-arc3-jar`, `2026-11-05-crt5-arc3-full`).
+End to end: `gate jar` (`crates/gate/src/jar.rs`) proves a first load stays logged in on real hosts. It was then a stage of its own that `gate all` did not run (`full` has run it since 2026-11-05), so it ran once at the end beside the `full` gate, not per step. Both passed at `d9486e44` (runs `2026-11-05-arc3-jar`, `2026-11-05-crt5-arc3-full`).
 
 ## Order of work
 

@@ -4,10 +4,11 @@
 //! uses an IP instead), not an IP, so a host-only cookie can be told apart from a domain cookie: after the CEF round trip
 //! the jar's sid must still be host-only (no dotted copy).
 //!
-//! `RUNS` (space separated; default all) picks from:
+//! `RUNS` (space separated; default all) picks from the list below, and `SKIP_RUNS` drops from what `RUNS` picked (`gate all`
+//! skips `cef`, so its `jar` step needs no CEF host and a run added here joins it unasked):
 //!
 //! - `login` `fresh` `cef` `webview2`: the login run and the three that follow it (they share state, so a subset of them
-//!   is not meaningful)
+//!   is not meaningful, except that `cef` can be left out)
 //! - `twotab`: whether two WebView2 InPrivate tabs (separate host processes) share cookies: tab B, seeded before tab A logs
 //!   in, asks `/whoami?b` after A's login. Informational, not pass/fail.
 //! - `reuse`, `ten`: WebView2 hosts take turns with a pool of profile names (manifold_0..7). `reuse`: a tab closed and
@@ -229,11 +230,12 @@ struct Probe {
     host: String,
     log: Log,
     runs: Vec<String>,
+    skip: Vec<String>,
 }
 
 impl Probe {
     fn wanted(&self, run: &str) -> bool {
-        self.runs.is_empty() || self.runs.iter().any(|r| r == run)
+        (self.runs.is_empty() || self.runs.iter().any(|r| r == run)) && !self.skip.iter().any(|r| r == run)
     }
 
     fn seen(&self) -> usize {
@@ -403,14 +405,17 @@ impl Probe {
         check_is("a reused profile name carried no cookies across runs", Some(false), f.map(|r| r.auth));
         self.rm_jars();
         fs::rename(&kept, self.jars_dir())?;
-        self.run("cef", "cef", "/whoami", |_, _| Ok(()))?;
-        self.jar_summary(&self.default_jar()?);
+        let engines: &[&str] = if self.wanted("cef") { &["cef", "webview2"] } else { &["webview2"] };
+        if self.wanted("cef") {
+            self.run("cef", "cef", "/whoami", |_, _| Ok(()))?;
+            self.jar_summary(&self.default_jar()?);
+        }
         self.run("webview2", "webview2", "/whoami", |_, _| Ok(()))?;
         println!("=== requests (engine path auth user cookie-names)");
         for r in self.since(0) {
             println!("{} {} auth={} {} names={}", r.engine, r.path, r.auth, r.user_field(), r.names);
         }
-        for engine in ["cef", "webview2"] {
+        for &engine in engines {
             let first = self.since(0).into_iter().find(|r| r.engine == engine && r.path == "/whoami");
             println!("{engine}: {}", first.as_ref().map_or("no request".to_owned(), |r| format!("auth={}", r.auth)));
             check_is(&format!("{engine}'s first /whoami was authenticated"), Some(true), first.map(|r| r.auth));
@@ -742,8 +747,9 @@ pub(crate) fn jar(ctx: &mut Ctx) -> io::Result<()> {
     // The home page is what NEWTAB opens: tab B of the two-tab run.
     let more = format!(", \"home_page\": \"{base}/whoami?b\", \"cef_directory\": \"{cef}\"");
     seed_settings(&profile, "webview2", &more).map_err(|e| io::Error::other(format!("settings: {e}")))?;
-    let runs = std::env::var("RUNS").unwrap_or_default().split_whitespace().map(str::to_owned).collect();
-    let p = Probe { exe: exe.to_path_buf(), work: work.to_path_buf(), profile, base, host, log, runs };
+    let words = |name| std::env::var(name).unwrap_or_default().split_whitespace().map(str::to_owned).collect();
+    let (runs, skip) = (words("RUNS"), words("SKIP_RUNS"));
+    let p = Probe { exe: exe.to_path_buf(), work: work.to_path_buf(), profile, base, host, log, runs, skip };
     let section = |name: &str| Section::start(name);
     if p.wanted("login") || p.wanted("fresh") || p.wanted("cef") || p.wanted("webview2") {
         let _t = section("jar-login");

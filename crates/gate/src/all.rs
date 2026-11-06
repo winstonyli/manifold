@@ -6,7 +6,7 @@
 //! mode that runs it.
 //! - `full` (default): `gate two` x3, then every step. For any change to sync, the store, the mirror, session
 //!   save/restore or the view hosts.
-//! - `light`: `two` once, and the steps from `light` up (`kill-check` and `shots-aa` are `full` only). For UI code that writes the
+//! - `light`: `two` once, and the steps from `light` up (`kill-check`, `jar` and `shots-aa` are `full` only). For UI code that writes the
 //!   store or reaches a view, and scripts. The repeats in `full` exist to catch flaky ordering in sync, which UI-only
 //!   changes cannot reach.
 //! - `ui`: `cargo test` of the four crates it names (`manifold`, `manifold-view-protocol`, `manifold-pages`,
@@ -246,6 +246,13 @@ const STEPS: &[Step] = &[
     step("layout", Mode::Ui),
     step("kill-check", Mode::Full),
     Step { stage: "kill-check", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("kill-check-cef", Mode::Full) },
+    Step { env: &[("SKIP_RUNS", "cef")], ..step("jar", Mode::Full) },
+    Step {
+        stage: "jar",
+        env: &[("RUNS", "login fresh cef webview2")],
+        engine: Some("cef"),
+        ..step("jar-cef", Mode::Full)
+    },
     step("shots-aa", Mode::Full),
 ];
 
@@ -382,14 +389,15 @@ mod tests {
         }
     }
 
-    /// Each mode runs its own steps and every smaller mode's: `light` adds the store's, `full` the kill check and the A/A of the shots.
+    /// Each mode runs its own steps and every smaller mode's: `light` adds the store's, `full` the kill check, the jar probe
+    /// and the A/A of the shots.
     #[test]
     fn a_mode_runs_the_steps_from_it_and_below() {
         let runs = |mode: Mode| STEPS.iter().filter(|s| s.from <= mode).count();
         let only = |mode: Mode| STEPS.iter().filter(|s| s.from == mode).map(|s| s.name).collect::<Vec<_>>();
-        assert_eq!(only(Mode::Full), ["kill-check", "kill-check-cef", "shots-aa"]);
+        assert_eq!(only(Mode::Full), ["kill-check", "kill-check-cef", "jar", "jar-cef", "shots-aa"]);
         assert_eq!(runs(Mode::Full), STEPS.len());
-        assert_eq!(runs(Mode::Light), STEPS.len() - 3);
+        assert_eq!(runs(Mode::Light), STEPS.len() - 5);
         assert_eq!(runs(Mode::Ui), only(Mode::Ui).len());
         assert_eq!(Mode::parse("light"), Some(Mode::Light));
         assert_eq!(Mode::parse("most"), None);
