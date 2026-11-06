@@ -620,7 +620,7 @@ pub(super) const VERBS: &[Verb] = &[
     }),
     // Replaces the `SLEEP 1` between `ADDRESSBAR` and `ENTER` (they land in one frame otherwise, Enter first) and the
     // `SLEEP 3` for a new tab's first load. A tab that hasn't reported its first load yet counts as not loading.
-    row("WAITIDLE [secs]", "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading (default 60 s max)", |rest| {
+    row("WAITIDLE [secs]", "Hold later commands until typed input has landed, no view transition runs and the focused tab isn't loading or waking (default 60 s max)", |rest| {
         wait_timeout(rest).map(|timeout| Parsed::Reader(ReaderOp::WaitIdle(timeout)))
     }),
     row("SUGGEST", "Toolbar's Suggest groups: cluster this level's cards by page text (read the offers in EXPORTSTATE `group_suggestions`)", |_| {
