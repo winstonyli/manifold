@@ -129,7 +129,7 @@ pub(crate) fn add(app: &mut App, kind: Kind, runtime: Runtime) -> NodeId {
 /// A group named `name` at the top level (`App::place_group`).
 pub(crate) fn add_group(app: &mut App, name: &str) -> NodeId {
     let id = app.alloc_node_id();
-    app.place_group(Some(id), name, crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO })
+    app.place_group(Some(id), name, crate::node_store::Placement { group: None, pos: egui::Vec2::ZERO })
 }
 
 /// Another replica sets one field of `node`.
@@ -199,7 +199,7 @@ fn json_on(path: &std::path::Path, name: &str) -> (App, NodeId) {
 /// A note placed at `pos` (top level), as `place_node` places every new node.
 fn a_note_at(app: &mut App, pos: egui::Vec2) -> NodeId {
     let note = Runtime::Note(NotePayload { text: "n".into(), editing: false });
-    app.place_node(None, Kind::Note, note, crate::fetched::Placement { group: None, pos })
+    app.place_node(None, Kind::Note, note, crate::node_store::Placement { group: None, pos })
 }
 
 /// What a drag does to the layout every frame (`card.rs`), then its release.
@@ -458,7 +458,7 @@ fn link_doc(nodes: Vec<crate::store::json::JsonNode>) -> JsonDoc {
 
 /// A jar card named `name` at the top level, off the origin (which reads as unplaced, `pos_of`).
 pub(crate) fn add_jar(app: &mut App, name: &str) -> NodeId {
-    app.create_jar(name, crate::fetched::Placement { group: None, pos: egui::vec2(40.0, 40.0) })
+    app.create_jar(name, crate::node_store::Placement { group: None, pos: egui::vec2(40.0, 40.0) })
 }
 
 /// The Default jar's id, making it first if the app has none (startup does this).

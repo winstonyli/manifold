@@ -121,7 +121,7 @@ fn closing_a_group_keeps_its_jar_and_a_tab_follows_it_back_on_reopen() {
     let mut app = app_on(&path, 1);
     app.ensure_default_jar();
     let group = add_group(&mut app, "G");
-    let at = crate::fetched::Placement { group: Some(group), pos: egui::vec2(40.0, 40.0) };
+    let at = crate::node_store::Placement { group: Some(group), pos: egui::vec2(40.0, 40.0) };
     let inside = app.create_jar("In", at);
     let outside = add_jar(&mut app, "Out");
     let tab = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
@@ -289,7 +289,7 @@ fn a_tab_on_a_closed_jar_uses_the_default_and_returns() {
     let mut app = app_on(&path, 1);
     app.ensure_default_jar();
     let default = app.default_jar().unwrap();
-    let work = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+    let work = app.create_jar("Work", crate::node_store::Placement { group: None, pos: egui::Vec2::ZERO });
     let tab = add(&mut app, Kind::Tab, crate::session_sync::tests::sleeping_tab("https://a.com/", "A"));
     app.set_jar_edge(tab, Some(work));
     assert!(app.save_session());

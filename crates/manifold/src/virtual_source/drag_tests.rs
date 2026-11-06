@@ -9,7 +9,7 @@ const ALL: &str = "application/vnd.manifold.virtual.fake-all";
 /// A rig with a stored group `g` right of the cards, the camera framing everything.
 fn rig_with_group(ty: &'static str) -> (Rig, NodeId) {
     let mut rig = Rig::with_kind(ty);
-    let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+    let placement = crate::node_store::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
     let group = crate::card_id::testutil::node(9);
     rig.app.place_group(Some(group), "G", placement);
     rig.app.camera.jump_to(egui::Rect::from_min_max(egui::pos2(-100.0, -100.0), egui::pos2(1100.0, 600.0)));

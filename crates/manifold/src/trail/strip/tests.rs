@@ -553,7 +553,7 @@ fn random_layout(rng: &mut Lcg) -> (Rig, std::collections::HashMap<CardId, Strin
             }
             2 => {
                 let title = format!("GROUP{n}");
-                let placement = crate::fetched::Placement { group: None, pos: at };
+                let placement = crate::node_store::Placement { group: None, pos: at };
                 (title.clone(), rig.app.place_group(None, &title, placement))
             }
             3 => {

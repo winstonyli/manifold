@@ -25,7 +25,7 @@ fn footprint(app: &mut App, others: &[NodeId]) -> String {
 #[test]
 fn every_write_entry_point_leaves_a_virtual_id_out_of_the_store_and_the_layout() {
     let mut rig = Rig::with_kind("application/vnd.manifold.virtual.fake-all");
-    let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+    let placement = crate::node_store::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
     let group = crate::card_id::testutil::node(9);
     rig.app.place_group(Some(group), "G", placement);
     let (virt, tab) = (fake::id('a'), rig.tab());

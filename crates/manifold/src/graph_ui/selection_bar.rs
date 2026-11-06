@@ -167,7 +167,7 @@ mod tests {
     /// The bar's Close names the cards that close with a selected group and are not selected themselves, at any depth.
     #[test]
     fn close_selected_counts_what_a_selected_group_takes_with_it() {
-        use crate::fetched::Placement;
+        use crate::node_store::Placement;
         let mut app = App::default();
         let top = Placement { group: None, pos: egui::Vec2::ZERO };
         use crate::card_id::testutil::node;

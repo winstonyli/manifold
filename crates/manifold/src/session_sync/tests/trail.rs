@@ -121,7 +121,7 @@ fn closing_keeps_links_to_the_root_and_across_nesting_and_deletes_a_blank_member
 fn closing_a_jar_keeps_it_for_reopen() {
     let path = temp_dir("jar-close").join("session.mnf");
     let mut app = app_on(&path, 1);
-    let jar = app.create_jar("Work", crate::fetched::Placement { group: None, pos: egui::vec2(5.0, 5.0) });
+    let jar = app.create_jar("Work", crate::node_store::Placement { group: None, pos: egui::vec2(5.0, 5.0) });
     assert!(app.save_session());
     app.close_node(jar);
     assert!(!app.nodes.contains_key(&jar) && app.jar_defs().is_empty());

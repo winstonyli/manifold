@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn the_hint_shows_on_every_empty_level_not_only_an_empty_graph() {
-        use crate::fetched::Placement;
+        use crate::node_store::Placement;
         let ctx = crate::theme::testutil::ctx(true);
         let (full, empty, n) = (node(1), node(2), node(3));
         let mut app = App::default();

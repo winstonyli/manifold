@@ -424,7 +424,7 @@ mod tests {
     #[test]
     fn level_items_list_the_current_level_bottom_first_in_draw_order() {
         let mut app = App::default();
-        app.place_group(Some(G), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.place_group(Some(G), "G", crate::node_store::Placement { group: None, pos: egui::Vec2::ZERO });
         app.insert_placeholder_node(D, egui::vec2(300.0, 0.0), Kind::Download, download("a.bin"));
         app.insert_placeholder_node(INNER, egui::vec2(0.0, 0.0), Kind::Download, download("b.bin"));
         app.edit_group(INNER, Some(G));
@@ -448,7 +448,7 @@ mod tests {
     #[test]
     fn level_scan_buckets_every_node_on_the_level_by_layer_in_node_order() {
         let mut app = App::default();
-        app.place_group(Some(G), "G", crate::fetched::Placement { group: None, pos: egui::Vec2::ZERO });
+        app.place_group(Some(G), "G", crate::node_store::Placement { group: None, pos: egui::Vec2::ZERO });
         app.insert_placeholder_node(D1, egui::Vec2::ZERO, Kind::Download, download("a.bin"));
         app.new_note_shortcut();
         app.insert_placeholder_node(D2, egui::Vec2::ZERO, Kind::Download, download("b.bin"));

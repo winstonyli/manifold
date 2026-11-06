@@ -53,7 +53,7 @@ impl App {
         let defaults: Vec<NodeId> = self.doc.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
         let Some((_, losers)) = defaults.split_first() else {
             let pos = crate::graph_ui::layout::GRAPH_WORLD_CENTER + crate::graph_ui::layout::named_jitter(DEFAULT_NAME);
-            let id = self.create_jar(DEFAULT_NAME, crate::fetched::Placement { group: None, pos });
+            let id = self.create_jar(DEFAULT_NAME, crate::node_store::Placement { group: None, pos });
             self.edit_field(id, field::IS_DEFAULT, FieldValue::Bool(true));
             return true;
         };
@@ -68,7 +68,7 @@ impl App {
     /// a colour shows the first, `jar_color`), so deleting a jar doesn't make the next one repeat a colour; with every
     /// colour taken, they cycle by count. A card placed at `at`; its fields go through `edit_field`, and the caller's
     /// `save_session` creates it.
-    pub(crate) fn create_jar(&mut self, name: &str, at: crate::fetched::Placement) -> NodeId {
+    pub(crate) fn create_jar(&mut self, name: &str, at: crate::node_store::Placement) -> NodeId {
         let defs = self.jar_defs();
         let color = crate::theme::free_tag_color(&defs.values().map(|d| d.color).collect::<Vec<_>>());
         let key = self.place_node(None, Kind::Jar, Runtime::Jar, at);
@@ -78,8 +78,8 @@ impl App {
     }
 
     /// Where a jar made for `tab` goes: its level (group), just above it.
-    pub(crate) fn jar_placement_beside(&self, tab: NodeId) -> crate::fetched::Placement {
-        crate::fetched::Placement {
+    pub(crate) fn jar_placement_beside(&self, tab: NodeId) -> crate::node_store::Placement {
+        crate::node_store::Placement {
             group: self.doc.mirror.group(tab),
             pos: self.layout_pos(tab) + egui::vec2(0.0, -80.0),
         }

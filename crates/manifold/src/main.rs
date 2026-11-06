@@ -88,6 +88,7 @@ use event_loop::UserEvent;
 use export::*;
 use fetched::*;
 use node_menu::*;
+use node_store::Placement;
 use session::sanitize_session_name;
 use tabs::{SpawnPurpose, SpawnTracker, TabCarry, TabSpawn, TabSpawnOutcome};
 use text::*;

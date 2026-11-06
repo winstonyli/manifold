@@ -31,7 +31,7 @@
 //! broken download's path (`retry_path`): restarted from 0 it overwrites that file; resumed from the bytes the engine
 //! kept (an HTTP/1.1 reply with an ETag and `Accept-Ranges`) it continues it (2026-10-28-dldir-result-etag), where
 //! Edge's own naming proposed `slow (1).zip` (2026-10-28-dldir-profile-etag). One path keeps one card: the app restarts
-//! the card of a download in flight under the same path (`fetched.rs` `insert_download_node`).
+//! the card of a download in flight under the same path (`node_store.rs` `insert_download_node`).
 //!
 //! The host holds each download's operation until it reports finished or failed. The retry reports its outcome only
 //! while held: dropped, it never did (runs 2026-10-27-download-host-events, 2026-10-28-dl-failed-red); held, it does

@@ -97,7 +97,7 @@ mod rig_tests {
     fn the_rigs_tab_is_the_tab_even_with_a_group_beside_it() {
         for _ in 0..40 {
             let mut rig = Rig::with_kind(FAKE);
-            let placement = crate::fetched::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
+            let placement = crate::node_store::Placement { group: None, pos: egui::vec2(700.0, 300.0) };
             let group = node(9);
             rig.app.place_group(Some(group), "G", placement);
             assert_ne!(rig.tab(), group);

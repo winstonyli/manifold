@@ -1121,7 +1121,7 @@ fn a_jar_is_a_card_that_round_trips_with_its_position_and_group() {
     let path = temp_dir("jar-card").join("session.mnf");
     let mut app = app_on(&path, 1);
     let group = add_group(&mut app, "G");
-    let at = crate::fetched::Placement { group: Some(group), pos: egui::vec2(120.0, -40.0) };
+    let at = crate::node_store::Placement { group: Some(group), pos: egui::vec2(120.0, -40.0) };
     let jar = app.create_jar("Work", at);
     assert!(app.save_session());
     // A tab too, so the restore is not a fresh start.

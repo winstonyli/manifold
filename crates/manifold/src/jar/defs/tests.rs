@@ -29,7 +29,7 @@ fn with_default() -> (App, NodeId) {
     (app, default)
 }
 fn jar_at(app: &mut App, name: &str, group: Option<NodeId>) -> NodeId {
-    let at = crate::fetched::Placement { group, pos: egui::Vec2::ZERO };
+    let at = crate::node_store::Placement { group, pos: egui::Vec2::ZERO };
     app.create_jar(name, at)
 }
 
