@@ -1,8 +1,8 @@
 //! Fetches (or, for a `file://` url, reads from disk) the bytes behind a
 //! tab whose page is content that becomes a node, or behind a node's
 //! source url (Refresh, a missing file). manifold fetches on its own,
-//! engine-agnostic, like `favicon_fetch`: a thread per running job (at most four), an `mpsc`
-//! channel, and a `tick()` each frame.
+//! engine-agnostic, like `favicon_fetch`: jobs run on a `worker::Pool` (at most four
+//! at once), and a `tick()` each frame collects what finished.
 //!
 //! The kind comes from `content::kind_of`, and the bytes must pass
 //! `content::passes` before anything is written: a server's claimed type
@@ -13,11 +13,10 @@
 
 use crate::content::{self, ContentKind};
 use crate::store::model::NodeId;
+use crate::worker::Pool;
 use crate::WebBody;
-use std::collections::HashSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::Duration;
 
 /// What a finished fetch is for.
@@ -36,76 +35,39 @@ pub struct FetchJob {
     pub kind: ContentKind,
 }
 
-pub struct FetchResult {
-    pub job: FetchJob,
-    /// `None`: the fetch failed or the bytes failed their check.
-    pub body: Option<WebBody>,
-}
-
-/// Fetches running at once; the rest wait in `throttle`. A pasted or restored session can name dozens
+/// Fetches running at once; the rest wait in the pool. A pasted or restored session can name dozens
 /// of large files, and each running fetch holds its whole body (up to 100 MB) in memory.
 const MAX_REDIRECT_FETCHES: usize = 4;
 
 pub struct RedirectFetcher {
-    dir: Option<PathBuf>,
-    tx: mpsc::Sender<FetchResult>,
-    rx: mpsc::Receiver<FetchResult>,
-    /// Nodes with a fetch running or waiting: a second Refresh (or a Retry racing a
-    /// restore-time refetch) is dropped instead of writing the same file.
-    in_flight: HashSet<NodeId>,
-    /// Jobs beyond `MAX_REDIRECT_FETCHES` wait here.
-    throttle: crate::net::Throttle<FetchJob>,
-    /// `fetch`; tests swap in a stub.
-    fetch: fn(&Path, NodeId, &str, ContentKind) -> Option<WebBody>,
+    /// Keyed by `job.node_id`, so a second Refresh (or a Retry racing a restore-time refetch) is dropped
+    /// instead of writing the same file; a result of `None` is a failed fetch.
+    pool: Pool<NodeId, FetchJob, Option<WebBody>>,
 }
 
 impl RedirectFetcher {
     /// `dir` is `profile::content_dir()`; `None` (tests) fails every fetch.
-    pub fn new(dir: Option<PathBuf>) -> Self {
-        let (tx, rx) = mpsc::channel();
-        let throttle = crate::net::Throttle::new(MAX_REDIRECT_FETCHES);
-        Self { dir, tx, rx, in_flight: HashSet::new(), throttle, fetch }
+    /// `fetch` is `redirect_fetch::fetch` in `Workers::new`; tests swap in a stub.
+    pub fn new(dir: Option<PathBuf>, fetch: fn(&Path, NodeId, &str, ContentKind) -> Option<WebBody>) -> Self {
+        let pool = Pool::new(MAX_REDIRECT_FETCHES, move |job: &FetchJob| {
+            dir.as_deref().and_then(|d| fetch(d, job.node_id, &job.url, job.kind))
+        });
+        Self { pool }
     }
 
     /// Fetches `job.url` on a background thread, or queues it behind `MAX_REDIRECT_FETCHES` running
     /// ones. `false` (and nothing done) when `job.node_id` is already being fetched or waiting.
-    pub fn request(&mut self, job: FetchJob) -> bool {
-        if !self.in_flight.insert(job.node_id) {
-            return false;
-        }
-        if let Some(job) = self.throttle.admit(job) {
-            self.start(job);
-        }
-        true
+    pub fn request(&self, job: FetchJob) -> bool {
+        self.pool.request(job.node_id, job)
     }
 
-    fn start(&self, job: FetchJob) {
-        let (tx, dir, fetch) = (self.tx.clone(), self.dir.clone(), self.fetch);
-        std::thread::spawn(move || {
-            // A panic still reports (as a failure), so `tick` frees the node and the slot;
-            // the panic hook has already printed it.
-            let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                dir.as_deref().and_then(|d| fetch(d, job.node_id, &job.url, job.kind))
-            }))
-            .unwrap_or(None);
-            let _ = tx.send(FetchResult { job, body });
-        });
-    }
-
-    /// Call once per frame. `body: None` means the fetch failed (a network
-    /// error, or bytes that don't actually pass `content::passes` despite
-    /// the engine's own `document.contentType` check) -- the tab is just
+    /// Call once per frame. A `None` body means the fetch failed (a network
+    /// error, bytes that don't actually pass `content::passes` despite
+    /// the engine's own `document.contentType` check, or a panic) -- the tab is just
     /// left as an ordinary tab in that case, still showing whichever
     /// native viewer page the engine itself rendered for it.
-    pub fn tick(&mut self) -> Vec<FetchResult> {
-        let results: Vec<FetchResult> = self.rx.try_iter().collect();
-        for r in &results {
-            self.in_flight.remove(&r.job.node_id);
-            if let Some(next) = self.throttle.finish() {
-                self.start(next);
-            }
-        }
-        results
+    pub fn tick(&self) -> Vec<(FetchJob, Option<WebBody>)> {
+        self.pool.tick().into_iter().map(|(_, job, body)| (job, body.flatten())).collect()
     }
 }
 
@@ -204,59 +166,6 @@ mod tests {
     use crate::content::{path_file_url, ContentKind};
     use crate::WebBody;
 
-    static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    static PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    static RELEASE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    /// A stub fetch that counts how many run at once and holds until released.
-    fn gated_fetch(_: &Path, _: NodeId, _: &str, _: ContentKind) -> Option<WebBody> {
-        use std::sync::atomic::Ordering::SeqCst;
-        let now = RUNNING.fetch_add(1, SeqCst) + 1;
-        PEAK.fetch_max(now, SeqCst);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !RELEASE.load(SeqCst) && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        RUNNING.fetch_sub(1, SeqCst);
-        None
-    }
-
-    #[test]
-    fn at_most_four_redirect_fetches_run_at_once() {
-        use std::sync::atomic::Ordering::SeqCst;
-        RUNNING.store(0, SeqCst);
-        PEAK.store(0, SeqCst);
-        RELEASE.store(false, SeqCst);
-        let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_cap")));
-        fetcher.fetch = gated_fetch;
-        for n in 0..10u64 {
-            let job = FetchJob {
-                target: FetchTarget::Node(node(n)),
-                node_id: node(n),
-                url: "https://example.invalid/x.pdf".into(),
-                kind: ContentKind::Pdf,
-            };
-            assert!(fetcher.request(job));
-        }
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while RUNNING.load(SeqCst) < MAX_REDIRECT_FETCHES && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        // An absence cannot be waited for: give any extra thread 100 ms to show itself. Before the
-        // cap all ten start within a millisecond or two.
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(PEAK.load(SeqCst), MAX_REDIRECT_FETCHES, "no fifth fetch started while four were held");
-        RELEASE.store(true, SeqCst);
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut done = 0;
-        while done < 10 && std::time::Instant::now() < deadline {
-            done += fetcher.tick().len();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(done, 10, "every queued job eventually ran and reported");
-        assert_eq!(PEAK.load(SeqCst), MAX_REDIRECT_FETCHES);
-    }
-
     #[test]
     fn saves_checked_content_by_node_id() {
         let dir = crate::store::testutil::temp_dir("redirect_save");
@@ -310,7 +219,7 @@ mod tests {
     #[test]
     fn a_second_request_for_a_node_in_flight_is_dropped() {
         // `None`: every fetch fails at once, without the network.
-        let mut fetcher = RedirectFetcher::new(None);
+        let fetcher = RedirectFetcher::new(None, fetch);
         let job = || FetchJob {
             target: FetchTarget::Node(node(1)),
             node_id: node(1),
@@ -329,12 +238,12 @@ mod tests {
         assert!(fetcher.request(job()), "free again once its result is ticked");
     }
 
-    /// A fetch that panics still reports (as a failure) and frees its node:
+    /// A fetch that panics still reports (as a failure, with its job) and frees its node:
     /// otherwise Refresh and Retry would be dead for it until a restart.
     #[test]
     fn a_panicking_fetch_still_frees_its_node() {
-        let mut fetcher = RedirectFetcher::new(Some(crate::store::testutil::temp_dir("redirect_panic")));
-        fetcher.fetch = |_, _, _, _| panic!("stub fetch panics (expected in this test)");
+        let dir = Some(crate::store::testutil::temp_dir("redirect_panic"));
+        let fetcher = RedirectFetcher::new(dir, |_, _, _, _| panic!("stub fetch panics (expected in this test)"));
         let job = || FetchJob {
             target: FetchTarget::Node(node(2)),
             node_id: node(2),
@@ -342,13 +251,12 @@ mod tests {
             kind: ContentKind::Pdf,
         };
         assert!(fetcher.request(job()));
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut results = Vec::new();
-        while results.is_empty() && std::time::Instant::now() < deadline {
-            results.extend(fetcher.tick());
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        assert!(matches!(results.as_slice(), [FetchResult { body: None, .. }]), "reported as a failure");
+        fetcher.pool.wait_for_threads(0);
+        let results = fetcher.tick();
+        assert!(
+            matches!(results.as_slice(), [(job, None)] if job.node_id == node(2)),
+            "reported as a failure, carrying its job"
+        );
         assert!(fetcher.request(job()), "the node is free again");
     }
 }

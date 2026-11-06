@@ -9,11 +9,11 @@
 //! rendering a given tab, gets identical behavior across all four --
 //! including Servo, which never had *any* favicon support before this.
 //!
-//! Same "just spawn a thread" pattern `SuggestionFetcher` already uses for
-//! its own network fetch (`manifold` has no async runtime) -- keyed by
-//! origin rather than per-request generation, since a favicon fetch has no
-//! notion of "stale" the way a debounced search query does: whichever
-//! result for a given origin arrives is just as valid whenever it lands.
+//! The queueing, the cap of four and the panic guard are `worker::Pool`'s
+//! (`manifold` has no async runtime) -- keyed by origin rather than
+//! per-request generation, since a favicon fetch has no notion of "stale"
+//! the way a debounced search query does: whichever result for a given
+//! origin arrives is just as valid whenever it lands.
 //!
 //! Each fetched favicon is also kept on disk (`profile::favicon_cache_dir`),
 //! one PNG per origin, so a launch shows the favicons of sleeping tabs
@@ -23,9 +23,8 @@
 //! fetch isn't recorded, so an origin without a favicon is tried once per
 //! launch, as before.
 
-use std::collections::HashSet;
+use crate::worker::Pool;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 /// How long a cached favicon is used without asking its origin again.
@@ -41,90 +40,53 @@ pub struct FaviconImage {
     pub height: u32,
 }
 
-/// Favicon fetches running at once; the rest wait in `throttle`. A restored
+/// Favicon fetches running at once; the rest wait in the pool. A restored
 /// session can name dozens of origins at the same moment.
 const MAX_FAVICON_FETCHES: usize = 4;
 
-/// Fetches and decodes favicons on background threads, deduplicating
+/// Fetches and decodes favicons on a `worker::Pool`, deduplicating
 /// concurrent requests for the same origin (two tabs navigating to the same
 /// site around the same time shouldn't fire two redundant HTTP requests).
 /// Which origins already resolved this launch is `Workers::favicon_resolved`'s
 /// job; this type knows only the requests in flight, and the disk cache.
 pub struct FaviconFetcher {
-    tx: mpsc::Sender<(String, Option<FaviconImage>)>,
-    rx: mpsc::Receiver<(String, Option<FaviconImage>)>,
-    /// Origins running or waiting.
-    in_flight: HashSet<String>,
-    /// Origins beyond `MAX_FAVICON_FETCHES` wait here.
-    throttle: crate::net::Throttle<String>,
-    cache_dir: Option<PathBuf>,
-    /// `fetch_favicon`; tests swap in a stub so no request leaves the machine.
-    fetch: fn(&str) -> Option<FaviconImage>,
+    /// Keyed and jobbed by origin; a result of `None` is no favicon.
+    pool: Pool<String, String, Option<FaviconImage>>,
 }
 
 impl FaviconFetcher {
     /// `cache_dir` is where favicons persist between launches (`None`: in
     /// memory only). Pruning it runs on its own thread.
-    pub fn new(cache_dir: Option<PathBuf>) -> Self {
-        let (tx, rx) = mpsc::channel();
+    /// `fetch` is the network fetch: `Workers::new` passes `fetch_favicon`, tests a stub so no
+    /// request leaves the machine.
+    pub fn new(cache_dir: Option<PathBuf>, fetch: fn(&str) -> Option<FaviconImage>) -> Self {
         if let Some(dir) = cache_dir.clone() {
             std::thread::spawn(move || prune_cache(&dir, CACHE_PRUNE));
         }
-        Self {
-            tx,
-            rx,
-            in_flight: HashSet::new(),
-            throttle: crate::net::Throttle::new(MAX_FAVICON_FETCHES),
-            cache_dir,
-            fetch: fetch_favicon,
-        }
+        let pool = Pool::new(MAX_FAVICON_FETCHES, move |origin: &String| match &cache_dir {
+            Some(dir) => cached_or_fetched(dir, origin, fetch),
+            None => fetch(origin),
+        });
+        Self { pool }
     }
 
     /// Requests `origin`'s favicon if it isn't already being fetched: it
     /// starts at once while fewer than `MAX_FAVICON_FETCHES` run, and waits
-    /// in the throttle otherwise. A no-op if this origin is already running
+    /// in the pool otherwise. A no-op if this origin is already running
     /// or waiting -- the caller is expected to have already checked its own
     /// cache for a previously-*completed* fetch (this only dedupes
     /// concurrent ones).
-    pub fn request(&mut self, origin: String) {
-        if !self.in_flight.insert(origin.clone()) {
-            return;
-        }
-        if let Some(origin) = self.throttle.admit(origin) {
-            self.start(origin);
-        }
-    }
-
-    fn start(&self, origin: String) {
-        let (tx, cache_dir, fetch) = (self.tx.clone(), self.cache_dir.clone(), self.fetch);
-        std::thread::spawn(move || {
-            // A panic still reports (as no favicon), so `tick` frees the
-            // slot; the panic hook has already printed it.
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match &cache_dir {
-                Some(dir) => cached_or_fetched(dir, &origin, fetch),
-                None => fetch(&origin),
-            }))
-            .unwrap_or(None);
-            let _ = tx.send((origin, result));
-        });
+    pub fn request(&self, origin: String) {
+        self.pool.request(origin.clone(), origin);
     }
 
     /// Call once per frame. Returns every fetch that completed since the
     /// last call -- `None` for the image means the fetch failed (no
-    /// favicon at that origin, a network error, or undecodable bytes);
-    /// the caller should still remember that as a negative result so it
-    /// doesn't keep retrying the same origin every navigation. Waiting
-    /// origins start here as slots free up.
-    pub fn tick(&mut self) -> Vec<(String, Option<FaviconImage>)> {
-        let mut results = Vec::new();
-        while let Ok((origin, result)) = self.rx.try_recv() {
-            self.in_flight.remove(&origin);
-            if let Some(next) = self.throttle.finish() {
-                self.start(next);
-            }
-            results.push((origin, result));
-        }
-        results
+    /// favicon at that origin, a network error, undecodable bytes, or a
+    /// panic); the caller should still remember that as a negative result so
+    /// it doesn't keep retrying the same origin every navigation.
+    pub fn tick(&self) -> Vec<(String, Option<FaviconImage>)> {
+        self.pool.tick().into_iter().map(|(origin, _, image)| (origin, image.flatten())).collect()
     }
 }
 
@@ -137,7 +99,7 @@ impl FaviconFetcher {
 /// The size and timeout caps are safety nets against a misbehaving server;
 /// a favicon is small. A missing favicon is the common case, so a failure
 /// isn't logged.
-fn fetch_favicon(origin: &str) -> Option<FaviconImage> {
+pub(crate) fn fetch_favicon(origin: &str) -> Option<FaviconImage> {
     let url = format!("{origin}/favicon.ico");
     let budget = crate::net::Budget {
         connect: Duration::from_secs(3),
@@ -260,44 +222,25 @@ mod tests {
         assert_ne!(cache_file_name("https://a:1"), cache_file_name("https://a_1"));
     }
 
+    /// The pool reports a panic as `None`; the fetcher reads it as "no favicon" for that origin.
     #[test]
-    fn at_most_four_favicon_fetches_run_at_once() {
-        let mut fetcher = FaviconFetcher::new(None);
-        fetcher.fetch = |_| None;
-        for n in 0..6 {
-            fetcher.request(format!("https://o{n}.example"));
-        }
-        fetcher.request("https://o5.example".into());
-        assert_eq!(
-            (fetcher.throttle.running(), fetcher.throttle.waiting()),
-            (MAX_FAVICON_FETCHES, 2),
-            "a queued origin isn't queued twice"
-        );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut done = Vec::new();
-        while done.len() < 6 && std::time::Instant::now() < deadline {
-            done.extend(fetcher.tick().into_iter().map(|(origin, _)| origin));
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        done.sort();
-        assert_eq!(done, (0..6).map(|n| format!("https://o{n}.example")).collect::<Vec<_>>());
+    fn a_panicking_fetch_is_no_favicon() {
+        let fetcher = FaviconFetcher::new(None, |_| panic!("stub fetch panics (expected in this test)"));
+        fetcher.request("https://p.example".into());
+        fetcher.pool.wait_for_threads(0);
+        let done = fetcher.tick();
+        assert!(matches!(done.as_slice(), [(origin, None)] if origin == "https://p.example"));
+        assert_eq!(fetcher.pool.pending(), 0, "the origin is free again");
     }
 
-    /// A fetch that panics still reports and gives its slot back: otherwise
-    /// four such origins would stop every later favicon until a restart.
+    /// Queued origins start as threads free up, with no `tick` to start them.
     #[test]
-    fn a_panicking_fetch_gives_its_slot_back() {
-        let mut fetcher = FaviconFetcher::new(None);
-        fetcher.fetch = |_| panic!("stub fetch panics (expected in this test)");
-        fetcher.request("https://p.example".into());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut done = Vec::new();
-        while done.is_empty() && std::time::Instant::now() < deadline {
-            done.extend(fetcher.tick());
-            std::thread::sleep(std::time::Duration::from_millis(5));
+    fn favicons_past_the_cap_finish_without_a_tick() {
+        let fetcher = FaviconFetcher::new(None, |_| None);
+        for n in 0..MAX_FAVICON_FETCHES + 3 {
+            fetcher.request(format!("https://{n}.test"));
         }
-        assert!(matches!(done.as_slice(), [(origin, None)] if origin == "https://p.example"));
-        assert!(fetcher.in_flight.is_empty(), "the slot is free again");
-        assert_eq!(fetcher.throttle.running(), 0);
+        fetcher.pool.wait_for_threads(0);
+        assert_eq!(fetcher.tick().len(), MAX_FAVICON_FETCHES + 3);
     }
 }

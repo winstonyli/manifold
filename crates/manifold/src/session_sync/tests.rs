@@ -2,7 +2,7 @@ use super::writes::keep_trail;
 use super::*;
 use crate::card_id::testutil::node;
 use crate::local_state::{LiveUrl, LocalState};
-use crate::redirect_fetch::{FetchResult, FetchTarget};
+use crate::redirect_fetch::{FetchJob, FetchTarget};
 use crate::store::journal::Journal;
 use crate::store::json::JsonDoc;
 use crate::store::model::ActorId;
@@ -26,7 +26,7 @@ mod writes;
 
 /// Waits up to ~1 s for `app.workers.redirect_fetcher` to report something.
 /// Under test (no content dir) every fetch fails at once.
-fn drain_fetches(app: &mut App) -> Vec<FetchResult> {
+fn drain_fetches(app: &mut App) -> Vec<(FetchJob, Option<crate::WebBody>)> {
     for _ in 0..200 {
         let results = app.workers.redirect_fetcher.tick();
         if !results.is_empty() {

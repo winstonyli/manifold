@@ -102,7 +102,7 @@ use favicon_fetch::FaviconFetcher;
 use image_decode::ImageDecoder;
 use omnibar::{Host, OmniBar};
 use pdf::render::PdfRenderer;
-use redirect_fetch::{FetchJob, FetchResult, FetchTarget, RedirectFetcher};
+use redirect_fetch::{FetchJob, FetchTarget, RedirectFetcher};
 use suggestions::{looks_like_url, resolve_navigation_url, SuggestionFetcher};
 
 use card::*;

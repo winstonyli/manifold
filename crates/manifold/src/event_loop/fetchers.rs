@@ -1,4 +1,5 @@
-//! The per-tick glue between the event loop and the fetchers: tab events, the idle sweep and image decodes.
+//! The per-tick glue between the event loop and the fetchers: tab events, the idle sweep and image decodes. The
+//! fetchers run their jobs on `worker::Pool`s by themselves; `tick_fetchers` only collects what finished.
 
 use super::*;
 
@@ -29,10 +30,10 @@ pub(crate) struct Workers {
 impl Workers {
     pub(crate) fn new(favicon_dir: Option<std::path::PathBuf>, content_dir: Option<std::path::PathBuf>) -> Self {
         Self {
-            favicon_fetcher: FaviconFetcher::new(favicon_dir),
+            favicon_fetcher: FaviconFetcher::new(favicon_dir, crate::favicon_fetch::fetch_favicon),
             pdf_renderer: PdfRenderer::new(crate::pdf::render::render),
             image_decoder: ImageDecoder::new(crate::image_decode::decode),
-            redirect_fetcher: RedirectFetcher::new(content_dir),
+            redirect_fetcher: RedirectFetcher::new(content_dir, crate::redirect_fetch::fetch),
             favicon_resolved: HashSet::new(),
         }
     }
@@ -170,7 +171,7 @@ impl App {
             }
         }
 
-        for FetchResult { job, body } in self.workers.redirect_fetcher.tick() {
+        for (job, body) in self.workers.redirect_fetcher.tick() {
             let Some(body) = body else {
                 // A tab whose fetch failed just stays an ordinary tab (see
                 // `RedirectFetcher::tick`'s own doc comment) -- silent by

@@ -59,7 +59,7 @@ fn a_failed_refetch_of_a_missing_file_shows_the_missing_file_card() {
         assert!(!more.is_empty(), "every missing file was refetched");
         results.extend(more);
     }
-    for FetchResult { job, body } in results {
+    for (job, body) in results {
         assert!(body.is_none());
         let FetchTarget::Node(node) = &job.target else { panic!("a node refetch") };
         app.refresh_fetch_failed(*node);
@@ -97,7 +97,7 @@ fn retry_missing_file_refetches_a_node_with_a_url_instead_of_retrying_its_local_
     app.retry_missing_file(node_id);
     let results = drain_fetches(&mut app);
     assert_eq!(results.len(), 1, "the URL branch queued exactly one fetch");
-    assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
+    assert!(matches!(&results[0].0.target, FetchTarget::Node(n) if *n == node_id));
 }
 
 #[test]

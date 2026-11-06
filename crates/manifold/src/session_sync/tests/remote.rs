@@ -136,8 +136,8 @@ fn a_missing_content_file_with_a_known_url_becomes_a_placeholder_that_refetches(
     assert!(app.toasts.save_toast_queue.is_empty() && app.toasts.save_toast.is_none(), "no 'Couldn't open' toast");
     let results = drain_fetches(&mut app);
     assert_eq!(results.len(), 1, "materialize's own refresh_node queued exactly one fetch");
-    assert!(matches!(&results[0].job.target, FetchTarget::Node(n) if *n == node_id));
-    assert!(results[0].body.is_none(), "no content dir under test, so the fetch itself fails");
+    assert!(matches!(&results[0].0.target, FetchTarget::Node(n) if *n == node_id));
+    assert!(results[0].1.is_none(), "no content dir under test, so the fetch itself fails");
 }
 
 #[test]
