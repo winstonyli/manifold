@@ -338,6 +338,7 @@ impl App {
             "toast": self.toasts.save_toast.as_ref().map(|(message, _)| message).or(self.toasts.save_toast_queue.front()),
             "view_kinds": self.view_kinds_state(),
             "window": [window.width(), window.height()],
+            "find_result": self.find.result,
             "popups": self.popups_state(),
             // The theme colors the gate checks on screen, as [r, g, b]: the gate reads them here, not from its own copy.
             "theme": {"danger": crate::theme::rgb(crate::theme::danger(&visuals)), "accent": crate::theme::rgb(crate::theme::accent(&visuals))},

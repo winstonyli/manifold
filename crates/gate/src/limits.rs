@@ -14,7 +14,7 @@ const APP_FIELDS_MAX: usize = 60;
 
 /// Files over `PROD_LIMIT` today: path under `crates/` and the prod line count the file may not exceed.
 const PROD_ALLOWED: &[(&str, usize)] = &[
-    ("gate/src/shots.rs", 1776),
+    ("gate/src/shots.rs", 1664),
     ("manifold/src/card.rs", 1662),
     ("manifold/src/gpu.rs", 1542),
     ("manifold/src/store/journal.rs", 1492),
@@ -119,6 +119,16 @@ fn inline_test_blocks_stay_under_the_split_threshold() {
     let measured: Vec<(String, usize)> = sources().into_iter().map(|(p, s)| (p, measure(&s).1)).collect();
     let problems = ratchet("test block", TEST_BLOCK_LIMIT, TEST_ALLOWED, &measured);
     assert!(problems.is_empty(), "{problems:#?}");
+}
+
+/// A shot waits for what it shows. A sleep is long enough on the machine it was tuned on and races on a busier one, and
+/// it cost `chrome-shots` over half its time.
+#[test]
+fn shots_do_not_wait_on_the_clock() {
+    let is_shots = |path: &str| path == "gate/src/shots.rs" || path.starts_with("gate/src/shots/");
+    let sleepers: Vec<String> =
+        sources().into_iter().filter(|(p, s)| is_shots(p) && s.contains("\"SLEEP ")).map(|(p, _)| p).collect();
+    assert!(sleepers.is_empty(), "{sleepers:?} send SLEEP: wait on a state instead (`Shots::await_state`)");
 }
 
 #[test]

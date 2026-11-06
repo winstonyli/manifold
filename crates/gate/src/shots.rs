@@ -10,7 +10,7 @@
 //! - `sheet.png`: every view in one grid
 //!
 //! Each view starts from Graph view at the top level and leaves the app there, so `VIEWS` picks any subset and a run is
-//! about 40 s. `SIZE` (`"1280 800"`) is the window size; the clicks on fixed coordinates (card positions on the
+//! about 2 to 4 min. `SIZE` (`"1280 800"`) is the window size; the clicks on fixed coordinates (card positions on the
 //! canvas, parking the pointer) assume the default. Chrome controls (toolbar buttons, the search field, the Tab actions
 //! popup's rows) are clicked or hovered by the name `EXPORTSTATE`'s `controls` lists (`crate::state`), wherever the
 //! toolbar puts them; a name that is not on screen fails the view, naming it. The default views are `DEFAULT_VIEWS`;
@@ -46,21 +46,20 @@
 //! possible: headless mode's caret doesn't blink, the download server keeps one port (`shots_net`; a busy port is
 //! logged, and then the two download views won't match), and the address bar's suggestions come from the local
 //! `suggest::Server`. Later runs showed two more: a view's toast outlived it and showed in the next view's shot or not
-//! by timing (`reset` sends `CLEARTOASTS`), and the graph layout summed forces in an order set by each launch's random
+//! by timing (`shot` drops toasts, `toast_shot` waits for its own), and the graph layout summed forces in an order set by each launch's random
 //! actor, so cards settled a ulp apart (`graph_ui::layout::ExactSum`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use manifold_hosts::{cef, Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
-use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
+use crate::instance::{seed_settings, Instance};
 use crate::probes::{import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
-use crate::shots_net::{resume_body, Downloads, Proxy};
+use crate::shots_net::{resume_body, Downloads};
 use crate::state::{
     bar_stops, round_i, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH, SPLIT_VIEW,
     TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
@@ -70,10 +69,6 @@ use crate::windows_main::Ctx;
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
 const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts quickswitch settings tabview";
-/// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
-fn fake_cef_host() -> (String, u64, &'static str) {
-    (CEF.file_name(Os::here()), 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c")
-}
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
 /// The settings page's pickers, by the labels of their rows (`labelled_by`).
@@ -217,6 +212,8 @@ macro_rules! send {
     ($s:expr, $($c:expr),+ $(,)?) => { $s.send_all(&[$($c.to_string()),+]) };
 }
 
+mod engine_states;
+
 impl Shots {
     fn start(exe: &Path, work: &Path, cfg: Config) -> io::Result<Shots> {
         fs::create_dir_all(work)?;
@@ -351,10 +348,33 @@ impl Shots {
             .ok_or_else(|| io::Error::other(format!("no top-level card of type {ty}")))
     }
 
-    /// Waits for the app to be idle: SLEEP draws no frames, and the camera eases after entering a level, so a
-    /// fixed sleep can shoot mid-ease.
+    /// Waits for the tabs to be up and the app idle. Nothing here waits on the clock: a sleep long enough on a quiet
+    /// machine is too short on a busy one, and `limits` fails on one.
     fn settle(&mut self) -> io::Result<()> {
-        self.inst.send("WAITIDLE")
+        self.inst.settle()
+    }
+
+    /// Exports until `want` holds, or fails naming `what` (a state only the engine or egui's clock brings, which idle
+    /// doesn't wait for).
+    fn await_state(&mut self, what: &str, mut want: impl FnMut(&State) -> bool) -> io::Result<()> {
+        let state = self.inst.export_until("await", &mut want)?;
+        if want(&state) {
+            return Ok(());
+        }
+        Err(io::Error::other(format!("no {what}")))
+    }
+
+    /// Waits for the tooltip of what the pointer rests on: egui shows it after a delay, with nothing to draw meanwhile.
+    /// Settles first, or the tooltip of where the pointer was would pass.
+    fn await_tooltip(&mut self) -> io::Result<()> {
+        self.settle()?;
+        self.await_state("tooltip", State::tooltip_showing)
+    }
+
+    /// The find bar on `abc`, with the engine's answer in.
+    fn find_abc(&mut self) -> io::Result<()> {
+        send!(self, "OPENFINDBAR", "FINDTEXT abc")?;
+        self.await_state("find result", |s| !s.0["find_result"].is_null())
     }
 
     /// Double-clicks the first top-level loaded tab card, looked up now (a fit or a new card moves it), and waits for
@@ -368,7 +388,21 @@ impl Shots {
         self.settle()
     }
 
+    /// A shot with no toast: one expires on the clock, so which one shows depends on how long the steps took. Settles
+    /// first, so a toast on its way is there to drop.
     fn shot(&mut self, name: &str) -> io::Result<()> {
+        self.settle()?;
+        send!(self, "CLEARTOASTS")?;
+        self.capture(name)
+    }
+
+    /// A shot of the toast holding `text`, once it shows.
+    fn toast_shot(&mut self, name: &str, text: &str) -> io::Result<()> {
+        self.await_state(&format!("toast with {text:?}"), |s| s.toast().is_some_and(|t| t.contains(text)))?;
+        self.capture(name)
+    }
+
+    fn capture(&mut self, name: &str) -> io::Result<()> {
         self.settle()?;
         let path = self.out.join(format!("{name}.png"));
         self.inst.screenshot_to(&path)?;
@@ -402,14 +436,14 @@ impl Shots {
             format!("MOUSEMOVE {x} {y}"),
             format!("MOUSEDOWN {x} {y} right"),
             format!("MOUSEUP {x} {y} right"),
-            "SLEEP 1"
+            "WAITIDLE"
         )
     }
 
     /// `click` on the chrome control named `name` (`crate::state`), wherever the toolbar has put it.
     fn click_named(&mut self, name: &str) -> io::Result<()> {
         self.inst.click_control(name)?;
-        send!(self, "SLEEP 1")
+        self.settle()
     }
 
     fn click(&mut self, x: i64, y: i64) -> io::Result<()> {
@@ -418,19 +452,19 @@ impl Shots {
             format!("MOUSEMOVE {x} {y}"),
             format!("MOUSEDOWN {x} {y} left"),
             format!("MOUSEUP {x} {y} left"),
-            "SLEEP 1"
+            "WAITIDLE"
         )
     }
 
     /// Opens the focused tab's menu, closes it, and names two jars (Alpha, Beta): the focused tab uses the second.
     fn make_jars(&mut self, x: i64, y: i64) -> io::Result<()> {
         self.menu_at(x, y)?;
-        send!(self, "ESCAPE", "SETJAR Alpha", "SETJAR Beta", "SLEEP 1")
+        send!(self, "ESCAPE", "SETJAR Alpha", "SETJAR Beta", "WAITIDLE")
     }
 
-    fn tab_presses(&mut self, n: u32, pause: &str) -> io::Result<()> {
+    fn tab_presses(&mut self, n: u32) -> io::Result<()> {
         for _ in 0..n {
-            send!(self, "TABKEY", format!("SLEEP {pause}"))?;
+            send!(self, "TABKEY", "WAITIDLE")?;
         }
         Ok(())
     }
@@ -464,7 +498,7 @@ impl Shots {
 
     /// The scan's reference shot with the pointer parked at `pos`.
     fn rest_shot(&mut self, dir: &Path, pos: &str) -> io::Result<()> {
-        send!(self, format!("MOUSEMOVE {pos}"), "SLEEP 1")?;
+        send!(self, format!("MOUSEMOVE {pos}"), "WAITIDLE")?;
         self.settle()?;
         self.inst.screenshot_to(&dir.join("rest.png"))
     }
@@ -480,7 +514,7 @@ impl Shots {
         let dir = self.scan_dir(name)?;
         self.rest_shot(&dir, "5 790")?;
         for x in (4..=self.size.0).step_by(knob("HOVER_STEP", 14) as usize) {
-            send!(self, format!("MOUSEMOVE {x} {y}"), "SLEEP 0.3")?;
+            send!(self, format!("MOUSEMOVE {x} {y}"), "WAITIDLE")?;
             self.inst.screenshot_to(&dir.join(format!("x{x:04}.png")))?;
         }
         send!(self, "MOUSEMOVE 5 790")?;
@@ -492,7 +526,7 @@ impl Shots {
         let dir = self.scan_dir(name)?;
         self.rest_shot(&dir, "1275 795")?;
         for y in (y0..=y1).step_by(knob("HOVER_STEP", 14) as usize) {
-            send!(self, format!("MOUSEMOVE {x} {y}"), "SLEEP 0.3")?;
+            send!(self, format!("MOUSEMOVE {x} {y}"), "WAITIDLE")?;
             self.inst.screenshot_to(&dir.join(format!("y{y:04}.png")))?;
         }
         Self::print_report(&dir, band, true, x0)
@@ -500,7 +534,7 @@ impl Shots {
 
     /// One Tab key press (egui keyboard focus moving on) and the shot after it, `x<i>.png` in `dir`.
     fn tab_press(&mut self, dir: &Path, i: u32) -> io::Result<()> {
-        send!(self, "TABKEY", "SLEEP 0.5")?;
+        send!(self, "TABKEY", "WAITIDLE")?;
         self.inst.screenshot_to(&dir.join(format!("x{i:04}.png")))
     }
 
@@ -569,9 +603,9 @@ impl Shots {
         self.rest_shot(&dir, "5 790")?;
         for (i, control) in controls.iter().enumerate() {
             self.inst.click_control(control)?;
-            send!(self, "SLEEP 0.5", "MOUSEMOVE 5 790", "SLEEP 0.5")?;
+            send!(self, "WAITIDLE", "MOUSEMOVE 5 790", "WAITIDLE")?;
             self.inst.screenshot_to(&dir.join(format!("x{:04}.png", i + 1)))?;
-            send!(self, "ESCAPE", "SLEEP 0.5")?;
+            send!(self, "ESCAPE", "WAITIDLE")?;
         }
         Self::print_report(&dir, 34, false, 0)
     }
@@ -581,9 +615,9 @@ impl Shots {
     fn run_views(&mut self, exe: &Path) -> io::Result<()> {
         let (w, h) = self.size;
         let (work, seed) = (self.work.clone(), self.seed.clone());
-        send!(self, format!("RESIZE {w} {h}"), "WAITTABS", "SLEEP 3")?;
+        send!(self, format!("RESIZE {w} {h}"), "WAITTABS", "WAITIDLE")?;
         send!(self, format!("ADDFILE {} 200 640", seed.join("pic.png").display()))?;
-        send!(self, format!("ADDFILE {} 640 700", seed.join("data.json").display()), "SLEEP 2")?;
+        send!(self, format!("ADDFILE {} 640 700", seed.join("data.json").display()), "WAITIDLE")?;
 
         self.view("graph", |s| s.shot("graph"))?;
         self.graph_menus()?;
@@ -624,67 +658,74 @@ impl Shots {
         // A toolbar tooltip (the shortcuts help button).
         self.view("graph-tooltip", |s| {
             s.inst.hover_control("Keyboard Shortcuts (F1)")?;
-            send!(s, "SLEEP 2")?;
+            s.await_tooltip()?;
             s.shot("graph-tooltip")?;
             send!(s, "MOUSEMOVE 5 790")
         })?;
         // A download card and a sleeping tab beside the live cards (header F on cards with no seeded kind of their own).
         self.view("cards-f", |s| {
-            send!(s, format!("ADDDOWNLOAD {}", seed.join("data.json").display()), "SLEEPNODE t1", "SLEEP 6")?;
+            let tab = s.card_id(TAB)?;
+            send!(s, format!("ADDDOWNLOAD {}", seed.join("data.json").display()), format!("SLEEPNODE {tab}"))?;
+            s.await_state("sleeping tab", |st| st.all_cards().iter().any(|c| State::card_is(c, TAB, Some(false))))?;
             s.inst.click_control(crate::state::FIT_VIEW)?;
-            send!(s, "SLEEP 2")?;
-            s.shot("cards-f")
+            s.shot("cards-f")?;
+            // Awake again: the views after this one open a live tab.
+            let (x, y) = s.center(TAB, "top", Some(false))?;
+            send!(s, format!("DOUBLECLICK {x} {y}"))?;
+            s.await_state("woken tab", State::tab_view)?;
+            s.settle()?;
+            s.reset()
         })?;
         // A note being edited: a double-click on the rendered note enters the editor in place.
         self.view("note-edit", |s| {
             let (x, y) = s.center(NOTE, "top", None)?;
-            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 1", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(s, format!("DOUBLECLICK {x} {y}"), "WAITIDLE", "MOUSEMOVE 5 790")?;
             s.shot("note-edit")?;
-            send!(s, "ESCAPE", "SLEEP 1")
+            send!(s, "ESCAPE", "WAITIDLE")
         })?;
         self.view("image-view", |s| {
             let (x, y) = s.center(IMAGE, "top", None)?;
-            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 3")?;
+            send!(s, format!("DOUBLECLICK {x} {y}"))?;
             s.shot("image-view")?;
             s.reset()
         })?;
         self.view("graph-filter", |s| {
-            send!(s, "GRAPHFILTERTEXT res", "SLEEP 1")?;
+            send!(s, "GRAPHFILTERTEXT res")?;
             s.shot("graph-filter")?;
             send!(s, "GRAPHFILTERTEXT ")
         })?;
         self.view("graph-group", |s| {
             let (x, y) = s.center(GROUP, "top", None)?;
-            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 3")?;
+            send!(s, format!("DOUBLECLICK {x} {y}"))?;
             s.shot("graph-group")?;
             s.reset()
         })?;
         self.json_views()?;
         self.tabview_views()?;
         self.view("tab-quickswitch", |s| {
-            send!(s, "QUICKSWITCHOPEN", "SLEEP 1")?;
+            send!(s, "QUICKSWITCHOPEN", "WAITIDLE")?;
             s.tab_scan("quickswitch", 4, 400)?;
-            send!(s, "QUICKSWITCHESCAPE", "SLEEP 1")
+            send!(s, "QUICKSWITCHESCAPE", "WAITIDLE")
         })?;
         self.view("hover-quickswitch", |s| {
-            send!(s, "QUICKSWITCHOPEN", "SLEEP 1")?;
+            send!(s, "QUICKSWITCHOPEN", "WAITIDLE")?;
             s.hover_column("quickswitch", 640, 90, 230, 400, 440)?;
-            send!(s, "QUICKSWITCHESCAPE", "SLEEP 1")
+            send!(s, "QUICKSWITCHESCAPE", "WAITIDLE")
         })?;
         self.view("shortcuts", |s| {
-            send!(s, "TOGGLESHORTCUTSHELP", "SLEEP 1")?;
+            send!(s, "TOGGLESHORTCUTSHELP")?;
             s.shot("shortcuts")?;
-            send!(s, "TOGGLESHORTCUTSHELP", "SLEEP 1")
+            send!(s, "TOGGLESHORTCUTSHELP", "WAITIDLE")
         })?;
         self.view("quickswitch", |s| {
-            send!(s, "QUICKSWITCHOPEN", "SLEEP 1")?;
+            send!(s, "QUICKSWITCHOPEN")?;
             s.shot("quickswitch")?;
-            send!(s, "QUICKSWITCHESCAPE", "SLEEP 1")
+            send!(s, "QUICKSWITCHESCAPE", "WAITIDLE")
         })?;
         // Closes the note (middle-click), so it must come before the settings block and after every view that shows it.
         self.view("graph-closed", |s| {
             let (x, y) = s.center(NOTE, "top", None)?;
-            send!(s, format!("CLICK {x} {y} middle"), "SLEEP 1")?;
+            send!(s, format!("CLICK {x} {y} middle"), "WAITIDLE")?;
             s.settle()?;
             let button = s.state()?.recently_closed_name();
             s.click_named(&button)?;
@@ -694,8 +735,8 @@ impl Shots {
         self.settings_views()?;
         // A toast, from opening a session that doesn't exist (which also leaves the settings page).
         self.view("toast", |s| {
-            send!(s, "OPENSESSION nosuch", "SLEEP 1")?;
-            s.shot("toast")
+            send!(s, "OPENSESSION nosuch")?;
+            s.toast_shot("toast", "nosuch")
         })?;
         // Restored cards whose files are gone (an image and a JSON file): save a session with them, delete the files,
         // open it again. Before json-zoom, which must run last.
@@ -710,9 +751,9 @@ impl Shots {
                 s,
                 format!("ADDFILE {} 100 300", pic.display()),
                 format!("ADDFILE {} 400 300", data.display()),
-                "SLEEP 2",
+                "WAITIDLE",
                 format!("EXPORTSESSION {}", session.display()),
-                "SLEEP 1"
+                "WAITIDLE"
             )?;
             s.state()?;
             fs::remove_file(&pic)?;
@@ -720,13 +761,12 @@ impl Shots {
             send!(
                 s,
                 format!("IMPORTSESSION {}", session.display()),
-                "SLEEP 1",
+                "WAITIDLE",
                 "CONFIRMIMPORT",
-                "SLEEP 4",
-                "MOUSEMOVE 5 790",
-                "SLEEP 1"
+                "WAITIDLE",
+                "MOUSEMOVE 5 790"
             )?;
-            s.shot("missing-file")
+            s.toast_shot("missing-file", "Couldn't open image")
         })?;
         if self.has_any(&["download-real", "download-progress", "download-failed", "download-resume"]) {
             self.step("downloads", Self::download_views)?;
@@ -741,13 +781,13 @@ impl Shots {
 
     /// Right-click on empty canvas.
     fn menu_at_empty(&mut self) -> io::Result<()> {
-        send!(self, "MOUSEMOVE 700 150", "MOUSEDOWN 700 150 right", "MOUSEUP 700 150 right", "SLEEP 1")
+        send!(self, "MOUSEMOVE 700 150", "MOUSEDOWN 700 150 right", "MOUSEUP 700 150 right", "WAITIDLE")
     }
 
     fn graph_menus(&mut self) -> io::Result<()> {
         self.view("graph-hover", |s| {
             let (x, y) = s.center(TAB, "top", Some(true))?;
-            send!(s, format!("MOUSEMOVE {x} {y}"), "SLEEP 1")?;
+            send!(s, format!("MOUSEMOVE {x} {y}"))?;
             s.shot("graph-hover")?;
             send!(s, "MOUSEMOVE 5 790")
         })?;
@@ -766,7 +806,7 @@ impl Shots {
             let (x, y) = s.center(TAB, "top", Some(true))?;
             s.make_jars(x, y)?;
             s.menu_at(x, y)?;
-            send!(s, "MENUPAGE jar", "SLEEP 1")?;
+            send!(s, "MENUPAGE jar")?;
             s.shot("graph-menu-jars")?;
             s.reset()
         })?;
@@ -785,7 +825,7 @@ impl Shots {
             s.make_jars(x, y)?;
             let (gx, gy) = s.center(GROUP, "top", None)?;
             s.menu_at(gx, gy)?;
-            send!(s, "MENUPAGE jar", "SLEEP 1")?;
+            send!(s, "MENUPAGE jar")?;
             s.shot("graph-menu-group-jars")?;
             s.reset()
         })
@@ -800,7 +840,7 @@ impl Shots {
         if self.has_any(&["graph-link", "graph-link-hover", "graph-menu-links"]) {
             self.step("links", |s| {
                 let (tab, note) = (s.card_id(TAB)?, s.card_id(NOTE)?);
-                send!(s, format!("LINK {tab} {note}"), "SLEEP 1")?;
+                send!(s, format!("LINK {tab} {note}"), "WAITIDLE")?;
                 if s.has("graph-link") {
                     s.shot("graph-link")?;
                 }
@@ -815,7 +855,7 @@ impl Shots {
                         round_i(edge["screen"][0].as_f64().unwrap_or(0.0)),
                         round_i(edge["screen"][1].as_f64().unwrap_or(0.0)),
                     );
-                    send!(s, format!("MOUSEMOVE {lx} {ly}"), "SLEEP 1")?;
+                    send!(s, format!("MOUSEMOVE {lx} {ly}"))?;
                     s.shot("graph-link-hover")?;
                     s.reset()?;
                 }
@@ -825,14 +865,14 @@ impl Shots {
                     s.shot("graph-menu-links")?;
                     s.reset()?;
                 }
-                send!(s, format!("UNLINK {tab} {note}"), "SLEEP 1")
+                send!(s, format!("UNLINK {tab} {note}"), "WAITIDLE")
             })?;
         }
         if self.has_any(&["graph-link-handles", "graph-link-drag"]) {
             self.step("link handles", |s| {
                 let tab = s.card_id(TAB)?;
                 let (tx, ty) = s.center(TAB, "top", Some(true))?;
-                send!(s, format!("MOUSEMOVE {tx} {ty}"), "SLEEP 1")?;
+                send!(s, format!("MOUSEMOVE {tx} {ty}"), "WAITIDLE")?;
                 let st = s.state()?;
                 let r = st.0["link_handles"][&tab]["left"]
                     .as_array()
@@ -841,7 +881,8 @@ impl Shots {
                 let f = |i: usize| r[i].as_f64().unwrap_or(0.0);
                 let (hx, hy) = (round_i((f(0) + f(2)) / 2.0), round_i((f(1) + f(3)) / 2.0));
                 if s.has("graph-link-handles") {
-                    send!(s, format!("MOUSEMOVE {hx} {hy}"), "SLEEP 1")?;
+                    send!(s, format!("MOUSEMOVE {hx} {hy}"))?;
+                    s.await_tooltip()?;
                     s.shot("graph-link-handles")?;
                 }
                 if s.has("graph-link-drag") {
@@ -856,13 +897,12 @@ impl Shots {
                     for i in 1..=8 {
                         send!(s, format!("MOUSEMOVE {} {}", hx + (nx - hx) * i * 4 / 40, hy + (ny - hy) * i * 4 / 40))?;
                     }
-                    send!(s, "SLEEP 1")?;
                     s.shot("graph-link-drag")?;
                     send!(
                         s,
                         "ESCAPE",
                         format!("MOUSEUP {} {}", hx + (nx - hx) * 4 / 5, hy + (ny - hy) * 4 / 5),
-                        "SLEEP 1"
+                        "WAITIDLE"
                     )?;
                 }
                 s.reset()
@@ -888,7 +928,7 @@ impl Shots {
             s.menu_at(x, y)?;
             let menu = s.popup_rect()?.ok_or_else(|| io::Error::other("no group menu"))?;
             s.click((menu[0] + 60.0) as i64, (menu[3] - 44.0) as i64)?;
-            s.shot("graph-dissolve-undo-toast")?;
+            s.toast_shot("graph-dissolve-undo-toast", "Dissolved")?;
             check(
                 "Dissolve Group takes the members out and hides the group",
                 before > 0 && members(s)? == 0 && closed(s)?,
@@ -908,7 +948,7 @@ impl Shots {
                 .ok_or_else(|| io::Error::other("no toast"))?;
             s.click((toast[2] - 28.0) as i64, ((toast[1] + toast[3]) / 2.0) as i64)?;
             s.settle()?;
-            s.shot("graph-dissolve-undo-back")?;
+            s.toast_shot("graph-dissolve-undo-back", "Undone")?;
             check("Undo brings the same group back around its members", !closed(s)? && members(s)? == before);
             s.reset()
         })?;
@@ -921,13 +961,12 @@ impl Shots {
             for i in 1..=10 {
                 send!(s, toward(i))?;
             }
-            send!(s, "SLEEP 1")?;
             s.shot("graph-drop-hint")?;
             // Back to where it started, so the release moves nothing.
             for i in (0..10).rev() {
                 send!(s, toward(i))?;
             }
-            send!(s, format!("MOUSEUP {nx} {ny}"), "SLEEP 1")?;
+            send!(s, format!("MOUSEUP {nx} {ny}"), "WAITIDLE")?;
             s.reset()
         })?;
         Ok(())
@@ -936,19 +975,16 @@ impl Shots {
     fn keyboard_views(&mut self) -> io::Result<()> {
         // A click focuses the group card without entering it; Enter then does what a double-click does.
         self.view("graph-enter-group", |s| {
-            s.tab_presses(knob("GROUP_STOP", 12), "0.5")?;
-            send!(s, "SLEEP 1")?;
+            s.tab_presses(knob("GROUP_STOP", 12))?;
             s.shot("graph-enter-group-click")?;
-            send!(s, "ENTER", "SLEEP 0.4")?;
-            s.shot("graph-enter-group-early")?;
-            send!(s, "SLEEP 3")?;
+            send!(s, "ENTER")?;
             s.shot("graph-enter-group")?;
             s.reset()
         })?;
         // Tab to the JSON card and Enter: the level opens with its root card focused.
         self.view("graph-enter-json", |s| {
-            s.tab_presses(knob("JSON_ENTRY_STOP", 16), "0.5")?;
-            send!(s, "ENTER", "SLEEP 3")?;
+            s.tab_presses(knob("JSON_ENTRY_STOP", 16))?;
+            send!(s, "ENTER")?;
             s.shot("graph-enter-json")?;
             s.reset()
         })?;
@@ -957,8 +993,8 @@ impl Shots {
             let mut found = 0;
             for stop in 1..=20 {
                 s.reset()?;
-                s.tab_presses(stop, "0.2")?;
-                send!(s, "SHIFTF10", "SLEEP 1")?;
+                s.tab_presses(stop)?;
+                send!(s, "SHIFTF10", "WAITIDLE")?;
                 if s.menu_open()? {
                     found = stop;
                     break;
@@ -966,30 +1002,30 @@ impl Shots {
             }
             check(&format!("Shift+F10 on a Tab-focused card opens its menu (Tab stop {found})"), found != 0);
             s.shot("graph-menu-key-open")?;
-            send!(s, "TABKEY", "SLEEP 0.5")?;
+            send!(s, "TABKEY")?;
             s.shot("graph-menu-key-tab")?;
             // Still open: Down through the rows.
             // A shot after each Down: the frame it forces is what lets the next key see the new focus.
             for i in 1..=5 {
-                send!(s, "ARROWDOWN", "SLEEP 0.3")?;
+                send!(s, "ARROWDOWN")?;
                 s.shot(&format!("graph-menu-key-down{i}"))?;
             }
-            send!(s, "ESCAPE", "SLEEP 1")?;
+            send!(s, "ESCAPE")?;
             s.shot("graph-menu-key-closed")?;
             s.reset()
         })?;
         // Space on a Tab-focused tab card selects it (and Space again clears it).
         self.view("graph-select-key", |s| {
-            s.tab_presses(knob("SELECT_STOP", 12), "0.5")?;
-            send!(s, "SPACEKEY", "SLEEP 1")?;
+            s.tab_presses(knob("SELECT_STOP", 12))?;
+            send!(s, "SPACEKEY")?;
             s.shot("graph-select-key-on")?;
-            send!(s, "SPACEKEY", "SLEEP 1")?;
+            send!(s, "SPACEKEY")?;
             s.shot("graph-select-key-off")?;
             // Two more cards selected: the selection bar sits on a box around both.
-            send!(s, "TABKEY", "SLEEP 0.5", "SPACEKEY", "SLEEP 0.5", "TABKEY", "SLEEP 0.5", "SPACEKEY", "SLEEP 1")?;
+            send!(s, "TABKEY", "WAITIDLE", "SPACEKEY", "WAITIDLE", "TABKEY", "WAITIDLE", "SPACEKEY")?;
             s.shot("graph-select-key-two")?;
             // Pinned: the bar's pin goes accent, and each card keeps its passive pin mark.
-            send!(s, "TOGGLEPIN", "SLEEP 1")?;
+            send!(s, "TOGGLEPIN")?;
             s.shot("graph-select-key-pinned")?;
             s.reset()
         })?;
@@ -998,14 +1034,13 @@ impl Shots {
             for _ in 0..70 {
                 send!(s, "NEWNOTE")?;
             }
-            send!(s, "SLEEP 3")?;
-            s.tab_presses(1, "0.5")?;
-            send!(s, "SPACEKEY", "SLEEP 0.5", "TOGGLEPIN", "SLEEP 1")?;
+            s.settle()?;
+            s.tab_presses(1)?;
+            send!(s, "SPACEKEY", "WAITIDLE", "TOGGLEPIN", "WAITIDLE")?;
             for _ in 0..6 {
                 s.inst.click_control(crate::state::ZOOM_OUT)?;
-                send!(s, "SLEEP 0.5")?;
+                s.settle()?;
             }
-            send!(s, "SLEEP 1")?;
             s.shot("graph-pinned-dense")?;
             s.reset()
         })?;
@@ -1015,8 +1050,8 @@ impl Shots {
             let mut found = 0;
             for stop in 1..=20 {
                 s.reset()?;
-                s.tab_presses(stop, "0.2")?;
-                send!(s, "ENTER", "SLEEP 1")?;
+                s.tab_presses(stop)?;
+                send!(s, "ENTER", "WAITIDLE")?;
                 if s.editing()? {
                     found = stop;
                     break;
@@ -1027,9 +1062,9 @@ impl Shots {
             } else {
                 check(&format!("Enter on the Note card (Tab stop {found}) starts editing"), true);
                 s.shot("note-key-editing")?;
-                send!(s, "ESCAPE", "SLEEP 1")?;
+                send!(s, "ESCAPE", "WAITIDLE")?;
                 check("Escape ends editing", !s.editing()?);
-                send!(s, "ENTER", "SLEEP 1")?;
+                send!(s, "ENTER", "WAITIDLE")?;
                 check("Enter edits again, so focus returned to the card", s.editing()?);
             }
             s.reset()
@@ -1042,8 +1077,8 @@ impl Shots {
                 let j = &st.0["json_level"];
                 Ok((j["selected"].to_string(), j["cards"].as_array().map_or(0, Vec::len)))
             };
-            s.tab_presses(knob("JSON_ENTRY_STOP", 16), "0.3")?;
-            send!(s, "ENTER", "SLEEP 3")?;
+            s.tab_presses(knob("JSON_ENTRY_STOP", 16))?;
+            send!(s, "ENTER", "WAITIDLE")?;
             // Zoomed in, the cards other than the root fall off screen.
             send!(
                 s,
@@ -1057,14 +1092,14 @@ impl Shots {
                 "MOUSEUP 100 650",
                 "MOUSEMOVE 100 650",
                 "MOUSEMOVE 5 790",
-                "SLEEP 2"
+                "WAITIDLE"
             )?;
             s.settle()?;
             s.shot("json-tab-offscreen-before")?;
             let total = sel(s)?.1;
             let mut seen = Vec::new();
             for _ in 1..total {
-                send!(s, "TABKEY", "SLEEP 1.5")?;
+                send!(s, "TABKEY", "WAITIDLE")?;
                 s.settle()?;
                 seen.push(sel(s)?.0);
             }
@@ -1082,9 +1117,9 @@ impl Shots {
         // Enter starts editing.
         self.view("digit-jump", |s| {
             s.reset()?;
-            send!(s, "DIGITKEY 3", "SLEEP 1")?;
+            send!(s, "DIGITKEY 3")?;
             s.shot("digit-jump")?;
-            send!(s, "ENTER", "SLEEP 1")?;
+            send!(s, "ENTER", "WAITIDLE")?;
             check("digit 3 focuses card 3 (the note), Enter edits it", s.editing()?);
             s.reset()
         })
@@ -1112,7 +1147,7 @@ impl Shots {
             format!("MOUSEMOVE {} {}", cx + 60, cy + 30),
             format!("MOUSEMOVE {} {}", cx + 90, cy + 45),
             format!("MOUSEUP {} {}", cx + 90, cy + 45),
-            "SLEEP 1"
+            "WAITIDLE"
         )?;
         let [n0, m0, n1, m1] = note_rect(self)?;
         check_eq("drag moves the card by the drag distance", "90,45".to_string(), format!("{},{}", n0 - x0, m0 - y0));
@@ -1123,7 +1158,7 @@ impl Shots {
             format!("MOUSEMOVE {mx} {my}"),
             format!("MOUSEDOWN {mx} {my} middle"),
             format!("MOUSEUP {mx} {my} middle"),
-            "SLEEP 1"
+            "WAITIDLE"
         )?;
         check_eq("middle-click closes the card", before - 1, self.card_count()?);
         self.reset()
@@ -1136,7 +1171,7 @@ impl Shots {
         }
         self.step("json level", |s| {
             let (x, y) = s.center(JSON, "top", None)?;
-            send!(s, format!("DOUBLECLICK {x} {y}"), "SLEEP 3")?;
+            send!(s, format!("DOUBLECLICK {x} {y}"), "WAITIDLE")?;
             if s.has("json-level") {
                 s.shot("json-level")?;
             }
@@ -1145,35 +1180,35 @@ impl Shots {
             }
             // With a card selected, the bar's Copy buttons are enabled.
             if s.has("hover-json-sel") {
-                send!(s, "CLICK 280 380", "SLEEP 1")?;
+                send!(s, "CLICK 280 380", "WAITIDLE")?;
                 s.hover_scan("json-sel", knob("HOVER_Y", 16), knob("HOVER_BAND", 34))?;
             }
             // Copy value is disabled until a row is selected, and a disabled widget shows no tooltip: select the root
             // (JSONSELECT with no pointer), hover the button by name, and Escape clears the selection after.
             if s.has("json-tooltip") {
-                send!(s, "JSONSELECT", "SLEEP 1")?;
+                send!(s, "JSONSELECT", "WAITIDLE")?;
                 s.inst.hover_control(COPY_VALUE)?;
-                send!(s, "SLEEP 2")?;
+                s.await_tooltip()?;
                 s.shot("json-tooltip")?;
-                send!(s, "MOUSEMOVE 5 790", "ESCAPE", "SLEEP 1")?;
+                send!(s, "MOUSEMOVE 5 790", "ESCAPE", "WAITIDLE")?;
             }
             // Keys: Down x3 selects the third outline row, Enter toggles it, Right opens it, Up+Left+Left closes then
             // selects the parent, Tab focuses a card.
             if s.has("json-keys") {
-                send!(s, "ARROWDOWN", "ARROWDOWN", "ARROWDOWN", "SLEEP 1")?;
+                send!(s, "ARROWDOWN", "ARROWDOWN", "ARROWDOWN")?;
                 s.shot("json-keys-down")?;
-                send!(s, "ENTER", "SLEEP 1")?;
+                send!(s, "ENTER")?;
                 s.shot("json-keys-enter")?;
-                send!(s, "ARROWRIGHT", "SLEEP 1")?;
+                send!(s, "ARROWRIGHT")?;
                 s.shot("json-keys-right")?;
-                send!(s, "ARROWUP", "ARROWLEFT", "ARROWLEFT", "SLEEP 1")?;
+                send!(s, "ARROWUP", "ARROWLEFT", "ARROWLEFT")?;
                 s.shot("json-keys-left")?;
                 s.tab_walk("json", knob("HOVER_BAND", 34))?;
             }
             // Right-click the first card the level lays out (data.json at 1280x800).
             if s.has("json-menu") {
                 s.settle()?;
-                send!(s, "MOUSEMOVE 280 380", "MOUSEDOWN 280 380 right", "MOUSEUP 280 380 right", "SLEEP 1")?;
+                send!(s, "MOUSEMOVE 280 380", "MOUSEDOWN 280 380 right", "MOUSEUP 280 380 right")?;
                 s.shot("json-menu")?;
                 send!(s, "ESCAPE")?;
             }
@@ -1214,22 +1249,22 @@ impl Shots {
                 s.hover_scan("tabview", knob("HOVER_Y", 16), band)?;
             }
             if s.has("tabview-dropdown") {
-                send!(s, "ADDRESSBAR exam", "SLEEP 2")?;
+                send!(s, "ADDRESSBAR exam")?;
                 s.shot("tabview-dropdown")?;
-                send!(s, "ESCAPE", "SLEEP 1")?;
+                send!(s, "ESCAPE", "WAITIDLE")?;
             }
             if s.has("tab-dropdown") {
-                send!(s, "ADDRESSBAR exam", "SLEEP 2")?;
+                send!(s, "ADDRESSBAR exam", "WAITIDLE")?;
                 s.tab_scan("dropdown", 4, 820)?;
-                send!(s, "ESCAPE", "SLEEP 1")?;
+                send!(s, "ESCAPE", "WAITIDLE")?;
             }
             if s.has("hover-dropdown") {
-                send!(s, "ADDRESSBAR exam", "SLEEP 2")?;
+                send!(s, "ADDRESSBAR exam", "WAITIDLE")?;
                 s.hover_column("dropdown", 400, 40, 250, 820, 210)?;
-                send!(s, "ESCAPE", "SLEEP 1")?;
+                send!(s, "ESCAPE", "WAITIDLE")?;
             }
             if s.has("tabview-find") {
-                send!(s, "OPENFINDBAR", "FINDTEXT abc", "SLEEP 1")?;
+                s.find_abc()?;
                 s.shot("tabview-find")?;
                 send!(s, "CLOSEFINDBAR")?;
             }
@@ -1239,12 +1274,12 @@ impl Shots {
                 send!(s, "ESCAPE")?;
             }
             if s.has("hover-find") {
-                send!(s, "OPENFINDBAR", "FINDTEXT abc", "SLEEP 1")?;
+                s.find_abc()?;
                 s.hover_scan("find", knob("FIND_Y", 60), knob("FIND_BAND", 90))?;
                 send!(s, "CLOSEFINDBAR")?;
             }
             if s.has("tab-find") {
-                send!(s, "OPENFINDBAR", "FINDTEXT abc", "SLEEP 1")?;
+                s.find_abc()?;
                 s.tab_scan("find", 6, knob("FIND_BAND", 90))?;
                 send!(s, "CLOSEFINDBAR")?;
             }
@@ -1252,23 +1287,23 @@ impl Shots {
             if s.has("tabview-engine") {
                 s.click_named(SPLIT_VIEW)?;
                 s.shot("tabview-engine")?;
-                send!(s, "ESCAPE", "SLEEP 1")?;
+                send!(s, "ESCAPE", "WAITIDLE")?;
             }
             // Keyboard-only pick from the Split engine picker: it opens on the selected card, Down moves, Enter picks
             // and opens the Split pane.
             if s.has("tabview-split-key") {
                 s.click_named(SPLIT_VIEW)?;
                 s.shot("tabview-split-key-open")?;
-                send!(s, "ARROWDOWN", "SLEEP 1")?;
+                send!(s, "ARROWDOWN")?;
                 s.shot("tabview-split-key-down")?;
-                send!(s, "ENTER", "SLEEP 3")?;
+                send!(s, "ENTER")?;
                 s.shot("tabview-split-key")?;
-                send!(s, "CLOSESPLIT", "SLEEP 1")?;
+                send!(s, "CLOSESPLIT", "WAITIDLE")?;
             }
             if s.has("tabview-split") {
-                send!(s, "SPLIT webview2", "SLEEP 3")?;
+                send!(s, "SPLIT webview2")?;
                 s.shot("tabview-split")?;
-                send!(s, "CLOSESPLIT", "SLEEP 1")?;
+                send!(s, "CLOSESPLIT", "WAITIDLE")?;
             }
             // Asserted: the popup's Pin row pins the focused tab, its Duplicate row adds a card, its Close Tab row
             // removes one. Last, because Close Tab ends the Tab view and a view after it would find no toolbar to click.
@@ -1282,11 +1317,11 @@ impl Shots {
                 check("Tab actions > Pin pins the tab", pinned(s)? == pins0 + 1);
                 s.click_named(TAB_ACTIONS)?;
                 s.inst.click_control(TAB_ACTIONS_DUPLICATE)?;
-                send!(s, "SLEEP 2")?;
+                s.settle()?;
                 check("Tab actions > Duplicate adds a card", s.card_count()? == cards0 + 1);
                 s.click_named(TAB_ACTIONS)?;
                 s.inst.click_control(TAB_ACTIONS_CLOSE_TAB)?;
-                send!(s, "SLEEP 2")?;
+                s.settle()?;
                 let now = s.card_count()?;
                 check(&format!("Tab actions > Close Tab removes the tab ({now} vs {cards0})"), now == cards0);
             }
@@ -1317,11 +1352,11 @@ impl Shots {
         let data = self.seed.join("data.json");
         self.step("settings", |s| {
             // Taller, so a popup opening below the Lists buttons is not pushed up over them.
-            send!(s, format!("RESIZE {} 1000", s.size.0), "TOGGLESETTINGSPAGE", "SLEEP 2")?;
+            send!(s, format!("RESIZE {} 1000", s.size.0), "TOGGLESETTINGSPAGE", "WAITIDLE")?;
             if s.has("popup-downloads") {
-                send!(s, format!("ADDDOWNLOAD {}", data.display()), "SLEEP 1")?;
+                send!(s, format!("ADDDOWNLOAD {}", data.display()), "WAITIDLE")?;
             }
-            send!(s, "SESSIONNAMETEXT demo", "SAVESESSIONAS demo", "SLEEP 1")?;
+            send!(s, "SESSIONNAMETEXT demo", "SAVESESSIONAS demo", "WAITIDLE")?;
             if s.has("settings") {
                 s.shot("settings")?;
             }
@@ -1339,9 +1374,8 @@ impl Shots {
             ] {
                 if s.has(view) {
                     s.inst.click_control(control)?;
-                    send!(s, "SLEEP 1")?;
                     s.shot(view)?;
-                    send!(s, AWAY, "SLEEP 1")?;
+                    send!(s, AWAY, "WAITIDLE")?;
                 }
             }
             for (view, control, name) in
@@ -1349,9 +1383,9 @@ impl Shots {
             {
                 if s.has(view) {
                     s.inst.click_control(control)?;
-                    send!(s, "SLEEP 1")?;
+                    s.settle()?;
                     s.tab_scan(name, 5, 1000)?;
-                    send!(s, AWAY, "SLEEP 1")?;
+                    send!(s, AWAY, "WAITIDLE")?;
                 }
             }
             // The Lists popups, opened by name (the buttons' place on the page moves with the sections above them).
@@ -1359,7 +1393,7 @@ impl Shots {
                 [("popup-bookmarks", "bookmarks"), ("popup-history", "history"), ("popup-downloads", "downloads")]
             {
                 if s.has(view) {
-                    send!(s, format!("TOGGLEPOPUP {name}"), "SLEEP 1")?;
+                    send!(s, format!("TOGGLEPOPUP {name}"))?;
                     s.shot(view)?;
                     if view == "popup-history" {
                         // The filter narrows the list, and Down from the field focuses the first match.
@@ -1368,7 +1402,13 @@ impl Shots {
                             check("The History popup is open", false);
                             return s.reset();
                         };
-                        send!(s, format!("CLICK {} {}", x0 + 40.0, y0 + 13.0), "SLEEP 1", "EGUITEXT wiki", "SLEEP 1")?;
+                        send!(
+                            s,
+                            format!("CLICK {} {}", x0 + 40.0, y0 + 13.0),
+                            "WAITIDLE",
+                            "EGUITEXT wiki",
+                            "WAITIDLE"
+                        )?;
                         // A shot forces the frame that `controls` is read from (see PARKED.md, headless debug keys).
                         s.shot("popup-history-typed")?;
                         let st = s.state()?;
@@ -1377,26 +1417,26 @@ impl Shots {
                             "History filter 'wiki' keeps Wikipedia and drops Hacker News",
                             row("Wikipedia").is_some() && row("Hacker News").is_none(),
                         );
-                        send!(s, "ARROWDOWN", "SLEEP 1")?;
+                        send!(s, "ARROWDOWN")?;
                         s.shot("popup-history-filtered")?;
                         let st = s.state()?;
                         let selected =
                             st.popup_controls().iter().any(|c| c["name"] == "Wikipedia" && c["selected"] == true);
                         check("Down from the History filter focuses the first match", selected);
                     }
-                    send!(s, AWAY, "SLEEP 1")?;
+                    send!(s, AWAY, "WAITIDLE")?;
                 }
             }
             for (view, name) in
                 [("tab-popup", "bookmarks"), ("tab-popup-history", "history"), ("tab-popup-downloads", "downloads")]
             {
                 if s.has(view) {
-                    send!(s, format!("TOGGLEPOPUP {name}"), "SLEEP 1")?;
+                    send!(s, format!("TOGGLEPOPUP {name}"), "WAITIDLE")?;
                     s.tab_scan(view.trim_start_matches("tab-"), 6, 1000)?;
-                    send!(s, AWAY, "SLEEP 1")?;
+                    send!(s, AWAY, "WAITIDLE")?;
                 }
             }
-            send!(s, "TOGGLESETTINGSPAGE", format!("RESIZE {} {}", s.size.0, s.size.1), "SLEEP 1")
+            send!(s, "TOGGLESETTINGSPAGE", format!("RESIZE {} {}", s.size.0, s.size.1), "WAITIDLE")
         })
     }
 
@@ -1417,7 +1457,7 @@ impl Shots {
             self.open_tab()?;
             let (url, slow) = (server.url("/slow"), at("slow.zip"));
             // Still arriving: 300 KB of 1 MB. The fit button frames the new card, which opens above the tab's.
-            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            send!(self, format!("ADDRESSBAR {url}"), "WAITIDLE", "ENTER", "WAITIDLE")?;
             let named = |s: &State| matches!(s.downloads_from(&url)[..], [d] if d["path"] == slow.as_str());
             let state = self.inst.export_until("download-progress", named)?;
             if !named(&state) {
@@ -1426,9 +1466,9 @@ impl Shots {
                     state.downloads_from(&url)
                 )));
             }
-            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            send!(self, "TOGGLEVIEW", "WAITIDLE")?;
             self.inst.click_control(crate::state::FIT_VIEW)?;
-            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(self, "WAITIDLE", "MOUSEMOVE 5 790", "WAITIDLE")?;
             if self.has("download-progress") {
                 self.shot("download-progress")?;
             }
@@ -1436,7 +1476,7 @@ impl Shots {
                 // The server dies mid-transfer. WebView2 retries the download as a second one, which its host gives
                 // the first one's path (`retry_path`) and which fails once the retry is refused (runs
                 // 2026-10-27-dl-probe-*); the card shows it failed for the network (`NETWORK_FAILED`, run
-                // 2026-10-27-dl-probe-hold), and the shot waits for its toast to go.
+                // 2026-10-27-dl-probe-hold).
                 server.kill();
                 // The download cards' names as a screen reader hears them (`controls`): kind, title, then the tooltip.
                 let card_names = |s: &State| -> Vec<String> {
@@ -1445,7 +1485,6 @@ impl Shots {
                 let failed = |s: &State| {
                     matches!(s.downloads_from(&url)[..], [d]
                         if d["failed"] == true && d["path"] == slow.as_str() && d["failure"] == "Network")
-                        && s.toast().is_none()
                         && card_names(s).iter().any(|n| {
                             n.starts_with("Download: slow.zip. ") && n.contains("The connection failed or timed out")
                         })
@@ -1453,14 +1492,13 @@ impl Shots {
                 let state = self.inst.export_until("download-failed", failed)?;
                 if !failed(&state) {
                     return Err(io::Error::other(format!(
-                        "the one card downloading {url} to {slow} did not show why the download failed (toast {:?}, \
-                         card names {:?}): {:?}",
-                        state.toast(),
+                        "the one card downloading {url} to {slow} did not show why the download failed (card names \
+                         {:?}): {:?}",
                         card_names(&state),
                         state.downloads_from(&url)
                     )));
                 }
-                send!(self, "MOUSEMOVE 5 780", "SLEEP 1")?;
+                send!(self, "MOUSEMOVE 5 780")?;
                 self.shot("download-failed")?;
             }
         }
@@ -1469,13 +1507,10 @@ impl Shots {
             let server = Downloads::start()?;
             self.open_tab()?;
             let (url, real) = (server.url("/real.zip"), at("real.zip"));
-            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER", "SLEEP 6")?;
+            send!(self, format!("ADDRESSBAR {url}"), "WAITIDLE", "ENTER", "WAITIDLE")?;
             // Framed as before (S16): the tab six seconds after the download started.
             self.shot("download-real-tab")?;
-            let saved = |s: &State| {
-                matches!(s.downloads_from(&url)[..], [d] if d["completed"] == true && d["path"] == real.as_str())
-                    && s.toast().is_none()
-            };
+            let saved = |s: &State| matches!(s.downloads_from(&url)[..], [d] if d["completed"] == true && d["path"] == real.as_str());
             let state = self.inst.export_until("download-real", saved)?;
             if !saved(&state) {
                 return Err(io::Error::other(format!(
@@ -1488,9 +1523,9 @@ impl Shots {
                 return Err(io::Error::other(format!("{real} holds {} bytes, not the server's 4", bytes.len())));
             }
             // The card opens above the tab's, off the frame an earlier step's fit left.
-            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            send!(self, "TOGGLEVIEW", "WAITIDLE")?;
             self.inst.click_control(crate::state::FIT_VIEW)?;
-            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(self, "WAITIDLE", "MOUSEMOVE 5 790")?;
             self.shot("download-real")?;
         }
         if self.has("download-resume") {
@@ -1500,7 +1535,7 @@ impl Shots {
             let server = Downloads::start()?;
             self.open_tab()?;
             let (url, resume) = (server.url("/resume"), at("resume.zip"));
-            send!(self, format!("ADDRESSBAR {url}"), "SLEEP 1", "ENTER")?;
+            send!(self, format!("ADDRESSBAR {url}"), "WAITIDLE", "ENTER")?;
             let arriving = |s: &State| s.downloads_from(&url).iter().any(|d| d["bytes"].as_u64() > Some(0));
             let state = self.inst.export_until("download-resume-arriving", arriving)?;
             if !arriving(&state) {
@@ -1510,8 +1545,7 @@ impl Shots {
             server.break_transfers();
             let settled = |s: &State| {
                 let cards = s.downloads_from(&url);
-                cards.len() > 1
-                    || (cards.iter().any(|d| d["completed"] == true || d["failed"] == true) && s.toast().is_none())
+                cards.len() > 1 || cards.iter().any(|d| d["completed"] == true || d["failed"] == true)
             };
             let state = self.inst.export_until("download-resume", settled)?;
             let cards = state.downloads_from(&url);
@@ -1537,9 +1571,9 @@ impl Shots {
                      shots_net answers with a 206)"
                 )));
             }
-            send!(self, "TOGGLEVIEW", "SLEEP 2")?;
+            send!(self, "TOGGLEVIEW", "WAITIDLE")?;
             self.inst.click_control(crate::state::FIT_VIEW)?;
-            send!(self, "SLEEP 2", "MOUSEMOVE 5 790", "SLEEP 1")?;
+            send!(self, "WAITIDLE", "MOUSEMOVE 5 790")?;
             self.shot("download-resume")?;
         }
         Ok(())
@@ -1551,13 +1585,13 @@ impl Shots {
     fn json_zoom(&mut self) -> io::Result<()> {
         self.click_named(crate::state::ZOOM_OUT)?;
         self.click_named(crate::state::ZOOM_OUT)?;
-        send!(self, "MOUSEMOVE 5 790", "SLEEP 2")?;
+        send!(self, "MOUSEMOVE 5 790")?;
         self.shot("json-zoom-out")?;
         // Further out: the Note card under 80 points tall, so it falls back to the 18-point name strip.
         for _ in 0..3 {
             self.click_named(crate::state::ZOOM_OUT)?;
         }
-        send!(self, "MOUSEMOVE 5 790", "SLEEP 2")?;
+        send!(self, "MOUSEMOVE 5 790")?;
         self.shot("note-short")?;
         for _ in 0..9 {
             self.click_named(crate::state::ZOOM_IN)?;
@@ -1570,155 +1604,9 @@ impl Shots {
             "MOUSEMOVE 900 660 left",
             "MOUSEMOVE 900 560 left",
             "MOUSEUP 900 560 left",
-            "MOUSEMOVE 5 790",
-            "SLEEP 2"
+            "MOUSEMOVE 5 790"
         )?;
         self.shot("json-zoom-in")
-    }
-
-    // ---- engine states -------------------------------------------------------------------------------------------
-
-    /// Restarts the instance on a fresh profile `eng-<name>` (a copy of the exe, the settings page open).
-    fn engine_app(&mut self, eng_exe: &Path, proxy: &Proxy, name: &str, more: &str) -> io::Result<()> {
-        let root = self.work.join(format!("eng-{name}"));
-        let profile = root.join("manifold");
-        seed_settings(&profile, "webview2", more)?;
-        // etcetera's data dir under this APPDATA.
-        self.eng_data = profile.join("manifold").join("data").join(HOSTS_DIR);
-        fs::create_dir_all(&self.eng_data)?;
-        import_session(
-            eng_exe,
-            &profile,
-            &[
-                json!({"id": "t1", "type": TAB, "url": "about:blank", "view_kind": "webview2", "pos": [0.0, 0.0]}),
-                json!({"id": "t3", "type": TAB, "url": "https://example.com/", "view_kind": "cef", "pos": [300.0, 0.0]}),
-            ],
-        )?;
-        let (appdata, proxy_url, suggest_url) = (root.display().to_string(), proxy.url(), self.suggestions.url());
-        let pins_file = self.work.join("host-pins.json").display().to_string();
-        self.inst = Instance::launch_env(
-            eng_exe,
-            &profile,
-            &self.work,
-            &format!("log-eng-{name}"),
-            &[
-                ("APPDATA", &appdata),
-                ("HTTPS_PROXY", &proxy_url),
-                ("MANIFOLD_HOST_PINS_FILE", &pins_file),
-                ("MANIFOLD_SUGGESTIONS_URL", &suggest_url),
-            ],
-        )?;
-        send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "SLEEP 3")
-    }
-
-    /// CEF's pinned host files (sparse, at their pinned sizes) and the `cef.host` marker that lists their hashes
-    /// (`old`: other hashes, so the host reads Update needed).
-    fn fake_host(&self, pins: &[(String, u64, String)], old: bool) -> io::Result<()> {
-        let mut marker = String::new();
-        for (file, size, sha) in pins {
-            fs::File::create(self.eng_data.join(file))?.set_len(*size)?;
-            marker.push_str(&format!("{} {file}\n", if old { "0".repeat(64) } else { sha.clone() }));
-        }
-        fs::write(self.eng_data.join(format!("{}.host", CEF.id)), marker)
-    }
-
-    /// A runtime directory with a (sparse) 423 MB libcef.dll and `marker` in `ready`.
-    fn fake_runtime(&self, marker: &str) -> io::Result<()> {
-        let dir = self.eng_data.join(CEF_RUNTIME_DIR);
-        fs::create_dir_all(&dir)?;
-        let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
-        fs::File::create(dir.join(lib))?.set_len(423 * 1024 * 1024)?;
-        fs::write(dir.join("ready"), marker)
-    }
-
-    fn engine_stop(&mut self) -> io::Result<()> {
-        self.inst.quit(QUIT_TIMEOUT).map(|_| ())
-    }
-
-    fn engine_states(&mut self, exe: &Path) -> io::Result<()> {
-        let (file, size, sha256) = fake_cef_host();
-        let pins = vec![(file.clone(), size, sha256.to_string())];
-        // The manifest's keys: the host's id, then the platform it is pinned under (the app's parser reads both).
-        let (id, platform) = (CEF.id, Os::here().pin_platform());
-        fs::write(
-            self.work.join("host-pins.json"),
-            json!({id: {platform: [{"file": file, "size": size, "sha256": sha256}]}}).to_string(),
-        )?;
-        let pin_version = cef::pin(Os::here()).ok_or_else(|| io::Error::other("no CEF pin for this OS"))?.version;
-        let eng = self.work.join("eng");
-        fs::create_dir_all(&eng)?;
-        let eng_exe = eng.join("manifold.exe");
-        fs::copy(exe, &eng_exe)?;
-        let webview2 = WEBVIEW2.file_name(Os::here());
-        fs::copy(exe.with_file_name(&webview2), eng.join(&webview2))?;
-        let proxy = Proxy::start(true)?;
-
-        self.engine_app(&eng_exe, &proxy, "states", "")?;
-        // The seeded CEF tab can't start: its card says so (graph view, then its Tab view).
-        self.shot("engine-states-graph")?;
-        send!(self, "GRAPHRIGHT", "GRAPHOPEN", "SLEEP 3")?;
-        self.shot("engine-states-failed-tab")?;
-        send!(self, "TOGGLEVIEW", "SLEEP 1", "TOGGLESETTINGSPAGE", "SLEEP 2")?;
-        self.shot("engine-states-settings-notinstalled")?;
-        self.picker_shot("engine-states-picker-notinstalled")?;
-        // The Engines section's Download button asks first, with the size.
-        self.inst.click_control("Download")?;
-        send!(self, "SLEEP 1")?;
-        self.shot("engine-install-confirm")?;
-        // Confirm with the proxy refusing: the install fails and the row says why, with Retry. The dialog is in
-        // front, so its own Download button is the one found by that name.
-        self.inst.click_control("Download")?;
-        send!(self, "SLEEP 4")?;
-        self.shot("engine-states-settings-failed")?;
-        self.picker_shot("engine-states-picker-failed")?;
-        // Retry with the proxy silent: Installing, with Cancel.
-        proxy.set_refuse(false);
-        self.inst.click_control("Retry")?;
-        send!(self, "SLEEP 1")?;
-        self.inst.click_control("Download")?;
-        send!(self, "SLEEP 2")?;
-        self.shot("engine-states-settings-installing")?;
-        self.picker_shot("engine-states-picker-installing")?;
-        self.engine_stop()?;
-        // Files on disk, judged by their marker: this pin's is Installed (size, Remove), another's is Update needed.
-        // Fresh instances: a failed install outranks the disk in the state, so they can't follow the one above.
-        self.engine_app(&eng_exe, &proxy, "installed", "")?;
-        self.fake_host(&pins, false)?;
-        self.fake_runtime(pin_version)?;
-        send!(self, "TOGGLESETTINGSPAGE", "SLEEP 2")?;
-        self.shot("engine-states-settings-installed")?;
-        self.engine_stop()?;
-        self.engine_app(&eng_exe, &proxy, "stale", "")?;
-        self.fake_host(&pins, true)?;
-        self.fake_runtime("old-version")?;
-        send!(self, "TOGGLESETTINGSPAGE", "SLEEP 2")?;
-        self.shot("engine-states-settings-stale")?;
-        self.picker_shot("engine-states-picker-stale")?;
-        self.engine_stop()?;
-        // Bring-your-own folders: one whose archive.json names this pin (Custom), one that names another build.
-        for (name, archive) in [("custom", pin_version), ("custom-bad", "151.0.1+gabcdef+chromium-151.0.0.1")] {
-            // Its path shows on the settings page, so it is named by its files, not kept in the work dir.
-            let archive = json!({"type": "minimal", "name": format!("cef_binary_{archive}_windows64_minimal.tar.bz2")})
-                .to_string();
-            let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
-            let dir = content_dir(&std::env::temp_dir(), &[(lib, b""), ("archive.json", archive.as_bytes())])?;
-            let more = format!(", \"cef_directory\": {}", Value::String(dir.display().to_string().replace('\\', "/")));
-            self.engine_app(&eng_exe, &proxy, name, &more)?;
-            self.fake_host(&pins, false)?; // a bring-your-own runtime still needs the downloaded host
-            send!(self, "TOGGLESETTINGSPAGE", "SLEEP 2")?;
-            self.shot(&format!("engine-states-settings-{name}"))?;
-            self.picker_shot(&format!("engine-states-picker-{name}"))?;
-            self.engine_stop()?;
-        }
-        Ok(())
-    }
-
-    /// The Default starting engine picker open, shot, closed.
-    fn picker_shot(&mut self, name: &str) -> io::Result<()> {
-        self.inst.click_control(DEFAULT_ENGINE)?;
-        send!(self, "SLEEP 1")?;
-        self.shot(name)?;
-        send!(self, AWAY, "SLEEP 1")
     }
 }
 
@@ -1783,16 +1671,6 @@ mod tests {
     #[test]
     fn the_seed_json_keeps_its_key_order() {
         assert_eq!(seed_data(), r#"{"name":"demo","items":[1,2,3],"nested":{"a":true,"b":null}}"#);
-    }
-
-    #[test]
-    fn the_fixture_host_is_this_oss_cef_file() {
-        let (file, size, sha) = fake_cef_host();
-        assert!(
-            file == if cfg!(windows) { "manifold-view-cef.exe" } else { "manifold-view-cef" }
-                && size > 0
-                && sha.len() == 64
-        );
     }
 
     #[test]

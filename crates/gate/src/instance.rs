@@ -153,6 +153,11 @@ pub fn log_tail(log: &Path, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
+/// The first command the app didn't know, from its log: it only logs one, and the step that sent it passes doing nothing.
+fn unrecognized_command(log: &str) -> Option<&str> {
+    log.lines().find(|l| l.contains("Unrecognized debug command"))
+}
+
 pub struct Instance {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -340,7 +345,10 @@ impl Instance {
         loop {
             if let Some(status) = self.child.try_wait()? {
                 self.stdin = None;
-                return Ok(status);
+                return match unrecognized_command(&fs::read_to_string(&self.log).unwrap_or_default()) {
+                    Some(line) => Err(io::Error::other(line.to_string())),
+                    None => Ok(status),
+                };
             }
             if Instant::now() >= deadline {
                 self.kill();
@@ -370,6 +378,13 @@ impl Drop for Instance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unknown_command_in_the_log_is_found() {
+        let line = "Unrecognized debug command: \"SLEEPNODE t1\" -- try HELP";
+        assert_eq!(unrecognized_command(&format!("started\n{line}\nquit\n")), Some(line));
+        assert_eq!(unrecognized_command("started\nquit\n"), None);
+    }
 
     #[test]
     fn launch_registers_its_log_once_and_take_empties_the_list() {

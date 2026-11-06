@@ -343,6 +343,11 @@ impl State {
         self.0["toast"].as_str()
     }
 
+    /// Whether a tooltip is up (`popups`, in egui's Tooltip layer).
+    pub fn tooltip_showing(&self) -> bool {
+        self.0["popups"].as_array().is_some_and(|list| list.iter().any(|p| p["order"] == "Tooltip"))
+    }
+
     /// The `download` object (url, path, bytes, total, completed, failed, failure) of each download card fetched from
     /// `url`, in draw order.
     pub fn downloads_from(&self, url: &str) -> Vec<&Value> {
