@@ -17,7 +17,8 @@
 //! the CEF host built (`gate sync-runtime-deps`; README "Engine setup for the gate"), `servo` the Servo host built in `target-servo` with
 //! its DLLs beside it (`gate sync-runtime-deps`; README "Building Servo on its own"), and `webkit` the WebKit host built
 //! in WSL plus `SITE_HOST=<ip>`, the WSL gateway as Windows sees it (`wsl.exe -d Ubuntu -- ip route`, the default
-//! route's `via`; README "WebKit under the gate"); without it the webkit steps fail.
+//! route's `via`; README "WebKit under the gate"); without it the webkit steps fail. A listed host older than its sources
+//! stops the gate before it starts (`fresh::stale_host`).
 //!
 //! Build first (`cargo build -j 8 -p manifold -p manifold-view-webview2 -p manifold-view-pdfium -p gate`) and run from
 //! the repo root, detached and low priority: `cmd //c start "" //b //belownormal target/debug/gate.exe all LOG [mode]`.
@@ -40,6 +41,7 @@ use windows_sys::Win32::Foundation::{FILETIME, SYSTEMTIME};
 use windows_sys::Win32::System::SystemInformation::GetLocalTime;
 use windows_sys::Win32::System::Threading::GetSystemTimes;
 
+use crate::fresh::{repo, stale_host};
 use crate::instance::job;
 use crate::timing;
 
@@ -256,6 +258,12 @@ const STEPS: &[Step] = &[
     step("shots-aa", Mode::Full),
 ];
 
+/// One line for each engine host a step of this run needs that is older than its sources, under the repo `root`.
+fn stale_hosts(mode: Mode, with_engines: &[String], root: &Path) -> Vec<String> {
+    let used = |engine: &String| STEPS.iter().any(|s| s.from <= mode && s.engine == Some(engine.as_str()));
+    with_engines.iter().filter(|e| used(e)).filter_map(|e| by_id(e)).filter_map(|h| stale_host(h, root)).collect()
+}
+
 pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     let mode_name = mode.as_deref().unwrap_or("full");
     let Some(mode) = Mode::parse(mode_name) else {
@@ -273,6 +281,16 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    let with_engines: Vec<String> =
+        std::env::var("WITH_ENGINES").map(|v| v.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
+    // Before anything runs: the stale host would otherwise show only at the end of a half-hour run, or pass on old code.
+    let stale = stale_hosts(mode, &with_engines, &repo());
+    if !stale.is_empty() {
+        for line in stale {
+            append(&log, &format!("GATE not run: {line}"));
+        }
+        return ExitCode::from(1);
+    }
     let cpu_log = sibling(&log, "cpu");
     let _ = fs::remove_file(&cpu_log);
 
@@ -323,8 +341,6 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
     for i in 1..=mode.runs() {
         g.stage(&format!("two-{i}"), &sibling(&log, &format!("two-{i}.log")), gate("two"));
     }
-    let with_engines: Vec<String> =
-        std::env::var("WITH_ENGINES").map(|v| v.split_whitespace().map(str::to_owned).collect()).unwrap_or_default();
     for step in STEPS {
         if step.from > mode {
             continue;
@@ -401,6 +417,36 @@ mod tests {
         assert_eq!(runs(Mode::Ui), only(Mode::Ui).len());
         assert_eq!(Mode::parse("light"), Some(Mode::Light));
         assert_eq!(Mode::parse("most"), None);
+    }
+
+    /// A host a step of this run needs is judged by its dep-info; `cef` has no `ui` step, so `ui` does not ask.
+    #[test]
+    fn a_stale_host_stops_only_a_run_that_uses_it() {
+        if std::env::var_os("ALLOW_STALE").is_some() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, cef) = (tmp.path(), vec!["cef".to_owned()]);
+        let debug = root.join("target/debug");
+        fs::create_dir_all(&debug).unwrap();
+        let (src, exe) = (root.join("src.rs"), debug.join("manifold-view-cef.exe"));
+        let set = |file: &Path, secs| {
+            let f = File::create(file).unwrap();
+            f.set_modified(UNIX_EPOCH + Duration::from_secs(secs)).unwrap();
+        };
+        let rule =
+            format!("{}: {}", exe.display(), src.display()).replace(' ', "\\ ").replacen(".exe:\\ ", ".exe: ", 1);
+        fs::write(debug.join("manifold-view-cef.d"), rule).unwrap();
+        set(&exe, 2);
+        set(&src, 1);
+        assert_eq!(stale_hosts(Mode::Full, &cef, root), Vec::<String>::new(), "built after its sources");
+
+        set(&src, 3);
+        let stale = stale_hosts(Mode::Light, &cef, root);
+        assert_eq!(stale.len(), 1, "{stale:?}");
+        assert!(stale[0].contains("manifold-view-cef.exe is older than") && stale[0].contains("src.rs"), "{stale:?}");
+        assert_eq!(stale_hosts(Mode::Ui, &cef, root), Vec::<String>::new(), "no `ui` step needs CEF");
+        assert_eq!(stale_hosts(Mode::Full, &[], root), Vec::<String>::new(), "not asked for");
     }
 
     #[test]

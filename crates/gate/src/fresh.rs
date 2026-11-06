@@ -60,9 +60,32 @@ pub(crate) fn sources_newer_than(exe: &Path) -> Vec<PathBuf> {
     parse_dep_info(&text).into_iter().filter(|src| mtime(src).is_some_and(|t| t > built)).collect()
 }
 
-/// `require_fresh_exe`: `Err` names the stale files. `ALLOW_STALE` set (non-empty) skips the check.
+/// `ALLOW_STALE` set (non-empty) skips every check here.
+fn stale_allowed() -> bool {
+    std::env::var_os("ALLOW_STALE").is_some_and(|v| !v.is_empty())
+}
+
+/// What is wrong with an engine host's own build in `root/<dev_dir or target>/debug/`, if it is older than its sources.
+/// These hosts stay out of `require_fresh_exe`, which every stage runs, so only a run that uses one is judged by it
+/// (`gate all`, `WITH_ENGINES`). One that is absent is left to its stages, and WebKit's has no `.exe` rule to read.
+pub(crate) fn stale_host(host: &Host, root: &Path) -> Option<String> {
+    if stale_allowed() {
+        return None;
+    }
+    let exe = root.join(host.dev_dir.unwrap_or("target")).join("debug").join(host.file_name(Os::here()));
+    let newer = sources_newer_than(&exe);
+    let first = newer.first()?;
+    Some(format!(
+        "{} is older than {} and {} more: rebuild it (README \"Engine setup for the gate\"), or set ALLOW_STALE=1.",
+        exe.display(),
+        first.display(),
+        newer.len() - 1
+    ))
+}
+
+/// `require_fresh_exe`: `Err` names the stale files, unless `stale_allowed`.
 pub fn require_fresh_exe(exe: &Path) -> Result<(), String> {
-    if std::env::var_os("ALLOW_STALE").is_some_and(|v| !v.is_empty()) {
+    if stale_allowed() {
         return Ok(());
     }
     let dir = exe.parent().unwrap_or(Path::new("."));
