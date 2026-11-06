@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Seed a host's cookies when it lands (ARC3)

@@ -10,7 +10,7 @@ const PROD_LIMIT: usize = 1200;
 /// An inline `mod tests {` block (to the end of the file) may not reach this many lines: it moves to `foo/tests.rs`.
 const TEST_BLOCK_LIMIT: usize = 250;
 /// `struct App`'s direct fields. Lower it when fields move into groups (ARC7); never raise it.
-const APP_FIELDS_MAX: usize = 61;
+const APP_FIELDS_MAX: usize = 60;
 
 /// Files over `PROD_LIMIT` today: path under `crates/` and the prod line count the file may not exceed.
 const PROD_ALLOWED: &[(&str, usize)] = &[

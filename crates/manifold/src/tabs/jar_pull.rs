@@ -81,7 +81,8 @@ impl App {
             return false;
         }
         self.ensure_jar_loaded(key);
-        let (Some(jar), Some((_, tab))) = (self.jars.get_mut(&key), self.cookies.jar_tabs.get_mut(&tab_id)) else {
+        let (Some(jar), Some((_, tab))) = (self.cookies.jars.get_mut(&key), self.cookies.jar_tabs.get_mut(&tab_id))
+        else {
             return false;
         };
         let changed = jar.merge(pulled, tab);

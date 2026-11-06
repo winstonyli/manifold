@@ -429,10 +429,13 @@ fn remove_key(slots: &mut [Option<Cookie>], index: &mut HashMap<Key, usize>, k: 
     true
 }
 
-/// The cookie jars' runtime bookkeeping (`App::cookies`): which jar each host was spawned with, the pull rounds and the
-/// holds parked for a tab's last cookies. The jars themselves are `App::jars`.
+/// The cookie jars and their runtime bookkeeping (`App::cookies`): which jar each host was spawned with, the pull rounds
+/// and the holds parked for a tab's last cookies.
 #[derive(Default)]
 pub(crate) struct CookieState {
+    /// The cookie jars WebView2 and CEF tabs share, by jar card id. A jar loads the first time a tab spawns with it
+    /// (`ensure_jar_loaded`). An ephemeral jar lives only here.
+    pub(crate) jars: BTreeMap<NodeId, Jar>,
     /// Per running host, the jar it was **spawned with** (spec "Live tabs when `jar` changes") and what its engine is
     /// believed to hold (`jar::TabCookies`): only a cookie the tab itself changed reaches that jar, and only a cookie
     /// the tab itself reported can be deleted by its absence.
@@ -469,7 +472,9 @@ impl CookieState {
             jar_pulls,
             jar_silent,
             cookie_holds,
-            // `App::forget_jar_memory` saves a dirty jar (file I/O, so it stays an `App` method), then drops its snapshot.
+            // `App::forget_jar_memory` saves a dirty jar (file I/O, so it stays an `App` method), then drops it and its
+            // snapshot. Keyed by jar, not by tab.
+            jars: _,
             jar_dirty: _,
             jar_snapshots: _,
             // A round timestamp, not per node.
@@ -492,10 +497,6 @@ pub struct Snapshots {
 }
 
 impl Snapshots {
-    pub fn new(jars: BTreeMap<NodeId, Jar>) -> Snapshots {
-        Snapshots { jars, clears: HashMap::new() }
-    }
-
     pub fn insert(&mut self, id: NodeId, jar: Jar) {
         self.jars.insert(id, jar);
     }

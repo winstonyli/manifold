@@ -129,11 +129,11 @@ impl App {
     /// are written to a new file (a locked one writes nothing).
     pub(crate) fn after_jar_ephemeral_changed(&mut self, id: NodeId, on: bool) {
         if on {
-            if let (false, Some(dir)) = (self.jars.contains_key(&id), self.jars_dir()) {
+            if let (false, Some(dir)) = (self.cookies.jars.contains_key(&id), self.jars_dir()) {
                 let jar = Jar::load(&dir, id);
                 self.publish_jar(id, jar);
             }
-            if let (Some(dir), Some(false)) = (self.jars_dir(), self.jars.get(&id).map(Jar::is_locked)) {
+            if let (Some(dir), Some(false)) = (self.jars_dir(), self.cookies.jars.get(&id).map(Jar::is_locked)) {
                 if let Err(e) = Jar::delete_files(&dir, id) {
                     eprintln!("jar: could not delete {id}: {e}");
                 }
@@ -178,7 +178,7 @@ impl App {
         if self.cookies.jar_dirty.contains_key(&id) {
             self.save_jar(id);
         }
-        self.jars.remove(&id);
+        self.cookies.jars.remove(&id);
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.remove(&id);
         }
@@ -287,7 +287,7 @@ impl App {
     /// Loads `key`'s jar the first time a tab needs it (spec "Manifold state": named jars load lazily). An ephemeral
     /// jar starts empty and is never read from disk.
     pub(crate) fn ensure_jar_loaded(&mut self, id: NodeId) {
-        if self.jars.contains_key(&id) {
+        if self.cookies.jars.contains_key(&id) {
             return;
         }
         let jar = match self.jars_dir() {
@@ -302,7 +302,7 @@ impl App {
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.insert(id, jar.clone());
         }
-        self.jars.insert(id, jar);
+        self.cookies.jars.insert(id, jar);
     }
 
     fn is_ephemeral(&self, id: NodeId) -> bool {
@@ -314,7 +314,7 @@ impl App {
     /// alone. Settles the jar's dirty mark (`jar_dirty`): every write goes through here.
     pub(crate) fn save_jar(&mut self, id: NodeId) {
         self.cookies.jar_dirty.remove(&id); // written now, or never (ephemeral, no dir)
-        let (Some(dir), Some(jar)) = (self.jars_dir(), self.jars.get(&id)) else { return };
+        let (Some(dir), Some(jar)) = (self.jars_dir(), self.cookies.jars.get(&id)) else { return };
         if self.is_ephemeral(id) {
             return;
         }
@@ -332,7 +332,7 @@ impl App {
             return;
         }
         self.ensure_jar_loaded(id);
-        let Some(jar) = self.jars.get(&id) else { return };
+        let Some(jar) = self.cookies.jars.get(&id) else { return };
         // Cleared in place, so a locked jar stays locked and its unreadable file is still never overwritten.
         let mut jar = jar.clone();
         jar.cookies.clear();
@@ -341,7 +341,7 @@ impl App {
         if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
             snapshots.insert_cleared(id, jar.clone());
         }
-        self.jars.insert(id, jar);
+        self.cookies.jars.insert(id, jar);
         self.save_jar(id);
         // Their engines still hold the old cookies: they must be replaced although their jar is unchanged.
         let running: Vec<NodeId> =

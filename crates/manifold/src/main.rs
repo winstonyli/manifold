@@ -281,10 +281,7 @@ struct App {
     page_text: tabs::PageTextTracker,
     /// The page text log (`search`).
     search: search::Search,
-    /// The cookie jars WebView2 and CEF tabs share, by jar card id (see `jar`). A jar loads the first time a tab
-    /// spawns with it (`ensure_jar_loaded`). An ephemeral jar lives only here.
-    jars: BTreeMap<store::model::NodeId, jar::Jar>,
-    /// Per-host cookie bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
+    /// The cookie jars and their per-host bookkeeping: pull rounds, holds, dirty jars (see `jar::CookieState`).
     cookies: jar::CookieState,
     /// Files dropped on the window since the last frame -- each one's
     /// placement (`drop_file`) is offset by `egui::vec2(24.0, 24.0) *
@@ -474,8 +471,6 @@ impl App {
         apply_style(&egui_ctx);
         apply_fonts(&egui_ctx);
         apply_theme_choice(&egui_ctx, settings.theme);
-        let jars: BTreeMap<store::model::NodeId, jar::Jar> = BTreeMap::new();
-        let jar_snapshots = Arc::new(std::sync::Mutex::new(jar::Snapshots::new(jars.clone())));
         let mut app = Self {
             window: None,
             last_window_title: "manifold".to_string(),
@@ -497,8 +492,7 @@ impl App {
             idle_clock: tabs::sleep::idle::IdleClock::default(),
             page_text: Default::default(),
             search: search::Search::open(search_dir.as_deref()),
-            jars,
-            cookies: jar::CookieState { jar_snapshots, ..Default::default() },
+            cookies: jar::CookieState::default(),
             scoped: node_store::NodeScoped { nav_history, ..Default::default() },
             drop_batch: 0,
             view_mode: ViewMode::Item,

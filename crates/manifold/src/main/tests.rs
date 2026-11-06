@@ -87,7 +87,6 @@ const EXCUSED: &[(&str, &str)] = &[
     ("focused", "`unshow`'s focus, split and view-mode logic"),
     ("split_tab", "`unshow`'s focus, split and view-mode logic"),
     ("viewed_image", "`unshow` clears it with the Item view; `image_view` resets when the image is gone"),
-    ("jars", "removed by `forget_jar_memory`, which `forget_id` calls"),
 ];
 
 /// C1: a new `App` field whose type mentions a node or card id must be decided: named in `forget_id`'s body (a
@@ -161,7 +160,7 @@ fn on_default(app: &mut App, tab: NodeId) {
 }
 
 fn default_jar(app: &App) -> &jar::Jar {
-    &app.jars[&app.default_jar().expect("on_default made the Default")]
+    &app.cookies.jars[&app.default_jar().expect("on_default made the Default")]
 }
 
 #[test]
@@ -211,9 +210,9 @@ fn a_pull_merges_into_the_jar_the_tab_was_spawned_with() {
     app.ensure_jar_loaded(work);
     app.cookies.jar_tabs.insert(node(1), (work, jar::TabCookies::default()));
     assert!(app.apply_pulled_cookies(node(1), SID));
-    assert_eq!(app.jars[&work].cookies.len(), 1);
+    assert_eq!(app.cookies.jars[&work].cookies.len(), 1);
     let default = default_jar_id(&mut app);
-    assert!(app.jars.get(&default).is_none_or(|j| j.cookies.is_empty()), "default untouched");
+    assert!(app.cookies.jars.get(&default).is_none_or(|j| j.cookies.is_empty()), "default untouched");
 }
 
 #[test]
@@ -224,7 +223,7 @@ fn a_pull_with_no_entry_or_a_deleted_jar_is_dropped() {
     app.cookies.jar_tabs.insert(node(1), (work, jar::TabCookies::default()));
     app.remove_remotely_deleted(work);
     assert!(!app.apply_pulled_cookies(node(1), SID), "its jar was deleted while it ran: dropped");
-    assert!(app.jars.values().all(|j| j.cookies.is_empty()));
+    assert!(app.cookies.jars.values().all(|j| j.cookies.is_empty()));
 }
 
 #[test]
@@ -255,7 +254,7 @@ fn an_ephemeral_jar_never_writes_a_file() {
     assert!(jar::Jar::path(&dir, tmp).exists(), "turned off: saved");
     app.set_jar_ephemeral(tmp, true);
     assert!(!jar::Jar::path(&dir, tmp).exists(), "turned on: file deleted");
-    assert_eq!(app.jars[&tmp].cookies.len(), 1, "cookies kept in memory until quit");
+    assert_eq!(app.cookies.jars[&tmp].cookies.len(), 1, "cookies kept in memory until quit");
 }
 
 #[test]
@@ -270,11 +269,11 @@ fn closing_a_jar_keeps_its_file_and_clearing_empties_it() {
     app.flush_dirty_jars(None); // the round ends
     assert!(jar::Jar::path(&dir, key).exists());
     app.clear_jar_cookies(key);
-    assert!(app.jars[&key].cookies.is_empty());
+    assert!(app.cookies.jars[&key].cookies.is_empty());
     assert!(jar::Jar::load(&dir, key).cookies.is_empty(), "cleared on disk too");
     app.close_node(work);
     assert!(jar::Jar::path(&dir, key).exists(), "closing never wipes credentials");
-    assert!(!app.jars.contains_key(&key));
+    assert!(!app.cookies.jars.contains_key(&key));
 }
 
 /// A jar `Work` whose file holds one cookie, saved by an earlier run: this run has not loaded it.
@@ -296,7 +295,7 @@ fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
     let key = work;
     app.set_jar_ephemeral(work, true);
     assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
-    assert_eq!(app.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
+    assert_eq!(app.cookies.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
     assert_eq!(app.cookies.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
     app.set_jar_ephemeral(work, false);
     assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
