@@ -12,10 +12,9 @@ use std::process::ExitCode;
 
 use manifold_hosts::{Delivery, Os};
 
-use crate::cef_pin::hash_file;
 use crate::check::{check, check_is, exit_code, note_failure};
 use crate::fresh::repo;
-use crate::release_hosts::embedded_record;
+use crate::release_hosts::{embedded_record, hash_file};
 
 /// The first whitespace-separated word of a hash record file.
 fn recorded(path: &Path) -> Option<String> {

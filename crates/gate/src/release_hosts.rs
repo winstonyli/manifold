@@ -15,15 +15,34 @@
 //! the lines, so the tests run the cores on temp trees.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use manifold_hosts::{Delivery, Host, Os};
+use manifold_view_protocol::transport::to_hex;
 use serde_json::{json, Map, Value};
+use sha1::Sha1;
+use sha2::{Digest, Sha256};
 
-use crate::cef_pin::hash_file;
 use crate::fresh::repo;
 use crate::sync_deps::find_first;
+
+/// (SHA-256 hex, SHA-1 hex, byte count) of a file, read in 1 MiB chunks.
+pub(crate) fn hash_file(path: &Path) -> Result<(String, String, u64), String> {
+    let mut f = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (mut s256, mut s1, mut n) = (Sha256::new(), Sha1::new(), 0u64);
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let got = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if got == 0 {
+            return Ok((to_hex(&s256.finalize()), to_hex(&s1.finalize()), n));
+        }
+        s256.update(&buf[..got]);
+        s1.update(&buf[..got]);
+        n += got as u64;
+    }
+}
 
 /// The hash record of an embedded host in a release's DIST, `<stem>.embedded-<id>.sha256`, where `stem` is
 /// `manifold-vX.Y.Z-<platform>`. `release-embedded` writes it, the draft release uploads it, `release-verify` reads it.

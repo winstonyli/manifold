@@ -53,7 +53,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use manifold_hosts::{Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
+use manifold_hosts::{cef, Os, CEF, CEF_RUNTIME_DIR, HOSTS_DIR, WEBVIEW2};
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, note_failure, Section};
@@ -74,7 +74,6 @@ const SIZES_VIEWS: &str = "graph graph-menu-tab graph-newnode-menu shortcuts qui
 fn fake_cef_host() -> (String, u64, &'static str) {
     (CEF.file_name(Os::here()), 740_000, "db3e0751979c3cb3068f732ed4f0ef12ade69d183d98ceee120ad08c8d00f74c")
 }
-const CEF_PIN: &str = include_str!("../../manifold/src/cef_pin.rs");
 /// Where a click outside every popup lands and closes it.
 const AWAY: &str = "CLICK 1100 300";
 /// The settings page's pickers, by the labels of their rows (`labelled_by`).
@@ -1645,7 +1644,7 @@ impl Shots {
             self.work.join("host-pins.json"),
             json!({id: {platform: [{"file": file, "size": size, "sha256": sha256}]}}).to_string(),
         )?;
-        let pin_version = pin_version(CEF_PIN).ok_or_else(|| io::Error::other("cef_pin.rs has no version"))?;
+        let pin_version = cef::pin(Os::here()).ok_or_else(|| io::Error::other("no CEF pin for this OS"))?.version;
         let eng = self.work.join("eng");
         fs::create_dir_all(&eng)?;
         let eng_exe = eng.join("manifold.exe");
@@ -1685,7 +1684,7 @@ impl Shots {
         // Fresh instances: a failed install outranks the disk in the state, so they can't follow the one above.
         self.engine_app(&eng_exe, &proxy, "installed", "")?;
         self.fake_host(&pins, false)?;
-        self.fake_runtime(&pin_version)?;
+        self.fake_runtime(pin_version)?;
         send!(self, "TOGGLESETTINGSPAGE", "SLEEP 2")?;
         self.shot("engine-states-settings-installed")?;
         self.engine_stop()?;
@@ -1697,8 +1696,7 @@ impl Shots {
         self.picker_shot("engine-states-picker-stale")?;
         self.engine_stop()?;
         // Bring-your-own folders: one whose archive.json names this pin (Custom), one that names another build.
-        for (name, archive) in [("custom", pin_version.as_str()), ("custom-bad", "151.0.1+gabcdef+chromium-151.0.0.1")]
-        {
+        for (name, archive) in [("custom", pin_version), ("custom-bad", "151.0.1+gabcdef+chromium-151.0.0.1")] {
             // Its path shows on the settings page, so it is named by its files, not kept in the work dir.
             let archive = json!({"type": "minimal", "name": format!("cef_binary_{archive}_windows64_minimal.tar.bz2")})
                 .to_string();
@@ -1737,12 +1735,6 @@ fn rect(card: &Value) -> io::Result<[f64; 4]> {
     Ok(out)
 }
 
-/// The text between `after` and the next `until` following it.
-fn between<'a>(text: &'a str, after: &str, until: &str) -> Option<&'a str> {
-    let rest = &text[text.find(after)? + after.len()..];
-    Some(&rest[..rest.find(until)?])
-}
-
 /// A folder in `root` named after the SHA-256 of `files` (name, contents), holding them. A file whose path shows in a
 /// shot goes here rather than in the work dir, whose name holds the pid, so the shot repeats between runs. An
 /// existing folder is reused; each file is written under a per-process name and renamed into place, so runs at once
@@ -1777,11 +1769,6 @@ fn content_dir(root: &Path, files: &[(&str, &[u8])]) -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-/// The CEF version cef_pin.rs pins (its first `version: "..."`).
-fn pin_version(src: &str) -> Option<String> {
-    between(src, "version: \"", "\"").map(str::to_string)
-}
-
 /// The seed's `data.json`, keys in the order written: the JSON views show them, and the bytes name the seed's folder.
 fn seed_data() -> String {
     json!({"name": "demo", "items": [1, 2, 3], "nested": {"a": true, "b": null}}).to_string()
@@ -1799,14 +1786,13 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_host_and_the_repos_cef_pin_parse() {
+    fn the_fixture_host_is_this_oss_cef_file() {
         let (file, size, sha) = fake_cef_host();
         assert!(
             file == if cfg!(windows) { "manifold-view-cef.exe" } else { "manifold-view-cef" }
                 && size > 0
                 && sha.len() == 64
         );
-        assert!(pin_version(CEF_PIN).is_some_and(|v| v.contains("chromium")));
     }
 
     #[test]
