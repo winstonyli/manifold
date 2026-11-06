@@ -19,7 +19,7 @@ pub(crate) enum Runtime {
     Pdf(PdfPayload),
     Json(JsonPayload),
     /// A cookie jar's card. Everything it shows is the mirror's (name, colour, ephemeral flag); its cookies are
-    /// `App::jars`, keyed by its id.
+    /// `CookieState::jars`, keyed by its id.
     Jar,
     /// A card of a type this build doesn't know: the generic fields only, all the mirror's (spec 2026-10-14).
     Unknown,

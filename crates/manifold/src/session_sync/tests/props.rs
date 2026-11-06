@@ -153,9 +153,7 @@ fn a_tab_duplicate_keeps_the_tree() {
         spawn,
         generation,
         result: Ok(view),
-        seeded: Default::default(),
         jar: Default::default(),
-        seed_clears: None,
     });
     assert_eq!(app.doc.mirror.trees_of(copy), app.doc.mirror.trees_of(tab), "and lands with it");
     assert!(app.save_session());

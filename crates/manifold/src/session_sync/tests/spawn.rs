@@ -360,15 +360,28 @@ fn clearing_failed_cards_does_not_save_before_a_parked_remote_delete_lands() {
         spawn,
         generation,
         result: Ok(tab),
-        seeded: Default::default(),
         jar: Default::default(),
-        seed_clears: None,
     });
     assert!(app.save_session());
     let doc = app.doc.journal.as_ref().unwrap().doc();
     assert!(!app.nodes.contains_key(&id), "the remotely deleted landing is gone");
     assert!(!app.nodes.contains_key(&card), "the failed card was cleared");
     assert_eq!(doc.live().count(), 0, "the document agrees");
+}
+
+/// A jar engine holds its first navigation for its seed, which goes out before anything else landing sends it.
+#[test]
+fn the_seed_is_the_first_message_a_muted_tab_gets() {
+    let mut app = app_on(&temp_dir("seed-first").join("session.mnf"), 1);
+    let id = app.alloc_node_id();
+    let mut spawn =
+        crate::tabs::TabSpawn::new(id, "https://t/".into(), ViewKind::Cef, egui::Vec2::ZERO, SpawnPurpose::New, 1.0);
+    spawn.carry.muted = true;
+    app.spawn_tab_async(spawn);
+    let mut peers = land_spawns(&mut app);
+    let sent = sent(&mut peers[0]);
+    assert!(matches!(sent[0], HostToView::SetCookies(_)));
+    assert!(sent.iter().any(|m| matches!(m, HostToView::SetMuted { muted: true })));
 }
 
 /// A respawn lands an existing tab: it is no new intent, so a same-url failed card stays.

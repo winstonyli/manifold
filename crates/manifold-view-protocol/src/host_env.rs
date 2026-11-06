@@ -19,7 +19,9 @@ pub const ENV_AWAIT_COOKIES: &str = "VIEW_AWAIT_COOKIES";
 /// WebKit host under WSL reads it from its command line, where hex is shell-safe.
 pub const ENV_SETTINGS: &str = "VIEW_SETTINGS";
 
-/// How long a host started with `ENV_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating.
+/// How long a host started with `ENV_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating. The seed goes
+/// out when the UI thread lands the spawn, so a long stall there uses up this wait; a late seed still applies, from the
+/// next load on.
 pub const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 
 /// The URL a host opens when manifold passes none.

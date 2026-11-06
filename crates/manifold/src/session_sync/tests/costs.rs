@@ -134,3 +134,52 @@ fn teardown_cost() {
     }
     report("teardown, 2000 notes and 300 links", best_median(times));
 }
+
+/// What landing a session restore costs the UI thread now that it seeds each host: 50 Restore spawns on one 5,000-cookie
+/// jar, from the first `handle_tab_spawn_result` to the last, each with its real `save_session`. Fake hosts only queue
+/// the seed, so this is the landing and not its delivery. A later host waits for the landings ahead of it, out of a
+/// margin of its start-up plus `COOKIE_SEED_WAIT`. Timing, not correctness, so ignored:
+/// `cargo test --release -j 12 -p manifold -- --ignored --nocapture restore_landing_costs`
+#[test]
+#[ignore]
+fn restore_landing_costs() {
+    use crate::store::testutil::{best_median, report};
+    const TABS: usize = 50;
+    const COOKIES: usize = 5000;
+    let cookie = |i: usize| crate::jar::Cookie {
+        name: format!("cookie_{i}"),
+        value: "a1b2c3d4".repeat(8),
+        domain: format!(".site{}.example.com", i % 200),
+        path: "/".into(),
+        expires: Some(2_000_000_000.0),
+        secure: true,
+        http_only: true,
+        same_site: crate::jar::SameSite::Lax,
+    };
+    let round = || {
+        let mut app = app_on(&temp_dir("landing-cost").join("session.mnf"), 1);
+        let jar = default_jar_id(&mut app);
+        app.ensure_jar_loaded(jar);
+        app.cookies.jars.get_mut(&jar).unwrap().cookies = (0..COOKIES).map(cookie).collect();
+        for i in 0..TABS {
+            let id = app.alloc_node_id();
+            let url = format!("https://site{i}.example.com/");
+            let mut spawn =
+                crate::tabs::TabSpawn::new(id, url, ViewKind::Cef, egui::Vec2::ZERO, SpawnPurpose::Restore, 1.0);
+            spawn.jar = Some(jar);
+            app.spawn_tab_async(spawn);
+        }
+        let (mut outcomes, mut peers) = (Vec::new(), Vec::new());
+        for (spawn, generation) in std::mem::take(&mut app.test_spawns) {
+            let (tab, peer) = crate::process_manager::ViewTab::fake(spawn.kind);
+            outcomes.push(crate::tabs::TabSpawnOutcome { spawn, generation, result: Ok(tab), jar: Some(jar) });
+            peers.push(peer);
+        }
+        let start = std::time::Instant::now();
+        for outcome in outcomes {
+            app.handle_tab_spawn_result(outcome);
+        }
+        start.elapsed()
+    };
+    report("50 landings on a 5,000-cookie jar", best_median((0..5).map(|_| round()).collect()));
+}

@@ -11,9 +11,7 @@ impl App {
             spawn: TabSpawn { id, url, kind, parent, group, jar: spawn_jar, pos, purpose, carry, fallback_kind },
             generation,
             result,
-            seeded,
             jar,
-            seed_clears,
         } = outcome;
         let TabCarry { anchor, zoom_factor, title, muted } = carry;
         // What the tab was started with, its trees included, is what it lands with (`seed_landing`).
@@ -65,7 +63,7 @@ impl App {
         }
         match result {
             Ok(tab) => {
-                self.note_spawned_jar(id, jar, seeded, seed_clears);
+                self.seed_landed_host(id, jar, &tab);
                 let is_focused = match purpose {
                     SpawnPurpose::Root => true,
                     SpawnPurpose::New | SpawnPurpose::Split => false,

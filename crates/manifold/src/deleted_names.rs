@@ -43,3 +43,12 @@ fn no_source_names_a_deleted_host_layout_item() {
     let offenders = crate::src_scan::offenders(&needles, "deleted_names.rs");
     assert_eq!(offenders, Vec::<String>::new(), "read the host through `ViewDesc::host` and `manifold_hosts`");
 }
+
+/// A host is seeded on the UI thread when it lands (spec 2026-11-05-jar-seed-at-landing-design.md), so the jars have one
+/// copy and a clear needs no count.
+#[test]
+fn no_source_names_the_spawn_threads_jar_copy() {
+    let needles = ["jar_snapshots", "Snapshots", "seed_clears"];
+    let offenders = crate::src_scan::offenders(&needles, "deleted_names.rs");
+    assert_eq!(offenders, Vec::<String>::new(), "read the jar through `CookieState::jars`, on the UI thread");
+}

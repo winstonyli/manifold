@@ -996,7 +996,6 @@ pub fn spawn_tab(
     initial_url: &str,
     custom_cef: Option<&Path>,
     settings: &HostSettings,
-    jar_json: &dyn Fn() -> String,
     wake: view_io::Wake,
 ) -> Result<ViewTab, SpawnError> {
     let desc = kind.desc();
@@ -1050,7 +1049,8 @@ pub fn spawn_tab(
         .stdout(stdout_file)
         .stderr(stderr_file);
     command.env(host_env::ENV_SETTINGS, settings.to_hex());
-    // Jar engines wait for the jar (`SetCookies`) before their first navigation.
+    // Jar engines wait for the jar (`SetCookies`, sent when the tab lands: `seed_landed_host`) before their first
+    // navigation.
     if desc.tags.has(Tag::Jars) {
         command.env(host_env::ENV_AWAIT_COOKIES, "1");
     }
@@ -1098,7 +1098,7 @@ pub fn spawn_tab(
 
     let writer = view_io::Writer::spawn(to_view, &format!("engine writer {socket_id}"));
     let frame_map = view_io::FrameMap::default();
-    let tab = ViewTab {
+    Ok(ViewTab {
         kind,
         socket_id,
         writer,
@@ -1111,12 +1111,7 @@ pub fn spawn_tab(
         shown: true,
         first_frame: FirstFrame::Waiting,
         settings: settings.clone(),
-    };
-    if desc.tags.has(Tag::Jars) {
-        // Serialised now that the host is connected, so cookies merged while it started are in the seed.
-        tab.send(&HostToView::SetCookies(jar_json()));
-    }
-    Ok(tab)
+    })
 }
 
 mod availability;

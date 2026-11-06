@@ -186,12 +186,9 @@ pub(crate) struct TabSpawnOutcome {
     /// `App::session_generation` when the spawn started -- see that field.
     pub(crate) generation: u64,
     pub(crate) result: Result<ViewTab, process_manager::SpawnError>,
-    /// The cookies the host was seeded with, as its starting `jar::TabCookies` (empty for hosts that are not).
-    pub(crate) seeded: jar::TabCookies,
-    /// The jar the host was seeded from, resolved when the spawn started: its pulls merge into this one.
+    /// The jar the host was spawned with, resolved when the spawn started: it is seeded from this one when it lands
+    /// (`seed_landed_host`), and its pulls merge into it.
     pub(crate) jar: Option<store::model::NodeId>,
-    /// That jar's clear count when the seed was read (`jar::Snapshots::seed`); `None` if it never was.
-    pub(crate) seed_clears: Option<u64>,
 }
 
 /// What `spawn_tab_async` needs to start a tab and, once it's up, to
@@ -390,40 +387,11 @@ impl App {
         let runtime = process_manager::runtime::HostRuntime::of(spawn.kind)
             .unwrap_or(process_manager::runtime::HostRuntime::Native);
         let settings = self.host_settings(runtime);
-        let snapshots = self.cookies.jar_snapshots.clone();
         std::thread::spawn(move || {
-            // Read when the host has connected (the host starts seconds after the spawn): remember its keys, and the
-            // jar's clear count then, so a clear before it lands is caught (`note_spawned_jar`).
-            let seeded = std::cell::RefCell::new((crate::jar::TabCookies::default(), None));
-            let seed = || {
-                let (cookies, clears) = match (jar, snapshots.lock()) {
-                    (Some(jar), Ok(s)) => {
-                        let (cookies, clears) = s.seed(jar);
-                        (cookies, Some(clears))
-                    }
-                    _ => (Vec::new(), None),
-                };
-                *seeded.borrow_mut() = (crate::jar::TabCookies::seeded(&cookies), clears);
-                serde_json::to_string(&cookies).unwrap_or_else(|_| "[]".to_owned())
-            };
-            let result = process_manager::spawn_tab(
-                spawn.kind,
-                spawn.id,
-                &spawn.url,
-                custom_cef.as_deref(),
-                &settings,
-                &seed,
-                wake,
-            );
-            let (seeded, seed_clears) = seeded.into_inner();
-            let _ = proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome {
-                spawn,
-                generation,
-                result,
-                seeded,
-                jar,
-                seed_clears,
-            })));
+            let result =
+                process_manager::spawn_tab(spawn.kind, spawn.id, &spawn.url, custom_cef.as_deref(), &settings, wake);
+            let _ =
+                proxy.send_event(UserEvent::TabSpawned(Box::new(TabSpawnOutcome { spawn, generation, result, jar })));
         });
     }
 

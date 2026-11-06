@@ -130,8 +130,7 @@ impl App {
     pub(crate) fn after_jar_ephemeral_changed(&mut self, id: NodeId, on: bool) {
         if on {
             if let (false, Some(dir)) = (self.cookies.jars.contains_key(&id), self.jars_dir()) {
-                let jar = Jar::load(&dir, id);
-                self.publish_jar(id, jar);
+                self.cookies.jars.insert(id, Jar::load(&dir, id));
             }
             if let (Some(dir), Some(false)) = (self.jars_dir(), self.cookies.jars.get(&id).map(Jar::is_locked)) {
                 if let Err(e) = Jar::delete_files(&dir, id) {
@@ -179,9 +178,6 @@ impl App {
             self.save_jar(id);
         }
         self.cookies.jars.remove(&id);
-        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.remove(&id);
-        }
     }
 
     /// `profile::jars_dir()`, or a test's temp dir. Never the real profile under test (`profile::dir()` is None).
@@ -294,14 +290,6 @@ impl App {
             Some(dir) if !self.is_ephemeral(id) => Jar::load(&dir, id),
             _ => Jar::default(),
         };
-        self.publish_jar(id, jar);
-    }
-
-    /// Stores `jar` under `id` and copies it to the spawn threads' snapshot map.
-    fn publish_jar(&mut self, id: NodeId, jar: Jar) {
-        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.insert(id, jar.clone());
-        }
         self.cookies.jars.insert(id, jar);
     }
 
@@ -332,16 +320,9 @@ impl App {
             return;
         }
         self.ensure_jar_loaded(id);
-        let Some(jar) = self.cookies.jars.get(&id) else { return };
+        let Some(jar) = self.cookies.jars.get_mut(&id) else { return };
         // Cleared in place, so a locked jar stays locked and its unreadable file is still never overwritten.
-        let mut jar = jar.clone();
         jar.cookies.clear();
-        // Counted with the emptied copy, under one lock: a host still spawning whose seed was read before this is
-        // caught when it lands (`note_spawned_jar`), as it has no `jar_tabs` entry to mark below.
-        if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-            snapshots.insert_cleared(id, jar.clone());
-        }
-        self.cookies.jars.insert(id, jar);
         self.save_jar(id);
         // Their engines still hold the old cookies: they must be replaced although their jar is unchanged.
         let running: Vec<NodeId> =

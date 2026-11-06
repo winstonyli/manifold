@@ -251,8 +251,8 @@ pub enum HostToView {
     /// Sent before a tab sleeps. An engine that cannot answer stays silent
     /// and the host gives up after a few seconds.
     QueryPageState,
-    /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, right after connect, to
-    /// hosts started with `VIEW_AWAIT_COOKIES=1`, which wait for it before their first navigation.
+    /// Seeds the engine's cookie jar from a JSON array of `jar::Cookie`. Sent once, first, when the app takes in the
+    /// connected host, to hosts started with `VIEW_AWAIT_COOKIES=1`, which wait for it before their first navigation.
     ///
     /// The payload holds cookie values (session credentials): the derived `Debug` would print them, so never format
     /// this message (or `ViewToHost::Cookies`) with `{:?}`.

@@ -444,9 +444,6 @@ pub(crate) struct CookieState {
     /// although their key is unchanged, and their pulls are dropped so the old cookies cannot refill the jar. An id
     /// leaves when its host is replaced or closed (`forget`).
     pub(crate) jar_reseed: HashSet<NodeId>,
-    /// A copy of `jars` for spawn threads: the seed is read when the host connects, not when the spawn starts. Also
-    /// counts each jar's clears, so a host seeded before a clear is caught when it lands (`note_spawned_jar`).
-    pub(crate) jar_snapshots: std::sync::Arc<std::sync::Mutex<Snapshots>>,
     /// A sleep's `PageState` or a swap's `StateSnapshot` waiting for the tab's `Cookies` reply (or its deadline), so
     /// the host is not dropped before its last cookies arrive.
     pub(crate) cookie_holds: HashMap<NodeId, (std::time::Instant, crate::tabs::Held)>,
@@ -458,7 +455,7 @@ pub(crate) struct CookieState {
     /// Consecutive unanswered pulls per tab (`tabs::start_pull`).
     pub(crate) jar_silent: HashMap<NodeId, u8>,
     /// Jars a pull changed and not saved yet, each with when it first changed: saved once the pull round ends
-    /// (`flush_dirty_jars`), not once per tab's reply. Memory and `jar_snapshots` are current; only the file lags.
+    /// (`flush_dirty_jars`), not once per tab's reply. Memory is current; only the file lags.
     pub(crate) jar_dirty: BTreeMap<NodeId, std::time::Instant>,
 }
 
@@ -472,11 +469,10 @@ impl CookieState {
             jar_pulls,
             jar_silent,
             cookie_holds,
-            // `App::forget_jar_memory` saves a dirty jar (file I/O, so it stays an `App` method), then drops it and its
-            // snapshot. Keyed by jar, not by tab.
+            // Keyed by jar, not by tab: `App::forget_jar_memory` saves a dirty jar (file I/O, so it stays an `App`
+            // method), then drops it.
             jars: _,
             jar_dirty: _,
-            jar_snapshots: _,
             // A round timestamp, not per node.
             jar_last_pull: _,
         } = self;
@@ -485,41 +481,6 @@ impl CookieState {
         jar_pulls.remove(&id);
         jar_silent.remove(&id);
         cookie_holds.remove(&id)
-    }
-}
-
-/// The copy of the loaded jars spawn threads seed new hosts from (`CookieState::jar_snapshots`), with how many times each jar
-/// was cleared. Both sit under one lock, so a seed and the clear count it was read at agree.
-#[derive(Debug, Default)]
-pub struct Snapshots {
-    jars: BTreeMap<NodeId, Jar>,
-    clears: HashMap<NodeId, u64>,
-}
-
-impl Snapshots {
-    pub fn insert(&mut self, id: NodeId, jar: Jar) {
-        self.jars.insert(id, jar);
-    }
-
-    /// Drops jar `id`'s copy. Its clear count stays, so a host seeded from it still compares against it.
-    pub fn remove(&mut self, id: &NodeId) {
-        self.jars.remove(id);
-    }
-
-    /// Jar `id` was just cleared (Clear Cookies): `jar` is the emptied jar, and the clear is counted.
-    pub fn insert_cleared(&mut self, id: NodeId, jar: Jar) {
-        self.jars.insert(id, jar);
-        *self.clears.entry(id).or_default() += 1;
-    }
-
-    /// How many times jar `id` has been cleared this run.
-    pub fn clears(&self, id: NodeId) -> u64 {
-        self.clears.get(&id).copied().unwrap_or(0)
-    }
-
-    /// A new host's seed: jar `id`'s cookies, and its clear count as of that read.
-    pub fn seed(&self, id: NodeId) -> (Vec<Cookie>, u64) {
-        (self.jars.get(&id).map(|j| j.cookies.clone()).unwrap_or_default(), self.clears(id))
     }
 }
 

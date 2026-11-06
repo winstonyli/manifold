@@ -87,10 +87,6 @@ impl App {
         };
         let changed = jar.merge(pulled, tab);
         if changed {
-            let jar = jar.clone();
-            if let Ok(mut snapshots) = self.cookies.jar_snapshots.lock() {
-                snapshots.insert(key, jar);
-            }
             // Saved once the round's other replies are in (`flush_dirty_jars`): fifteen tabs that saw one rotating
             // cookie write the file once, not fifteen times.
             self.cookies.jar_dirty.entry(key).or_insert_with(std::time::Instant::now);
@@ -171,26 +167,22 @@ impl App {
         }
     }
 
-    /// A new host for tab `id` landed (`handle_tab_spawn_result`): forgets the old host's cookie state, then records
-    /// the jar this one was spawned with and its seed. `seed_clears` is that jar's clear count when the seed was read
-    /// (`None`: never seeded). A Clear Cookies since then, while the spawn or wake was in flight, found no `jar_tabs`
-    /// entry to mark; a host seeded with cookies it cleared is marked now, like the hosts running at the clear, so it
-    /// switches and its pulls cannot refill the jar. Marked after the wipe, which would drop it.
-    pub(crate) fn note_spawned_jar(
-        &mut self,
-        id: NodeId,
-        jar: Option<crate::store::model::NodeId>,
-        seeded: crate::jar::TabCookies,
-        seed_clears: Option<u64>,
-    ) {
+    /// A new host for tab `id` landed (`handle_tab_spawn_result`): forgets the old host's cookie state, then seeds a jar
+    /// engine with `jar` as it is now and records it. Sent before anything else, as the host waits for it
+    /// (`ENV_AWAIT_COOKIES`), so a jar engine with no jar still gets an empty seed. A Clear Cookies during the spawn
+    /// needs no handling: this reads after it, so the host never holds what was cleared.
+    pub(crate) fn seed_landed_host(&mut self, id: NodeId, jar: Option<NodeId>, tab: &process_manager::ViewTab) {
         self.clear_cookie_state(id);
-        let Some(jar) = jar else { return };
-        let clears = self.cookies.jar_snapshots.lock().ok().map(|s| s.clears(jar));
-        let stale = seed_clears.is_some() && clears.is_some() && seed_clears != clears;
-        if stale && !seeded.baseline.is_empty() {
-            self.cookies.jar_reseed.insert(id);
+        let cookies = jar.and_then(|jar| self.cookies.jars.get(&jar)).map_or(&[][..], |jar| jar.cookies.as_slice());
+        let seeded = if tab.kind.has(crate::caps::Tag::Jars) {
+            tab.send(&HostToView::SetCookies(serde_json::to_string(cookies).unwrap_or_else(|_| "[]".to_owned())));
+            crate::jar::TabCookies::seeded(cookies)
+        } else {
+            crate::jar::TabCookies::default()
+        };
+        if let Some(jar) = jar {
+            self.cookies.jar_tabs.insert(id, (jar, seeded));
         }
-        self.cookies.jar_tabs.insert(id, (jar, seeded));
     }
 
     /// Acts on what `hold_for_cookies` parked for `id`, if anything.

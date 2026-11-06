@@ -244,14 +244,7 @@ fn fail_spawns(app: &mut App) {
 
 fn fail_spawn(app: &mut App, (spawn, generation): (crate::tabs::TabSpawn, u64)) {
     let result = Err(std::io::Error::other("no engine").into());
-    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome {
-        spawn,
-        generation,
-        result,
-        seeded: Default::default(),
-        jar: Default::default(),
-        seed_clears: None,
-    });
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome { spawn, generation, result, jar: Default::default() });
 }
 
 /// Starts a New spawn for `url` and lands it on a fake host; returns the new tab's id.
@@ -264,9 +257,7 @@ fn succeed_spawn(app: &mut App, url: &str) -> NodeId {
         spawn,
         generation,
         result: Ok(tab),
-        seeded: Default::default(),
         jar: Default::default(),
-        seed_clears: None,
     });
     id
 }
@@ -423,9 +414,7 @@ fn land_spawns(app: &mut App) -> Vec<Peer> {
             spawn,
             generation,
             result: Ok(tab),
-            seeded: Default::default(),
             jar: Default::default(),
-            seed_clears: None,
         });
         peers.push(peer);
     }

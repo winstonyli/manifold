@@ -65,6 +65,8 @@ No `COOKIE_SEED_WAIT` change is proposed. If the symptom appears, the fix is a l
 
 UI-thread cost: serialising a jar and building its baseline, once per landing, instead of on a spawn thread. That this is small is an inference. Step 3 measures it with an ignored, release-profile test in `session_sync/tests/costs.rs`: 50 `SpawnPurpose::Restore` spawns on an `app_on` app (a real journal, so `save_session` is real) with one 5,000-cookie jar, timed from the first to the last `handle_tab_spawn_result`, recorded here. Fake tabs only queue the message, so this is the UI thread's landing cost and not delivery. Over 2 s stops the work and comes back as a decision, because that would be most of the margin.
 
+Measured 2026-11-05 (run `2026-11-05-arc3-landing`, 5 rounds, CPU 46%, Defender off, not on a quiet machine): best 258 ms, median 290 ms for all 50 landings, about 6 ms each. That is well under the 2 s stop, so the work went on.
+
 ## Searched
 
 The deletion pass tried:

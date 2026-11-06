@@ -1,6 +1,7 @@
 use super::*;
 use crate::card_id::testutil::{card, node};
 use crate::session_sync::tests::{add_jar, default_jar_id};
+use manifold_view_protocol::HostToView;
 
 const SID: &str = r#"[{"name":"sid","value":"1","domain":"a.com","path":"/","expires":null,"secure":false,"http_only":true,"same_site":"Lax"}]"#;
 
@@ -296,7 +297,6 @@ fn ephemeral_on_then_off_keeps_an_unloaded_jars_cookies() {
     app.set_jar_ephemeral(work, true);
     assert!(!jar::Jar::path(&dir, key).exists(), "on: the file goes");
     assert_eq!(app.cookies.jars[&key].cookies.len(), 1, "but its cookies were loaded first");
-    assert_eq!(app.cookies.jar_snapshots.lock().unwrap().seed(key).0.len(), 1, "and seed tabs");
     app.set_jar_ephemeral(work, false);
     assert_eq!(jar::Jar::load(&dir, key).cookies.len(), 1, "off: saved back");
 }
@@ -453,41 +453,81 @@ fn clearing_a_jar_marks_its_running_tabs_for_a_reseed() {
     assert!(!app.cookies.jar_reseed.contains(&node(1)));
 }
 
-/// A Clear Cookies landing after a spawning host read its seed, but before the host arrived, is
-/// honoured: the host holds the old cookies, so it is marked to switch like the hosts running at the clear, even
-/// though the landing first wipes its id's old cookie state.
+/// Lands a fake host of `kind` for tab `id` on `jar`; returns everything it was sent.
+fn land(app: &mut App, id: NodeId, jar: Option<NodeId>, kind: process_manager::ViewKind) -> Vec<HostToView> {
+    let (tab, mut peer) = process_manager::ViewTab::fake(kind);
+    app.seed_landed_host(id, jar, &tab);
+    peer.sent()
+}
+
+/// The cookies in `sent`'s first message, which must be a seed.
+fn seed_in(sent: &[HostToView]) -> Vec<jar::Cookie> {
+    match sent.first() {
+        Some(HostToView::SetCookies(json)) => jar::from_json(json).unwrap(),
+        _ => panic!("the host's first message is not a seed"),
+    }
+}
+
+/// The seed is read when the host lands, not when its spawn started: a pull in between is in it, and in the baseline.
 #[test]
-fn a_clear_during_a_spawn_marks_the_host_when_it_lands() {
+fn a_host_lands_seeded_with_its_jar_as_it_is_then() {
+    let mut app = App::default();
+    let key = default_jar_id(&mut app);
+    app.ensure_jar_loaded(key);
+    on_default(&mut app, node(1));
+    assert!(app.apply_pulled_cookies(node(1), SID));
+    let sent = land(&mut app, node(2), Some(key), process_manager::ViewKind::Cef);
+    assert_eq!(seed_in(&sent).len(), 1);
+    assert!(app.cookies.jar_tabs[&node(2)].1.baseline.contains_key(&sid_key()));
+}
+
+/// A Clear Cookies while a host starts needs no handling: the host is seeded after it, so it never held what was
+/// cleared, needs no switch, and a cookie the site sets again reaches the jar as any new cookie does.
+#[test]
+fn a_clear_during_a_spawn_seeds_the_host_empty() {
     let mut app = App::default();
     let key = default_jar_id(&mut app);
     on_default(&mut app, node(1));
     app.apply_pulled_cookies(node(1), SID);
     app.clear_cookie_state(node(1));
-    let read_seed = |app: &App| {
-        let (cookies, clears) = app.cookies.jar_snapshots.lock().unwrap().seed(key);
-        (jar::TabCookies::seeded(&cookies), Some(clears))
-    };
-    let (old_seed, before) = read_seed(&app);
-    assert_eq!(old_seed.baseline.len(), 1);
     app.clear_jar_cookies(key);
-    app.note_spawned_jar(node(3), Some(key), old_seed.clone(), before);
-    assert!(app.cookies.jar_reseed.contains(&node(3)), "seeded before the clear: it holds the old cookies");
-    assert!(!app.apply_pulled_cookies(node(3), SID), "so its pulls cannot refill the cleared jar");
-    assert!(default_jar(&app).cookies.is_empty());
+    let sent = land(&mut app, node(3), Some(key), process_manager::ViewKind::Cef);
+    assert!(seed_in(&sent).is_empty());
+    assert!(!app.cookies.jar_reseed.contains(&node(3)));
+    assert!(app.apply_pulled_cookies(node(3), SID), "set again after the clear");
+    assert_eq!(default_jar(&app).cookies.len(), 1);
+}
 
-    let (empty_seed, after) = read_seed(&app);
-    app.cookies.jar_reseed.insert(node(4)); // an earlier host's mark: the landing wipes it
-    app.note_spawned_jar(node(4), Some(key), empty_seed.clone(), after);
-    assert!(!app.cookies.jar_reseed.contains(&node(4)), "seeded after the clear: the empty jar");
-    app.clear_jar_cookies(key);
-    app.note_spawned_jar(node(5), Some(key), empty_seed, after);
-    assert!(!app.cookies.jar_reseed.contains(&node(5)), "an empty seed holds nothing the clear took");
-    app.note_spawned_jar(node(6), Some(key), old_seed.clone(), None);
-    assert!(!app.cookies.jar_reseed.contains(&node(6)), "never seeded (its engine ignores jars)");
+/// A jar engine waits for its seed, so one with no jar is still sent an empty one.
+#[test]
+fn a_jar_engine_with_no_jar_is_seeded_empty() {
+    let mut app = App::default();
+    let sent = land(&mut app, node(1), None, process_manager::ViewKind::Webview2);
+    assert!(seed_in(&sent).is_empty());
+    assert!(!app.cookies.jar_tabs.contains_key(&node(1)));
+}
+
+/// Cookie values do not travel to an engine with no use for them, and it starts believed to hold none.
+#[test]
+fn an_engine_without_jars_is_not_seeded() {
+    let mut app = App::default();
+    let key = default_jar_id(&mut app);
+    on_default(&mut app, node(1));
+    assert!(app.apply_pulled_cookies(node(1), SID));
+    assert!(land(&mut app, node(2), Some(key), process_manager::ViewKind::Servo).is_empty());
+    assert_eq!(app.cookies.jar_tabs[&node(2)], (key, jar::TabCookies::default()));
+}
+
+#[test]
+fn a_jar_deleted_during_a_spawn_seeds_empty() {
+    let mut app = App::default();
     let work = add_jar(&mut app, "Work");
-    app.clear_jar_cookies(work);
-    app.note_spawned_jar(node(7), Some(key), old_seed, after.map(|n| n + 1));
-    assert!(!app.cookies.jar_reseed.contains(&node(7)), "only its own jar's clears count");
+    app.ensure_jar_loaded(work);
+    app.cookies.jar_tabs.insert(node(1), (work, jar::TabCookies::default()));
+    assert!(app.apply_pulled_cookies(node(1), SID));
+    app.remove_remotely_deleted(work);
+    let sent = land(&mut app, node(2), Some(work), process_manager::ViewKind::Cef);
+    assert!(seed_in(&sent).is_empty());
 }
 
 /// The pull `request_sleep` (or a timed pull, or one already in flight) sends a reseed tab still returns the
