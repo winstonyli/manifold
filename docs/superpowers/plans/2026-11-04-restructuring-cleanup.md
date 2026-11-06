@@ -95,7 +95,7 @@ Ids are the surveys' own and never renumbered. `Same as` merges findings from di
 
 **LAY9. Split impl-block bulk out of `card.rs` (630-line `impl App` 1012-1641 -> `card/frame.rs`) and `gpu.rs` (render passes).** No path changes; ~1100 lines moved, ~20 lines of logic (`pub(super)` on helpers). Independent.
 
-**ARC11. Rename `json_file.rs`.** Same as LAY10 (d3c), parked with it: `json_file.rs` -> `profile/file.rs`; not a separate item.
+**ARC11. Rename `json_file.rs`.** Same as LAY10 (d3c): `json_file.rs` -> `profile/file.rs`; not a separate item. Done by LAY10.
 
 ### State ownership (ARC)
 
@@ -161,3 +161,5 @@ Not subsumed by a pool: `SuggestionFetcher`, JSON search, `search/service.rs`, `
 - **REP7 Decided against 2026-11-04** (move two decision-type specs to `docs/decisions/`): leaves 13 dangling frozen cites for a small convention gain. **REP8 Decided against 2026-11-04** (CLAUDE.md "Branches" duplicates README:385-392, checked): CLAUDE.md must work without following a link.
 
 **Closed 2026-11-04.** Done: REP1, REP2, REP3, REP5, REP6, TST1, CRT4, LAY2, LAY6, ARC1. Every other item is parked with a trigger in `PARKED.md` "Restructuring leftovers (2026-11-04)". Whole-branch review: one Opus pass over `3880fc29~1..HEAD`, seven findings, all fixed (`d2415185`, `48d52b75`).
+
+**After closing, 2026-11-05.** Done from the parked list: LAY3, LAY4, LAY5, LAY7, LAY8, LAY10, LAY11, LAY12 (ARC11 with LAY10), and ARC2 through its own plan. Still parked in `PARKED.md` "Restructuring leftovers": ARC3 state half, ARC5 state half, ARC6, ARC7, ARC9, LAY9, CRT1, CRT2, CRT5, ARC10. CRT6-8 are decided against for now. The plan stays `done`: what is left runs from `PARKED.md`.
