@@ -31,11 +31,12 @@ impl App {
     /// view transition is running, the Graph camera isn't easing or gliding (only a frame that draws the Graph
     /// advances it, so in another view it is not waited on), no address-bar suggestion is on its way, egui did not
     /// ask for the next frame at once (`egui_wants_frame`: a fade, hover easing, smooth scroll or a popup still
-    /// sizing itself), and the focused tab (if any) isn't loading. It must hold for `QUIET_FRAMES` frame ends in a
-    /// row (see `release_idle_waiters`).
+    /// sizing itself), and the focused tab (if any) isn't loading or waking. It must hold for `QUIET_FRAMES` frame
+    /// ends in a row (see `release_idle_waiters`).
     fn debug_idle(&self) -> bool {
-        let loading =
-            self.focused.as_ref().and_then(|id| self.nodes.get(id)).and_then(|n| n.as_tab()).is_some_and(|t| t.loading);
+        let loading = self.focused.as_ref().and_then(|id| self.nodes.get(id)).is_some_and(|n| {
+            n.as_tab().is_some_and(|t| t.loading) || n.as_unloaded().is_some_and(|t| t.state == UnloadedState::Waking)
+        });
         !self.debug_input_pending()
             && self.transition.is_none()
             && !(self.view_mode == ViewMode::Graph && self.camera.is_moving())
@@ -150,6 +151,8 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    use crate::session_sync::tests::{add, sleeping_tab};
+    use crate::store::model::Kind;
     use crate::view_modes::ViewMode;
     use crate::App;
 
@@ -164,5 +167,17 @@ mod tests {
         assert!(!app.debug_idle(), "the Graph is drawing it");
         app.view_mode = ViewMode::Item;
         assert!(app.debug_idle(), "nothing will advance it");
+    }
+
+    /// At a zoom that draws no header a waking card has no spinner to keep frames coming, so only its state says the
+    /// card is about to change (`shots-aa`, 2026-11-06: one run's shot caught it waking, the other's live).
+    #[test]
+    fn a_waking_focused_tab_holds_idle() {
+        let mut app = App::default();
+        let id = add(&mut app, Kind::Tab, sleeping_tab("https://a/", "A"));
+        app.focused = Some(id);
+        assert!(app.debug_idle(), "asleep, nothing will wake it");
+        app.wake_focused();
+        assert!(!app.debug_idle(), "its engine is starting");
     }
 }
