@@ -9,6 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::store::body::{child_pointer, last_key, parent_pointer, pointer_tokens, push_token};
+
 /// A card's width in world units (100% zoom).
 pub(crate) const CARD_WIDTH: f32 = 220.0;
 pub(crate) const HEADER_HEIGHT: f32 = 26.0;
@@ -236,26 +238,6 @@ impl JsonView {
         }
         self.0.retain(|_, o| !o.is_empty());
     }
-}
-
-/// `parent`'s child `key`, escaping `~` and `/` (RFC 6901).
-pub(crate) fn child_pointer(parent: &str, key: &str) -> String {
-    format!("{parent}/{}", key.replace('~', "~0").replace('/', "~1"))
-}
-
-/// `pointer`'s unescaped reference tokens; none for the root (`""`).
-pub(crate) fn pointer_tokens(pointer: &str) -> Vec<String> {
-    pointer.split('/').skip(1).map(|t| t.replace("~1", "/").replace("~0", "~")).collect()
-}
-
-/// The pointer one level up; `None` for the root.
-pub(crate) fn parent_pointer(pointer: &str) -> Option<&str> {
-    pointer.rfind('/').map(|i| &pointer[..i])
-}
-
-/// The last reference token, unescaped; `None` for the root.
-pub(crate) fn last_key(pointer: &str) -> Option<String> {
-    pointer_tokens(pointer).pop()
 }
 
 /// `pointer` as a script would write it: `users[0].address`, with
@@ -640,18 +622,6 @@ pub(crate) fn search(root: &Value, query: &str) -> SearchResult {
 enum Children<'a> {
     Object(serde_json::map::Iter<'a>),
     Array(std::iter::Enumerate<std::slice::Iter<'a, Value>>),
-}
-
-/// Appends `key` to `path` as one pointer token, escaping `~` and `/` as `child_pointer` does.
-fn push_token(path: &mut String, key: &str) {
-    path.push('/');
-    for c in key.chars() {
-        match c {
-            '~' => path.push_str("~0"),
-            '/' => path.push_str("~1"),
-            c => path.push(c),
-        }
-    }
 }
 
 /// Whether `text` contains `needle` (already lowercased), ignoring case as `str::to_lowercase` does. When both

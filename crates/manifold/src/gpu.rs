@@ -1380,7 +1380,7 @@ mod frame_tests {
 #[cfg(test)]
 mod upload_timing {
     use super::{downsample_pipeline, non_srgb_view_format, SHADER};
-    use crate::bench::{best_median, report, timed};
+    use crate::store::testutil::{best_median, report, timed};
     use std::time::Instant;
 
     const W: u32 = 1920;

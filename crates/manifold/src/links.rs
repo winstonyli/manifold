@@ -572,7 +572,8 @@ mod tests {
     #[test]
     #[ignore]
     fn link_query_cost() {
-        use crate::bench::{level_fixture, report, timed};
+        use crate::bench::level_fixture;
+        use crate::store::testutil::{report, timed};
         let f = level_fixture(false);
         let g0 = f.groups[0];
         let mut app = f.app;

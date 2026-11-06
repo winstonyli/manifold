@@ -4,10 +4,10 @@
 
 use serde_json::Value;
 
-use crate::json::view::{child_pointer, last_key, parent_pointer, pointer_tokens};
 use crate::store::body::{
     self, between, elements, initial_order, pointer_path, tree_to_value, value_to_tree_at, Element, INLINE_MAX_LEAVES,
 };
+use crate::store::body::{child_pointer, last_key, parent_pointer, pointer_tokens};
 use crate::store::model::{field, NodeId};
 use crate::store::tree::{subtree, Leaf, Seg, Tree, TreePath};
 use crate::undo::{PropEdit, UndoKind};

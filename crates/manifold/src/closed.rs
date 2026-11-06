@@ -35,7 +35,7 @@ pub(crate) fn members_under(
             members.entry(group).or_default().push(*id);
         }
     }
-    crate::walk::descendants(root, |g| members.get(g).cloned().unwrap_or_default(), is_group)
+    crate::store::walk::descendants(root, |g| members.get(g).cloned().unwrap_or_default(), is_group)
 }
 
 impl App {

@@ -27,7 +27,7 @@ fn a_large_note_edit_does_not_clone_per_frame() {
 #[test]
 #[ignore]
 fn app_save_costs() {
-    use crate::bench::{report, timed};
+    use crate::store::testutil::{report, timed};
     const N: usize = 40;
     for tabs in [300usize, 2000, 3000] {
         let dir = temp_dir(&format!("app-cost-{tabs}"));
@@ -119,7 +119,7 @@ fn save_count_per_action() {
 #[test]
 #[ignore]
 fn teardown_cost() {
-    use crate::bench::{best_median, report};
+    use crate::store::testutil::{best_median, report};
     let mut times = Vec::new();
     for _ in 0..10 {
         let mut app = app_on(&temp_dir("teardown-cost").join("session.mnf"), 1);

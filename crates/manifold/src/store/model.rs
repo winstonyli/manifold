@@ -822,7 +822,9 @@ impl Doc {
     pub fn with_descendants(&self, nodes: BTreeSet<NodeId>) -> BTreeSet<NodeId> {
         let mut out = nodes.clone();
         for &id in self.nodes.keys() {
-            if crate::walk::ancestors(id, |k| self.nodes.get(k).and_then(|n| n.group)).any(|a| nodes.contains(&a)) {
+            if crate::store::walk::ancestors(id, |k| self.nodes.get(k).and_then(|n| n.group))
+                .any(|a| nodes.contains(&a))
+            {
                 out.insert(id);
             }
         }
@@ -832,7 +834,7 @@ impl Doc {
     /// Whether `ancestor` is on the path from `of` to the root, `of`
     /// excluded. Walks deleted nodes too, so every replica answers alike.
     pub fn is_ancestor(&self, ancestor: NodeId, of: NodeId) -> bool {
-        let mut above = crate::walk::ancestors(of, |k| self.nodes.get(k).and_then(|n| n.group));
+        let mut above = crate::store::walk::ancestors(of, |k| self.nodes.get(k).and_then(|n| n.group));
         above.any(|a| a == ancestor) || above.looped() // a cycle; `apply_move` never makes one
     }
 }

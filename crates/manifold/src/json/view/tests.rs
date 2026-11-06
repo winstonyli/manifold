@@ -110,19 +110,6 @@ fn stale_pointers_and_positions_are_dropped() {
 }
 
 #[test]
-fn pointers_escape_tilde_and_slash() {
-    assert_eq!(child_pointer("", "users"), "/users");
-    assert_eq!(child_pointer("/a", "x/y~z"), "/a/x~1y~0z");
-    assert_eq!(pointer_tokens("/a/x~1y~0z"), ["a", "x/y~z"]);
-    assert!(pointer_tokens("").is_empty());
-    assert_eq!(parent_pointer("/a/b"), Some("/a"));
-    assert_eq!(parent_pointer("/a"), Some(""));
-    assert_eq!(parent_pointer(""), None);
-    assert_eq!(last_key("/a/x~1y"), Some("x/y".to_string()));
-    assert_eq!(last_key(""), None);
-}
-
-#[test]
 fn accessor_paths_quote_what_isnt_an_identifier() {
     let root = json!({"users": [{"address": {"city": "London"}}], "a b": {"he\"y": 1}, "x/y": [[5]]});
     assert_eq!(accessor_path(&root, "/users/0/address"), "users[0].address");
@@ -478,7 +465,7 @@ fn search_matches_reference() {
 #[test]
 #[ignore]
 fn json_search_cost() {
-    use crate::bench::{report, timed};
+    use crate::store::testutil::{report, timed};
     let root = Value::Array(
         (0..14_000)
             .map(|n| json!({"id": n, "name": format!("item {n}"), "score": n as f64 * 0.37, "tags": ["a", "b"]}))

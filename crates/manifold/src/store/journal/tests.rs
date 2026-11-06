@@ -1357,7 +1357,7 @@ fn a_writer_killed_mid_commit_loses_at_most_that_commit() {
 
 // --- Save-path costs (Plan B measures these before wiring saves) ---
 
-use crate::bench::{report, timed};
+use crate::store::testutil::{report, timed};
 
 /// What each save costs at realistic session sizes, with the file at
 /// its largest (just below compaction): `begin` reads the header and

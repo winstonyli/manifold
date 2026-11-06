@@ -26,7 +26,7 @@ fn c(name: &str, value: &str) -> Cookie {
 #[test]
 #[ignore]
 fn jar_save_cost() {
-    use crate::bench::{report, timed};
+    use crate::store::testutil::{report, timed};
     let dir = temp_dir("jar-save-cost");
     let cookies = (0..3000).map(|i| c(&format!("n{i}"), &format!("value-{i}-0123456789abcdef"))).collect();
     let jar = Jar { cookies, ..Jar::default() };

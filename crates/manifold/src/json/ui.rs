@@ -513,7 +513,8 @@ pub(crate) fn json_focus_root_key() -> egui::Id {
 /// What a double click at `x` (world units from the card's left edge) on the row at `pointer` edits: an object
 /// member's key when it lands in the key column, else a scalar's value; nothing on a container's value.
 pub(crate) fn edit_target(root: &Value, pointer: &str, x: f32) -> Option<EditWhat> {
-    let in_object = json::view::parent_pointer(pointer).and_then(|p| root.pointer(p)).is_some_and(Value::is_object);
+    let in_object =
+        crate::store::body::parent_pointer(pointer).and_then(|p| root.pointer(p)).is_some_and(Value::is_object);
     if in_object && x < PAD + KEY_WIDTH {
         Some(EditWhat::Key)
     } else {
@@ -524,8 +525,9 @@ pub(crate) fn edit_target(root: &Value, pointer: &str, x: f32) -> Option<EditWha
 /// Where the text box for `edit` sits (world): over the row's key column, or over the rest of the row.
 fn edit_rect(level: &crate::json::level::JsonLevel, edit: &RowEdit) -> Option<egui::Rect> {
     let row = level.entry_rect(&edit.pointer)?;
-    let in_array =
-        json::view::parent_pointer(&edit.pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+    let in_array = crate::store::body::parent_pointer(&edit.pointer)
+        .and_then(|p| level.value.pointer(p))
+        .is_some_and(Value::is_array);
     let (left, right) = (row.left() + PAD, row.right() - PAD);
     Some(match edit.on {
         EditWhat::Key => {
@@ -878,8 +880,9 @@ impl App {
         let view = self.doc.mirror.view(level.node_id);
         let color = view.and_then(|v| v.get(&pointer)).and_then(|o| o.color).map(rgb);
         let value = level.value.pointer(&pointer).cloned().unwrap_or(Value::Null);
-        let parent_is_array =
-            json::view::parent_pointer(&pointer).and_then(|p| level.value.pointer(p)).is_some_and(Value::is_array);
+        let parent_is_array = crate::store::body::parent_pointer(&pointer)
+            .and_then(|p| level.value.pointer(p))
+            .is_some_and(Value::is_array);
         let rows = json_menu_rows(self.json_editable(level.node_id), &value, pointer.is_empty(), parent_is_array);
         let doc = level.value.clone();
         let mut close = false;
@@ -1081,8 +1084,8 @@ impl App {
                         // Same footprint as the caret, spacing included.
                         ui.allocate_exact_size(CARET_SIZE, egui::Sense::hover());
                     }
-                    let parent = json::view::parent_pointer(&row.pointer).and_then(|p| level.value.pointer(p));
-                    let (name, color) = match (parent, json::view::last_key(&row.pointer)) {
+                    let parent = crate::store::body::parent_pointer(&row.pointer).and_then(|p| level.value.pointer(p));
+                    let (name, color) = match (parent, crate::store::body::last_key(&row.pointer)) {
                         (Some(parent), Some(key)) if parent.is_array() => (key, pal.muted),
                         (_, Some(key)) => (key, pal.key),
                         (_, None) => (root_name.clone(), ui.visuals().text_color()),

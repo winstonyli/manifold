@@ -14,10 +14,12 @@ pub mod tlv;
 pub mod tree;
 pub mod tree_json;
 pub mod varint;
+pub mod walk;
 
 #[cfg(test)]
 pub(crate) mod testutil {
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
 
     use std::collections::BTreeMap;
 
@@ -56,6 +58,29 @@ pub(crate) mod testutil {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// The best and the median of `times`.
+    pub fn best_median(mut times: Vec<Duration>) -> (Duration, Duration) {
+        times.sort();
+        (times[0], times[times.len() / 2])
+    }
+
+    /// Runs `f` `n` times: the best and the median.
+    pub fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
+        best_median(
+            (0..n)
+                .map(|_| {
+                    let start = Instant::now();
+                    f();
+                    start.elapsed()
+                })
+                .collect(),
+        )
+    }
+
+    pub fn report(what: &str, (best, median): (Duration, Duration)) {
+        println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
     }
 
     /// Sets or clears the read-only attribute of `path`, which makes a write to it fail on Windows (a Unix rename

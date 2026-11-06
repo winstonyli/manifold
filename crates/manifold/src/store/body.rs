@@ -12,7 +12,6 @@ use serde_json::{Map, Value};
 use super::model::{ActorId, NodeId};
 use super::tree::{resolved, Leaf, Seg, Tree, TreePath};
 use super::tree_json::{leaf_json, number_leaf, MAX_DEPTH};
-use crate::json::view::{child_pointer, pointer_tokens};
 
 pub const INLINE_MAX_LEAVES: usize = 10_000;
 
@@ -267,6 +266,40 @@ pub fn elements(tree: &Tree, array: &TreePath) -> Vec<Element> {
     out
 }
 
+/// Appends `key` to `path` as one pointer token, escaping `~` and `/` (RFC 6901).
+pub fn push_token(path: &mut String, key: &str) {
+    path.push('/');
+    for c in key.chars() {
+        match c {
+            '~' => path.push_str("~0"),
+            '/' => path.push_str("~1"),
+            c => path.push(c),
+        }
+    }
+}
+
+/// `parent`'s child `key`.
+pub fn child_pointer(parent: &str, key: &str) -> String {
+    let mut pointer = parent.to_owned();
+    push_token(&mut pointer, key);
+    pointer
+}
+
+/// `pointer`'s unescaped reference tokens; none for the root (`""`).
+pub fn pointer_tokens(pointer: &str) -> Vec<String> {
+    pointer.split('/').skip(1).map(|t| t.replace("~1", "/").replace("~0", "~")).collect()
+}
+
+/// The pointer one level up; `None` for the root.
+pub fn parent_pointer(pointer: &str) -> Option<&str> {
+    pointer.rfind('/').map(|i| &pointer[..i])
+}
+
+/// The last reference token, unescaped; `None` for the root.
+pub fn last_key(pointer: &str) -> Option<String> {
+    pointer_tokens(pointer).pop()
+}
+
 /// The path of the entry at JSON `pointer` of the document `tree` holds, or `None` when it does not resolve. An
 /// array index resolves through the element to its `v` path.
 pub fn pointer_path(tree: &Tree, pointer: &str) -> Option<TreePath> {
@@ -288,6 +321,19 @@ mod tests {
     use crate::store::tree::{Leaf, Seg, TreePath};
     use crate::store::tree_json::MAX_DEPTH;
     use serde_json::json;
+
+    #[test]
+    fn pointers_escape_tilde_and_slash() {
+        assert_eq!(child_pointer("", "users"), "/users");
+        assert_eq!(child_pointer("/a", "x/y~z"), "/a/x~1y~0z");
+        assert_eq!(pointer_tokens("/a/x~1y~0z"), ["a", "x/y~z"]);
+        assert!(pointer_tokens("").is_empty());
+        assert_eq!(parent_pointer("/a/b"), Some("/a"));
+        assert_eq!(parent_pointer("/a"), Some(""));
+        assert_eq!(parent_pointer(""), None);
+        assert_eq!(last_key("/a/x~1y"), Some("x/y".to_string()));
+        assert_eq!(last_key(""), None);
+    }
 
     fn id(n: u64) -> NodeId {
         NodeId { actor: crate::store::model::ActorId(1), counter: n }

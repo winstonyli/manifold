@@ -127,7 +127,8 @@ fn a_right_click_on_the_swatch_opens_the_menu_on_its_color_page() {
 #[test]
 #[ignore]
 fn graph_frame_cost() {
-    use crate::bench::{level_fixture, report, spread, timed};
+    use crate::bench::{level_fixture, spread};
+    use crate::store::testutil::{report, timed};
     let ctx = crate::theme::testutil::ctx(true);
     let mut f = level_fixture(false);
     spread(&mut f);

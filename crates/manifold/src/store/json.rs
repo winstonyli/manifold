@@ -160,16 +160,15 @@ pub fn subtree_to_json(doc: &Doc, root: NodeId) -> JsonDoc {
             nodes.push(node_to_json(id, node, None));
         }
     }
-    // The labels the exported cards carry (`PROPS/labels/@<id>`), so a membership names a node in the file.
+    // The labels the exported cards carry (`PROPS/labels/@<id>`), so a membership names a node in the file. Any
+    // `PROPS/<key>/@<id>` is taken: only a label's id reaches the file through the `Kind::Label` filter below.
     let mut used = std::collections::BTreeSet::new();
     for exported in &nodes {
         let Some(node) = exported.id.parse::<NodeId>().ok().and_then(|id| doc.nodes.get(&id)) else { continue };
         let trees = node.trees();
         for (path, _) in trees.get(&field::PROPS).into_iter().flat_map(|tree| tree.iter()) {
-            if let [Seg::Key(k), Seg::Id(label)] = path.segments().as_slice() {
-                if k == crate::labels::LABELS_KEY {
-                    used.insert(*label);
-                }
+            if let [Seg::Key(_), Seg::Id(label)] = path.segments().as_slice() {
+                used.insert(*label);
             }
         }
     }

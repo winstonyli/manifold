@@ -32,8 +32,8 @@ fn crates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// Every non-test `.rs` file under a crate's `src`, as `(path under crates/, source)`.
-fn sources() -> Vec<(String, String)> {
+/// Every `.rs` file under a crate's `src`, as `(path under crates/, source)`.
+fn all_sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let path = entry.path();
@@ -54,14 +54,19 @@ fn sources() -> Vec<(String, String)> {
     let mut found = Vec::new();
     for path in files {
         let rel = path.strip_prefix(crates_dir()).unwrap().to_string_lossy().replace('\\', "/");
-        let name = path.file_name().unwrap().to_string_lossy();
-        if name == "tests.rs" || name.ends_with("_tests.rs") || rel.contains("/tests/") {
-            continue;
-        }
         found.push((rel, std::fs::read_to_string(&path).unwrap()));
     }
     found.sort();
     found
+}
+
+/// `all_sources` without test files.
+fn sources() -> Vec<(String, String)> {
+    let is_test = |path: &str| {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        name == "tests.rs" || name.ends_with("_tests.rs") || path.contains("/tests/")
+    };
+    all_sources().into_iter().filter(|(path, _)| !is_test(path)).collect()
 }
 
 /// `(prod lines, inline test block lines)` of a source: the block starts at a `#[cfg(test)]` line directly above
@@ -148,4 +153,22 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
         }
     }
     assert_eq!(users, ["manifold/src/worker.rs"], "catch_unwind belongs to worker.rs alone");
+}
+
+/// The store is the bottom layer: nothing in it, tests included, names the app above it, so it can become its own
+/// crate (plan item CRT1). Only a `crate::` path is seen; one reached through a re-export is not.
+#[test]
+fn the_store_reaches_nothing_above_it() {
+    let mut upward = Vec::new();
+    for (path, source) in all_sources() {
+        if path != "manifold/src/store.rs" && !path.starts_with("manifold/src/store/") {
+            continue;
+        }
+        for line in source.lines().filter(|l| !l.trim_start().starts_with("//")) {
+            if line.split("crate::").skip(1).any(|after| !after.starts_with("store::")) {
+                upward.push(format!("{path}: {}", line.trim()));
+            }
+        }
+    }
+    assert!(upward.is_empty(), "the store names code above it: {upward:#?}");
 }

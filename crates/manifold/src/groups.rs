@@ -23,7 +23,7 @@ impl App {
     /// How many groups `id` is nested in, by the mirror's `group` chain; capped at the chain's length so a cycle
     /// (two replicas' moves raced) ends.
     pub(crate) fn group_depth(&self, id: NodeId) -> usize {
-        crate::walk::ancestors(id, |k| self.doc.mirror.group(*k)).count()
+        crate::store::walk::ancestors(id, |k| self.doc.mirror.group(*k)).count()
     }
 
     /// The menu's "Dissolve Group" and the toolbar's Ungroup All: each group's members move up to its own level and
@@ -108,7 +108,7 @@ impl App {
 
     /// Every member of group `id` and of the groups inside it, groups included, each once.
     pub(crate) fn members_under(&self, id: NodeId) -> Vec<NodeId> {
-        crate::walk::descendants(id, |g| self.members_of(*g).collect(), |m| self.is_container(*m))
+        crate::store::walk::descendants(id, |g| self.members_of(*g).collect(), |m| self.is_container(*m))
     }
 
     /// `destroy_group`'s removal, with no save: `below` is everything under group `id` (`members_under`, each once, so

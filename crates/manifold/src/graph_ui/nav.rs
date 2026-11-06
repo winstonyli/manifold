@@ -387,7 +387,7 @@ impl App {
         if !self.nodes.contains_key(&target) {
             return;
         }
-        let mut above = crate::walk::ancestors(target, |k| self.nodes.get(k).and(self.doc.mirror.group(*k)));
+        let mut above = crate::store::walk::ancestors(target, |k| self.nodes.get(k).and(self.doc.mirror.group(*k)));
         if target == source || above.any(|a| a == source) || above.looped() {
             return;
         }
@@ -411,7 +411,7 @@ impl App {
     /// counts as one too.
     pub(crate) fn would_create_cycle(&self, node_id: NodeId, new_parent_id: NodeId) -> bool {
         // The raw edge on purpose: a cycle through a closed card would come back with a reopen.
-        let mut above = crate::walk::ancestors(new_parent_id, |k| self.doc.mirror.parent(*k));
+        let mut above = crate::store::walk::ancestors(new_parent_id, |k| self.doc.mirror.parent(*k));
         new_parent_id == node_id || above.any(|a| a == node_id) || above.looped()
     }
 
@@ -425,7 +425,7 @@ impl App {
         let Some(current) = self.current_group else { return Vec::new() };
         // Called every frame: `ancestors` ends on a cycle in the mirror's `.group` chain (a local move and another
         // replica's move can race into one until the next save), so it can't freeze the app.
-        let up = crate::walk::ancestors(current, |k| self.doc.mirror.group(*k));
+        let up = crate::store::walk::ancestors(current, |k| self.doc.mirror.group(*k));
         let mut chain = Vec::new();
         for id in std::iter::once(current).chain(up) {
             let Some(node) = self.nodes.get(&id) else { break };
@@ -489,7 +489,7 @@ impl App {
                 .collect()
         };
         let mut result = vec![root_id];
-        result.extend(crate::walk::descendants(root_id, children, |_| true));
+        result.extend(crate::store::walk::descendants(root_id, children, |_| true));
         result
     }
 
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     #[ignore]
     fn level_pass_cost() {
-        use crate::bench::{report, timed};
+        use crate::store::testutil::{report, timed};
         const N: usize = 200;
         let f = crate::bench::level_fixture(true);
         assert_eq!((f.groups.len(), f.nodes.len()), (8, 2000));
@@ -825,7 +825,8 @@ mod tests {
     #[test]
     #[ignore]
     fn settle_cost() {
-        use crate::bench::{level_fixture, report, spread, timed};
+        use crate::bench::{level_fixture, spread};
+        use crate::store::testutil::{report, timed};
         let mut f = level_fixture(false);
         spread(&mut f);
         let levels = [None, Some(f.groups[0])];

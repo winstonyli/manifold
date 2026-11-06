@@ -177,7 +177,7 @@ impl JsonLevel {
         let pointer = &c.pointer;
         let value = self.value.pointer(pointer)?;
         let (key, _) = json::view::entries_from(value, c.skip).take(c.rows).nth(row)?;
-        Some(json::view::child_pointer(pointer, &key))
+        Some(crate::store::body::child_pointer(pointer, &key))
     }
 
     /// Where the entry at `pointer` is drawn (world): its own card if it
@@ -186,9 +186,9 @@ impl JsonLevel {
         if let Some(&i) = self.index.get(pointer) {
             return Some(self.rects[i]);
         }
-        let parent = json::view::parent_pointer(pointer)?;
+        let parent = crate::store::body::parent_pointer(pointer)?;
         let card = *self.index.get(parent)?;
-        let row = json::view::entry_index(self.value.pointer(parent)?, &json::view::last_key(pointer)?)?;
+        let row = json::view::entry_index(self.value.pointer(parent)?, &crate::store::body::last_key(pointer)?)?;
         let c = &self.cards[card];
         if row < c.skip || row >= c.skip + c.rows {
             return None;
@@ -425,7 +425,7 @@ impl App {
         let value = level.value.pointer(pointer)?;
         Some(match what {
             CopyWhat::Value => json::view::copy_value_text(value),
-            CopyWhat::Key => json::view::last_key(pointer).unwrap_or_default(),
+            CopyWhat::Key => crate::store::body::last_key(pointer).unwrap_or_default(),
             CopyWhat::Path if self.json_ui.json_accessor_paths => json::view::accessor_path(&level.value, pointer),
             CopyWhat::Path => pointer.to_string(),
         })
@@ -539,7 +539,7 @@ impl App {
             }
         } else if level.outline.open.remove(&pointer) {
             level.outline.dirty = true;
-        } else if let Some(parent) = json::view::parent_pointer(&pointer).map(str::to_string) {
+        } else if let Some(parent) = crate::store::body::parent_pointer(&pointer).map(str::to_string) {
             self.apply_json_edit(JsonEdit::Select(parent));
         }
     }
@@ -570,8 +570,8 @@ impl App {
         // every kept row open regardless.
         let mut ancestor = String::new();
         let mut opened = level.outline.open.insert(String::new());
-        for token in json::view::pointer_tokens(json::view::parent_pointer(pointer).unwrap_or("")) {
-            ancestor = json::view::child_pointer(&ancestor, &token);
+        for token in crate::store::body::pointer_tokens(crate::store::body::parent_pointer(pointer).unwrap_or("")) {
+            ancestor = crate::store::body::child_pointer(&ancestor, &token);
             opened |= level.outline.open.insert(ancestor.clone());
         }
         if opened && level.search.result.is_none() {

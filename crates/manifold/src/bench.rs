@@ -1,8 +1,7 @@
-//! Timing helpers and fixtures shared by the `#[ignore]` timing tests (wave 2 "Measuring"):
+//! Fixtures shared by the `#[ignore]` timing tests (wave 2 "Measuring"; timing helpers are `store::testutil`'s):
 //! `cargo test --release -j 8 -p manifold --bins <name> -- --ignored --nocapture`.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
 use crate::node::{
     DownloadPayload, ImagePayload, JsonPayload, NotePayload, PdfPayload, Runtime, TabPayload, UnloadedState,
@@ -11,29 +10,6 @@ use crate::node::{
 use crate::process_manager::{ViewKind, ViewTab};
 use crate::store::model::{Kind, NodeId};
 use crate::App;
-
-/// The best and the median of `times`.
-pub(crate) fn best_median(mut times: Vec<Duration>) -> (Duration, Duration) {
-    times.sort();
-    (times[0], times[times.len() / 2])
-}
-
-/// Runs `f` `n` times: the best and the median.
-pub(crate) fn timed(n: usize, mut f: impl FnMut()) -> (Duration, Duration) {
-    best_median(
-        (0..n)
-            .map(|_| {
-                let start = Instant::now();
-                f();
-                start.elapsed()
-            })
-            .collect(),
-    )
-}
-
-pub(crate) fn report(what: &str, (best, median): (Duration, Duration)) {
-    println!("  {what:<44} best {best:>10.1?}  median {median:>10.1?}");
-}
 
 /// Spreads each level's cards on a grid, 30 to a row, 300 by 200 apart, so a settle starts from distinct positions.
 pub(crate) fn spread(f: &mut Fixture) {
