@@ -20,6 +20,18 @@ fn a_card_with_no_position_lands_at_the_camera_target() {
     assert_eq!(app.placement(id, None).pos, egui::vec2(900.0, -400.0));
 }
 
+/// A new tab with no parent in its group lands in view, not by whichever groupmate comes first; one with a parent there
+/// stays by it, wherever the view is.
+#[test]
+fn a_new_tab_lands_by_its_parent_else_at_the_camera_target() {
+    let (mut app, far) = app_with_far_card();
+    app.spawn_new_tab(None, None, "https://new/");
+    assert_eq!(app.test_spawns.last().unwrap().0.pos, egui::vec2(100.0, 100.0));
+    app.spawn_new_tab(Some(far), None, "https://child/");
+    let spawn = &app.test_spawns.last().unwrap().0;
+    assert_eq!(spawn.pos, egui::vec2(5000.0, 5000.0) + crate::graph_ui::layout::spawn_jitter(spawn.id));
+}
+
 /// A reopened card the layout put out of view is eased into it; one already in view leaves the camera alone.
 #[test]
 fn a_revealed_card_out_of_view_is_eased_to() {

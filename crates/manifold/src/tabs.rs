@@ -492,20 +492,17 @@ impl App {
         pos: Option<egui::Vec2>,
     ) -> NodeId {
         let id = self.alloc_node_id();
-        // `parent`'s own position only if it actually shares `group` --
-        // the toolbar's "+ New Tab" passes `self.current_group` as `group`
-        // but `self.focused` (unconditionally) as `parent`, and those can
-        // point at different levels (see `spawn_new_tab`'s own doc
-        // comment). Falling back to any existing member of `group` keeps
-        // the new tab near its actual new groupmates instead of near an
-        // unrelated tab at a different level; `ZERO` (same as a fresh
-        // group's own spawn point) covers a brand new, still-empty group.
-        let in_group = |id: NodeId| self.doc.mirror.group(id) == group;
-        let parent_pos = parent
-            .filter(|&p| in_group(p) && self.nodes.contains_key(&p))
-            .or_else(|| self.nodes.keys().copied().find(|&id| in_group(id)))
-            .map_or(egui::Vec2::ZERO, |id| self.layout_pos(id));
-        let pos = pos.unwrap_or_else(|| parent_pos + graph_ui::layout::spawn_jitter(id));
+        // Next to `parent` only if it actually shares `group`: the toolbar's
+        // "+ New Tab" passes `self.current_group` as `group` but `self.focused`
+        // (unconditionally) as `parent`, and those can point at different
+        // levels (see `spawn_new_tab`'s own doc comment). Otherwise where any
+        // new card lands (`App::placement`).
+        let pos = pos.unwrap_or_else(|| {
+            parent.filter(|&p| self.doc.mirror.group(p) == group && self.nodes.contains_key(&p)).map_or_else(
+                || self.camera.target().center().to_vec2(),
+                |p| self.layout_pos(p) + graph_ui::layout::spawn_jitter(id),
+            )
+        });
         let spawn = TabSpawn::new(id, url.to_string(), kind, pos, purpose, self.settings.value.zoom_factor);
         self.spawn_tab_async(TabSpawn { parent, group, jar, ..spawn });
         id
