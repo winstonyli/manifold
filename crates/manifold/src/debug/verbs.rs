@@ -825,6 +825,7 @@ pub(super) const VERBS: &[Verb] = &[
             let jitter = app.alloc_node_id();
             let at = app.placement(jitter, None);
             let id = app.create_jar(&name, at);
+            app.camera.reveal = Some(id);
             eprintln!("NEWJAR: {id}");
             app.save_session();
         })

@@ -1627,6 +1627,32 @@ fn only_the_last_of_two_new_notes_stays_in_editing() {
     assert!(app.camera.is_moving(), "eased to where layout put it");
 }
 
+/// A reveal aims at where the settle put the card, on the frame the card arrives.
+#[test]
+fn a_reveal_aims_at_the_settled_card() {
+    let (h, mut app, _) = three_notes();
+    let (first, second) = (app.alloc_node_id(), app.alloc_node_id());
+    app.insert_note_at(first, Some(egui::vec2(100_000.0, 0.0)));
+    app.insert_note_at(second, Some(egui::vec2(100_000.0, 0.0)));
+    let placed = app.card_rect(second).unwrap();
+    h.frame(&mut app, vec![]);
+    let card = app.card_rect(second).unwrap();
+    assert_ne!(card, placed, "the settle moved it");
+    assert_eq!(app.camera.target().center(), card.center());
+}
+
+/// A pan or zoom takes the camera back: a reveal still waiting for its card won't pull it away afterwards.
+#[test]
+fn a_wheel_zoom_drops_a_waiting_reveal() {
+    let (h, mut app, _) = three_notes();
+    let coming = app.alloc_node_id();
+    app.camera.reveal = Some(coming);
+    h.frame(&mut app, vec![egui::Event::PointerMoved(egui::pos2(400.0, 400.0))]);
+    assert_eq!(app.camera.reveal, Some(coming), "still waiting without a zoom");
+    h.frame(&mut app, vec![egui::Event::Zoom(1.2)]);
+    assert_eq!(app.camera.reveal, None);
+}
+
 /// An edit that ends before the note first draws takes its focus request with it: the note is no longer waiting for
 /// the keyboard, so nothing else would clear it.
 #[test]

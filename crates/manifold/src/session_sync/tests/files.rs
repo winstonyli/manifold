@@ -67,8 +67,11 @@ fn a_group_export_imports_as_fresh_nodes() {
     let json = app.export_group_json(g).unwrap();
     assert_eq!(json.nodes.len(), 2);
     assert_eq!(json.nodes[0].kind(), Some(Kind::Group));
+    let before: Vec<_> = app.nodes.keys().copied().collect();
     app.import_group_json(&json);
     assert_eq!(snapshots(&app).len(), 4, "the import added a second group and note");
+    let root = app.camera.reveal.expect("the camera goes to the import");
+    assert!(!before.contains(&root) && app.in_level(root), "the imported root, on this level");
 }
 
 /// A jar deleted on another device while this one was not running never reaches `remove_remotely_deleted` here, so

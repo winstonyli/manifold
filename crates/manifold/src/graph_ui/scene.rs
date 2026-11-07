@@ -168,7 +168,6 @@ impl App {
         // order doesn't decide what paints on top, though: see
         // `overlay_painter`'s own comment for why its layer is
         // `Order::Middle`.
-        self.apply_camera_requests(reset_view);
 
         // The level drawn, not the whole graph: an empty group shows it too.
         if items.is_empty() {
@@ -193,6 +192,8 @@ impl App {
         // independent of this, and everything else should stay exactly
         // where it is for the whole gesture.
         self.settle_level_if_changed(self.settle_key(&items));
+        // After the settle: Fit and a reveal aim at where the cards now are.
+        self.apply_camera_requests(reset_view);
 
         self.handle_graph_keys(ui, typing);
 
@@ -318,6 +319,7 @@ impl App {
         self.draw_suggestions(ui, scene_outer_rect, &project);
         if scene_rect != scene_rect_before_pan_zoom {
             self.interaction.pending_new_node = None;
+            self.camera.reveal = None;
         }
 
         // A click on a link line deletes that link (link-gestures spec B). The Scene's background took the click, so

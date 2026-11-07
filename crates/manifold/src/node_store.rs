@@ -127,9 +127,11 @@ impl App {
 
     /// Where a new node `id` goes: `current_group` at `pos`, or at a
     /// jittered world-center spawn when `pos` is `None`. A JSON level is
-    /// left first, so the node lands in the level the user then sees.
+    /// left first, so the node lands in the level the user then sees, and
+    /// the camera goes to it there (`GraphCamera::reveal`).
     pub(crate) fn placement(&mut self, id: NodeId, pos: Option<egui::Vec2>) -> Placement {
         self.leave_json_level();
+        self.camera.reveal = Some(id);
         let pos = pos.unwrap_or_else(|| graph_ui::layout::GRAPH_WORLD_CENTER + graph_ui::layout::spawn_jitter(id));
         Placement { group: self.current_group, pos }
     }

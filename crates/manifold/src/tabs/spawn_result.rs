@@ -120,6 +120,7 @@ impl App {
                     }
                     SpawnPurpose::New => {
                         self.send_zoom_to(id);
+                        self.camera.reveal = Some(id);
                     }
                     SpawnPurpose::Split => {
                         self.split_tab = Some(id);
@@ -217,6 +218,7 @@ impl App {
                             if matches!(purpose, SpawnPurpose::Root) {
                                 self.view_mode = ViewMode::Graph;
                             }
+                            self.camera.reveal = Some(twin);
                             self.queue_delete(id);
                             self.save_session();
                             return;
@@ -246,6 +248,9 @@ impl App {
                     if matches!(purpose, SpawnPurpose::Root) {
                         // Success switches to Graph view; the failed card must be seen too.
                         self.view_mode = ViewMode::Graph;
+                    }
+                    if matches!(purpose, SpawnPurpose::Root | SpawnPurpose::New) {
+                        self.camera.reveal = Some(id);
                     }
                     self.land_remote_in_flight(id, remote);
                     self.save_session();

@@ -170,7 +170,9 @@ impl App {
         self.omni_leave_other_views();
         // Likewise a drag ends when its card stops being drawn (Graph view left, or the card left the level by
         // another replica's move): its release would never be seen, and the next one would save a stale pos.
-        self.end_stale_drag(self.transition.is_some() || self.view_mode == ViewMode::Graph);
+        let graph_drawn = self.transition.is_some() || self.view_mode == ViewMode::Graph;
+        self.end_stale_drag(graph_drawn);
+        self.end_stale_reveal(graph_drawn);
         // And pick-target mode, whose targets are drawn only there.
         self.end_stale_connect(self.view_mode == ViewMode::Graph);
         // And the rectangle selection, which only ever holds the tabs drawn on this level.

@@ -699,6 +699,14 @@ impl App {
         }
     }
 
+    /// Ends a reveal once the Graph view isn't drawn: it is for the view being looked at, and the camera shouldn't move
+    /// on the way back (`GraphCamera::reveal`).
+    pub(crate) fn end_stale_reveal(&mut self, graph_drawn: bool) {
+        if !graph_drawn {
+            self.camera.reveal = None;
+        }
+    }
+
     /// Drops from the selection every card no longer drawn on this level: a tab closed, mid-respawn, or moved by
     /// another replica. What stays is a card of this level whose kind grants `selectable` (a stored card's row does;
     /// a virtual kind's grants it only if its source's row says so). A JSON level's cards are never selected. It

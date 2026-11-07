@@ -301,8 +301,8 @@ impl App {
         // member's file position is already relative to its own (possibly
         // nested) group and stays as-is, same as the old per-group export
         // format's own import behavior.
-        let pos = crate::graph_ui::layout::GRAPH_WORLD_CENTER + crate::graph_ui::layout::spawn_jitter(root);
-        let root = ImportRoot { group: self.insertion_group(), pos: Some(pos) };
+        let at = self.placement(root, None);
+        let root = ImportRoot { group: at.group, pos: Some(at.pos) };
         self.materialize_imported(imported, Some(root), false);
         self.save_session();
     }

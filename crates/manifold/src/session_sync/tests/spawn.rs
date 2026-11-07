@@ -872,3 +872,27 @@ fn a_failed_startup_card_is_retried_at_the_next_launch() {
     assert_eq!(restored.focused, Some(card));
     assert!(restored.test_spawns.iter().any(|(spawn, _)| spawn.id == card), "the card is woken");
 }
+
+/// A new tab is revealed when it lands, and a failed one by its card, the old card if it refreshes one. A tab that
+/// existed already is not news: a failed wake leaves the camera alone.
+#[test]
+fn a_new_tab_reveals_its_card_and_an_old_one_does_not() {
+    let mut app = app_on(&temp_dir("reveal-spawn").join("session.mnf"), 1);
+    let landed = succeed_spawn(&mut app, "https://landed/");
+    assert_eq!(app.camera.reveal, Some(landed));
+
+    let failed = app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(app.camera.reveal, Some(failed));
+
+    app.camera.reveal = None;
+    app.spawn_tab_at("https://a/", egui::Vec2::ZERO, None, None);
+    fail_spawns(&mut app);
+    assert_eq!(app.camera.reveal, Some(failed), "the card that stands for it");
+
+    app.camera.reveal = None;
+    let sleeping = add(&mut app, Kind::Tab, sleeping_tab("https://b/", "B"));
+    app.focus_tab(sleeping);
+    fail_spawns(&mut app);
+    assert_eq!(app.camera.reveal, None);
+}

@@ -66,7 +66,6 @@ impl App {
                 );
                 if self.interaction.focus_new_note == Some(CardId::from(id)) {
                     self.interaction.focus_new_note = None;
-                    self.camera.reveal = Some(id);
                     edit.request_focus();
                 }
                 // Not only `lost_focus`: a box that never had the keyboard has no blur to end it (a newer note took
