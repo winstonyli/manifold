@@ -53,7 +53,7 @@ impl App {
 
         if is_editing {
             body.interact_rect = handle;
-            let mut lost_focus = false;
+            let mut unfocused = false;
             if let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) {
                 let edit = ui.put(
                     text_rect,
@@ -68,11 +68,13 @@ impl App {
                     self.interaction.focus_new_note = None;
                     edit.request_focus();
                 }
-                lost_focus = edit.lost_focus();
+                // Not only `lost_focus`: a box that never had the keyboard has no blur to end it (a newer note took
+                // the one focus request, it drew after its request expired, or it was scrolled away mid-edit).
+                unfocused = !edit.has_focus();
             }
             // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on
             // every keystroke -- a note can reach 1 MB, and `save_session` is real file I/O.
-            if lost_focus {
+            if unfocused {
                 // Escape ends the edit; focus goes back to the card so keyboard users keep their place
                 // (a click elsewhere keeps the focus it took).
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {

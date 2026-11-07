@@ -1606,9 +1606,26 @@ fn a_new_note_out_of_view_does_not_take_the_keyboard_later() {
         h.frame(&mut app, vec![]);
     }
     assert!(app.interaction.focus_new_note.is_none(), "the request expired");
-    app.camera.jump_to(app.fit_all_nodes_scene_rect());
+    app.camera.jump_to(egui::Rect::from_center_size(app.card_rect(far).unwrap().center(), egui::vec2(1024.0, 768.0)));
     for _ in 0..3 {
         h.frame(&mut app, vec![]);
     }
     assert!(!h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(far).editor())));
+    assert!(!app.nodes[&far].as_note().unwrap().editing, "a box nothing can type in is not being edited");
+}
+
+/// Of two notes made before a frame draws, the second gets the keyboard and the first stops editing: its focus request
+/// was replaced, so nothing would ever end its edit.
+#[test]
+fn only_the_last_of_two_new_notes_stays_in_editing() {
+    let (h, mut app, _) = three_notes();
+    let (first, second) = (app.alloc_node_id(), app.alloc_node_id());
+    app.insert_note_at(first, Some(egui::vec2(0.0, 0.0)));
+    app.insert_note_at(second, Some(egui::vec2(300.0, 0.0)));
+    for _ in 0..3 {
+        h.frame(&mut app, vec![]);
+    }
+    assert!(!app.nodes[&first].as_note().unwrap().editing, "the first note's edit ended");
+    assert!(app.nodes[&second].as_note().unwrap().editing);
+    assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(second).editor())));
 }
