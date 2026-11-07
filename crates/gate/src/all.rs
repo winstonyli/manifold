@@ -9,8 +9,8 @@
 //! - `light`: `two` once, and the steps from `light` up (`kill-check`, `jar` and `shots-aa` are `full` only). For UI code that writes the
 //!   store or reaches a view, and scripts. The repeats in `full` exist to catch flaky ordering in sync, which UI-only
 //!   changes cannot reach.
-//! - `ui`: `cargo test` of the four crates it names (`manifold`, `manifold-view-protocol`, `manifold-pages`,
-//!   `manifold-view-webview2`; CI tests six, and the hook's clippy covers seven), then the steps marked `ui`. For
+//! - `ui`: `cargo test` of the five crates it names (`manifold`, `manifold-view-protocol`, `manifold-pages`,
+//!   `manifold-view-webview2`, `gate`; CI tests more, and the hook's clippy covers seven), then the steps marked `ui`. For
 //!   drawing, input and view-state modules that import no store, sync or network module (the list is in tier.rs), and docs.
 //!
 //! `WITH_ENGINES="servo webkit cef"` adds an engine's steps to any mode; a step's `engine` field names which. `cef` needs
@@ -335,6 +335,8 @@ pub(crate) fn all(log: Option<PathBuf>, mode: Option<String>) -> ExitCode {
             "manifold-pages",
             "-p",
             "manifold-view-webview2",
+            "-p",
+            "gate",
         ]);
         g.stage("unit", &sibling(&log, "unit.log"), c);
     }
