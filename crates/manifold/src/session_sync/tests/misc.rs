@@ -273,7 +273,7 @@ fn a_respawning_tab_follows_a_local_moves_edge_recheck() {
     let path = temp_dir("jar-respawn-move").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (_outer, g, t) = nested_tab(&mut app);
-    let local = app.create_jar("Local", crate::node_store::Placement { group: Some(g), pos: egui::Vec2::ZERO });
+    let local = app.create_jar(None, "Local", crate::node_store::Placement { group: Some(g), pos: egui::Vec2::ZERO });
     app.set_jar_edge(t, Some(local));
     assert!(app.save_session());
     assert_eq!(stored(&app, t, field::JAR), FieldValue::Id(Some(local)));

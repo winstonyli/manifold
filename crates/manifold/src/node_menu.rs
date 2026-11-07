@@ -1013,7 +1013,7 @@ impl App {
             NodeAction::NewJar(name) => {
                 self.scoped.naming_jar = None;
                 if !crate::names::clean_name(&name).is_empty() {
-                    let jar = self.create_jar(&name, self.jar_placement_beside(id));
+                    let jar = self.create_jar(None, &name, self.jar_placement_beside(id));
                     self.set_jar_edge(id, Some(jar));
                 }
             }

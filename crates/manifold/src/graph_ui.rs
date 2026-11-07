@@ -222,6 +222,7 @@ pub(crate) struct GraphCamera {
     /// A card to bring into view once it has a rect and the level has settled (`App::apply_camera_requests`): a new or
     /// reopened card appears a frame or more after the write that makes it, wherever the layout put it. It is for the
     /// view being looked at, so a pan, a zoom, a jump or leaving the Graph view ends it; several in a row keep the last.
+    /// The card may not exist yet, or ever (a failed add): the id just waits, and whatever ends a reveal ends it too.
     pub(crate) reveal: Option<NodeId>,
     /// The scene area `fill` last fitted `rect` to. When the next area differs only in width (the right panel
     /// opening, closing or resized, or the window resized sideways), `fill` keeps the scale and left edge.

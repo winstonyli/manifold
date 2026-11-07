@@ -821,11 +821,9 @@ pub(super) const VERBS: &[Verb] = &[
     }),
     row("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)", |rest| {
         with_text(rest, |app, name| {
-            // `create_jar` picks its own id, so `placement`'s reveal is replaced below.
-            let unused = app.alloc_node_id();
-            let at = app.placement(unused, None);
-            let id = app.create_jar(&name, at);
-            app.camera.reveal = Some(id);
+            let id = app.alloc_node_id();
+            let at = app.placement(id, None);
+            app.create_jar(Some(id), &name, at);
             eprintln!("NEWJAR: {id}");
             app.save_session();
         })

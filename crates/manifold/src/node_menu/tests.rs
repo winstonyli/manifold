@@ -869,7 +869,8 @@ fn the_jar_page_offers_inherit_and_the_jars_in_reach() {
         crate::session_sync::tests::sleeping_tab("https://a/", "A"),
     );
     app.edit_group(tab, Some(group));
-    let inside = app.create_jar("Inside", crate::node_store::Placement { group: Some(group), pos: egui::Vec2::ZERO });
+    let inside =
+        app.create_jar(None, "Inside", crate::node_store::Placement { group: Some(group), pos: egui::Vec2::ZERO });
     let menu = app.jar_menu(tab).unwrap();
     let names: Vec<String> = menu.rows.iter().map(|r| r.name.name.clone()).collect();
     assert_eq!(names, ["Inherit", "Default", "Inside"]);

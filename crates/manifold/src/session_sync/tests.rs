@@ -447,7 +447,7 @@ fn link_doc(nodes: Vec<crate::store::json::JsonNode>) -> JsonDoc {
 
 /// A jar card named `name` at the top level, off the origin (which reads as unplaced, `pos_of`).
 pub(crate) fn add_jar(app: &mut App, name: &str) -> NodeId {
-    app.create_jar(name, crate::node_store::Placement { group: None, pos: egui::vec2(40.0, 40.0) })
+    app.create_jar(None, name, crate::node_store::Placement { group: None, pos: egui::vec2(40.0, 40.0) })
 }
 
 /// The Default jar's id, making it first if the app has none (startup does this).

@@ -53,7 +53,7 @@ impl App {
         let defaults: Vec<NodeId> = self.doc.mirror.default_jar_ids().filter(|&id| self.jar_exists(id)).collect();
         let Some((_, losers)) = defaults.split_first() else {
             let pos = crate::graph_ui::layout::GRAPH_WORLD_CENTER + crate::graph_ui::layout::named_jitter(DEFAULT_NAME);
-            let id = self.create_jar(DEFAULT_NAME, crate::node_store::Placement { group: None, pos });
+            let id = self.create_jar(None, DEFAULT_NAME, crate::node_store::Placement { group: None, pos });
             self.edit_field(id, field::IS_DEFAULT, FieldValue::Bool(true));
             return true;
         };
@@ -66,12 +66,12 @@ impl App {
 
     /// A new named jar under `name`'s clean form (name rules), with the first palette colour no jar shows (one without
     /// a colour shows the first, `jar_color`), so deleting a jar doesn't make the next one repeat a colour; with every
-    /// colour taken, they cycle by count. A card placed at `at`; its fields go through `edit_field`, and the caller's
-    /// `save_session` creates it.
-    pub(crate) fn create_jar(&mut self, name: &str, at: crate::node_store::Placement) -> NodeId {
+    /// colour taken, they cycle by count. A card placed at `at` under `id` (allocated when `None`); its fields go
+    /// through `edit_field`, and the caller's `save_session` creates it.
+    pub(crate) fn create_jar(&mut self, id: Option<NodeId>, name: &str, at: crate::node_store::Placement) -> NodeId {
         let defs = self.jar_defs();
         let color = crate::theme::free_tag_color(&defs.values().map(|d| d.color).collect::<Vec<_>>());
-        let key = self.place_node(None, Kind::Jar, Runtime::Jar, at);
+        let key = self.place_node(id, Kind::Jar, Runtime::Jar, at);
         self.edit_field(key, field::NAME, FieldValue::Str(crate::names::clean_name(name).into_owned()));
         self.edit_field(key, field::COLOR, color_value(Some(color)));
         key
@@ -110,7 +110,7 @@ impl App {
             self.default_jar()
         } else {
             let existing = self.jar_named(name).or_else(|| self.jar_named(&clean));
-            Some(existing.unwrap_or_else(|| self.create_jar(&clean, self.jar_placement_beside(tab))))
+            Some(existing.unwrap_or_else(|| self.create_jar(None, &clean, self.jar_placement_beside(tab))))
         };
         self.set_jar_edge(tab, jar);
         true
