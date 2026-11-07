@@ -211,6 +211,7 @@ macro_rules! send {
     ($s:expr, $($c:expr),+ $(,)?) => { $s.send_all(&[$($c.to_string()),+]) };
 }
 
+mod aim;
 mod engine_states;
 mod keyboard;
 
@@ -312,35 +313,6 @@ impl Shots {
             self.step(name, body)?;
         }
         Ok(())
-    }
-
-    /// The first top-level (`place` "top"; else any) card of type `ty` (and engine state `loaded`): the centre of the
-    /// part of its rect inside the window, since a card can hang off the edge. Place "chip" is the point where the
-    /// jar chip hangs, a fixed number of screen points above the card's bottom-left corner.
-    fn center(&mut self, ty: &str, place: &str, loaded: Option<bool>) -> io::Result<(i64, i64)> {
-        let s = self.state()?;
-        let (w, h) = (f64::from(self.size.0), f64::from(self.size.1));
-        let c = s
-            .all_cards()
-            .iter()
-            .find(|c| State::card_is(c, ty, loaded) && (place != "top" || c["group"].is_null()))
-            .ok_or_else(|| io::Error::other(format!("no {place} card of type {ty}")))?;
-        let r = rect(c)?;
-        Ok(if place == "chip" {
-            ((r[0] + 18.0) as i64, (r[3] - 33.0) as i64)
-        } else {
-            (((r[0].max(0.0) + r[2].min(w)) / 2.0) as i64, ((r[1].max(36.0) + r[3].min(h)) / 2.0) as i64)
-        })
-    }
-
-    /// The id of the first top-level card of type `ty` (import gives the seeded nodes fresh ids).
-    fn card_id(&mut self, ty: &str) -> io::Result<String> {
-        let s = self.state()?;
-        s.all_cards()
-            .iter()
-            .find(|c| State::card_is(c, ty, None) && c["group"].is_null())
-            .and_then(|c| c["id"].as_str().map(str::to_string))
-            .ok_or_else(|| io::Error::other(format!("no top-level card of type {ty}")))
     }
 
     /// Waits for the tabs to be up and the app idle. Nothing here waits on the clock: a sleep long enough on a quiet
@@ -624,6 +596,8 @@ impl Shots {
         send!(self, format!("RESIZE {w} {h}"), "WAITTABS", "WAITIDLE")?;
         send!(self, format!("ADDFILE {} 200 640", seed.join("pic.png").display()))?;
         send!(self, format!("ADDFILE {} 640 700", seed.join("data.json").display()), "WAITIDLE")?;
+        // Each added file pulls the camera to it; the views aim at every card.
+        self.click_named(crate::state::FIT_VIEW)?;
 
         self.view("graph", |s| s.shot("graph"))?;
         self.graph_menus()?;

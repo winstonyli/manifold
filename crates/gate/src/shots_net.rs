@@ -1,6 +1,6 @@
 //! The two servers `gate chrome-shots` needs that http.rs cannot be (they hold a connection open after answering):
 //! the download server (was the inline python `serve.py`) and the fake proxy (was scripts/fake_proxy.py); and
-//! `Offline`, which keeps a shot's app off the internet.
+//! `Offline`, which keeps a shot's or smoke's app off the internet.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -256,7 +256,7 @@ impl Proxy {
     }
 }
 
-/// What a shot's app reaches instead of the internet. A real server answers on its own time, so a favicon would land
+/// What a shot's or smoke's app reaches instead of the internet. A real server answers on its own time, so a favicon would land
 /// before a shot or after it; `env` sends the app's fetches to the proxy, and the local servers past it.
 pub struct Offline {
     /// Refusing, until a view says otherwise.

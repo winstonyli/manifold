@@ -23,8 +23,9 @@ use serde_json::Value;
 use crate::check::{fail_line, failures, note_failure, pass_line, Marks};
 use crate::instance::{file_url, seed_settings, Instance, QUIT_TIMEOUT};
 use crate::link::{bad, truthy};
+use crate::shots_net::Offline;
 use crate::state::{fmt0, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
-use crate::suggest::{query_param, url_query, Server};
+use crate::suggest::{query_param, url_query};
 use crate::windows_main::Ctx;
 
 mod pixels;
@@ -505,7 +506,6 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     sm.check_state("group_card", "a headless screenshot shows no toast", "s['toast'] is None", |v| {
         null_key(v.s, "toast")
     })?;
-    sm.inst.click_control(FIT_VIEW)?;
     let s = sm.settle("group_card")?;
     let first_group = first(&s.groups(), "group card")?.clone();
     sm.send(&format!("DOUBLECLICK {}", xy(&s, &first_group)?))?;
@@ -528,8 +528,6 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     let before = group_out.groups();
     sm.send(&format!("IMPORTGROUP {}", sm.win("pair.group.json")))?;
     sm.send("WAITTABS")?;
-    // Reset View (fit all) brings the imported card into view.
-    sm.inst.click_control(FIT_VIEW)?;
     let pair_top = sm.settle("pair_top")?;
     let pair_id = new_group(&pair_top, &before).ok_or_else(|| bad("no imported group card".into()))?;
     sm.send(&format!("DOUBLECLICK {}", xy(&pair_top, &pair_id)?))?;
@@ -1056,8 +1054,6 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
     }
     sm.send("WAITTABS")?;
     sm.settle("after_kinds_placed")?;
-    // Layout can push a dropped card out of view; Reset View brings it back to be aimed at.
-    sm.inst.click_control(FIT_VIEW)?;
     let after_kinds = sm.settle("after_kinds")?;
     let pdf_id = new_card(&after_kinds, PDF, None, &before_kinds);
     let md_id = new_card(&after_kinds, NOTE, None, &before_kinds);
@@ -1249,13 +1245,12 @@ pub fn smoke(ctx: &mut Ctx) -> io::Result<()> {
     let profile = ctx.work.join("profile");
     seed_settings(&profile, "webview2", "")?;
     // Address-bar suggestions come from a local server, not DuckDuckGo, so those checks don't depend on the network.
-    let server = Server::start()?;
-    let url = server.url();
-    let inst = Instance::launch_env(&ctx.exe, &profile, &out, "smoke.log", &[("MANIFOLD_SUGGESTIONS_URL", &url)])?;
+    let net = Offline::start()?;
+    let inst = Instance::launch_env(&ctx.exe, &profile, &out, "smoke.log", &net.env(&[]))?;
     let mut sm = Smoke { inst, out: out.clone(), repo };
     drive(&mut sm, &mut ctx.marks)?;
     drop(sm); // kills the instance if it is still up
-    drop(server);
+    drop(net);
     println!();
     if failures() == 0 {
         println!("All checks passed. Screenshots in {}", out.display());

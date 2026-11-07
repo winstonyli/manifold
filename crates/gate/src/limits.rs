@@ -14,11 +14,11 @@ const APP_FIELDS_MAX: usize = 60;
 
 /// Files over `PROD_LIMIT` today: path under `crates/` and the prod line count the file may not exceed.
 const PROD_ALLOWED: &[(&str, usize)] = &[
-    ("gate/src/shots.rs", 1526),
+    ("gate/src/shots.rs", 1500),
     ("manifold/src/card.rs", 1639),
     ("manifold/src/gpu.rs", 1542),
     ("manifold/src/store/journal.rs", 1492),
-    ("gate/src/smoke.rs", 1267),
+    ("gate/src/smoke.rs", 1262),
 ];
 /// Inline test blocks at or over `TEST_BLOCK_LIMIT` today, with the block's line count.
 const TEST_ALLOWED: &[(&str, usize)] = &[
@@ -131,13 +131,14 @@ fn shots_do_not_wait_on_the_clock() {
     assert!(sleepers.is_empty(), "{sleepers:?} send SLEEP: wait on a state instead (`Shots::await_state`)");
 }
 
-/// A shot can't wait on the internet: every instance it starts goes through `shots_net::Offline`.
+/// A shot or a smoke check can't wait on the internet: every instance they start goes through `shots_net::Offline`.
 #[test]
-fn shots_launch_offline() {
-    let is_shots = |path: &str| path == "gate/src/shots.rs" || path.starts_with("gate/src/shots/");
+fn shots_and_smoke_launch_offline() {
+    let covered =
+        |path: &str| path == "gate/src/smoke.rs" || path == "gate/src/shots.rs" || path.starts_with("gate/src/shots/");
     let online: Vec<String> = sources()
         .into_iter()
-        .filter(|(p, s)| is_shots(p) && s.matches("Instance::launch").count() != s.matches("net.env(").count())
+        .filter(|(p, s)| covered(p) && s.matches("Instance::launch").count() != s.matches("net.env(").count())
         .map(|(p, _)| p)
         .collect();
     assert!(online.is_empty(), "{online:?} start an instance without `net.env`");
