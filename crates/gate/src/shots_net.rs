@@ -1,6 +1,6 @@
 //! The two servers `gate chrome-shots` needs that http.rs cannot be (they hold a connection open after answering):
 //! the download server (was the inline python `serve.py`) and the fake proxy (was scripts/fake_proxy.py); and
-//! `Offline`, which keeps a shot's or smoke's app off the internet.
+//! `Offline`, which keeps every `Instance`'s app off the internet.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -256,28 +256,36 @@ impl Proxy {
     }
 }
 
-/// What a shot's or smoke's app reaches instead of the internet. A real server answers on its own time, so a favicon would land
-/// before a shot or after it; `env` sends the app's fetches to the proxy, and the local servers past it.
+/// What an instance's app reaches instead of the internet (`Instance::launch_env` starts one per instance). A real
+/// server answers on its own time, so a favicon would land before a shot or after it; `env` sends the app's fetches to
+/// the proxy, and the local servers past it. The host's own fetches read `HTTPS_PROXY`; WebView2 ignores it and takes
+/// `--proxy-server` from `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`. CEF reads neither (PARKED.md "CEF in the gate is
+/// online").
 pub struct Offline {
     /// Refusing, until a view says otherwise.
     pub proxy: Proxy,
     /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
     _suggestions: suggest::Server,
-    env: [(&'static str, String); 3],
+    env: [(&'static str, String); 4],
 }
 
 impl Offline {
     pub fn start() -> io::Result<Offline> {
         let (proxy, suggestions) = (Proxy::start(true)?, suggest::Server::start()?);
+        let site = crate::http::site_host();
         let env = [
             ("HTTPS_PROXY", proxy.url()),
-            ("NO_PROXY", crate::http::site_host()),
+            ("NO_PROXY", site.clone()),
+            (
+                "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+                format!("--proxy-server={} --proxy-bypass-list={site}", proxy.url()),
+            ),
             ("MANIFOLD_SUGGESTIONS_URL", suggestions.url()),
         ];
         Ok(Offline { proxy, _suggestions: suggestions, env })
     }
 
-    /// `Instance::launch_env`'s variables: `own`, then these.
+    /// The variables to launch with: `own`, then these (a later one wins, so `own` can't name them).
     pub fn env<'a>(&'a self, own: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
         own.iter().copied().chain(self.env.iter().map(|(name, value)| (*name, value.as_str()))).collect()
     }

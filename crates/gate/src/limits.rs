@@ -14,11 +14,11 @@ const APP_FIELDS_MAX: usize = 60;
 
 /// Files over `PROD_LIMIT` today: path under `crates/` and the prod line count the file may not exceed.
 const PROD_ALLOWED: &[(&str, usize)] = &[
-    ("gate/src/shots.rs", 1500),
+    ("gate/src/shots.rs", 1497),
     ("manifold/src/card.rs", 1639),
     ("manifold/src/gpu.rs", 1542),
     ("manifold/src/store/journal.rs", 1492),
-    ("gate/src/smoke.rs", 1262),
+    ("gate/src/smoke.rs", 1258),
 ];
 /// Inline test blocks at or over `TEST_BLOCK_LIMIT` today, with the block's line count.
 const TEST_ALLOWED: &[(&str, usize)] = &[
@@ -131,17 +131,33 @@ fn shots_do_not_wait_on_the_clock() {
     assert!(sleepers.is_empty(), "{sleepers:?} send SLEEP: wait on a state instead (`Shots::await_state`)");
 }
 
-/// A shot or a smoke check can't wait on the internet: every instance they start goes through `shots_net::Offline`.
+/// The app processes the gate starts outside `Instance`, which keeps them offline (`shots_net::Offline`), with the count
+/// of `Command::new(exe` / `Command::new(&exe` in the file. The list only shrinks.
+const RAW_APP_SPAWNS: &[(&str, usize)] = &[
+    ("gate/src/launch_forms.rs", 1), // the command-line forms' exit codes; no tab loads
+    ("gate/src/probes.rs", 2),       // `--import-json` and `--dump`: no window, no engine
+    ("gate/src/profile.rs", 1),      // local content only; the samply path (profile.ps1) can't pass the environment
+];
+
+/// A gate check can't wait on the internet: the app starts through `Instance::launch`/`launch_env`, offline, and only
+/// `gate package` reaches the network (`launch_online`).
 #[test]
-fn shots_and_smoke_launch_offline() {
-    let covered =
-        |path: &str| path == "gate/src/smoke.rs" || path == "gate/src/shots.rs" || path.starts_with("gate/src/shots/");
-    let online: Vec<String> = sources()
-        .into_iter()
-        .filter(|(p, s)| covered(p) && s.matches("Instance::launch").count() != s.matches("net.env(").count())
-        .map(|(p, _)| p)
-        .collect();
-    assert!(online.is_empty(), "{online:?} start an instance without `net.env`");
+fn the_gate_launches_the_app_offline() {
+    let mut problems = Vec::new();
+    for (path, source) in sources()
+        .iter()
+        .filter(|(p, _)| p.starts_with("gate/src/") && !p.ends_with("/instance.rs") && !p.ends_with("/limits.rs"))
+    {
+        if source.contains("launch_online(") && path != "gate/src/package.rs" {
+            problems.push(format!("{path}: calls `launch_online`; only gate package may"));
+        }
+        let raw = source.matches("Command::new(exe").count() + source.matches("Command::new(&exe").count();
+        let allowed = RAW_APP_SPAWNS.iter().find(|(p, _)| p == path).map_or(0, |&(_, n)| n);
+        if raw != allowed {
+            problems.push(format!("{path}: {raw} raw app spawns, {allowed} allowed; launch through `Instance`"));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
 }
 
 #[test]

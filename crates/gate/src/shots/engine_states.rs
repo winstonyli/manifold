@@ -41,7 +41,7 @@ impl Shots {
             &profile,
             &self.work,
             &format!("log-eng-{name}"),
-            &self.net.env(&[("APPDATA", &appdata), ("MANIFOLD_HOST_PINS_FILE", &pins_file)]),
+            &[("APPDATA", &appdata), ("MANIFOLD_HOST_PINS_FILE", &pins_file)],
         )?;
         send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "WAITIDLE")
     }
@@ -102,7 +102,7 @@ impl Shots {
         self.toast_shot("engine-states-settings-failed", "install failed", |s| s.inst.click_control("Download"))?;
         self.picker_shot("engine-states-picker-failed")?;
         // Retry with the proxy silent: Installing, with Cancel.
-        self.net.proxy.set_refuse(false);
+        self.inst.proxy().expect("launched offline").set_refuse(false);
         self.inst.click_control("Retry")?;
         self.settle()?;
         self.inst.click_control("Download")?;

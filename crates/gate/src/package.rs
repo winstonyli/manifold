@@ -148,7 +148,7 @@ fn install(engine: &str, files: &[String], exe_src: &Path, work: &Path) -> io::R
     let profile = appdata.join("manifold");
     seed(&exe, &profile, "webview2", &[tab_node(None, "webview2")])?;
     let appdata_env = appdata.display().to_string();
-    let mut inst = Instance::launch_env(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
+    let mut inst = Instance::launch_online(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
     inst.send("WAITTABS")?;
     inst.send(&format!("INSTALLVIEW {engine}"))?;
     let deadline = Instant::now() + INSTALL_WAIT;
@@ -204,7 +204,7 @@ fn run(repo: &Path, exe_src: &Path, work: &Path) -> io::Result<()> {
     let profile = appdata.join("manifold");
     seed(&exe, &profile, "webview2", &[tab_node(Some(&site.url("/tall")), "webview2")])?;
     let appdata_env = appdata.display().to_string();
-    let mut inst = Instance::launch_env(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
+    let mut inst = Instance::launch_online(&exe, &profile, work, "log", &[("APPDATA", &appdata_env)])?;
     inst.send("WAITTABS")?;
     // The tab's page reports its load once the WebView2 host is extracted from the embed and running.
     let loaded = site.wait_for("load ", 1, Duration::from_secs(60));

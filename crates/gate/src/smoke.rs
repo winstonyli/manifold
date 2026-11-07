@@ -23,7 +23,6 @@ use serde_json::Value;
 use crate::check::{fail_line, failures, note_failure, pass_line, Marks};
 use crate::instance::{file_url, seed_settings, Instance, QUIT_TIMEOUT};
 use crate::link::{bad, truthy};
-use crate::shots_net::Offline;
 use crate::state::{fmt0, State, BACK, DOWNLOAD, FIT_VIEW, IMAGE, JAR, JSON, NOTE, PDF, TAB};
 use crate::suggest::{query_param, url_query};
 use crate::windows_main::Ctx;
@@ -1244,13 +1243,10 @@ pub fn smoke(ctx: &mut Ctx) -> io::Result<()> {
     // skips the demo scene, so the app starts with just the root tab.
     let profile = ctx.work.join("profile");
     seed_settings(&profile, "webview2", "")?;
-    // Address-bar suggestions come from a local server, not DuckDuckGo, so those checks don't depend on the network.
-    let net = Offline::start()?;
-    let inst = Instance::launch_env(&ctx.exe, &profile, &out, "smoke.log", &net.env(&[]))?;
+    let inst = Instance::launch(&ctx.exe, &profile, &out, "smoke.log")?;
     let mut sm = Smoke { inst, out: out.clone(), repo };
     drive(&mut sm, &mut ctx.marks)?;
     drop(sm); // kills the instance if it is still up
-    drop(net);
     println!();
     if failures() == 0 {
         println!("All checks passed. Screenshots in {}", out.display());

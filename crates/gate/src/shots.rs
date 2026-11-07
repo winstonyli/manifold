@@ -59,7 +59,7 @@ use crate::check::{check, check_eq, note_failure, Section};
 use crate::instance::{seed_settings, Instance};
 use crate::probes::{import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
-use crate::shots_net::{resume_body, Downloads, Offline};
+use crate::shots_net::{resume_body, Downloads};
 use crate::state::{
     bar_stops, round_i, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH, SPLIT_VIEW,
     TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
@@ -202,7 +202,6 @@ struct Shots {
     views: Vec<String>,
     /// The engine-states instance's data dir for the view hosts.
     eng_data: PathBuf,
-    net: Offline,
     /// A failed tab is what the shots are of (`engine_states`); anywhere else it fails the shot.
     tabs_fail: bool,
 }
@@ -258,9 +257,8 @@ impl Shots {
             .map_err(io::Error::other)?;
         let data = seed_data();
         let seed = content_dir(&std::env::temp_dir(), &[("pic.png", png.get_ref()), ("data.json", data.as_bytes())])?;
-        let net = Offline::start()?;
         let appdata = root.display().to_string();
-        let inst = Instance::launch_env(exe, &profile, work, "log", &net.env(&[("APPDATA", &appdata)]))?;
+        let inst = Instance::launch_env(exe, &profile, work, "log", &[("APPDATA", &appdata)])?;
         let downloads = crate::instance::download_dir(&profile)?;
         Ok(Shots {
             work: work.to_path_buf(),
@@ -271,7 +269,6 @@ impl Shots {
             size: cfg.size,
             views: cfg.views,
             eng_data: PathBuf::new(),
-            net,
             tabs_fail: false,
         })
     }

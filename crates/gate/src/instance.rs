@@ -20,6 +20,7 @@ use std::sync::{Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use crate::shots_net::{Offline, Proxy};
 use crate::state::State;
 
 /// `BELOW_NORMAL_PRIORITY_CLASS`: the instance never competes with the user's work (LONG_RUNS.md).
@@ -165,16 +166,19 @@ pub struct Instance {
     work: PathBuf,
     /// The instance's stdout+stderr.
     pub log: PathBuf,
+    /// What the app reaches instead of the internet; `None` only for `launch_online`. `Drop` kills the child first.
+    offline: Option<Offline>,
 }
 
 impl Instance {
     /// Starts `exe --headless --profile-dir PROFILE` at BelowNormal in the kill-on-close job, its output in
-    /// `WORK/LOG_NAME`. The caller seeds the profile first (`seed_settings`). The exports go to `WORK`.
+    /// `WORK/LOG_NAME`, offline (`shots_net::Offline`, its own per instance). The caller seeds the profile first
+    /// (`seed_settings`). The exports go to `WORK`.
     pub fn launch(exe: &Path, profile: &Path, work: &Path, log_name: &str) -> io::Result<Instance> {
         Self::launch_env(exe, profile, work, log_name, &[])
     }
 
-    /// `launch` with extra environment variables for the instance (the smoke test's `MANIFOLD_SUGGESTIONS_URL`).
+    /// `launch` with extra environment variables for the instance (say an `APPDATA`).
     pub fn launch_env(
         exe: &Path,
         profile: &Path,
@@ -182,6 +186,29 @@ impl Instance {
         log_name: &str,
         envs: &[(&str, &str)],
     ) -> io::Result<Instance> {
+        let offline = Offline::start()?;
+        let mut inst = Self::spawn(exe, profile, work, log_name, &offline.env(envs))?;
+        inst.offline = Some(offline);
+        Ok(inst)
+    }
+
+    /// `launch_env` with the real network, only for `gate package`: its PDF view downloads PDFium on a first run.
+    pub fn launch_online(
+        exe: &Path,
+        profile: &Path,
+        work: &Path,
+        log_name: &str,
+        envs: &[(&str, &str)],
+    ) -> io::Result<Instance> {
+        Self::spawn(exe, profile, work, log_name, envs)
+    }
+
+    /// The proxy this instance's fetches go to (`launch` and `launch_env` only).
+    pub fn proxy(&self) -> Option<&Proxy> {
+        self.offline.as_ref().map(|o| &o.proxy)
+    }
+
+    fn spawn(exe: &Path, profile: &Path, work: &Path, log_name: &str, envs: &[(&str, &str)]) -> io::Result<Instance> {
         fs::create_dir_all(work)?;
         let log = work.join(log_name);
         let out = File::create(&log)?;
@@ -199,7 +226,7 @@ impl Instance {
             .spawn()?;
         job::assign(&child);
         let stdin = child.stdin.take();
-        Ok(Instance { child, stdin, work: work.to_path_buf(), log })
+        Ok(Instance { child, stdin, work: work.to_path_buf(), log, offline: None })
     }
 
     pub fn pid(&self) -> u32 {
