@@ -244,6 +244,11 @@ impl State {
         self.controls().into_iter().filter(|c| c.selected).collect()
     }
 
+    /// The widget holding keyboard focus, named in `controls` or not.
+    pub fn focus(&self) -> Option<u64> {
+        self.0["focus"].as_u64()
+    }
+
     /// The center of a `controls` entry, `"x y"`.
     pub fn center(control: &Value) -> Option<String> {
         let [l, t, r, b] = Self::floats::<4>(control, "rect")?;

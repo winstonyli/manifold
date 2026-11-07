@@ -143,10 +143,6 @@ Three read-only surveys on 2026-10-19 (document and sync, UI, engines and toolin
 - **Failure toasts are not coalesced.** *What:* each failed download queues its own toast (`crates/manifold/src/event_loop/view_message.rs`, the `DownloadFailed` arm), so several failing at once show one after another. *Status:* decided against (2026-10-28): rare, and each names its own file and reason.
 - **A write-access check in `destination`.** *What:* checking that the download folder can be written before handing a path to the engine. *Status:* decided against (2026-10-28): it would write a test file into the user's folder; the failure's reason now says why instead.
 
-## Chrome shots (2026-10-28)
-
-- **`tab_scan` walks a fixed number of Tab stops.** *What:* the views that still shoot each stop of a surface (`tab-tabview` 12, `tab-settings` 24, `tab-find` 6, the dropdown and quick-switch walks) press Tab a set number of times, so a surface that grows stops goes unshot without failing. The views that aim at a card find it by name (`tab_to`, 2026-11-06). *Why parked:* a stale count here loses shots, not a check. *Trigger:* a stop added to one of these surfaces, or a gate stage taking these views. *Fix:* end each walk as `tab_walk` does, at the first repeated stop, then delete `tab_scan`. *Evidence:* `crates/gate/src/shots.rs:564` (`tab_scan`), verified 2026-11-06. *Status:* parked.
-
 ## Host protocol stamp (2026-10-29)
 
 How hosts are found and checked: README "Which host runs, and whether it speaks this build's protocol".

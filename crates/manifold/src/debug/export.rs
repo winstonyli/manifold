@@ -356,6 +356,8 @@ impl App {
             // The named controls the last frame drew (`identity::controls_in`), list rows among them: the gate clicks
             // them by name, not by pixel, finds a list's highlighted or focused row by `selected`, and tells a Tab stop
             // from a disabled button by `focusable`.
+            // Egui's focused widget, named or not: what a Tab walk follows.
+            "focus": self.egui_ctx.memory(|m| m.focused()).map(|id| id.value()),
             "controls": self.debug.controls.iter().map(|c| json!({"name": c.label, "selected": c.selected, "focusable": c.focusable, "rect": rect_json(c.rect)})).collect::<Vec<_>>(),
             "open_popup": self.menus.open_popup.map(|p| format!("{p:?}")),
             "identities": crate::identity::drawn_icons(&self.egui_ctx).iter().map(|i| json!({"kind": i.kind, "text": i.text, "rect": rect_json(i.rect)})).collect::<Vec<_>>(),

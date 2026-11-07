@@ -77,6 +77,26 @@ impl Shots {
             s.inst.click_control(crate::state::FIT_VIEW)?;
             s.reset()
         })?;
+        // Shift+Tab walks back out of the cards through the canvas, a stop with no name, to the bar's last control; Tab
+        // comes back the same way.
+        self.view("graph-shift-tab", |s| {
+            let focus = |s: &mut Self| -> io::Result<Vec<String>> {
+                Ok(s.state()?.selected_controls().into_iter().map(|c| c.name.clone()).collect())
+            };
+            send!(s, "DIGITKEY 1", "WAITIDLE")?;
+            let card = focus(s)?;
+            send!(s, "TABKEY shift", "WAITIDLE")?;
+            let canvas = s.state()?.focus();
+            send!(s, "TABKEY shift", "WAITIDLE")?;
+            let bar = focus(s)?;
+            println!("Shift+Tab twice from {card:?} went to {bar:?}");
+            check("Digit 1 focuses the first card", !card.is_empty());
+            check("Shift+Tab leaves the first card", canvas.is_some());
+            check("A second Shift+Tab reaches a named control", !bar.is_empty() && bar != card);
+            send!(s, "TABKEY", "WAITIDLE", "TABKEY", "WAITIDLE")?;
+            check("Two Tabs come back to the first card", focus(s)? == card);
+            s.reset()
+        })?;
         // Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus
         // returned to the card).
         self.view("note-key", |s| {

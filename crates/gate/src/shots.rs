@@ -20,12 +20,12 @@
 //!   hover-dropdown hover-quickswitch`) and Tab-key scans (`tab-graph tab-tabview tab-settings tab-find tab-quickswitch
 //!   tab-dropdown tab-popup tab-popup-history tab-popup-downloads tab-engine tab-combo`) sweep the mouse or the Tab key
 //!   along a bar and print where anything other than the hovered widget moved (`shots_img::hover_report`);
-//!   `focus-graph` does the same for a click into the Graph search field. `tab-graph` and the JSON bar's scan (in
-//!   `json-keys`) press Tab until no named control has focus (`tab_walk`), print each stop, and fail if a focusable
+//!   `focus-graph` does the same for a click into the Graph search field. Tab scans press Tab until focus drops or
+//!   repeats (`tab_scan`) and print each stop; `tab-graph` and the JSON bar's scan (in `json-keys`) fail if a focusable
 //!   named control of the bar was never a stop, so no stop count goes stale and a walk that ends early cannot pass
 //! - keyboard views: `graph-enter-group graph-enter-json graph-menu-key graph-select-key graph-pinned-dense json-keys tabview-split-key`
 //! - assertion views, which print `PASS:`/`FAIL:`: `mouse-regress` (drag, middle-click close),
-//!   `note-key`, `digit-jump`, `json-tab-offscreen`, `tabview-actions-click`
+//!   `note-key`, `digit-jump`, `graph-shift-tab`, `json-tab-offscreen`, `tabview-actions-click`
 //! - `graph-menu-jars graph-menu-chip graph-menu-group-jars`: the menu's Jar page
 //!
 //! `engine-states-picker engine-states-settings engine-install-confirm` (any one runs the block) start more instances
@@ -74,7 +74,7 @@ const AWAY: &str = "CLICK 1100 300";
 /// The settings page's pickers, by the labels of their rows (`labelled_by`).
 const DEFAULT_ENGINE: &str = "Default starting engine (new tabs)";
 const SEARCH_ENGINE: &str = "Default search engine";
-/// The most Tab presses a `tab_walk` makes before it reports that it never ended.
+/// The most Tab presses a `tab_scan` makes before it reports that it never ended.
 const TAB_WALK_CAP: u32 = 40;
 
 /// A calibration number read from the environment, so a pixel position can be retuned without a rebuild. The names and
@@ -560,52 +560,44 @@ impl Shots {
         self.inst.screenshot_to(&dir.join(format!("x{i:04}.png")))
     }
 
-    /// Rest, then `n` Tab key presses, a shot after each.
-    fn tab_scan(&mut self, name: &str, n: u32, band: u32) -> io::Result<()> {
-        let dir = self.scan_dir("tab", name)?;
-        self.rest_shot(&dir, "1275 795")?;
-        for i in 1..=n {
-            self.tab_press(&dir, i)?;
-        }
-        Self::print_report(&dir, band, false, 0)
-    }
-
-    /// `tab_scan` with no stop count to go stale: presses Tab (a shot and an export after each) and ends at the first
-    /// press after which no control is selected except those selected at rest (compared by name and rect), or after
-    /// `TAB_WALK_CAP` presses, which is a failure. A press ends it by moving focus off the last Tab stop on screen
-    /// (egui drops focus there, as `card_tab_step` does past the last card) or onto a control the
-    /// export does not name. Each stop prints its control's name; a glyph-only icon button's name is its glyph, a
-    /// private-use character that prints blank. Fails if no press lands on a named control, if the walk does not end,
-    /// if the bar at rest has no focusable named control (`state::bar_stops`; a disabled button is not one), or if one
-    /// of them was never a stop (`state::unvisited_bar_stops`): an unnamed stop in the middle of the bar ends the walk
-    /// there, and the controls after it show up as never reached.
-    fn tab_walk(&mut self, name: &str, band: u32) -> io::Result<()> {
+    /// Rest, then Tab presses (a shot and an export after each), ending at the first press that leaves no widget with
+    /// focus (egui drops it past the last Tab stop on screen, as `card_tab_step` does past the last card) or one that
+    /// had it already, or after `TAB_WALK_CAP` presses, which is a failure. Each stop prints the names of the controls
+    /// selected there beyond those at rest (compared by name and rect), none on a stop the export does not name; a
+    /// glyph-only icon button's name is its glyph, a private-use character that prints blank. Returns the controls at
+    /// rest and the named stops.
+    fn tab_scan(&mut self, name: &str, band: u32) -> io::Result<(Vec<Control>, Vec<Control>)> {
         let dir = self.scan_dir("tab", name)?;
         self.rest_shot(&dir, "1275 795")?;
         let rest = self.state()?.controls();
         // Selected at rest (a toggled button, a highlighted row) is not focus.
         let selected_at_rest: Vec<&Control> = rest.iter().filter(|c| c.selected).collect();
+        let mut seen: Vec<u64> = self.state()?.focus().into_iter().collect();
         let mut stops: Vec<Control> = Vec::new();
-        let mut presses = 0;
         let mut ended = false;
         for i in 1..=TAB_WALK_CAP {
             self.tab_press(&dir, i)?;
-            let focus: Vec<Control> = self
-                .state()?
-                .selected_controls()
-                .into_iter()
-                .filter(|c| !selected_at_rest.iter().any(|r| r.is(c)))
-                .collect();
-            if focus.is_empty() {
+            let state = self.state()?;
+            let Some(widget) = state.focus().filter(|w| !seen.contains(w)) else {
                 ended = true;
                 break;
-            }
+            };
+            seen.push(widget);
+            let focus: Vec<Control> =
+                state.selected_controls().into_iter().filter(|c| !selected_at_rest.iter().any(|r| r.is(c))).collect();
             println!("{name}: Tab stop {i}: {}", focus.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", "));
-            presses = i;
             stops.extend(focus);
         }
-        check(&format!("{name}: the first Tab lands on a named control"), presses > 0);
-        check(&format!("{name}: the Tab walk ends within {TAB_WALK_CAP} stops ({presses} named)"), ended);
+        check(&format!("{name}: the Tab walk ends within {TAB_WALK_CAP} stops ({} stops)", seen.len()), ended);
+        Self::print_report(&dir, band, false, 0)?;
+        Ok((rest, stops))
+    }
+
+    /// `tab_scan` of a view with a top bar. Also fails if the bar at rest has no focusable named control
+    /// (`state::bar_stops`; a disabled button is not one), or if one of them was never a stop
+    /// (`state::unvisited_bar_stops`).
+    fn tab_walk(&mut self, name: &str, band: u32) -> io::Result<()> {
+        let (rest, stops) = self.tab_scan(name, band)?;
         // A bar with no focusable control at rest checks nothing, so that fails too. A glyph's name shows escaped.
         let bar = bar_stops(&rest).len();
         let missed = unvisited_bar_stops(&rest, &stops);
@@ -615,7 +607,7 @@ impl Shots {
             label = format!("{label}; never reached: {}", list.join("; "));
         }
         check(&label, bar > 0 && missed.is_empty());
-        Self::print_report(&dir, band, false, 0)
+        Ok(())
     }
 
     /// Rest, then a click on each of the controls named `controls` (focusing it), Escape between. Same report as
@@ -730,7 +722,7 @@ impl Shots {
         self.tabview_views()?;
         self.view("tab-quickswitch", |s| {
             send!(s, "QUICKSWITCHOPEN", "WAITIDLE")?;
-            s.tab_scan("quickswitch", 4, 400)?;
+            s.tab_scan("quickswitch", 400)?;
             send!(s, "QUICKSWITCHESCAPE", "WAITIDLE")
         })?;
         self.view("hover-quickswitch", |s| {
@@ -1117,7 +1109,7 @@ impl Shots {
                 s.shot("tabview")?;
             }
             if s.has("tab-tabview") {
-                s.tab_scan("tabview", 12, band)?;
+                s.tab_scan("tabview", band)?;
             }
             if s.has("hover-tabview") {
                 s.hover_scan("tabview", knob("HOVER_Y", 16), band)?;
@@ -1129,7 +1121,7 @@ impl Shots {
             }
             if s.has("tab-dropdown") {
                 send!(s, "ADDRESSBAR exam", "WAITIDLE")?;
-                s.tab_scan("dropdown", 4, 820)?;
+                s.tab_scan("dropdown", 820)?;
                 // Tabbing out closes the dropdown, so this Escape can be the one that leaves Tab view.
                 send!(s, "ESCAPE", "WAITIDLE")?;
                 if !s.state()?.tab_view() {
@@ -1158,7 +1150,7 @@ impl Shots {
             }
             if s.has("tab-find") {
                 s.find_abc()?;
-                s.tab_scan("find", 6, knob("FIND_BAND", 90))?;
+                s.tab_scan("find", knob("FIND_BAND", 90))?;
                 send!(s, "CLOSEFINDBAR")?;
             }
             // The Split button opens the engine picker.
@@ -1239,7 +1231,7 @@ impl Shots {
                 s.shot("settings")?;
             }
             if s.has("tab-settings") {
-                s.tab_scan("settings", 24, 1000)?;
+                s.tab_scan("settings", 1000)?;
             }
             if s.has("hover-settings") {
                 s.hover_column("settings", 40, 44, 960, 520, 0)?;
@@ -1262,7 +1254,7 @@ impl Shots {
                 if s.has(view) {
                     s.inst.click_control(control)?;
                     s.settle()?;
-                    s.tab_scan(name, 5, 1000)?;
+                    s.tab_scan(name, 1000)?;
                     send!(s, AWAY, "WAITIDLE")?;
                 }
             }
@@ -1310,7 +1302,7 @@ impl Shots {
             {
                 if s.has(view) {
                     send!(s, format!("TOGGLEPOPUP {name}"), "WAITIDLE")?;
-                    s.tab_scan(view.trim_start_matches("tab-"), 6, 1000)?;
+                    s.tab_scan(view.trim_start_matches("tab-"), 1000)?;
                     send!(s, AWAY, "WAITIDLE")?;
                 }
             }
