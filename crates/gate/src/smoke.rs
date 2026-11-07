@@ -1097,6 +1097,9 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         sm.send(&format!("ADDFILE {} 600 500", sm.win(f)))?;
     }
     sm.send("WAITTABS")?;
+    sm.settle("after_kinds_placed")?;
+    // Layout can push a dropped card out of view; Reset View brings it back to be aimed at.
+    sm.inst.click_control(FIT_VIEW)?;
     let after_kinds = sm.settle("after_kinds")?;
     let pdf_id = new_card(&after_kinds, PDF, None, &before_kinds);
     let md_id = new_card(&after_kinds, NOTE, None, &before_kinds);
@@ -1146,6 +1149,7 @@ fn drive(sm: &mut Smoke, m: &mut Marks) -> io::Result<()> {
         .to_string();
     check_found(&made, "inline_made", "the dropped detach.json is a second new Json card", &file_json);
     sm.send(&format!("DETACHJSON {file_json}"))?;
+    sm.inst.click_control(FIT_VIEW)?;
     for (id, keys) in [(&new_json, serde_json::json!([])), (&file_json, serde_json::json!(["k"]))] {
         let at = sm.settle("inline_before_enter")?;
         sm.send(&format!("DOUBLECLICK {}", uncovered_xy(&at, id)?))?;
