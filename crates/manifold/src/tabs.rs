@@ -428,8 +428,8 @@ impl App {
         })
     }
 
-    /// Tab context menu's "Duplicate": a new tab at `id`'s current url and
-    /// engine, sharing its parent and group -- a sibling, not a child of
+    /// Tab context menu's "Duplicate": a new tab beside `id` at its current url
+    /// and engine, sharing its parent and group -- a sibling, not a child of
     /// `id` itself, matching what "duplicate" means in a real browser's
     /// own tab strip. Its engine is the mirror's (a swap in flight: its target).
     /// The copy keeps `id`'s jar choice.
@@ -442,7 +442,8 @@ impl App {
             return;
         };
         let jar = self.doc.mirror.jar(id);
-        let copy = self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, None);
+        let pos = self.layout_pos(id) + egui::Vec2::splat(crate::duplicate::DUPLICATE_OFFSET);
+        let copy = self.spawn_new_tab_with_kind(parent, group, &url, kind, SpawnPurpose::New, jar, Some(pos));
         // The copy keeps the original's trees (labels, properties): it is created with them and lands showing them.
         if let Some(snap) = self.spawns.spawning.get_mut(&copy) {
             snap.trees = self.doc.mirror.trees_of(id);

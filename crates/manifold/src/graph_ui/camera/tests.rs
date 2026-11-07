@@ -32,6 +32,15 @@ fn a_new_tab_lands_by_its_parent_else_at_the_camera_target() {
     assert_eq!(spawn.pos, egui::vec2(5000.0, 5000.0) + crate::graph_ui::layout::spawn_jitter(spawn.id));
 }
 
+/// A duplicate lands beside its original, parent or not, wherever the view is.
+#[test]
+fn a_duplicated_tab_lands_beside_its_original() {
+    let (mut app, far) = app_with_far_card();
+    app.duplicate_tab(far);
+    let beside = egui::vec2(5000.0, 5000.0) + egui::Vec2::splat(crate::duplicate::DUPLICATE_OFFSET);
+    assert_eq!(app.test_spawns.last().unwrap().0.pos, beside);
+}
+
 /// A reopened card the layout put out of view is eased into it; one already in view leaves the camera alone.
 #[test]
 fn a_revealed_card_out_of_view_is_eased_to() {

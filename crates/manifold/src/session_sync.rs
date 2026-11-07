@@ -241,7 +241,7 @@ pub(crate) fn pos_in(fields: &Fields) -> Option<egui::Vec2> {
 }
 
 /// A stored node's document pos, or, for one that has none (an old jar from before jars were cards), a jittered
-/// spawn around the world center: the rule `App::placement` uses for a new node with no position.
+/// spawn around the world center.
 pub(crate) fn pos_of(id: NodeId, fields: &Fields) -> egui::Vec2 {
     pos_in(fields)
         .unwrap_or_else(|| crate::graph_ui::layout::GRAPH_WORLD_CENTER + crate::graph_ui::layout::spawn_jitter(id))

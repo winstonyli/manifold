@@ -7,7 +7,7 @@ use crate::closed::members_under;
 use crate::store::model::NodeId;
 
 /// How far a duplicate lands from its original, in the level's world units (`App::duplicate_nodes`).
-const DUPLICATE_OFFSET: f32 = 40.0;
+pub(crate) const DUPLICATE_OFFSET: f32 = 40.0;
 
 /// `id`'s live tab zoom, when it differs from the default -- what `subtree_json` records in `doc.local["zoom"]`. Zoom
 /// isn't a store field (it's personal state), so it isn't in the node's snapshot.
