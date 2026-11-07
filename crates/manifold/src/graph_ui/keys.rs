@@ -3,8 +3,10 @@
 use super::*;
 
 /// Tab / Shift+Tab from a focused card moves focus to the next / previous card in `order` and returns that card's
-/// rect (`rect_of`) for the caller to pan to, since it may be culled. Past either end Tab is left to egui, which moves
-/// on to the next widget outside the cards.
+/// rect (`rect_of`) for the caller to pan to, since it may be culled. Past the last card focus drops, and the next Tab
+/// starts on the widgets outside the cards; before the first it goes to the widget drawn before that card, which egui
+/// finds when the card registers, after this step. Egui never sees a Tab here: it steps in paint order, and a raised
+/// card paints out of `order`, so its next widget after the last card can be the first card, for good.
 pub(crate) fn card_tab_step(
     ui: &egui::Ui,
     order: &[CardId],
@@ -19,11 +21,23 @@ pub(crate) fn card_tab_step(
         );
         (i.key_pressed(egui::Key::Tab), shifted)
     });
-    let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
     ui.memory_mut(|m| {
-        m.set_focus_lock_filter(card_id(&order[at]), egui::EventFilter { tab: target.is_some(), ..Default::default() })
+        m.set_focus_lock_filter(card_id(&order[at]), egui::EventFilter { tab: true, ..Default::default() })
     });
-    let target = target.filter(|_| tab)?;
+    if !tab {
+        return None;
+    }
+    let target = if shift { at.checked_sub(1) } else { Some(at + 1).filter(|&n| n < order.len()) };
+    let Some(target) = target else {
+        ui.memory_mut(|m| {
+            if shift {
+                m.move_focus(egui::FocusDirection::Previous);
+            } else {
+                m.surrender_focus(card_id(&order[at]));
+            }
+        });
+        return None;
+    };
     ui.memory_mut(|m| m.request_focus(card_id(&order[target])));
     rect_of(order[target])
 }

@@ -243,8 +243,7 @@ fn escape_ends_pick_target_mode_first() {
     assert!(app.interaction.selected.is_empty());
 }
 
-/// Tab and Shift+Tab on a focused card step through the level in creation order and stop
-/// handling at either end (egui then moves on to widgets outside the cards).
+/// Tab and Shift+Tab on a focused card step through the level in creation order and drop focus past either end.
 #[test]
 fn tab_steps_through_cards_in_creation_order() {
     let mut app = App::default();
@@ -291,7 +290,59 @@ fn tab_steps_through_cards_in_creation_order() {
     frame(vec![]);
     frame(vec![tab(egui::Modifiers::NONE)]);
     frame(vec![]);
-    // At the last card the handler does nothing (target is `None`), so focus is not moved back.
+    // Past the last card focus drops, so it is not moved back.
     frame(vec![tab(egui::Modifiers::NONE)]);
     assert!(!ctx.memory(|m| m.has_focus(card(0)) || m.has_focus(card(1))), "no wrap past the end");
+}
+
+/// Cards paint in layer order, not Tab order: once a click raises the first card above the last, egui's own Tab from
+/// the last card would land on the first, and Tab would circle the cards for good, never reaching the toolbar. So past
+/// the last card focus drops (`chrome-shots`, 2026-11-06: `tab-graph` after `graph-menu-chip`); before the first it goes
+/// to the widget drawn before the cards.
+#[test]
+fn tab_past_either_end_leaves_the_cards_whatever_their_paint_order() {
+    let mut app = App::default();
+    for _ in 0..3 {
+        app.new_note_shortcut();
+    }
+    let order = app.card_tab_order();
+    let toolbar = egui::Id::new("toolbar");
+    let click = egui::Sense::click();
+    let ctx = egui::Context::default();
+    let frame = |events: Vec<egui::Event>| {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(600.0, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| {
+            // As the pass runs it: the toolbar, the step, then the cards, with the first in Tab order on top. Only the
+            // Tab entry and the focused card are focusable (`interact_card`).
+            ui.interact(egui::Rect::from_min_size(egui::pos2(10.0, 80.0), egui::vec2(50.0, 20.0)), toolbar, click);
+            card_tab_step(ui, &order, |_| None);
+            for (i, id) in [order[1], order[2], order[0]].iter().enumerate() {
+                let rect = egui::Rect::from_min_size(egui::pos2(10.0 + 60.0 * i as f32, 10.0), egui::vec2(50.0, 50.0));
+                let focusable = *id == order[0] || ui.memory(|m| m.has_focus(id.widget()));
+                ui.interact(rect, id.widget(), if focusable { click } else { egui::Sense::CLICK });
+            }
+        });
+        output.textures_delta.clear();
+    };
+    let tab = |modifiers| egui::Event::Key {
+        key: egui::Key::Tab,
+        physical_key: Some(egui::Key::Tab),
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let press_at = |card: usize, modifiers| {
+        ctx.memory_mut(|m| m.request_focus(order[card].widget()));
+        frame(vec![]);
+        frame(vec![]);
+        frame(vec![tab(modifiers)]);
+        frame(vec![]);
+        ctx.memory(|m| m.focused())
+    };
+    assert_eq!(press_at(2, egui::Modifiers::NONE), None, "Tab from the last card");
+    assert_eq!(press_at(0, egui::Modifiers::SHIFT), Some(toolbar), "Shift+Tab from the first card");
 }
