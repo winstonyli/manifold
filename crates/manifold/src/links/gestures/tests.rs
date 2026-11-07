@@ -1615,7 +1615,8 @@ fn a_new_note_out_of_view_does_not_take_the_keyboard_later() {
 }
 
 /// Of two notes made before a frame draws, the second gets the keyboard and the first stops editing: its focus request
-/// was replaced, so nothing would ever end its edit.
+/// was replaced, so nothing would ever end its edit. Apart, because layout pushes cards that land together apart, and
+/// a second note at (0, 0) lands above this camera's view, culled, so it never takes the keyboard.
 #[test]
 fn only_the_last_of_two_new_notes_stays_in_editing() {
     let (h, mut app, _) = three_notes();
