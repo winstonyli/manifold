@@ -134,6 +134,11 @@ impl State {
         })
     }
 
+    /// Why each card here that failed to start its engine did, `failed` on a stored card.
+    pub fn failed_tabs(&self) -> Vec<&str> {
+        self.all_cards().iter().filter_map(|c| c["failed"].as_str()).collect()
+    }
+
     /// `card_is`: a stored node of type `ty` (a JSON level's card and a virtual card are never one); `loaded` also
     /// requires that engine state (`Some(true)` a live tab, `Some(false)` a sleeping/waking/failed one).
     pub fn card_is(card: &Value, ty: &str, loaded: Option<bool>) -> bool {
@@ -499,6 +504,13 @@ mod tests {
             }"#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn failed_tabs_are_the_cards_with_a_reason() {
+        assert!(fixture().failed_tabs().is_empty());
+        let s = State::parse(r#"{"cards":[{"id":"a","failed":null},{"id":"b","failed":"no engine"}]}"#).unwrap();
+        assert_eq!(s.failed_tabs(), ["no engine"]);
     }
 
     #[test]

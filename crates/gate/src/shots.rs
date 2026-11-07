@@ -46,7 +46,7 @@
 //! possible: headless mode's caret doesn't blink, the download server keeps one port (`shots_net`; a busy port is
 //! logged, and then the two download views won't match), and the address bar's suggestions come from the local
 //! `suggest::Server`. Later runs showed two more: a view's toast outlived it and showed in the next view's shot or not
-//! by timing (`shot` drops toasts, `toast_shot` waits for its own), and the graph layout summed forces in an order set by each launch's random
+//! by timing (`shot` drops toasts, `toast_shot` holds its own), and the graph layout summed forces in an order set by each launch's random
 //! actor, so cards settled a ulp apart (`graph_ui::layout::ExactSum`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
@@ -79,8 +79,7 @@ const TAB_WALK_CAP: u32 = 40;
 
 /// A calibration number read from the environment, so a pixel position can be retuned without a rebuild. The names and
 /// defaults: `CROP_PX` 110; the hover scans `HOVER_STEP` 14, `HOVER_Y` 16, `HOVER_BAND` 34; the find bar `FIND_Y` 60,
-/// `FIND_BAND` 90; the tab-actions menu `MENU_X` 700, `MENU_X0` 640, `MENU_Y0` 424, `MENU_Y1` 646; the Tab-key stops
-/// `GROUP_STOP` 12, `JSON_ENTRY_STOP` 16, `SELECT_STOP` 12.
+/// `FIND_BAND` 90; the tab-actions menu `MENU_X` 700, `MENU_X0` 640, `MENU_Y0` 424, `MENU_Y1` 646.
 fn knob(name: &str, default: u32) -> u32 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
@@ -206,6 +205,8 @@ struct Shots {
     eng_data: PathBuf,
     /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
     suggestions: suggest::Server,
+    /// A failed tab is what the shots are of (`engine_states`); anywhere else it fails the shot.
+    tabs_fail: bool,
 }
 
 macro_rules! send {
@@ -213,6 +214,7 @@ macro_rules! send {
 }
 
 mod engine_states;
+mod keyboard;
 
 impl Shots {
     fn start(exe: &Path, work: &Path, cfg: Config) -> io::Result<Shots> {
@@ -277,6 +279,7 @@ impl Shots {
             views: cfg.views,
             eng_data: PathBuf::new(),
             suggestions,
+            tabs_fail: false,
         })
     }
 
@@ -396,8 +399,16 @@ impl Shots {
         self.capture(name)
     }
 
-    /// A shot of the toast holding `text`, once it shows.
-    fn toast_shot(&mut self, name: &str, text: &str) -> io::Result<()> {
+    /// A shot of the toast holding `text`, which `cause` brings up. Held before `cause` runs, so however long that
+    /// takes to come back the toast can't expire before the shot.
+    fn toast_shot(
+        &mut self,
+        name: &str,
+        text: &str,
+        cause: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> io::Result<()> {
+        send!(self, format!("HOLDTOAST {text}"))?;
+        cause(self)?;
         self.await_state(&format!("toast with {text:?}"), |s| s.toast().is_some_and(|t| t.contains(text)))?;
         self.capture(name)
     }
@@ -407,6 +418,12 @@ impl Shots {
         let path = self.out.join(format!("{name}.png"));
         self.inst.screenshot_to(&path)?;
         println!("shot: {name}");
+        let state = self.state()?;
+        let failed = state.failed_tabs();
+        if !self.tabs_fail && !failed.is_empty() {
+            println!("FAIL: {name} shows a failed tab: {}", failed.join("; "));
+            note_failure();
+        }
         Ok(())
     }
 
@@ -462,11 +479,15 @@ impl Shots {
         send!(self, "ESCAPE", "SETJAR Alpha", "SETJAR Beta", "WAITIDLE")
     }
 
-    fn tab_presses(&mut self, n: u32) -> io::Result<()> {
-        for _ in 0..n {
+    /// Presses Tab until the control whose name starts with `name` has focus, so no stop count goes stale.
+    fn tab_to(&mut self, name: &str) -> io::Result<()> {
+        for _ in 0..TAB_WALK_CAP {
             send!(self, "TABKEY", "WAITIDLE")?;
+            if self.state()?.selected_controls().iter().any(|c| c.name.starts_with(name)) {
+                return Ok(());
+            }
         }
-        Ok(())
+        Err(io::Error::other(format!("{TAB_WALK_CAP} Tab presses never reached {name:?}")))
     }
 
     /// The rect `[x0, y0, x1, y1]` of the open menu or popup, if any (the key hint beside a keyboard-focused card does
@@ -489,8 +510,9 @@ impl Shots {
 
     // ---- scans ---------------------------------------------------------------------------------------------------
 
-    fn scan_dir(&self, name: &str) -> io::Result<PathBuf> {
-        let dir = self.out.join("hover").join(name);
+    /// `OUT/<kind>/<name>/`, emptied: the `hover`, `tab` and `focus` scans of one view keep their own shots.
+    fn scan_dir(&self, kind: &str, name: &str) -> io::Result<PathBuf> {
+        let dir = self.out.join(kind).join(name);
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir)?;
         Ok(dir)
@@ -511,7 +533,7 @@ impl Shots {
     /// With the app in the view `name`: shoot it at rest and with the mouse every `HOVER_STEP` px along the top bar,
     /// into `OUT/hover/<name>/`, and report where a hover moved anything other than the hovered widget.
     fn hover_scan(&mut self, name: &str, y: u32, band: u32) -> io::Result<()> {
-        let dir = self.scan_dir(name)?;
+        let dir = self.scan_dir("hover", name)?;
         self.rest_shot(&dir, "5 790")?;
         for x in (4..=self.size.0).step_by(knob("HOVER_STEP", 14) as usize) {
             send!(self, format!("MOUSEMOVE {x} {y}"), "WAITIDLE")?;
@@ -523,7 +545,7 @@ impl Shots {
 
     /// The same down the column at `x` (the settings page's widgets).
     fn hover_column(&mut self, name: &str, x: u32, y0: u32, y1: u32, band: u32, x0: u32) -> io::Result<()> {
-        let dir = self.scan_dir(name)?;
+        let dir = self.scan_dir("hover", name)?;
         self.rest_shot(&dir, "1275 795")?;
         for y in (y0..=y1).step_by(knob("HOVER_STEP", 14) as usize) {
             send!(self, format!("MOUSEMOVE {x} {y}"), "WAITIDLE")?;
@@ -540,7 +562,7 @@ impl Shots {
 
     /// Rest, then `n` Tab key presses, a shot after each.
     fn tab_scan(&mut self, name: &str, n: u32, band: u32) -> io::Result<()> {
-        let dir = self.scan_dir(name)?;
+        let dir = self.scan_dir("tab", name)?;
         self.rest_shot(&dir, "1275 795")?;
         for i in 1..=n {
             self.tab_press(&dir, i)?;
@@ -551,14 +573,14 @@ impl Shots {
     /// `tab_scan` with no stop count to go stale: presses Tab (a shot and an export after each) and ends at the first
     /// press after which no control is selected except those selected at rest (compared by name and rect), or after
     /// `TAB_WALK_CAP` presses, which is a failure. A press ends it by moving focus off the last Tab stop on screen
-    /// (egui drops focus there; the presses after that are the canvas's own walk over cards) or onto a control the
+    /// (egui drops focus there, as `card_tab_step` does past the last card) or onto a control the
     /// export does not name. Each stop prints its control's name; a glyph-only icon button's name is its glyph, a
     /// private-use character that prints blank. Fails if no press lands on a named control, if the walk does not end,
     /// if the bar at rest has no focusable named control (`state::bar_stops`; a disabled button is not one), or if one
     /// of them was never a stop (`state::unvisited_bar_stops`): an unnamed stop in the middle of the bar ends the walk
     /// there, and the controls after it show up as never reached.
     fn tab_walk(&mut self, name: &str, band: u32) -> io::Result<()> {
-        let dir = self.scan_dir(name)?;
+        let dir = self.scan_dir("tab", name)?;
         self.rest_shot(&dir, "1275 795")?;
         let rest = self.state()?.controls();
         // Selected at rest (a toggled button, a highlighted row) is not focus.
@@ -599,7 +621,7 @@ impl Shots {
     /// Rest, then a click on each of the controls named `controls` (focusing it), Escape between. Same report as
     /// `hover_scan`. A name the toolbar no longer shows fails the view, naming it.
     fn focus_scan(&mut self, name: &str, controls: &[&str]) -> io::Result<()> {
-        let dir = self.scan_dir(name)?;
+        let dir = self.scan_dir("focus", name)?;
         self.rest_shot(&dir, "5 790")?;
         for (i, control) in controls.iter().enumerate() {
             self.inst.click_control(control)?;
@@ -623,7 +645,11 @@ impl Shots {
         self.graph_menus()?;
         self.link_views()?;
         self.view("hover-graph", |s| s.hover_scan("graph", knob("HOVER_Y", 16), knob("HOVER_BAND", 34)))?;
-        self.view("tab-graph", |s| s.tab_walk("graph", knob("HOVER_BAND", 34)))?;
+        // A closed menu hands focus back to its card; this Escape drops it, so the walk starts at the toolbar.
+        self.view("tab-graph", |s| {
+            send!(s, "ESCAPE", "WAITIDLE")?;
+            s.tab_walk("graph", knob("HOVER_BAND", 34))
+        })?;
         self.keyboard_views()?;
         self.view("mouse-regress", Self::mouse_regress)?;
         self.view("hover-menu-tab", |s| {
@@ -734,10 +760,7 @@ impl Shots {
         })?;
         self.settings_views()?;
         // A toast, from opening a session that doesn't exist (which also leaves the settings page).
-        self.view("toast", |s| {
-            send!(s, "OPENSESSION nosuch")?;
-            s.toast_shot("toast", "nosuch")
-        })?;
+        self.view("toast", |s| s.toast_shot("toast", "nosuch", |s| send!(s, "OPENSESSION nosuch")))?;
         // Restored cards whose files are gone (an image and a JSON file): save a session with them, delete the files,
         // open it again. Before json-zoom, which must run last.
         self.view("missing-file", |s| {
@@ -758,15 +781,16 @@ impl Shots {
             s.state()?;
             fs::remove_file(&pic)?;
             fs::remove_file(&data)?;
-            send!(
-                s,
-                format!("IMPORTSESSION {}", session.display()),
-                "WAITIDLE",
-                "CONFIRMIMPORT",
-                "WAITIDLE",
-                "MOUSEMOVE 5 790"
-            )?;
-            s.toast_shot("missing-file", "Couldn't open image")
+            s.toast_shot("missing-file", "Couldn't open image", |s| {
+                send!(
+                    s,
+                    format!("IMPORTSESSION {}", session.display()),
+                    "WAITIDLE",
+                    "CONFIRMIMPORT",
+                    "WAITIDLE",
+                    "MOUSEMOVE 5 790"
+                )
+            })
         })?;
         if self.has_any(&["download-real", "download-progress", "download-failed", "download-resume"]) {
             self.step("downloads", Self::download_views)?;
@@ -774,7 +798,9 @@ impl Shots {
         self.view("json-zoom", Self::json_zoom)?;
         quit(&mut self.inst, "chrome-shots");
         if self.has_any(&["engine-states-picker", "engine-states-settings", "engine-install-confirm"]) {
+            self.tabs_fail = true;
             self.step("engine-states", |s| s.engine_states(exe))?;
+            self.tabs_fail = false;
         }
         Ok(())
     }
@@ -927,8 +953,9 @@ impl Shots {
             // The menu's second-last row is "Dissolve Group" (the last is "Close Group and Contents").
             s.menu_at(x, y)?;
             let menu = s.popup_rect()?.ok_or_else(|| io::Error::other("no group menu"))?;
-            s.click((menu[0] + 60.0) as i64, (menu[3] - 44.0) as i64)?;
-            s.toast_shot("graph-dissolve-undo-toast", "Dissolved")?;
+            s.toast_shot("graph-dissolve-undo-toast", "Dissolved", |s| {
+                s.click((menu[0] + 60.0) as i64, (menu[3] - 44.0) as i64)
+            })?;
             check(
                 "Dissolve Group takes the members out and hides the group",
                 before > 0 && members(s)? == 0 && closed(s)?,
@@ -946,9 +973,9 @@ impl Shots {
                     ])
                 })
                 .ok_or_else(|| io::Error::other("no toast"))?;
+            // Clicked first: holding the next toast lets go of this one, whose Undo the click is aimed at.
             s.click((toast[2] - 28.0) as i64, ((toast[1] + toast[3]) / 2.0) as i64)?;
-            s.settle()?;
-            s.toast_shot("graph-dissolve-undo-back", "Undone")?;
+            s.toast_shot("graph-dissolve-undo-back", "Undone", |s| s.settle())?;
             check("Undo brings the same group back around its members", !closed(s)? && members(s)? == before);
             s.reset()
         })?;
@@ -970,159 +997,6 @@ impl Shots {
             s.reset()
         })?;
         Ok(())
-    }
-
-    fn keyboard_views(&mut self) -> io::Result<()> {
-        // A click focuses the group card without entering it; Enter then does what a double-click does.
-        self.view("graph-enter-group", |s| {
-            s.tab_presses(knob("GROUP_STOP", 12))?;
-            s.shot("graph-enter-group-click")?;
-            send!(s, "ENTER")?;
-            s.shot("graph-enter-group")?;
-            s.reset()
-        })?;
-        // Tab to the JSON card and Enter: the level opens with its root card focused.
-        self.view("graph-enter-json", |s| {
-            s.tab_presses(knob("JSON_ENTRY_STOP", 16))?;
-            send!(s, "ENTER")?;
-            s.shot("graph-enter-json")?;
-            s.reset()
-        })?;
-        // The menu opens on the focused card, so the card's Tab stop is found by trying each stop (as `note-key` does).
-        self.view("graph-menu-key", |s| {
-            let mut found = 0;
-            for stop in 1..=20 {
-                s.reset()?;
-                s.tab_presses(stop)?;
-                send!(s, "SHIFTF10", "WAITIDLE")?;
-                if s.menu_open()? {
-                    found = stop;
-                    break;
-                }
-            }
-            check(&format!("Shift+F10 on a Tab-focused card opens its menu (Tab stop {found})"), found != 0);
-            s.shot("graph-menu-key-open")?;
-            send!(s, "TABKEY")?;
-            s.shot("graph-menu-key-tab")?;
-            // Still open: Down through the rows.
-            // A shot after each Down: the frame it forces is what lets the next key see the new focus.
-            for i in 1..=5 {
-                send!(s, "ARROWDOWN")?;
-                s.shot(&format!("graph-menu-key-down{i}"))?;
-            }
-            send!(s, "ESCAPE")?;
-            s.shot("graph-menu-key-closed")?;
-            s.reset()
-        })?;
-        // Space on a Tab-focused tab card selects it (and Space again clears it).
-        self.view("graph-select-key", |s| {
-            s.tab_presses(knob("SELECT_STOP", 12))?;
-            send!(s, "SPACEKEY")?;
-            s.shot("graph-select-key-on")?;
-            send!(s, "SPACEKEY")?;
-            s.shot("graph-select-key-off")?;
-            // Two more cards selected: the selection bar sits on a box around both.
-            send!(s, "TABKEY", "WAITIDLE", "SPACEKEY", "WAITIDLE", "TABKEY", "WAITIDLE", "SPACEKEY")?;
-            s.shot("graph-select-key-two")?;
-            // Pinned: the bar's pin goes accent, and each card keeps its passive pin mark.
-            send!(s, "TOGGLEPIN")?;
-            s.shot("graph-select-key-pinned")?;
-            s.reset()
-        })?;
-        // Over `LOD_SIMPLIFY_COUNT` cards the graph draws simple: a pinned card shows its accent dot, not the glyph.
-        self.view("graph-pinned-dense", |s| {
-            for _ in 0..70 {
-                send!(s, "NEWNOTE")?;
-            }
-            s.settle()?;
-            s.tab_presses(1)?;
-            send!(s, "SPACEKEY", "WAITIDLE", "TOGGLEPIN", "WAITIDLE")?;
-            for _ in 0..6 {
-                s.inst.click_control(crate::state::ZOOM_OUT)?;
-                s.settle()?;
-            }
-            s.shot("graph-pinned-dense")?;
-            s.reset()
-        })?;
-        // Tab to the Note card and Enter: the note starts editing; Escape ends it and Enter edits again (focus
-        // returned to the card). The note's Tab stop is found by trying each stop.
-        self.view("note-key", |s| {
-            let mut found = 0;
-            for stop in 1..=20 {
-                s.reset()?;
-                s.tab_presses(stop)?;
-                send!(s, "ENTER", "WAITIDLE")?;
-                if s.editing()? {
-                    found = stop;
-                    break;
-                }
-            }
-            if found == 0 {
-                check("Enter on a focused Note card starts editing (no Tab stop did)", false);
-            } else {
-                check(&format!("Enter on the Note card (Tab stop {found}) starts editing"), true);
-                s.shot("note-key-editing")?;
-                send!(s, "ESCAPE", "WAITIDLE")?;
-                check("Escape ends editing", !s.editing()?);
-                send!(s, "ENTER", "WAITIDLE")?;
-                check("Enter edits again, so focus returned to the card", s.editing()?);
-            }
-            s.reset()
-        })?;
-        // Enter the JSON level by keyboard in a small window (so some cards are off screen) and Tab through every
-        // card after the root: each Tab must select a new card, off-screen ones included (zoomed in so they are).
-        self.view("json-tab-offscreen", |s| {
-            let sel = |s: &mut Self| -> io::Result<(String, usize)> {
-                let st = s.state()?;
-                let j = &st.0["json_level"];
-                Ok((j["selected"].to_string(), j["cards"].as_array().map_or(0, Vec::len)))
-            };
-            s.tab_presses(knob("JSON_ENTRY_STOP", 16))?;
-            send!(s, "ENTER", "WAITIDLE")?;
-            // Zoomed in, the cards other than the root fall off screen.
-            send!(
-                s,
-                "ZOOMIN",
-                "ZOOMIN",
-                "ZOOMIN",
-                "MOUSEMOVE 700 650",
-                "MOUSEDOWN 700 650",
-                "MOUSEMOVE 400 650",
-                "MOUSEMOVE 100 650",
-                "MOUSEUP 100 650",
-                "MOUSEMOVE 100 650",
-                "MOUSEMOVE 5 790",
-                "WAITIDLE"
-            )?;
-            s.settle()?;
-            s.shot("json-tab-offscreen-before")?;
-            let total = sel(s)?.1;
-            let mut seen = Vec::new();
-            for _ in 1..total {
-                send!(s, "TABKEY", "WAITIDLE")?;
-                s.settle()?;
-                seen.push(sel(s)?.0);
-            }
-            println!("selected after each Tab: {} (cards: {total})", seen.join(" "));
-            seen.sort();
-            seen.dedup();
-            check(
-                &format!("Tab reached {} of {} JSON cards after the root", seen.len(), total.saturating_sub(1)),
-                seen.len() >= total.saturating_sub(1),
-            );
-            s.shot("json-tab-offscreen")?;
-            s.reset()
-        })?;
-        // Digits jump to the card with that Tab-order number (the Note is 3 of the 5 seeded cards): 3 focuses it, so
-        // Enter starts editing.
-        self.view("digit-jump", |s| {
-            s.reset()?;
-            send!(s, "DIGITKEY 3")?;
-            s.shot("digit-jump")?;
-            send!(s, "ENTER", "WAITIDLE")?;
-            check("digit 3 focuses card 3 (the note), Enter edits it", s.editing()?);
-            s.reset()
-        })
     }
 
     /// Mouse behaviour that the Tab-focus model must not disturb, asserted rather than shot: dragging a card moves
@@ -1256,7 +1130,11 @@ impl Shots {
             if s.has("tab-dropdown") {
                 send!(s, "ADDRESSBAR exam", "WAITIDLE")?;
                 s.tab_scan("dropdown", 4, 820)?;
+                // Tabbing out closes the dropdown, so this Escape can be the one that leaves Tab view.
                 send!(s, "ESCAPE", "WAITIDLE")?;
+                if !s.state()?.tab_view() {
+                    s.open_tab()?;
+                }
             }
             if s.has("hover-dropdown") {
                 send!(s, "ADDRESSBAR exam", "WAITIDLE")?;

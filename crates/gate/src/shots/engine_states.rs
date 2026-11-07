@@ -97,8 +97,7 @@ impl Shots {
         self.engine_app(&eng_exe, &proxy, "states", "")?;
         // The seeded CEF tab can't start: its card says so (graph view, then its Tab view).
         self.shot("engine-states-graph")?;
-        send!(self, "GRAPHRIGHT", "GRAPHOPEN")?;
-        self.toast_shot("engine-states-failed-tab", "is not installed")?;
+        self.toast_shot("engine-states-failed-tab", "is not installed", |s| send!(s, "GRAPHRIGHT", "GRAPHOPEN"))?;
         send!(self, "TOGGLEVIEW", "WAITIDLE", "TOGGLESETTINGSPAGE")?;
         self.shot("engine-states-settings-notinstalled")?;
         self.picker_shot("engine-states-picker-notinstalled")?;
@@ -107,8 +106,7 @@ impl Shots {
         self.shot("engine-install-confirm")?;
         // Confirm with the proxy refusing: the install fails and the row says why, with Retry. The dialog is in
         // front, so its own Download button is the one found by that name.
-        self.inst.click_control("Download")?;
-        self.toast_shot("engine-states-settings-failed", "install failed")?;
+        self.toast_shot("engine-states-settings-failed", "install failed", |s| s.inst.click_control("Download"))?;
         self.picker_shot("engine-states-picker-failed")?;
         // Retry with the proxy silent: Installing, with Cancel.
         proxy.set_refuse(false);
