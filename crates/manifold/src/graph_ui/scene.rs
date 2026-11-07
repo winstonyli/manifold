@@ -116,7 +116,7 @@ impl App {
     /// Shows `group`'s level without saving the one left (`switch_group_level` saves it): eases the camera to the view
     /// this level was left at, or fits it when none is saved or the saved one misses its cards (`LevelView::camera_or`),
     /// brings back its Collapse Groups toggle, and drops everything tied to the old level: the rectangle selection (the
-    /// toolbar's "Group Selected"/"Close Selected" would otherwise act on tabs no longer visible), the empty-canvas
+    /// selection bar's Group and Close would otherwise act on cards no longer visible), the empty-canvas
     /// card, any open node menu, a drag whose card is no longer shown, and pick-target mode (its targets were the old
     /// level's). `sync_json_level` leaves a JSON level it never showed (an unenterable one) through this, so that level
     /// gets no saved view.
