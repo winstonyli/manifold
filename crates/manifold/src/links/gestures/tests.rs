@@ -1581,7 +1581,7 @@ fn a_drop_onto_overlapping_groups_targets_the_topmost() {
     assert_eq!(target, Some(crate::card_id::CardId::from(over)));
 }
 
-/// A note made by "+ Note" or the new-node menu opens in its editor, so typing starts at once; a note that was
+/// A note made from the new-node menu opens in its editor, so typing starts at once; a note that was
 /// there already (here, one made as a placeholder, as a session load does) does not take the keys.
 #[test]
 fn a_new_note_takes_the_keyboard_and_a_loaded_one_does_not() {
@@ -1596,37 +1596,44 @@ fn a_new_note_takes_the_keyboard_and_a_loaded_one_does_not() {
     assert!(!has_focus(loaded));
 }
 
-/// A note spawned out of view does not take the keyboard when the camera reaches it later.
+/// A note that lands out of view still takes the keyboard at once, and the camera goes to it, so what is typed is seen.
 #[test]
-fn a_new_note_out_of_view_does_not_take_the_keyboard_later() {
+fn a_new_note_out_of_view_takes_the_keyboard_and_the_camera_goes_to_it() {
     let (h, mut app, _) = three_notes();
     let far = app.alloc_node_id();
     app.insert_note_at(far, Some(egui::vec2(100_000.0, 100_000.0)));
-    for _ in 0..4 {
-        h.frame(&mut app, vec![]);
-    }
-    assert!(app.interaction.focus_new_note.is_none(), "the request expired");
-    app.camera.jump_to(egui::Rect::from_center_size(app.card_rect(far).unwrap().center(), egui::vec2(1024.0, 768.0)));
     for _ in 0..3 {
         h.frame(&mut app, vec![]);
     }
-    assert!(!h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(far).editor())));
-    assert!(!app.nodes[&far].as_note().unwrap().editing, "a box nothing can type in is not being edited");
+    assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(far).editor())));
+    assert!(app.nodes[&far].as_note().unwrap().editing);
+    assert!(app.camera.is_moving(), "eased towards the note");
 }
 
 /// Of two notes made before a frame draws, the second gets the keyboard and the first stops editing: its focus request
-/// was replaced, so nothing would ever end its edit. Apart, because layout pushes cards that land together apart, and
-/// a second note at (0, 0) lands above this camera's view, culled, so it never takes the keyboard.
+/// was replaced, so nothing would ever end its edit. Both land on a note, so layout pushes the second out of view.
 #[test]
 fn only_the_last_of_two_new_notes_stays_in_editing() {
     let (h, mut app, _) = three_notes();
     let (first, second) = (app.alloc_node_id(), app.alloc_node_id());
     app.insert_note_at(first, Some(egui::vec2(0.0, 0.0)));
-    app.insert_note_at(second, Some(egui::vec2(300.0, 0.0)));
+    app.insert_note_at(second, Some(egui::vec2(0.0, 0.0)));
     for _ in 0..3 {
         h.frame(&mut app, vec![]);
     }
     assert!(!app.nodes[&first].as_note().unwrap().editing, "the first note's edit ended");
     assert!(app.nodes[&second].as_note().unwrap().editing);
     assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(second).editor())));
+    assert!(app.camera.is_moving(), "eased to where layout put it");
+}
+
+/// An edit that ends before the note first draws takes its focus request with it: the note is no longer waiting for
+/// the keyboard, so nothing else would clear it.
+#[test]
+fn ending_a_new_notes_edit_drops_its_focus_request() {
+    let (_, mut app, _) = three_notes();
+    let note = app.alloc_node_id();
+    app.insert_note_at(note, Some(egui::vec2(300.0, 0.0)));
+    app.end_note_edits();
+    assert_eq!(app.interaction.focus_new_note, None);
 }

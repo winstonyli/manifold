@@ -134,6 +134,7 @@ impl App {
     /// caller saves.
     pub(crate) fn end_note_edit(&mut self, id: NodeId) {
         let held = self.doc.writes.held_text.remove(&id);
+        self.interaction.focus_new_note.take_if(|n| *n == crate::card_id::CardId::from(id));
         let Some(note) = self.nodes.get_mut(&id).and_then(|n| n.as_note_mut()) else { return };
         note.editing = false;
         let buffer = std::mem::take(&mut note.text);

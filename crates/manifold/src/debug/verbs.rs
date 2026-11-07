@@ -591,7 +591,7 @@ pub(super) const VERBS: &[Verb] = &[
             }
         }
     }),
-    row("NEWNOTE", "Graph toolbar's \"+ Note\" button", |_| job(|app, _| app.new_note_shortcut())),
+    row("NEWNOTE", "A new note near the graph's centre, in the level in view", |_| job(|app, _| app.new_note_shortcut())),
     // With a point, placed like a real drop at that window point; no `save_session` there either -- same reasoning as
     // `WindowEvent::DroppedFile`, so a script sending several `ADDFILE`s with a point still gets one save per batch,
     // not one per file. With none, the file is jittered around world center at the current level, as the picker does.

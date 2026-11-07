@@ -1171,20 +1171,16 @@ impl App {
         Some(CardOutput { response, control })
     }
 
-    /// Viewport culling: skip every bit of interact/paint
-    /// work below for a node that isn't actually visible --
-    /// the single highest-leverage fix for a graph with many
-    /// more nodes than fit on screen at once. Never culls
-    /// the node currently being dragged, even once it's
-    /// moved outside the viewport -- `ui.interact`'s own
-    /// drag tracking is what keeps a drag alive frame to
-    /// frame, so skipping it mid-drag would freeze the node
-    /// in place the instant it crossed the visible edge.
-    /// The Tab entry (first card) and the card holding keyboard focus stay registered too, so
-    /// Tab can reach them and focus survives a pan that hasn't brought them into view yet, and
-    /// a note being edited, whose editor must stay laid out to keep its focus.
+    /// Viewport culling: skip every bit of interact/paint work below for a node that isn't actually visible -- the
+    /// single highest-leverage fix for a graph with many more nodes than fit on screen at once. Never culls the node
+    /// currently being dragged, even once it's moved outside the viewport -- `ui.interact`'s own drag tracking is what
+    /// keeps a drag alive frame to frame, so skipping it mid-drag would freeze the node in place the instant it crossed
+    /// the visible edge. The Tab entry (first card) and the card holding keyboard focus stay registered too, so Tab can
+    /// reach them and focus survives a pan that hasn't brought them into view yet, and a note being edited, whose
+    /// editor must stay laid out to keep its focus, and a new note about to take it.
     fn card_culled(&self, ui: &egui::Ui, pass: &CardPass, card: CardId, rect: egui::Rect) -> bool {
         let keeps_keyboard = pass.order.first() == Some(&card)
+            || self.interaction.focus_new_note == Some(card)
             || ui.memory(|m| m.has_focus(card.widget()))
             || ui.memory(|m| m.has_focus(card.editor()));
         self.interaction.dragging != Some(card) && !keeps_keyboard && !rect.intersects(pass.viewport)

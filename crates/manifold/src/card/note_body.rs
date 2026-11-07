@@ -64,12 +64,13 @@ impl App {
                         .text_color(NOTE_TEXT)
                         .hint_text("Type a note..."),
                 );
-                if self.interaction.focus_new_note.as_ref().is_some_and(|(n, _)| *n == CardId::from(id)) {
+                if self.interaction.focus_new_note == Some(CardId::from(id)) {
                     self.interaction.focus_new_note = None;
+                    self.camera.reveal = Some(id);
                     edit.request_focus();
                 }
                 // Not only `lost_focus`: a box that never had the keyboard has no blur to end it (a newer note took
-                // the one focus request, it drew after its request expired, or it was scrolled away mid-edit).
+                // the one focus request, or it was scrolled away mid-edit).
                 unfocused = !edit.has_focus();
             }
             // The box edits the payload, the edit buffer; the mirror gets it on blur (and at each save), not on

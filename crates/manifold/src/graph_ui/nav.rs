@@ -69,9 +69,9 @@ pub(crate) struct GraphInteraction {
     /// the wrong feel for it).
     pub(crate) pending_new_node: Option<egui::Vec2>,
     /// A note just made (`insert_note_at`) whose editor takes the keyboard when it first draws, so typing starts at
-    /// once, and the graph frames it has left to be drawn in: a note spawned out of view must not grab the keyboard
-    /// when the camera reaches it later. Taken by the note's editor.
-    pub(crate) focus_new_note: Option<(CardId, u8)>,
+    /// once. Drawn even out of view (`card_culled`): layout may push it there. Taken by the note's editor, which
+    /// brings it into view.
+    pub(crate) focus_new_note: Option<CardId>,
 }
 
 impl GraphInteraction {
@@ -104,7 +104,7 @@ impl GraphInteraction {
         if *peek_suppressed == Some(id) {
             *peek_suppressed = None;
         }
-        if focus_new_note.as_ref().is_some_and(|(n, _)| *n == id) {
+        if *focus_new_note == Some(id) {
             *focus_new_note = None;
         }
         selected.remove(&id);

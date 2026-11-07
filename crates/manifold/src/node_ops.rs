@@ -29,7 +29,7 @@ impl App {
     pub(crate) fn insert_note_at(&mut self, id: NodeId, pos: Option<egui::Vec2>) {
         let at = self.placement(id, pos);
         let note = NotePayload { text: String::new(), editing: true };
-        self.interaction.focus_new_note = Some((CardId::from(id), 2));
+        self.interaction.focus_new_note = Some(CardId::from(id));
         self.place_node(Some(id), store::model::Kind::Note, Runtime::Note(note), at);
     }
 
