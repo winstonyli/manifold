@@ -159,6 +159,25 @@ impl App {
         self.save_session();
     }
 
+    /// Ends every note edit (`end_note_edit`), saving if one was on. A note's TextEdit that
+    /// stops being laid out (its level left, the view changed) loses focus
+    /// without `lost_focus()` ever firing, so `editing` would stay on.
+    pub(crate) fn end_note_edits(&mut self) -> bool {
+        let editing: Vec<NodeId> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.as_note().is_some_and(|note| note.editing))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &editing {
+            self.end_note_edit(*id);
+        }
+        if !editing.is_empty() {
+            self.save_session();
+        }
+        !editing.is_empty()
+    }
+
     /// The one writer of a node's document pos: a drag release, with where the card was dropped
     /// (`release_drag`). A new node's is seeded at placement instead (`place_node`, `seed_landing`). Physics never
     /// calls it: a settle moves only `App::layout`. `None` (and a non-finite pos) writes the absent value, `Pos(None)`.

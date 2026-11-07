@@ -15,7 +15,7 @@ const APP_FIELDS_MAX: usize = 60;
 /// Files over `PROD_LIMIT` today: path under `crates/` and the prod line count the file may not exceed.
 const PROD_ALLOWED: &[(&str, usize)] = &[
     ("gate/src/shots.rs", 1534),
-    ("manifold/src/card.rs", 1662),
+    ("manifold/src/card.rs", 1643),
     ("manifold/src/gpu.rs", 1542),
     ("manifold/src/store/journal.rs", 1492),
     ("gate/src/smoke.rs", 1305),

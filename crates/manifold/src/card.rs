@@ -1010,25 +1010,6 @@ fn missing_view_text(kind: ViewKind, state: &crate::view_install::ViewStatus) ->
 }
 
 impl App {
-    /// Ends every note edit (`end_note_edit`), saving if one was on. A note's TextEdit that
-    /// stops being laid out (its level left, the view changed) loses focus
-    /// without `lost_focus()` ever firing, so `editing` would stay on.
-    pub(crate) fn end_note_edits(&mut self) -> bool {
-        let editing: Vec<NodeId> = self
-            .nodes
-            .iter()
-            .filter(|(_, n)| n.as_note().is_some_and(|note| note.editing))
-            .map(|(id, _)| *id)
-            .collect();
-        for id in &editing {
-            self.end_note_edit(*id);
-        }
-        if !editing.is_empty() {
-            self.save_session();
-        }
-        !editing.is_empty()
-    }
-
     /// Every group's members, in `node_order`: built once per card pass.
     pub(crate) fn group_members(&self) -> HashMap<NodeId, Vec<NodeId>> {
         let mut members: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
