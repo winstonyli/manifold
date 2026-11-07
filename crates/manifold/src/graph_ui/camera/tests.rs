@@ -32,6 +32,18 @@ fn a_new_tab_lands_by_its_parent_else_at_the_camera_target() {
     assert_eq!(spawn.pos, egui::vec2(5000.0, 5000.0) + crate::graph_ui::layout::spawn_jitter(spawn.id));
 }
 
+/// Ctrl+T with nothing focused files the tab in the level being viewed, where the camera can reveal it.
+#[test]
+fn ctrl_t_with_nothing_focused_files_the_tab_in_the_viewed_level() {
+    let mut app = App::default();
+    let group = app.alloc_node_id();
+    app.insert_group_at(group, None);
+    app.switch_group_level(Some(group));
+    assert_eq!(app.focused, None);
+    app.new_tab_shortcut();
+    assert_eq!(app.test_spawns.last().unwrap().0.group, Some(group));
+}
+
 /// A duplicate lands beside its original, parent or not, wherever the view is.
 #[test]
 fn a_duplicated_tab_lands_beside_its_original() {

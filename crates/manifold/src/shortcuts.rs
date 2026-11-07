@@ -425,12 +425,15 @@ impl App {
         let home_page = self.settings.value.home_page.clone();
         let parent = self.focused;
         // From a JSON level: leave it, and land in the level then shown (the
-        // focused id may be a level card, not a stored node).
+        // focused id may be a level card, not a stored node). With nothing
+        // focused, the level being viewed too.
         let group = if self.current_json_node().is_some() {
             self.leave_json_level();
             self.current_group
-        } else {
+        } else if parent.is_some_and(|p| self.nodes.contains_key(&p)) {
             self.group_of(parent)
+        } else {
+            self.current_group
         };
         self.spawn_new_tab(parent, group, &home_page);
     }
