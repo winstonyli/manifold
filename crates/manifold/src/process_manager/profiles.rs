@@ -181,7 +181,8 @@ pub(super) fn claim_slot<G>(
 /// it). Its leftover profile folder is deleted if it can be; one that cannot is still open in the browser process
 /// all hosts share, which keeps a profile loaded after its last host exits. That does not block reuse: the cookies
 /// are InPrivate, in memory, and a new host with the name starts with an empty store (shown by `gate jar`'s
-/// reuse run, runtime 154.0.4258.53). A lock file that cannot be created at all (not a sharing violation) gives a
+/// reuse run, runtime 154.0.4258.53); while the name is still closing the host tries again (`retry_while_busy`).
+/// A lock file that cannot be created at all (not a sharing violation) gives a
 /// claim without a lock.
 pub(super) fn take_webview2_slot(udf: &Path, n: usize) -> Option<Option<std::fs::File>> {
     let _ = std::fs::create_dir_all(udf);

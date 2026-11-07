@@ -48,6 +48,13 @@ use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_sta
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
+/// `HRESULT_FROM_WIN32(ERROR_BUSY)`, what creating a controller fails with while its profile is still closing.
+const ERROR_BUSY: windows::core::HRESULT = windows::core::HRESULT(0x800700AA_u32 as i32);
+/// How long a new host waits for its profile to finish closing, and how often it asks. A name just given up can stay
+/// busy past the host's first try, and on one CPU a try alone took about 7 s, so 15 s gave up after two (`q1-1cpu-d`,
+/// 2026-11-06). A failed card is what waiting too little costs, a later page what waiting does.
+const PROFILE_RELEASE_WAIT: Duration = Duration::from_secs(60);
+const PROFILE_RETRY_PAUSE: Duration = Duration::from_millis(100);
 /// Caps how often a captured frame is actually acted on and sent to
 /// manifold -- see the cap's own call-site doc comment for why this
 /// exists (unlike CEF/Servo/WebKit, WGC produces a new frame every vsync
@@ -162,7 +169,10 @@ fn main() {
     // unusable: a respawn would fail the same way, so they end the host with a reason rather than a panic.
     let environment = create_environment()
         .unwrap_or_else(|e| exit_fatal(&mut control, &startup_failure("create its environment", &e)));
-    let (comp_controller, controller, webview, in_private) = create_composition_controller(environment.clone(), hwnd)
+    let (comp_controller, controller, webview, in_private) =
+        retry_while_busy(PROFILE_RELEASE_WAIT, PROFILE_RETRY_PAUSE, || {
+            create_composition_controller(environment.clone(), hwnd)
+        })
         .unwrap_or_else(|e| exit_fatal(&mut control, &startup_failure("create its controller", &e)));
     unsafe {
         comp_controller.SetRootVisualTarget(&root_visual).expect("set composition root visual target");
@@ -546,13 +556,42 @@ fn missing_runtime_reason(version: windows::core::Result<String>) -> Option<Stri
     ))
 }
 
+/// Whether `err` says the profile is in use: the shared browser process has not finished closing the profile a host
+/// that just exited had, and manifold has handed its name to this one (`process_manager::claim_webview2_slot`).
+fn is_busy(err: &webview2_com::Error) -> bool {
+    matches!(err, webview2_com::Error::WindowsError(e) if e.code() == ERROR_BUSY)
+}
+
+/// Runs `attempt`, and again every `pause` while it fails with `is_busy`, for up to `wait`.
+fn retry_while_busy<T>(
+    wait: Duration,
+    pause: Duration,
+    mut attempt: impl FnMut() -> webview2_com::Result<T>,
+) -> webview2_com::Result<T> {
+    let deadline = std::time::Instant::now() + wait;
+    loop {
+        match attempt() {
+            Err(e) if is_busy(&e) && std::time::Instant::now() < deadline => {
+                eprintln!("jar: profile still in use, trying again");
+                std::thread::sleep(pause);
+            }
+            done => return done,
+        }
+    }
+}
+
 /// One line saying which startup step (`what`) failed and how, for `exit_fatal`.
 fn startup_failure(what: &str, err: &webview2_com::Error) -> String {
     let how = match err {
         webview2_com::Error::WindowsError(e) => format!("{:#010x}: {}", e.code().0, e.message().trim()),
         other => format!("{other:?}"),
     };
-    format!("WebView2 couldn't {what} ({how}); its runtime may be damaged, or its user-data folder unusable")
+    let why = if is_busy(err) {
+        "its profile is still in use"
+    } else {
+        "its runtime may be damaged, or its user-data folder unusable"
+    };
+    format!("WebView2 couldn't {what} ({how}); {why}")
 }
 
 /// Ends a host that connected but cannot start, so manifold leaves a failed card naming `reason` instead of
@@ -707,7 +746,45 @@ fn resize_controller(controller: &ICoreWebView2Controller, root_visual: &Contain
 
 #[cfg(test)]
 mod tests {
-    use super::{missing_runtime_reason, startup_failure};
+    use super::{missing_runtime_reason, retry_while_busy, startup_failure, ERROR_BUSY};
+    use std::time::Duration;
+
+    fn error(code: windows::core::HRESULT) -> webview2_com::Error {
+        webview2_com::Error::WindowsError(windows::core::Error::from(code))
+    }
+
+    #[test]
+    fn a_busy_profile_is_tried_again_until_it_frees() {
+        let mut tries = 0;
+        let got = retry_while_busy(Duration::from_secs(60), Duration::ZERO, || {
+            tries += 1;
+            if tries < 3 {
+                Err(error(ERROR_BUSY))
+            } else {
+                Ok(tries)
+            }
+        });
+        assert_eq!(got.ok(), Some(3));
+    }
+
+    #[test]
+    fn a_profile_still_busy_at_the_deadline_gives_up_saying_so() {
+        let got = retry_while_busy(Duration::ZERO, Duration::ZERO, || Err::<(), _>(error(ERROR_BUSY)));
+        let reason = startup_failure("create its controller", &got.unwrap_err());
+        assert!(reason.contains("0x800700aa") && reason.contains("still in use"), "{reason}");
+        assert!(!reason.contains("damaged"), "{reason}");
+    }
+
+    #[test]
+    fn another_error_is_not_tried_again() {
+        let mut tries = 0;
+        let got = retry_while_busy(Duration::from_secs(60), Duration::ZERO, || {
+            tries += 1;
+            Err::<(), _>(error(windows::Win32::Foundation::E_ACCESSDENIED))
+        });
+        assert!(got.is_err());
+        assert_eq!(tries, 1);
+    }
 
     #[test]
     fn a_startup_failure_names_the_step_and_the_error() {
