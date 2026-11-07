@@ -489,6 +489,35 @@ fn a_slow_plain_move_keeps_its_deadline_alive_while_the_origin_reports() {
     assert_eq!(h.at, 0);
 }
 
+/// A woken engine can be quiet for seconds before its first report (5.8 s, `2026-11-07-navlog-back`): the move sent
+/// meanwhile is still in time, whichever report comes first.
+#[test]
+fn a_move_sent_to_a_new_engine_waits_for_its_first_report() {
+    let now = Instant::now();
+    let late = now + Duration::from_secs(6);
+    for origin_first in [true, false] {
+        let mut h = NavHistory::visited(&["a", "b"]);
+        h.view_reset("b");
+        assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+        if origin_first {
+            h.observe("b", "", true, false, late);
+        }
+        h.observe("a", "", true, false, late);
+        h.observe("a", "", false, false, late);
+        assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0), "arrived, not a redirect or a fork");
+    }
+}
+
+#[test]
+fn a_move_sent_during_a_load_gets_the_long_window() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    h.observe("b", "", true, false, now);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.observe("a", "", false, false, now + Duration::from_secs(6));
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0));
+}
+
 #[test]
 fn a_move_with_no_reports_expires_after_the_window() {
     let now = Instant::now();

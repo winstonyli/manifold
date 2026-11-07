@@ -22,8 +22,9 @@ use std::time::{Duration, Instant};
 const MAX_ENTRIES: usize = 50;
 /// How long a move waits for the engine to report its arrival.
 const MOVE_WINDOW: Duration = Duration::from_secs(3);
-/// The same, once the engine has said it is loading: a busy machine can take longer than `MOVE_WINDOW` between two
-/// reports of one navigation (measured 2026-10-15, `gate sleep` history on WebView2 under load).
+/// The same while the engine is loading: a busy machine can take longer than `MOVE_WINDOW` between two reports of one
+/// navigation (measured 2026-10-15, `gate sleep` history on WebView2 under load), and a new engine longer before its
+/// first (`2026-11-07-navlog-back`).
 const LOADING_WINDOW: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -521,7 +522,8 @@ impl NavHistory {
             self.dirty |= before != self.saved_form();
             return if native { action } else { NavAction::None };
         }
-        self.pending = Some(Move { target, from, native, deadline: now + MOVE_WINDOW, committed: false });
+        let window = if self.loading { LOADING_WINDOW } else { MOVE_WINDOW };
+        self.pending = Some(Move { target, from, native, deadline: now + window, committed: false });
         action
     }
 
@@ -582,7 +584,8 @@ impl NavHistory {
     /// new root.
     pub(crate) fn view_reset(&mut self, url: &str) {
         self.pending = None;
-        self.loading = false;
+        // The new engine is loading `url`, though it can take seconds to say so.
+        self.loading = true;
         if self.entries.get(self.at).is_some_and(|e| e.url == url) {
             self.lin = vec![Some(self.at)];
             self.lin_at = 0;
