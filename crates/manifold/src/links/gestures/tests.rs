@@ -1607,7 +1607,7 @@ fn a_new_note_out_of_view_takes_the_keyboard_and_the_camera_goes_to_it() {
     }
     assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(far).editor())));
     assert!(app.nodes[&far].as_note().unwrap().editing);
-    assert!(app.camera.is_moving(), "eased towards the note");
+    assert!(app.camera.target().contains_rect(app.card_rect(far).unwrap()), "the camera went to the note");
 }
 
 /// Of two notes made before a frame draws, the second gets the keyboard and the first stops editing: its focus request
@@ -1624,7 +1624,7 @@ fn only_the_last_of_two_new_notes_stays_in_editing() {
     assert!(!app.nodes[&first].as_note().unwrap().editing, "the first note's edit ended");
     assert!(app.nodes[&second].as_note().unwrap().editing);
     assert!(h.ctx.memory(|m| m.has_focus(crate::card_id::CardId::from(second).editor())));
-    assert!(app.camera.is_moving(), "eased to where layout put it");
+    assert!(app.camera.target().contains_rect(app.card_rect(second).unwrap()), "the camera went where layout put it");
 }
 
 /// A reveal aims at where the settle put the card, on the frame the card arrives.
