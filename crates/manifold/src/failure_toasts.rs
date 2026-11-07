@@ -33,6 +33,8 @@ pub(crate) struct Toasts {
     /// A toast with an Undo (or Redo) button: the message it shows on, the history entry it steps, and whether it
     /// redoes (`App::step_history`).
     pub(crate) undo: Option<(String, u64, bool)>,
+    /// Text a toast must hold for the clock to stop for it: at full opacity until `clear` (`HOLDTOAST`).
+    pub(crate) hold: Option<String>,
 }
 
 impl Toasts {
@@ -106,11 +108,13 @@ mod tests {
             save_toast: Some(("Saved a".into(), t0)),
             save_toast_queue: ["Saved b".to_owned()].into(),
             undo: Some(("Saved a".into(), 1, false)),
+            hold: Some("Saved".into()),
             ..Toasts::default()
         };
         toasts.failure_notices.push(t0, "Servo", "no engine", "a", "m".into());
         toasts.clear();
         assert!(toasts.save_toast.is_none() && toasts.save_toast_queue.is_empty() && toasts.undo.is_none());
+        assert!(toasts.hold.is_none());
         assert!(!toasts.failure_notices.is_pending() && toasts.failure_notices.flush(t0 + WINDOW).is_empty());
     }
 

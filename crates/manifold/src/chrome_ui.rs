@@ -66,7 +66,8 @@ impl App {
                 self.toasts.save_toast_queue.pop_front().map(|message| (message, std::time::Instant::now()));
         }
         let Some((message, shown_at)) = &self.toasts.save_toast else { return };
-        let elapsed = shown_at.elapsed();
+        let held = self.toasts.hold.as_ref().is_some_and(|text| message.contains(text.as_str()));
+        let elapsed = if held { TOAST_FADE_IN } else { shown_at.elapsed() };
         if elapsed >= SAVE_TOAST_DURATION {
             if self.toasts.undo.as_ref().is_some_and(|(shown, _, _)| shown == message) {
                 self.toasts.undo = None;
@@ -262,5 +263,29 @@ impl App {
             help.union(settings)
         });
         help_rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::App;
+
+    /// A shot of a toast must not race its expiry on a starved machine (`HOLDTOAST`); any other toast keeps its time.
+    #[test]
+    fn only_the_toast_held_outlasts_its_time() {
+        let mut app = App::default();
+        let ctx = egui::Context::default();
+        let draw = |app: &mut App| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.build_save_toast(ui));
+            output.textures_delta.clear();
+        };
+        let expired = std::time::Instant::now() - 2 * crate::SAVE_TOAST_DURATION;
+        app.toasts.save_toast = Some(("Saved a.png".to_owned(), expired));
+        app.toasts.hold = Some("a.png".to_owned());
+        draw(&mut app);
+        assert!(app.toasts.save_toast.is_some(), "held");
+        app.toasts.hold = Some("b.png".to_owned());
+        draw(&mut app);
+        assert!(app.toasts.save_toast.is_none(), "held for another");
     }
 }

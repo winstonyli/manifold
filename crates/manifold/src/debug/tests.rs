@@ -130,6 +130,7 @@ fn every_verb_has_a_parsing_sample() {
         "TOGGLEVIEW",
         "TOGGLESETTINGSPAGE",
         "CLEARTOASTS",
+        "HOLDTOAST Undone",
         r"EXPORTSESSION C:\x.json",
         r"EXPORTSTATE C:\x.json",
         r"IMPORTSESSION C:\x.json",
