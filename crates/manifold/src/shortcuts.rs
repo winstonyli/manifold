@@ -312,7 +312,7 @@ impl App {
         self.pending_focus = Some(FocusTarget::GroupRename);
     }
 
-    /// `Ctrl+Shift+G` / toolbar "+ New Group" / headless `NEWGROUP` —
+    /// `Ctrl+Shift+G` / headless `NEWGROUP` —
     /// creates an empty group at whichever level is currently being
     /// viewed, nested under `current_group` if that's not the top level
     /// (see `App::current_group`'s own doc comment on nesting). From a JSON

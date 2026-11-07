@@ -105,10 +105,8 @@ impl App {
         if !breadcrumb.is_empty() {
             // Goes up exactly one level (to the current group's
             // own parent, possibly another group, not straight
-            // to the top) -- the breadcrumb trail below takes
-            // the place "+ New Group" would otherwise fill in
-            // the empty space "+ New Tab"/"Reset View" already
-            // occupy at the top level. `CARET_LEFT`, not a raw
+            // to the top) -- the breadcrumb trail below fills
+            // the row beside "+ New Tab"/"Reset View". `CARET_LEFT`, not a raw
             // "◀" glyph -- the Tab toolbar's identical back
             // chevron already migrated to `egui_phosphor` for
             // this exact font's tofu-box risk with symbol

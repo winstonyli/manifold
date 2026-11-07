@@ -231,7 +231,7 @@ struct App {
     /// Dragging one group's card onto another's is deliberately left as
     /// **merge** (dissolve the source, flatten its members into the target),
     /// unchanged from before nesting existed -- it does not nest the source
-    /// under the target. Nesting is created only through "+ New Group"/Import
+    /// under the target. Nesting is created only through "New Group"/Import
     /// Group/"Group Selected" while already viewing a group's own subgraph, a
     /// deliberate choice (confirmed with the user) to avoid changing what an
     /// already-shipped drag gesture does.
