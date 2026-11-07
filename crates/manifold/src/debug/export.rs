@@ -172,6 +172,11 @@ impl App {
                     // A live tab whose engine stopped reading (`ViewTab::is_unresponsive`).
                     "unresponsive": node.as_tab().is_some_and(|t| t.tab.is_unresponsive(now)),
                     "editing": node.as_note().is_some_and(|n| n.editing),
+                    // Why a tab's engine couldn't start, null if it could.
+                    "failed": node.as_unloaded().and_then(|t| match &t.state {
+                        UnloadedState::Failed(error) => Some(error),
+                        _ => None,
+                    }),
                     // A download card's progress and outcome, as its body draws them.
                     "download": node.as_download().map(|d| json!({
                         "url": self.doc.mirror.url(id),
