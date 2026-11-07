@@ -139,11 +139,7 @@ fn placement_leaves_a_json_level_and_uses_the_outer_group() {
     assert_eq!(at.group, Some(OUTER));
     assert_eq!(app.current_group, Some(OUTER), "the level was left");
     assert!(app.json_level.is_none());
-    assert_eq!(
-        at.pos,
-        graph_ui::layout::GRAPH_WORLD_CENTER + graph_ui::layout::spawn_jitter(node(5)),
-        "no pos: jittered spawn"
-    );
+    assert_eq!(at.pos, app.camera.target().center().to_vec2(), "no pos: the level's view");
     let explicit = egui::vec2(3.0, 4.0);
     assert_eq!(app.placement(node(5), Some(explicit)).pos, explicit, "an explicit pos wins");
 }

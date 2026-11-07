@@ -85,7 +85,7 @@ impl App {
         self.nodes.contains_key(&id) && self.doc.mirror.group(id) == group
     }
 
-    /// Shared by `new_group_shortcut` (`pos` `None`: a jittered spawn) and
+    /// Shared by `new_group_shortcut` (`pos` `None`: the view's centre) and
     /// the empty-canvas "New Tab/Note/Group/File" card (`pending_new_node`),
     /// which passes the exact position that was right-clicked instead.
     /// Doesn't save; the caller does.

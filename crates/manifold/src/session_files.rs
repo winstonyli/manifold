@@ -264,7 +264,7 @@ impl App {
     /// Group): every node gets a fresh id (`store::json::import`), the
     /// file's root (first node -- `subtree_to_json`'s contract; a bare
     /// tab/note file with no group root is imported the same way) lands at
-    /// a jittered position around `GRAPH_WORLD_CENTER`, under
+    /// the centre of the view (`App::placement`), under
     /// `self.current_group`. Every other member keeps its file position
     /// exactly: `pos` is always local to a node's own immediate group, so
     /// a member's position is already relative to the root (or a group

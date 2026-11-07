@@ -276,11 +276,9 @@ impl App {
                     return;
                 }
                 let id = self.alloc_node_id();
-                // Centroid of the selected cards, rather than the usual
-                // world-center-plus-jitter spawn point: these tabs already have
-                // real positions the user just drew a box around, so the new
-                // group card should appear where they actually are, not at the
-                // origin of a possibly-distant part of the graph.
+                // Centroid of the selected cards, rather than the view's centre:
+                // these tabs already have real positions the user just drew a box
+                // around, so the new group card should appear where they actually are.
                 let pos = live.iter().fold(egui::Vec2::ZERO, |acc, t| acc + self.layout_pos(*t)) / live.len() as f32;
                 let name = self.default_group_name();
                 let at = self.placement(id, Some(pos));

@@ -506,10 +506,9 @@ impl App {
     /// real file picker blocks on OS/human input neither exists in headless
     /// mode, so this is never called there; `ADDFILE <path>` is the headless
     /// equivalent, going through `add_file_at` the same way.
-    /// `pos`: `None` for the toolbar button (jittered around world center,
-    /// same as always); `Some(pos)` for the empty-canvas "New Tab/Note/
-    /// Group/File" card (`pending_new_node`), which already knows exactly
-    /// where it should land.
+    /// `pos`: `None` for the view's centre; `Some(pos)` for the empty-canvas
+    /// "New Tab/Note/Group/File" card (`pending_new_node`), which already
+    /// knows exactly where it should land.
     pub(crate) fn add_file_node(&mut self, pos: Option<egui::Vec2>) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
@@ -526,7 +525,7 @@ impl App {
         }
     }
 
-    /// `path` as a new node at `pos`, or jittered around world center, at
+    /// `path` as a new node at `pos`, or the view's centre, at
     /// the current level (a JSON level is left first). The picker and
     /// `ADDFILE`.
     pub(crate) fn add_file_at(&mut self, path: std::path::PathBuf, pos: Option<egui::Vec2>) -> Result<(), String> {
@@ -539,7 +538,7 @@ impl App {
     /// drop location in window points. In Tab view, beside the focused
     /// tab, in its group -- `insert_content` directly, since that group may
     /// not be `current_group`. Otherwise (Graph view, or Tab view with no
-    /// focused tab, which lands near world center at the current level the
+    /// focused tab, which lands in the Graph's last view at the current level the
     /// same as any other point there would) the world position under
     /// `point`, via `add_file_at` (`current_group`). Several drops in one
     /// frame fan out by `drop_batch`, reset each frame in `render_frame`.

@@ -594,7 +594,7 @@ pub(super) const VERBS: &[Verb] = &[
     row("NEWNOTE", "A new note near the graph's centre, in the level in view", |_| job(|app, _| app.new_note_shortcut())),
     // With a point, placed like a real drop at that window point; no `save_session` there either -- same reasoning as
     // `WindowEvent::DroppedFile`, so a script sending several `ADDFILE`s with a point still gets one save per batch,
-    // not one per file. With none, the file is jittered around world center at the current level, as the picker does.
+    // not one per file. With none, the file lands at the view's centre at the current level.
     row("ADDFILE path [x y]", "Adds a file as the node its content makes (image, PDF, JSON, note, tab, or a download card); x y is a window point, like a drop there", |rest| {
         if rest.is_empty() {
             return None;
@@ -821,9 +821,9 @@ pub(super) const VERBS: &[Verb] = &[
     }),
     row("NEWJAR <name>", "A new jar card at the current level, as \"New Jar...\" makes (no edge)", |rest| {
         with_text(rest, |app, name| {
-            // `placement` jitters by the id it is given and leaves a JSON level first, as a new card does.
-            let jitter = app.alloc_node_id();
-            let at = app.placement(jitter, None);
+            // `create_jar` picks its own id, so `placement`'s reveal is replaced below.
+            let unused = app.alloc_node_id();
+            let at = app.placement(unused, None);
             let id = app.create_jar(&name, at);
             app.camera.reveal = Some(id);
             eprintln!("NEWJAR: {id}");

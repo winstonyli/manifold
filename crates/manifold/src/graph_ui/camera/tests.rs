@@ -9,6 +9,17 @@ fn the_target_is_where_an_ease_is_going() {
     assert_eq!(camera.target(), to);
 }
 
+/// A card with no position of its own lands in the view the user is headed to, not the world's middle or an ease's
+/// passing frame.
+#[test]
+fn a_card_with_no_position_lands_at_the_camera_target() {
+    let mut app = App::default();
+    let to = egui::Rect::from_center_size(egui::pos2(900.0, -400.0), egui::vec2(800.0, 600.0));
+    app.camera.ease_to(to);
+    let id = app.alloc_node_id();
+    assert_eq!(app.placement(id, None).pos, egui::vec2(900.0, -400.0));
+}
+
 /// A reopened card the layout put out of view is eased into it; one already in view leaves the camera alone.
 #[test]
 fn a_revealed_card_out_of_view_is_eased_to() {
