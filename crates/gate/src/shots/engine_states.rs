@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 use super::{content_dir, Shots, AWAY, DEFAULT_ENGINE};
 use crate::instance::{seed_settings, Instance, QUIT_TIMEOUT};
 use crate::probes::import_session;
-use crate::shots_net::Proxy;
 use crate::state::TAB;
 
 /// The CEF host the fixture manifest pins: (file, size, SHA-256). Nothing downloads it; the files on disk are sparse.
@@ -20,7 +19,7 @@ fn fake_cef_host() -> (String, u64, &'static str) {
 }
 impl Shots {
     /// Restarts the instance on a fresh profile `eng-<name>` (a copy of the exe, the settings page open).
-    fn engine_app(&mut self, eng_exe: &Path, proxy: &Proxy, name: &str, more: &str) -> io::Result<()> {
+    fn engine_app(&mut self, eng_exe: &Path, name: &str, more: &str) -> io::Result<()> {
         let root = self.work.join(format!("eng-{name}"));
         let profile = root.join("manifold");
         seed_settings(&profile, "webview2", more)?;
@@ -35,19 +34,14 @@ impl Shots {
                 json!({"id": "t3", "type": TAB, "url": "https://example.com/", "view_kind": "cef", "pos": [300.0, 0.0]}),
             ],
         )?;
-        let (appdata, proxy_url, suggest_url) = (root.display().to_string(), proxy.url(), self.suggestions.url());
+        let appdata = root.display().to_string();
         let pins_file = self.work.join("host-pins.json").display().to_string();
         self.inst = Instance::launch_env(
             eng_exe,
             &profile,
             &self.work,
             &format!("log-eng-{name}"),
-            &[
-                ("APPDATA", &appdata),
-                ("HTTPS_PROXY", &proxy_url),
-                ("MANIFOLD_HOST_PINS_FILE", &pins_file),
-                ("MANIFOLD_SUGGESTIONS_URL", &suggest_url),
-            ],
+            &self.net.env(&[("APPDATA", &appdata), ("MANIFOLD_HOST_PINS_FILE", &pins_file)]),
         )?;
         send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "WAITIDLE")
     }
@@ -92,9 +86,8 @@ impl Shots {
         fs::copy(exe, &eng_exe)?;
         let webview2 = WEBVIEW2.file_name(Os::here());
         fs::copy(exe.with_file_name(&webview2), eng.join(&webview2))?;
-        let proxy = Proxy::start(true)?;
 
-        self.engine_app(&eng_exe, &proxy, "states", "")?;
+        self.engine_app(&eng_exe, "states", "")?;
         // The seeded CEF tab can't start: its card says so (graph view, then its Tab view).
         self.shot("engine-states-graph")?;
         self.toast_shot("engine-states-failed-tab", "is not installed", |s| send!(s, "GRAPHRIGHT", "GRAPHOPEN"))?;
@@ -109,7 +102,7 @@ impl Shots {
         self.toast_shot("engine-states-settings-failed", "install failed", |s| s.inst.click_control("Download"))?;
         self.picker_shot("engine-states-picker-failed")?;
         // Retry with the proxy silent: Installing, with Cancel.
-        proxy.set_refuse(false);
+        self.net.proxy.set_refuse(false);
         self.inst.click_control("Retry")?;
         self.settle()?;
         self.inst.click_control("Download")?;
@@ -118,13 +111,13 @@ impl Shots {
         self.engine_stop()?;
         // Files on disk, judged by their marker: this pin's is Installed (size, Remove), another's is Update needed.
         // Fresh instances: a failed install outranks the disk in the state, so they can't follow the one above.
-        self.engine_app(&eng_exe, &proxy, "installed", "")?;
+        self.engine_app(&eng_exe, "installed", "")?;
         self.fake_host(&pins, false)?;
         self.fake_runtime(pin_version)?;
         send!(self, "TOGGLESETTINGSPAGE")?;
         self.shot("engine-states-settings-installed")?;
         self.engine_stop()?;
-        self.engine_app(&eng_exe, &proxy, "stale", "")?;
+        self.engine_app(&eng_exe, "stale", "")?;
         self.fake_host(&pins, true)?;
         self.fake_runtime("old-version")?;
         send!(self, "TOGGLESETTINGSPAGE")?;
@@ -139,7 +132,7 @@ impl Shots {
             let lib = CEF.runtime_lib(Os::here()).expect("CEF has a runtime");
             let dir = content_dir(&std::env::temp_dir(), &[(lib, b""), ("archive.json", archive.as_bytes())])?;
             let more = format!(", \"cef_directory\": {}", Value::String(dir.display().to_string().replace('\\', "/")));
-            self.engine_app(&eng_exe, &proxy, name, &more)?;
+            self.engine_app(&eng_exe, name, &more)?;
             self.fake_host(&pins, false)?; // a bring-your-own runtime still needs the downloaded host
             send!(self, "TOGGLESETTINGSPAGE")?;
             self.shot(&format!("engine-states-settings-{name}"))?;

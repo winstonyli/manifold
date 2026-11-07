@@ -1,5 +1,6 @@
 //! The two servers `gate chrome-shots` needs that http.rs cannot be (they hold a connection open after answering):
-//! the download server (was the inline python `serve.py`) and the fake proxy (was scripts/fake_proxy.py).
+//! the download server (was the inline python `serve.py`) and the fake proxy (was scripts/fake_proxy.py); and
+//! `Offline`, which keeps a shot's app off the internet.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
@@ -7,6 +8,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+
+use crate::suggest;
 
 /// The connections a server keeps open after answering, and whether `break_all` has run: a connection kept after
 /// that is broken at once, so a break never misses a reply still being written.
@@ -250,6 +253,33 @@ impl Proxy {
 
     pub fn url(&self) -> String {
         format!("http://{}:{}", crate::http::site_host(), self.hold.addr.port())
+    }
+}
+
+/// What a shot's app reaches instead of the internet. A real server answers on its own time, so a favicon would land
+/// before a shot or after it; `env` sends the app's fetches to the proxy, and the local servers past it.
+pub struct Offline {
+    /// Refusing, until a view says otherwise.
+    pub proxy: Proxy,
+    /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
+    _suggestions: suggest::Server,
+    env: [(&'static str, String); 3],
+}
+
+impl Offline {
+    pub fn start() -> io::Result<Offline> {
+        let (proxy, suggestions) = (Proxy::start(true)?, suggest::Server::start()?);
+        let env = [
+            ("HTTPS_PROXY", proxy.url()),
+            ("NO_PROXY", crate::http::site_host()),
+            ("MANIFOLD_SUGGESTIONS_URL", suggestions.url()),
+        ];
+        Ok(Offline { proxy, _suggestions: suggestions, env })
+    }
+
+    /// `Instance::launch_env`'s variables: `own`, then these.
+    pub fn env<'a>(&'a self, own: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+        own.iter().copied().chain(self.env.iter().map(|(name, value)| (*name, value.as_str()))).collect()
     }
 }
 

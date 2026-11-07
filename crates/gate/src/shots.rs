@@ -45,9 +45,9 @@
 //! on 2026-10-27 (60412333; run `chrome-shots-aa-5` in `docs/runs.md`): all 67 default views matched. What made that
 //! possible: headless mode's caret doesn't blink, the download server keeps one port (`shots_net`; a busy port is
 //! logged, and then the two download views won't match), and the address bar's suggestions come from the local
-//! `suggest::Server`. Later runs showed two more: a view's toast outlived it and showed in the next view's shot or not
-//! by timing (`shot` drops toasts, `toast_shot` holds its own), and the graph layout summed forces in an order set by each launch's random
-//! actor, so cards settled a ulp apart (`graph_ui::layout::ExactSum`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
+//! `suggest::Server`. Later runs showed three more: a view's toast outlived it and showed in the next view's shot or not
+//! by timing (`shot` drops toasts, `toast_shot` holds its own), the graph layout summed forces in an order set by each launch's random
+//! actor, so cards settled a ulp apart (`graph_ui::layout::ExactSum`), and a real site's favicon landed before a popup's shot or after it (`shots_net::Offline`). `gate shots-aa` is that A/A as one stage, run by `gate all` in `full`. Build first: `cargo build -p manifold -p manifold-view-webview2 -p gate`.
 
 use std::fs;
 use std::io;
@@ -59,12 +59,11 @@ use crate::check::{check, check_eq, note_failure, Section};
 use crate::instance::{seed_settings, Instance};
 use crate::probes::{import_session, quit};
 use crate::shots_img::{hover_report, write_sheet};
-use crate::shots_net::{resume_body, Downloads};
+use crate::shots_net::{resume_body, Downloads, Offline};
 use crate::state::{
     bar_stops, round_i, unvisited_bar_stops, Control, State, COPY_VALUE, GROUP, IMAGE, JSON, NOTE, SEARCH, SPLIT_VIEW,
     TAB, TAB_ACTIONS, TAB_ACTIONS_CLOSE_TAB, TAB_ACTIONS_DUPLICATE, TAB_ACTIONS_PIN,
 };
-use crate::suggest;
 use crate::windows_main::Ctx;
 
 const DEFAULT_VIEWS: &str = "graph graph-hover graph-menu-tab graph-menu-group graph-menu-note graph-link graph-menu-links graph-link-hover graph-link-handles graph-link-drag graph-drop-hint graph-dissolve-undo graph-filter graph-group json-level json-menu tabview tabview-dropdown tabview-find tabview-actions tabview-split settings popup-bookmarks popup-history popup-downloads shortcuts quickswitch graph-closed graph-newnode-menu newnode-zoom graph-tooltip image-view cards-f note-edit missing-file download-real download-progress download-failed download-resume json-zoom settings-engine settings-engine-tab settings-combo toast tabview-engine json-tooltip engine-states-picker engine-states-settings engine-install-confirm";
@@ -203,8 +202,7 @@ struct Shots {
     views: Vec<String>,
     /// The engine-states instance's data dir for the view hosts.
     eng_data: PathBuf,
-    /// The address bar's suggestions, local and fixed, so the dropdown shows the same rows every run.
-    suggestions: suggest::Server,
+    net: Offline,
     /// A failed tab is what the shots are of (`engine_states`); anywhere else it fails the shot.
     tabs_fail: bool,
 }
@@ -259,15 +257,9 @@ impl Shots {
             .map_err(io::Error::other)?;
         let data = seed_data();
         let seed = content_dir(&std::env::temp_dir(), &[("pic.png", png.get_ref()), ("data.json", data.as_bytes())])?;
-        let suggestions = suggest::Server::start()?;
-        let (appdata, suggest_url) = (root.display().to_string(), suggestions.url());
-        let inst = Instance::launch_env(
-            exe,
-            &profile,
-            work,
-            "log",
-            &[("APPDATA", &appdata), ("MANIFOLD_SUGGESTIONS_URL", &suggest_url)],
-        )?;
+        let net = Offline::start()?;
+        let appdata = root.display().to_string();
+        let inst = Instance::launch_env(exe, &profile, work, "log", &net.env(&[("APPDATA", &appdata)]))?;
         let downloads = crate::instance::download_dir(&profile)?;
         Ok(Shots {
             work: work.to_path_buf(),
@@ -278,7 +270,7 @@ impl Shots {
             size: cfg.size,
             views: cfg.views,
             eng_data: PathBuf::new(),
-            suggestions,
+            net,
             tabs_fail: false,
         })
     }
