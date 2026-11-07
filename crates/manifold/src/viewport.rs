@@ -191,7 +191,17 @@ impl App {
         }
     }
 
+    /// Sends tab `tab_id` to `url` as a new page of its trail: the trail hides the page it leaves until the engine
+    /// reports the arrival (`NavHistory::navigate`).
     pub(crate) fn navigate_tab(&mut self, tab_id: NodeId, url: String) {
+        if let Some(h) = self.scoped.nav_history.get_mut(&tab_id) {
+            h.navigate(&url, std::time::Instant::now());
+        }
+        self.load_url(tab_id, url);
+    }
+
+    /// Loads `url` in tab `tab_id`, shown and shared at once, with the trail left to its caller.
+    pub(crate) fn load_url(&mut self, tab_id: NodeId, url: String) {
         if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             // Recorded here, not left to `NavigationStateChanged`'s own
             // history-recording: this sets `node.url` immediately
@@ -213,12 +223,6 @@ impl App {
             }
         }
         if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
-            if node.url != url {
-                let window = self.scoped.nav_history.entry(tab_id).or_default().move_window();
-                self.spawns
-                    .navigated_from
-                    .insert(tab_id, (node.url.clone(), std::time::Instant::now() + window, false));
-            }
             node.url = url.clone();
             node.tab.send(&HostToView::Navigate { url: url.clone(), referrer: None });
             // Until the engine labels the navigation, a report can still

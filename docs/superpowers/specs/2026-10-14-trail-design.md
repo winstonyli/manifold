@@ -64,16 +64,27 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    The fold, in order:
    1. empty: create the root, `lin = [0]`, `lin_at = 0`.
    2. a stale pending move (past its deadline) is dropped.
-   3. pending move, native or plain: a report whose URL equals `target`'s URL commits it. A report equal to `from`'s URL is
-      ignored and the move kept (some engines repeat the old URL once; Servo reports only when a document commits, so the 3 s deadline restarts on each report at the origin's URL). A report equal to neither drops the move and falls
+   3. pending move, native, plain or new (a URL the host sent: typed, Home, a history row; `navigate`, 2026-11-07, which
+      replaced the host-side `reported_url` substitution, see `docs/decisions/2026-11-07-stale-url-suppression.md`).
+      Until the commit a report equal to the origin's URL (the cursor's when the move started) is held: the trail does
+      not change, `observe` returns true and the tab keeps its url and title (some engines repeat the old URL; CEF reports
+      the old URL loading before the new address; Servo reports only when a document commits, so the deadline restarts on
+      each, 30 s for a loading report). The 204 rule ends that: a loading origin report while the last report was settled
+      marks the move started, and a settled origin report after it drops the move and falls to step 4 (an attachment or a
+      204 never leaves the page). An engine already loading, or woken at the origin, finishing its own load is no start.
+      A report whose URL equals `target`'s URL commits a native or plain move. A new move commits on the first report of
+      any other URL, whatever the engine made of the URL sent, as a push by step 6's rule (never step 5's rewrite: the
+      origin's own load is not being redirected), and becomes a committed plain move at the pushed entry. A new move is
+      not pending for `go()`: Back and Forward replace it. A report equal to neither drops a trail move and falls
       to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
       `target` URL report is a known limit and forks).
-      A committed move stays as `committed` until its deadline or the first report of a URL other than `from` and
+      A committed move stays as `committed` until its deadline or the first report of a URL other than the origin and
       `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at `from`'s URL meanwhile is
       held (the old document finishing after a wake, in any order against the target's reports: not a redirect, which
       step 5 would read it as). `observe` returns true for such a report and the tab keeps its url and title. Measured
       2026-10-15 by `gate sleep` history on WebView2, WebKit and Servo.
-      If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once. Native: the engine
+      If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once (and `navigate` to
+      the cursor's URL starts no move; nor does one on an empty trail, whose first report makes the root). Native: the engine
       moves a real slot (`GoBack`/`GoForward`), `lin_at` +- 1, and the action is returned. Plain: the tab already shows
       that page and a same-URL `Navigate` is a reload that replaces the slot (measured 2026-10-15: WebView2 keeps the forward entry, CEF consistent; WebKit not run; Servo: see decision 12), so
       `go()` returns `NavAction::None`, sets `lin[lin_at] = Some(target)` with no truncate and no push, and the tab is not
@@ -82,7 +93,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       `fwd(parent(target)) = target`), clears `left_to` when the node is a parent (decision 7), and updates `lin`/`lin_at`
       per decision 4.
    4. same URL as the cursor entry: nothing (this runs before the inferred-move step, so a settled repeat of the cursor URL
-      and a `reported_url`-masked report, which equals the cursor URL, never reach it).
+      never reaches it).
    4b. **inferred move** (runs after steps 3 and 4, so also after a stale-move or mismatch drop; page script called
       `history.back()` or `forward()`). Engines report the URL before their `can_go_*` flags settle (WebView2's
       NavigationStarting reports the new URL with the old position's flags, `nav_state.rs:122-146`; CEF and Servo get URL

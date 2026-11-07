@@ -56,8 +56,8 @@ impl App {
         let message = match action {
             NavAction::GoBack => HostToView::GoBack,
             NavAction::GoForward => HostToView::GoForward,
-            // A plain move is a navigation like a typed one: `navigate_tab` notes it and shares the url.
-            NavAction::Navigate(url) => return self.navigate_tab(id, url),
+            // A plain move loads like a typed url and is shared, under the trail's own move.
+            NavAction::Navigate(url) => return self.load_url(id, url),
             NavAction::None => return,
         };
         if let Some(node) = self.nodes.get_mut(&id).and_then(|n| n.as_tab_mut()) {

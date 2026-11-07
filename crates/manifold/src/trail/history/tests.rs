@@ -740,3 +740,137 @@ fn a_forward_pick_points_fwd_at_it() {
     assert_eq!((h.at, h.entries[0].fwd), (1, Some(1)));
     assert_eq!(h.go_to(1, now), NavAction::None, "the cursor entry itself");
 }
+
+/// Right after a typed navigation an engine can still report the page it left, from before it started the navigation
+/// (CEF reports loading first): hidden, so the tab keeps the typed url and the trail keeps only reported pages.
+#[test]
+fn a_typed_navigation_hides_the_origins_leftover_reports_and_pushes_the_new_page() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    assert!(h.observe("a", "", false, false, now), "a finish from before the engine started");
+    assert!(h.observe("a", "", true, false, now), "started, address not changed yet");
+    assert!(!h.observe("b", "", true, false, now), "the arrival is not stale");
+    h.observe("b", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 1));
+    assert_eq!((h.lin.clone(), h.lin_at), (vec![Some(0), Some(1)], 1));
+}
+
+#[test]
+fn a_typed_navigation_from_a_page_still_loading_is_a_new_page_not_a_redirect() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.observe("a", "", true, false, now);
+    h.navigate("b", now);
+    assert!(h.observe("a", "", true, false, now));
+    h.observe("b", "", true, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 1), "a kept, b pushed");
+}
+
+/// A typed navigation that never leaves the page (an attachment, a 204): CEF reports it started and finished, both
+/// still at the old url, and nothing after. The finish is the page's real url.
+#[test]
+fn a_typed_navigation_that_ends_at_its_origin_shows_the_origin_and_adds_nothing() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    assert!(h.observe("a", "", false, false, now), "a finish from before it started");
+    assert!(h.observe("a", "", true, false, now), "started");
+    assert!(!h.observe("a", "", false, false, now), "finished without leaving");
+    assert!(h.pending.is_none());
+    assert_eq!((urls(&h), h.at), (vec!["a"], 0));
+}
+
+/// An engine still loading the origin (here a new one, woken at it) finishes that load after the navigation is sent:
+/// the load it finished was not the navigation's.
+#[test]
+fn the_origins_own_load_finishing_does_not_end_a_typed_navigation() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.view_reset("a");
+    h.navigate("b", now);
+    assert!(h.observe("a", "", true, false, now));
+    assert!(h.observe("a", "", false, false, now), "still hidden");
+    h.observe("b", "", true, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 1));
+}
+
+#[test]
+fn after_a_typed_arrival_the_origins_late_finish_is_held_and_a_redirect_rewrites_the_new_page() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", false, false, now);
+    assert!(h.observe("a", "", false, false, now), "the old document finishing");
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 1));
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", true, false, now);
+    h.observe("c", "", true, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "c"], 1), "b redirected to c");
+}
+
+#[test]
+fn a_typed_navigation_does_not_block_back_and_back_replaces_it() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    h.navigate("c", now);
+    assert!(!h.move_pending(now));
+    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
+    h.observe("a", "", false, true, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0));
+}
+
+#[test]
+fn a_second_typed_url_replaces_the_first_and_the_origin_stays_hidden() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.navigate("c", now);
+    assert!(h.observe("a", "", true, false, now));
+    h.observe("c", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "c"], 1));
+}
+
+#[test]
+fn typing_the_url_shown_or_into_an_empty_trail_starts_no_move() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.navigate("b", now);
+    assert!(h.pending.is_none(), "the engine was sent b: the move to a is over");
+    let mut h = NavHistory::default();
+    h.navigate("b", now);
+    assert!(h.pending.is_none());
+    h.observe("a", "", true, false, now);
+    assert_eq!(urls(&h), ["a"], "the engine's report makes the root");
+}
+
+/// Eviction renumbers entries: the push it follows has dropped the pending move, which then names its target anew.
+#[test]
+fn a_typed_navigation_from_a_full_trail_evicts_and_still_holds_the_origin() {
+    let now = Instant::now();
+    let names: Vec<String> = (0..MAX_ENTRIES).map(|i| format!("p{i}")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut h = NavHistory::visited(&refs);
+    h.navigate("new", now);
+    h.observe("new", "", false, false, now);
+    assert_eq!((h.entries.len(), h.entries[h.at].url.as_str()), (MAX_ENTRIES, "new"));
+    assert!(h.observe(refs[MAX_ENTRIES - 1], "", false, false, now), "the origin's late finish, held");
+    assert_eq!(h.entries[h.at].url, "new");
+}
+
+#[test]
+fn a_trail_moves_origin_reports_before_the_arrival_are_hidden_and_a_204_ends_it() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    assert!(h.observe("b", "", false, false, now), "the tab keeps showing a");
+    h.observe("a", "", false, false, now);
+    assert_eq!(h.at, 0);
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    assert!(h.observe("b", "", true, false, now));
+    assert!(!h.observe("b", "", false, false, now), "a started load that ended at b");
+    assert_eq!((urls(&h), h.at, h.pending.is_none()), (vec!["a", "b"], 1, true));
+}

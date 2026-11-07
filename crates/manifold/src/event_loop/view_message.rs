@@ -38,10 +38,9 @@ impl App {
                 }
             }
             ViewToHost::NavigationStateChanged { url, title, can_go_back, can_go_forward, loading, .. } => {
-                let Some(current) = self.nodes.get(&tab_id).and_then(|n| n.as_tab()).map(|t| t.url.clone()) else {
+                if !self.nodes.get(&tab_id).is_some_and(|n| n.as_tab().is_some()) {
                     return false;
-                };
-                let url = self.reported_url(tab_id, url, loading, current);
+                }
                 let stale = self.scoped.nav_history.entry(tab_id).or_default().observe(
                     &url,
                     &title,

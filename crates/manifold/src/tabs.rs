@@ -17,7 +17,7 @@ pub(crate) use jar_pull::{pull_pending, start_pull, JAR_FLUSH_AFTER, JAR_PULL_TI
 pub(crate) use page_text::PageTextTracker;
 
 /// Tab spawn and respawn bookkeeping (`App::spawns`): spawns in flight and what waits on them, the per-tab state
-/// that outlives a spawn (`host_loads`, `navigated_from`, `skip_convert`, `tab_crashes`), and the session generation
+/// that outlives a spawn (`host_loads`, `skip_convert`, `tab_crashes`), and the session generation
 /// that tells a result from a replaced session.
 #[derive(Default)]
 pub(crate) struct SpawnTracker {
@@ -44,11 +44,6 @@ pub(crate) struct SpawnTracker {
     /// loading; their url changes aren't shared meanwhile
     /// (`App::shares_url_change`).
     pub(crate) host_loads: HashMap<NodeId, std::time::Instant>,
-
-    /// Tabs `navigate_tab` just moved on, with the url each left, until when a
-    /// report of it is stale, and whether the engine has reported loading
-    /// since (`App::reported_url`).
-    pub(crate) navigated_from: HashMap<NodeId, (String, std::time::Instant, bool)>,
 
     pub(crate) tabs_spawned_waiters: crate::debug::reader::Waiters,
 
@@ -102,7 +97,6 @@ impl SpawnTracker {
     pub(crate) fn forget(&mut self, id: NodeId) {
         let Self {
             skip_convert,
-            navigated_from,
             tab_crashes,
             pending_respawn_focus,
             pending_trail_focus,
@@ -118,7 +112,6 @@ impl SpawnTracker {
             session_generation: _,
         } = self;
         skip_convert.remove(&id);
-        navigated_from.remove(&id);
         tab_crashes.remove(&id);
         if *pending_respawn_focus == Some(id) {
             *pending_respawn_focus = None;
@@ -135,7 +128,6 @@ impl SpawnTracker {
         self.wakes_in_flight.clear();
         self.spawning.clear();
         self.host_loads.clear();
-        self.navigated_from.clear();
         self.remote_in_flight.clear();
         self.pending_trail_focus = None;
         self.session_generation += 1;

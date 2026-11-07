@@ -1,11 +1,27 @@
 # Suppressing an engine's stale url: timer or navigation id (2026-11-07)
 
-Status: surveyed, decision open. The question is the fix named by PARKED.md's "A2 `reported_url` flash" entry: can the
-host stop hiding the url a navigation left by timer, and key it on a navigation id instead?
+Status: decided 2026-11-07: one pending Move (below). The question is the fix named by PARKED.md's "A2" stale-URL
+entry: can the host stop hiding the url a navigation left by timer, and key it on a navigation id instead? No id: the
+timers stay, merged into one mechanism.
 
-## Today
+## Decision
 
-Two mechanisms hide one fact, each with its own clock:
+`navigated_from` and `App::reported_url` are deleted. `navigate_tab` calls `NavHistory::navigate`, a `New` move (trail
+spec decision 3, step 3), and a trail move loads through `App::load_url`, keeping its own move. Picks, 2026-11-07:
+
+- The trail sees the url the engine reported, never the typed one; a held report returns `stale` and the tab keeps its
+  url.
+- Every move, before its commit, hides every report of its origin except the one the 204 rule takes: a loading report
+  while the last was settled marks the move started, a settled one after that ends it. One bit (`started`); an engine
+  finishing its own earlier load is not a start.
+- A `New` move doesn't block Back or Forward; they replace it.
+- The origin is the cursor's URL (`origin: String`, replacing `from`); no move on an empty trail (parked) or to the
+  cursor's own URL.
+- A `New` move commits on the first report of another URL as a push, never a redirect of the origin's own load.
+
+## Before 2026-11-07
+
+Two mechanisms hid one fact, each with its own clock:
 
 - `navigated_from` (`tabs.rs`), read by `App::reported_url` (`event_loop/view_ipc.rs`): set only by `navigate_tab`
   (`viewport.rs`). Until its deadline (`NavHistory::move_window`: 3 s, or 30 s while the engine is loading or new) a
@@ -49,10 +65,9 @@ order. An id cannot delete the timers while any engine lacks one.
 
 ## Options
 
-- **One pending Move** (the survey's recommendation): delete `navigated_from` and `reported_url`; `navigate_tab` sets a
+- **One pending Move** (chosen, see Decision): delete `navigated_from` and `reported_url`; `navigate_tab` sets a
   `Move` with no existing target entry that carries whether loading started. One mechanism and one clock, no protocol
-  change, the same on every engine. Open before building: whether the trail sees the raw reported url or the typed
-  one, and whether the `Move` also holds loading reports of the origin. Leaves A2's open path.
+  change, the same on every engine. Leaves A2's open path.
 - **Engine navigation counter**: CEF and WebView2 count starts and report `caused_by`; protocol 9 and a "not started"
   message. Fixes A2 there; Servo and WebKitGTK keep timers, so both mechanisms remain.
 - **Counter plus timer**: the counter where available, the timer elsewhere. Two mechanisms for good.

@@ -3,8 +3,8 @@
 //! by navigating from the middle stay reachable as branches.
 //!
 //! Each entry has a parent (Back) and `fwd`, the child the cursor last left it for (Forward). An engine report
-//! (`observe`) moves the cursor, rewrites a redirect, or forks a child. A Back or Forward (`go`) is a pending move that
-//! commits when the engine reports its arrival. `lin`/`lin_at` shadow the engine's own linear list: a move uses the
+//! (`observe`) moves the cursor, rewrites a redirect, or forks a child. A Back or Forward (`go`), or a url the host
+//! sends (`navigate`), is a pending move that commits when the engine reports its arrival and hides the page it left. `lin`/`lin_at` shadow the engine's own linear list: a move uses the
 //! engine's `GoBack`/`GoForward` (scroll and form state kept) only when the engine's neighbour is the tree's, else it
 //! is a plain `Navigate` to the entry's URL. Back at the root is the opened-from step (`trail/nav.rs`).
 //!
@@ -121,18 +121,42 @@ impl Saved {
     }
 }
 
-/// A Back, Forward or branch pick on its way: it commits when a report arrives at `target`'s URL, and ends at its
-/// deadline or at the first report of another URL.
-#[derive(Clone, Copy, Debug)]
+/// A navigation on its way, from the cursor: it commits at its arrival, and ends at its deadline, at the first report
+/// of another URL, or when a load it started ends at `origin` (the 204 rule). Until it commits, every report of
+/// `origin` is the old page's, hidden; after, its settled ones until the deadline.
+#[derive(Clone, Debug)]
 struct Move {
-    target: usize,
-    from: usize,
-    /// Sent as the engine's `GoBack`/`GoForward`, not a `Navigate`.
-    native: bool,
+    to: To,
+    /// The cursor's URL when the move started; the cursor stays there until the commit.
+    origin: String,
     deadline: Instant,
-    /// The cursor is at `target`; the origin's old document may still report (in any order, some engines settling the
-    /// target before the origin's last report), so its settled report is held until the deadline.
+    /// The cursor is at the target; the origin's old document may still report (in any order, some engines settling
+    /// the target before the origin's last report), so its settled report is held until the deadline.
     committed: bool,
+    /// A load began after the move did: a loading report of `origin` while the last report was settled. A settled one
+    /// next means the navigation ended without leaving (an attachment, a 204).
+    started: bool,
+}
+
+/// Where a move goes.
+#[derive(Clone, Copy, Debug)]
+enum To {
+    /// A trail entry, by the engine's `GoBack`/`GoForward`.
+    Native(usize),
+    /// A trail entry, by a `Navigate` to its URL.
+    Plain(usize),
+    /// A page the trail has not seen (`navigate`): the first report of another URL is it, whatever the engine made of
+    /// the URL sent. It becomes `Plain` at the commit.
+    New,
+}
+
+impl To {
+    fn target(self) -> Option<usize> {
+        match self {
+            To::Native(t) | To::Plain(t) => Some(t),
+            To::New => None,
+        }
+    }
 }
 
 /// What a commit does to the engine-list shadow.
@@ -176,7 +200,7 @@ pub(crate) struct NavHistory {
 impl NavHistory {
     /// Folds in one `NavigationStateChanged` (many repeat the same URL). `title` goes to the cursor entry when it is
     /// non-empty and the report is settled or repeats the cursor's URL (decision 11). Returns whether the report was
-    /// the old document of a committed move finishing (step 3): the tab keeps the cursor's URL and title.
+    /// the old page of a pending move (step 3): the tab keeps the URL and title it shows.
     pub(crate) fn observe(
         &mut self,
         url: &str,
@@ -199,14 +223,16 @@ impl NavHistory {
         stale
     }
 
-    /// Step 3's hold: a settled report of the origin while a committed move is still inside its window.
+    /// Step 3's hold: a report of a pending move's origin inside its window. Before the commit, any but the one that
+    /// ends a started load; after, a settled one.
     fn is_stale_origin(&self, url: &str, loading: bool, now: Instant) -> bool {
-        self.pending.is_some_and(|m| {
-            m.committed
-                && now <= m.deadline
-                && !loading
-                && self.entries[m.from].url == url
-                && self.entries[m.target].url != url
+        self.pending.as_ref().is_some_and(|m| {
+            now <= m.deadline
+                && m.origin == url
+                && match m.to.target() {
+                    Some(t) if m.committed => !loading && self.entries[t].url != url,
+                    _ => loading || !m.started,
+                }
         })
     }
 
@@ -229,34 +255,46 @@ impl NavHistory {
             return true;
         }
         // 2: a move whose arrival never came.
-        if self.pending.is_some_and(|m| now > m.deadline) {
+        if self.pending.as_ref().is_some_and(|m| now > m.deadline) {
             self.pending = None;
         }
-        // 3: a pending move commits on its target's URL and waits through its origin's. A committed one holds the
+        // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5).
-        if let Some(m) = self.pending {
+        if let Some(m) = self.pending.clone() {
+            let stale = self.is_stale_origin(url, loading, now);
             if m.committed {
-                if self.is_stale_origin(url, loading, now) {
+                if stale {
                     return false;
                 }
-                if self.entries[m.target].url != url {
+                if m.to.target().is_none_or(|t| self.entries[t].url != url) {
                     self.pending = None;
                 }
-            } else if self.entries[m.target].url == url {
-                self.pending = Some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
-                self.commit(m.target, m.from, if m.native { LinStep::Native } else { LinStep::Push });
-                self.loading = loading;
-                return true;
-            }
-            if !m.committed && self.entries[m.from].url == url {
-                // Servo reports only when a document commits: a slow target is quiet time, not total time.
+            } else if stale {
+                let started = loading && !self.loading;
                 if let Some(p) = self.pending.as_mut() {
+                    p.started |= started;
+                    // Servo reports only when a document commits: a slow target is quiet time, not total time.
                     p.deadline = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
                 }
                 self.settle(loading);
                 return true;
-            }
-            if !m.committed {
+            } else if m.origin == url {
+                // The 204 rule: the load it started ended where it began. The cursor's own URL (step 4).
+                self.pending = None;
+            } else if let Some(t) = m.to.target().filter(|&t| self.entries[t].url == url) {
+                self.pending = Some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
+                self.commit(t, self.at, if matches!(m.to, To::Native(_)) { LinStep::Native } else { LinStep::Push });
+                self.loading = loading;
+                return true;
+            } else if matches!(m.to, To::New) {
+                // A new engine navigation, never a redirect of the origin's own load (step 5). The push may evict,
+                // which renumbers: the move names its target after it.
+                self.pending = None;
+                self.push_page(url);
+                self.pending = Some(Move { to: To::Plain(self.at), committed: true, deadline: now + MOVE_WINDOW, ..m });
+                self.loading = loading;
+                return true;
+            } else {
                 self.pending = None;
                 self.fresh = false;
             }
@@ -301,14 +339,19 @@ impl NavHistory {
             self.evict_to(MAX_ENTRIES);
             return true;
         }
-        // 6: a new page: the equal child, else a new branch.
+        // 6: a new page.
+        self.push_page(url);
+        true
+    }
+
+    /// A new engine navigation from the cursor to `url`: the equal child, else a new branch.
+    fn push_page(&mut self, url: &str) {
         let child = self.child_or_push(url);
         self.entries[self.at].fwd = Some(child);
         self.at = child;
         self.fresh = false;
         self.lin_push(child);
         self.evict_to(MAX_ENTRIES);
-        true
     }
 
     /// A report that changes nothing but `loading`; a settled one ends the cursor entry's freshness.
@@ -375,8 +418,10 @@ impl NavHistory {
         self.start(target, native, now)
     }
 
+    /// A trail move awaits its arrival. A typed navigation (`To::New`) doesn't count: a move replaces it, as Back
+    /// during a load leaves the committed page in a browser.
     pub(crate) fn move_pending(&self, now: Instant) -> bool {
-        self.pending.is_some_and(|m| !m.committed && now <= m.deadline)
+        self.pending.as_ref().is_some_and(|m| !m.committed && m.to.target().is_some() && now <= m.deadline)
     }
 
     /// A row of the branch list (decision 8): a plain move to `target`, never native (plan D3). Ignored for the
@@ -522,12 +567,29 @@ impl NavHistory {
             self.dirty |= before != self.saved_form();
             return if native { action } else { NavAction::None };
         }
-        self.pending = Some(Move { target, from, native, deadline: now + self.move_window(), committed: false });
+        let to = if native { To::Native(target) } else { To::Plain(target) };
+        self.begin(to, now);
         action
     }
 
-    /// How long a move or a typed navigation sent now has until the engine should have reported it.
-    pub(crate) fn move_window(&self) -> Duration {
+    /// The host sent the engine `url` (typed, Home, a history row): a `New` move, in place of any pending one, so the
+    /// page it leaves can't report over it. None for the cursor's own URL, as in `start` (no report could tell the
+    /// arrival from the origin), or on an empty trail (no origin; the engine's first report makes the root).
+    pub(crate) fn navigate(&mut self, url: &str, now: Instant) {
+        self.pending = None;
+        if self.entries.get(self.at).is_some_and(|e| e.url != url) {
+            self.begin(To::New, now);
+        }
+    }
+
+    fn begin(&mut self, to: To, now: Instant) {
+        let origin = self.entries[self.at].url.clone();
+        let deadline = now + self.move_window();
+        self.pending = Some(Move { to, origin, deadline, committed: false, started: false });
+    }
+
+    /// How long a move sent now has until the engine should have reported it.
+    fn move_window(&self) -> Duration {
         if self.loading {
             LOADING_WINDOW
         } else {

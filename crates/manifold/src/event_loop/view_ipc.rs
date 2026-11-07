@@ -165,26 +165,6 @@ impl App {
             }
         }
     }
-
-    /// The url tab `tab_id` shows, given one its engine reported (`url`)
-    /// and the one it shows now (`current`). Right after `navigate_tab` an
-    /// engine can still report the url it left, from before it started the
-    /// navigation (CEF reports loading first): that keeps `current`, the
-    /// typed url, rather than flashing back and adding the old url to
-    /// history again. Any other url, or its deadline passing
-    /// (`NavHistory::move_window`), ends that. So does a finished load
-    /// (`!loading`) at the old url after one reported loading: the navigation
-    /// started and never left the page (an attachment download, a 204), and
-    /// CEF reports nothing after it.
-    pub(crate) fn reported_url(&mut self, tab_id: NodeId, url: String, loading: bool, current: String) -> String {
-        let Some((from, deadline, started)) = self.spawns.navigated_from.get_mut(&tab_id) else { return url };
-        if *from == url && std::time::Instant::now() < *deadline && (loading || !*started) {
-            *started |= loading;
-            return current;
-        }
-        self.spawns.navigated_from.remove(&tab_id);
-        url
-    }
 }
 
 #[cfg(test)]

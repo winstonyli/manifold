@@ -282,8 +282,39 @@ fn a_plain_move_records_what_navigate_tab_records() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-pick-books");
     app.trail_pick(tab, 1);
     assert_eq!(app.nodes.get(&tab).and_then(|n| n.as_tab()).map(|n| n.url.as_str()), Some("https://b/"));
-    assert!(app.spawns.navigated_from.contains_key(&tab), "the origin is noted");
+    assert!(app.scoped.nav_history[&tab].move_pending(Instant::now()), "the trail's own move, not a typed one");
     assert_eq!(app.doc.mirror.url(tab), "https://b/", "the url is edited, so it is shared");
+}
+
+/// `NavigationStateChanged` for `tab` at `url`.
+fn report(app: &mut App, tab: NodeId, url: &str, loading: bool) {
+    let msg = ViewToHost::NavigationStateChanged {
+        url: url.into(),
+        title: String::new(),
+        can_go_back: true,
+        can_go_forward: false,
+        loading,
+        user_started: None,
+    };
+    app.handle_view_message(tab, msg);
+}
+
+fn tab_url(app: &App, tab: NodeId) -> &str {
+    app.nodes.get(&tab).and_then(|n| n.as_tab()).map_or("", |n| n.url.as_str())
+}
+
+/// The engine's leftover reports of the page a typed url left keep the typed url in the bar, and add nothing to the
+/// global history; the arrival shows.
+#[test]
+fn a_typed_url_survives_the_origins_leftover_reports() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-typed-leftover");
+    app.navigate_tab(tab, "https://typed/".into());
+    let history = app.history.len();
+    report(&mut app, tab, "https://c/", false);
+    report(&mut app, tab, "https://c/", true);
+    assert_eq!((tab_url(&app, tab), app.history.len()), ("https://typed/", history));
+    report(&mut app, tab, "https://typed/", false);
+    assert_eq!(app.scoped.nav_history[&tab].entry_url(3), Some("https://typed/"));
 }
 
 /// A woken engine reports the page it woke at about 6 s after the move (`2026-11-07-navlog-back`): that's still stale.
@@ -292,16 +323,16 @@ fn a_new_engines_report_of_the_url_a_move_left_is_stale_for_longer() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-woken-origin");
     app.scoped.nav_history.get_mut(&tab).unwrap().view_reset("https://c/");
     app.trail_pick(tab, 1);
-    app.spawns.navigated_from.get_mut(&tab).unwrap().1 -= std::time::Duration::from_secs(3);
-    assert_eq!(app.reported_url(tab, "https://c/".into(), true, "https://b/".into()), "https://b/");
+    let late = Instant::now() + std::time::Duration::from_secs(6);
+    assert!(app.scoped.nav_history.get_mut(&tab).unwrap().observe("https://c/", "", true, false, late));
 }
 
 #[test]
 fn an_idle_engines_report_of_the_url_a_move_left_is_real_after_the_window() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-idle-origin");
     app.trail_pick(tab, 1);
-    app.spawns.navigated_from.get_mut(&tab).unwrap().1 -= std::time::Duration::from_secs(3);
-    assert_eq!(app.reported_url(tab, "https://c/".into(), true, "https://b/".into()), "https://c/");
+    let late = Instant::now() + std::time::Duration::from_secs(4);
+    assert!(!app.scoped.nav_history.get_mut(&tab).unwrap().observe("https://c/", "", true, false, late));
 }
 
 #[test]

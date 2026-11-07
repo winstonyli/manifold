@@ -114,40 +114,6 @@ fn backing_keep_holds_hidden_nodes_files() {
     assert!(!app.backing_keep(Some(jar)).contains(&jar.to_string()), "`except` leaves it out");
 }
 
-/// Right after a typed navigation, a report still at the url it left
-/// is from before the engine started it.
-#[test]
-fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
-    let mut app = App::default();
-    let report = |app: &mut App, url: &str| app.reported_url(node(7), url.into(), true, "https://typed/".into());
-    assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    let soon = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), soon, false));
-    assert_eq!(report(&mut app, "https://old/"), "https://typed/");
-    assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
-    assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
-    let passed = std::time::Instant::now();
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), passed, false));
-    assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
-}
-
-/// A typed navigation that never leaves the page (an attachment, a 204): CEF
-/// reports it started and finished, both still at the old url, and nothing
-/// after. The finish is the page's real url, not a stale report.
-#[test]
-fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
-    let mut app = App::default();
-    let report = |app: &mut App, url: &str, loading: bool| {
-        app.reported_url(node(7), url.into(), loading, "https://typed/".into())
-    };
-    let soon = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), soon, false));
-    assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
-    assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
-    assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");
-    assert!(app.spawns.navigated_from.is_empty());
-}
-
 /// A drag whose grabbed card stops being drawn ends with no drop: a remote pos then snaps its cards, and a later
 /// release (the card drawn again) saves nothing over it.
 #[test]

@@ -45,16 +45,15 @@ fn crashes_spread_past_the_window_keep_respawning() {
     }
 }
 
-/// `SpawnTracker::forget` takes what `forget_id` cleared by hand (`skip_convert`, `navigated_from`,
-/// `tab_crashes`, a matching `pending_respawn_focus`) and `reset` what `teardown_running_session` cleared (the
-/// spawns in flight, `host_loads`, `navigated_from`) plus a generation bump; neither touches the rest.
+/// `SpawnTracker::forget` takes what `forget_id` cleared by hand (`skip_convert`, `tab_crashes`, a matching
+/// `pending_respawn_focus`) and `reset` what `teardown_running_session` cleared (the spawns in flight, `host_loads`)
+/// plus a generation bump; neither touches the rest.
 #[test]
 fn forget_and_reset_clear_what_the_old_sites_cleared() {
     let now = std::time::Instant::now();
     let filled = || {
         let mut s = SpawnTracker::default();
         s.skip_convert.insert(node(1), true);
-        s.navigated_from.insert(node(1), ("u".into(), now, false));
         s.tab_crashes.insert(node(1), vec![now]);
         s.pending_respawn_focus = Some(node(1));
         s.wakes_in_flight.insert(node(1));
@@ -67,7 +66,7 @@ fn forget_and_reset_clear_what_the_old_sites_cleared() {
     s.forget(node(2));
     assert!(s.skip_convert.contains_key(&node(1)) && s.pending_respawn_focus.is_some(), "another id's state stays");
     s.forget(node(1));
-    assert!(s.skip_convert.is_empty() && s.navigated_from.is_empty() && s.tab_crashes.is_empty());
+    assert!(s.skip_convert.is_empty() && s.tab_crashes.is_empty());
     assert!(s.pending_respawn_focus.is_none());
     assert!(
         s.wakes_in_flight.contains(&node(1))
@@ -78,7 +77,7 @@ fn forget_and_reset_clear_what_the_old_sites_cleared() {
     let mut s = filled();
     s.reset();
     assert!(s.wakes_in_flight.is_empty() && s.host_loads.is_empty() && s.remote_in_flight.is_empty());
-    assert!(s.spawning.is_empty() && s.navigated_from.is_empty());
+    assert!(s.spawning.is_empty());
     assert_eq!(s.session_generation, 1);
     assert!(
         s.skip_convert.contains_key(&node(1))

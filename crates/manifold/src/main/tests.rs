@@ -27,7 +27,6 @@ fn forget_id_clears_every_id_keyed_table() {
     app.scoped.saved_scroll.insert(t, tabs::sleep::state::SavedScroll::new(0.0, 1.0));
     app.scoped.saved_scroll.insert(u, tabs::sleep::state::SavedScroll::new(0.0, 1.0));
     app.scoped.nav_history.insert(t, trail::history::NavHistory::default());
-    app.spawns.navigated_from.insert(t, ("https://a.test/".into(), now, false));
     for _ in 0..page_tab_gate::POPUP_BURST {
         app.page_tab_gate.admit(t, true, now);
     }
@@ -58,9 +57,7 @@ fn forget_id_clears_every_id_keyed_table() {
         !app.scoped.saved_scroll.contains_key(&t) && app.scoped.saved_scroll.contains_key(&u),
         "only t's entry goes"
     );
-    assert!(
-        app.scoped.nav_history.is_empty() && app.spawns.navigated_from.is_empty() && app.spawns.tab_crashes.is_empty()
-    );
+    assert!(app.scoped.nav_history.is_empty() && app.spawns.tab_crashes.is_empty());
     assert_eq!(app.page_tab_gate.admit(t, true, now), page_tab_gate::Admit::Open, "t's popup burst count went");
     assert_eq!(app.interaction.selected, HashSet::from([uc]));
     assert!(
