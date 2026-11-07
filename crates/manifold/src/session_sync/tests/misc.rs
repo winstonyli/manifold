@@ -121,12 +121,13 @@ fn a_report_still_at_the_url_a_typed_navigation_left_is_stale() {
     let mut app = App::default();
     let report = |app: &mut App, url: &str| app.reported_url(node(7), url.into(), true, "https://typed/".into());
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "no typed navigation: as reported");
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), std::time::Instant::now(), false));
+    let soon = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), soon, false));
     assert_eq!(report(&mut app, "https://old/"), "https://typed/");
     assert_eq!(report(&mut app, "https://typed/"), "https://typed/");
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "after the engine moved on: real (going back)");
-    let long_ago = std::time::Instant::now() - std::time::Duration::from_secs(2);
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), long_ago, false));
+    let passed = std::time::Instant::now();
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), passed, false));
     assert_eq!(report(&mut app, "https://old/"), "https://old/", "the navigation never started");
 }
 
@@ -139,7 +140,8 @@ fn a_typed_navigation_that_ends_at_the_url_it_left_keeps_that_url() {
     let report = |app: &mut App, url: &str, loading: bool| {
         app.reported_url(node(7), url.into(), loading, "https://typed/".into())
     };
-    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), std::time::Instant::now(), false));
+    let soon = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    app.spawns.navigated_from.insert(node(7), ("https://old/".into(), soon, false));
     assert_eq!(report(&mut app, "https://old/", false), "https://typed/", "a finish from before it started");
     assert_eq!(report(&mut app, "https://old/", true), "https://typed/", "started, address not changed yet");
     assert_eq!(report(&mut app, "https://old/", false), "https://old/", "finished without leaving");

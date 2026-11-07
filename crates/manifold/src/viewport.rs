@@ -212,9 +212,12 @@ impl App {
                 self.list_popups.history_matches_cache = None;
             }
         }
+        let window = self.scoped.nav_history.entry(tab_id).or_default().move_window();
         if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             if node.url != url {
-                self.spawns.navigated_from.insert(tab_id, (node.url.clone(), std::time::Instant::now(), false));
+                self.spawns
+                    .navigated_from
+                    .insert(tab_id, (node.url.clone(), std::time::Instant::now() + window, false));
             }
             node.url = url.clone();
             node.tab.send(&HostToView::Navigate { url: url.clone(), referrer: None });

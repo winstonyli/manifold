@@ -522,9 +522,17 @@ impl NavHistory {
             self.dirty |= before != self.saved_form();
             return if native { action } else { NavAction::None };
         }
-        let window = if self.loading { LOADING_WINDOW } else { MOVE_WINDOW };
-        self.pending = Some(Move { target, from, native, deadline: now + window, committed: false });
+        self.pending = Some(Move { target, from, native, deadline: now + self.move_window(), committed: false });
         action
+    }
+
+    /// How long a move or a typed navigation sent now has until the engine should have reported it.
+    pub(crate) fn move_window(&self) -> Duration {
+        if self.loading {
+            LOADING_WINDOW
+        } else {
+            MOVE_WINDOW
+        }
     }
 
     /// The cursor arrives at `target` from `from` (decision 3's commit).

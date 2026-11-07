@@ -286,6 +286,24 @@ fn a_plain_move_records_what_navigate_tab_records() {
     assert_eq!(app.doc.mirror.url(tab), "https://b/", "the url is edited, so it is shared");
 }
 
+/// A woken engine reports the page it woke at about 6 s after the move (`2026-11-07-navlog-back`): that's still stale.
+#[test]
+fn a_new_engines_report_of_the_url_a_move_left_is_stale_for_longer() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-woken-origin");
+    app.scoped.nav_history.get_mut(&tab).unwrap().view_reset("https://c/");
+    app.trail_pick(tab, 1);
+    app.spawns.navigated_from.get_mut(&tab).unwrap().1 -= std::time::Duration::from_secs(3);
+    assert_eq!(app.reported_url(tab, "https://c/".into(), true, "https://b/".into()), "https://b/");
+}
+
+#[test]
+fn an_idle_engines_report_of_the_url_a_move_left_is_real_after_the_window() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-idle-origin");
+    app.trail_pick(tab, 1);
+    app.spawns.navigated_from.get_mut(&tab).unwrap().1 -= std::time::Duration::from_secs(3);
+    assert_eq!(app.reported_url(tab, "https://c/".into(), true, "https://b/".into()), "https://c/");
+}
+
 #[test]
 fn open_as_card_opens_a_child_tab_and_leaves_the_trail() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-promote");

@@ -45,8 +45,9 @@ pub(crate) struct SpawnTracker {
     /// (`App::shares_url_change`).
     pub(crate) host_loads: HashMap<NodeId, std::time::Instant>,
 
-    /// Tabs `navigate_tab` just moved on, with the url each left, when, and
-    /// whether the engine has reported loading since (`App::reported_url`).
+    /// Tabs `navigate_tab` just moved on, with the url each left, until when a
+    /// report of it is stale, and whether the engine has reported loading
+    /// since (`App::reported_url`).
     pub(crate) navigated_from: HashMap<NodeId, (String, std::time::Instant, bool)>,
 
     pub(crate) tabs_spawned_waiters: crate::debug::reader::Waiters,
