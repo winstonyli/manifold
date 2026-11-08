@@ -337,11 +337,14 @@ impl NavHistory {
             return true;
         }
         // 4b: page script's history.back()/forward(), inferred from the URL; a loading report's flags are stale.
-        if let Some((dir, target)) = self.inferred(url) {
+        let fits = self.inferred(url);
+        if fits.iter().any(Option::is_some) {
             if loading {
                 return false;
             }
-            if can_go_forward || (dir == Dir::Forward && self.lin_at + 2 == self.lin.len()) {
+            let last = self.lin_at + 2 == self.lin.len();
+            let commits = |&(dir, _): &(Dir, usize)| can_go_forward || (dir == Dir::Forward && last);
+            if let Some((_, target)) = fits.into_iter().flatten().find(commits) {
                 let from = self.at;
                 self.commit(target, from, LinStep::Native);
                 self.loading = false;
@@ -403,8 +406,8 @@ impl NavHistory {
     }
 
     /// The tree's neighbour whose URL is `url` and that the engine's list holds next to its cursor (4b's candidates).
-    fn inferred(&self, url: &str) -> Option<(Dir, usize)> {
-        [Dir::Back, Dir::Forward].into_iter().find_map(|dir| {
+    fn inferred(&self, url: &str) -> [Option<(Dir, usize)>; 2] {
+        [Dir::Back, Dir::Forward].map(|dir| {
             let target = self.native_neighbour(dir)?;
             (self.entries[target].url == url).then_some((dir, target))
         })

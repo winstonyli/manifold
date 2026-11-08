@@ -666,6 +666,17 @@ fn an_inferred_forward_needs_the_flag_except_at_the_last_slot() {
     assert_eq!(h.entries.len(), 3, "the equal child is reused");
 }
 
+/// The parent and `fwd` share a URL: a settled report without the Forward flag at the last slot is the Forward.
+#[test]
+fn an_inferred_forward_when_the_parent_has_the_same_url() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b", "a"]);
+    back(&mut h, now);
+    assert_eq!((h.at, h.lin_at), (1, 1));
+    h.observe("a", "", false, false, now + MOVE_WINDOW + Duration::from_secs(1));
+    assert_eq!((h.at, h.lin_at, h.lin.len(), h.entries.len(), h.fresh), (2, 2, 3, 3, true));
+}
+
 #[test]
 fn go_after_a_discarded_report_moves_as_usual() {
     let now = Instant::now();

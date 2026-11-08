@@ -118,8 +118,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       a `loading` report. Nothing is stored between reports: each report's candidate is recomputed from `at`, `lin` and
       `fwd` (`NavHistory::inferred`). Candidates: Back: `parent(at)` is `Some(p)`, `lin_at > 0`,
       `lin[lin_at - 1] == Some(p)` and `entries[p].url` equals the report's URL. Forward: `fwd(at)` is `Some(f)`,
-      `lin[lin_at + 1] == Some(f)` and `entries[f].url` equals the URL. Back is tried first, so when the parent and
-      `fwd(at)` share a URL only the Back rule applies.
+      `lin[lin_at + 1] == Some(f)` and `entries[f].url` equals the URL. When the parent and `fwd(at)` share a URL both
+      fit; the first, Back first, whose commit rule below holds commits.
       A `loading` report that fits a candidate is **discarded**: 4b forks nothing and changes nothing (steps 2 and 3
       may already have ended a move; `loading` is not updated, so the pre-discard value stays for steps 5 and 6). Unlike step 3's holds, `observe` returns false for it,
       so the tab shows the new URL. Only the settled report decides, whether or not a loading one came first (CEF, Servo).
