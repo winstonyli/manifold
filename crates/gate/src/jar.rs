@@ -504,7 +504,13 @@ impl Probe {
         })?;
         // The app's own user-data folder (`process_manager::webview2_user_data`), new this run: every name is added.
         let local_state = self.profile.join("webview2").join(pid.get().to_string()).join("EBWebView/Local State");
-        let after = profile_names(&local_state).unwrap_or_default();
+        let after = profile_names(&local_state);
+        // Without it every check below passes on nothing: a wrong folder would read as no names added.
+        check(
+            &format!("Local State lists this run's profiles ({})", local_state.display()),
+            after.as_ref().is_some_and(|names| !names.is_empty()),
+        );
+        let after = after.unwrap_or_default();
         let added: Vec<&String> = after.iter().collect();
         let pool =
             after.iter().filter(|n| n.strip_prefix("manifold_").is_some_and(|d| d.len() == 1 && d < "8")).count();
