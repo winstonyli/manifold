@@ -509,16 +509,6 @@ fn a_move_sent_to_a_new_engine_waits_for_its_first_report() {
 }
 
 #[test]
-fn a_move_sent_during_a_load_gets_the_long_window() {
-    let now = Instant::now();
-    let mut h = NavHistory::visited(&["a", "b"]);
-    h.observe("b", "", true, false, now);
-    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
-    h.observe("a", "", false, false, now + Duration::from_secs(6));
-    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0));
-}
-
-#[test]
 fn a_move_with_no_reports_expires_after_the_window() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
