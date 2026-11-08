@@ -78,6 +78,17 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       not pending for `go()`: Back and Forward replace it. A report equal to neither drops a trail move and falls
       to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
       `target` URL report is a known limit and forks).
+      **Held urls.** A move that ends before its reports do leaves them to an old document. `retire` puts what the move
+      was still waiting on in `held`: its origin, and its unreached target when the host ended the move (`begin`, and a
+      `go()` or `navigate` to the cursor's URL), not when the page did (the last case above). Before anything else in
+      this step, a report of a held url is held whole (`observe` returns true, the trail and tab are unchanged) and
+      extends its hold by 3 s, or 30 s if loading; a hold starts at the same window a new move would get. `release`
+      drops a url's hold when the cursor or a new move goes there; a view reset clears the list. Why, and the reviews
+      that found each gap: `docs/decisions/2026-11-07-stale-url-suppression.md`. Known limits, both because no engine
+      gives a report a navigation id, so a hold can only be timed: a real navigation to a held url within its hold (a
+      link back to the page just left, a redirect onto it) goes unrecorded until it reports after a quiet stretch of the
+      window (each report inside the hold extends it), and an
+      arrival the engine renamed (a typed url that redirects) is not known in advance, so it is not held.
       A committed move stays as `committed` until its deadline or the first report of a URL other than the origin and
       `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at `from`'s URL meanwhile is
       held (the old document finishing after a wake, in any order against the target's reports: not a redirect, which
