@@ -56,8 +56,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    replica's URL and a restore all fork alike.
    A user move (Back, Forward, a sibling pick) is one mechanism, a **pending move**: `go()` changes nothing in the tree
    (one exception: the equal-URL commit in step 3). It
-   records `Move { to: To (Native(entry) | Plain(entry) | New), origin: String (the cursor's URL), sent: String (the URL
-   the host sent), deadline: Instant, committed: bool, started: bool }` and returns
+   records `Move { to: To (Native(entry) | Plain(entry) | New(the URL sent)), origin: String (the cursor's URL),
+   deadline: Instant, committed: bool, started: bool }` and returns
    the action for the caller (`GoBack`/`GoForward` or `Navigate(url)`). `at`, `fwd`, `lin` and `lin_at` change only when the
    move commits on its arrival, so a move that never arrives has nothing to undo. `go()` and `observe` take `now` (tests
    need no sleeps); `go()` is ignored while a non-stale move is pending (a rapid second press would otherwise send a second

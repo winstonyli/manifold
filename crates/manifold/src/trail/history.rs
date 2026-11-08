@@ -27,6 +27,15 @@ const MOVE_WINDOW: Duration = Duration::from_secs(3);
 /// first (`2026-11-07-navlog-back`).
 const LOADING_WINDOW: Duration = Duration::from_secs(30);
 
+/// How long the engine may stay quiet after a report (or after a move is sent) whose `loading` flag this is.
+fn window(loading: bool) -> Duration {
+    if loading {
+        LOADING_WINDOW
+    } else {
+        MOVE_WINDOW
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dir {
     Back,
@@ -129,9 +138,6 @@ struct Move {
     to: To,
     /// The cursor's URL when the move started; the cursor stays there until the commit.
     origin: String,
-    /// The URL the host sent (a trail move: its target's). If the move is replaced before it arrives, a report of it
-    /// is the replaced navigation's (`NavHistory::held`).
-    sent: String,
     deadline: Instant,
     /// The cursor is at the target; the origin's old document may still report (in any order, some engines settling
     /// the target before the origin's last report), so its settled report is held until the deadline.
@@ -149,22 +155,22 @@ struct Held {
 }
 
 /// Where a move goes.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum To {
     /// A trail entry, by the engine's `GoBack`/`GoForward`.
     Native(usize),
     /// A trail entry, by a `Navigate` to its URL.
     Plain(usize),
-    /// A page the trail has not seen (`navigate`): the first report of another URL is it, whatever the engine made of
-    /// the URL sent. It becomes `Plain` at the commit.
-    New,
+    /// A page the trail has not seen, by a `Navigate` to this URL (`navigate`): the first report of another URL is it,
+    /// whatever the engine made of the URL sent. It becomes `Plain` at the commit.
+    New(String),
 }
 
 impl To {
-    fn target(self) -> Option<usize> {
+    fn target(&self) -> Option<usize> {
         match self {
-            To::Native(t) | To::Plain(t) => Some(t),
-            To::New => None,
+            To::Native(t) | To::Plain(t) => Some(*t),
+            To::New(_) => None,
         }
     }
 }
@@ -281,7 +287,7 @@ impl NavHistory {
         // of what an ended move was waiting on is held whole, and restarts its hold.
         self.held.retain(|h| now <= h.until);
         if let Some(h) = self.held.iter_mut().find(|h| h.url == url) {
-            h.until = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
+            h.until = now + window(loading);
             return false;
         }
         if let Some(m) = self.pending.clone() {
@@ -298,7 +304,7 @@ impl NavHistory {
                 if let Some(p) = self.pending.as_mut() {
                     p.started |= started;
                     // Servo reports only when a document commits: a slow target is quiet time, not total time.
-                    p.deadline = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
+                    p.deadline = now + window(loading);
                 }
                 self.settle(loading);
                 return true;
@@ -306,11 +312,12 @@ impl NavHistory {
                 // The 204 rule: the load it started ended where it began. The cursor's own URL (step 4).
                 self.pending = None;
             } else if let Some(t) = m.to.target().filter(|&t| self.entries[t].url == url) {
+                let step = if matches!(m.to, To::Native(_)) { LinStep::Native } else { LinStep::Push };
                 self.pending = Some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
-                self.commit(t, self.at, if matches!(m.to, To::Native(_)) { LinStep::Native } else { LinStep::Push });
+                self.commit(t, self.at, step);
                 self.loading = loading;
                 return true;
-            } else if matches!(m.to, To::New) {
+            } else if matches!(m.to, To::New(_)) {
                 // A new engine navigation, never a redirect of the origin's own load (step 5). The push may evict,
                 // which renumbers: the move names its target after it.
                 self.pending = None;
@@ -595,7 +602,7 @@ impl NavHistory {
             return if native { action } else { NavAction::None };
         }
         let to = if native { To::Native(target) } else { To::Plain(target) };
-        self.begin(to, &url, now);
+        self.begin(to, now);
         action
     }
 
@@ -604,29 +611,38 @@ impl NavHistory {
     /// arrival from the origin), or on an empty trail (no origin; the engine's first report makes the root).
     pub(crate) fn navigate(&mut self, url: &str, now: Instant) {
         if self.entries.get(self.at).is_some_and(|e| e.url != url) {
-            self.begin(To::New, url, now);
+            self.begin(To::New(url.to_owned()), now);
         } else {
             self.retire(now, true);
             self.release(url);
         }
     }
 
-    /// Starts a move to `to` (whose URL is `sent`) in place of any pending one.
-    fn begin(&mut self, to: To, sent: &str, now: Instant) {
+    /// Starts a move to `to` in place of any pending one.
+    fn begin(&mut self, to: To, now: Instant) {
         self.retire(now, true);
         let origin = self.entries[self.at].url.clone();
+        let sent = self.sent(&to).to_owned();
         self.release(&origin);
-        self.release(sent);
-        let deadline = now + self.move_window();
-        self.pending = Some(Move { to, origin, sent: sent.to_owned(), deadline, committed: false, started: false });
+        self.release(&sent);
+        let deadline = now + window(self.loading);
+        self.pending = Some(Move { to, origin, deadline, committed: false, started: false });
+    }
+
+    /// The URL the host sends the engine for a move to `to`.
+    fn sent<'a>(&'a self, to: &'a To) -> &'a str {
+        match to {
+            To::Native(t) | To::Plain(t) => &self.entries[*t].url,
+            To::New(url) => url,
+        }
     }
 
     /// Ends the pending move: what it was still waiting on, its origin and (with `target`) its unreached target, is
     /// held (`held`) for as long as a new move would wait.
     fn retire(&mut self, now: Instant, target: bool) {
         let Some(m) = self.pending.take().filter(|m| now <= m.deadline) else { return };
-        let until = now + self.move_window();
-        let arrival = (target && !m.committed).then_some(m.sent);
+        let until = now + window(self.loading);
+        let arrival = (target && !m.committed).then(|| self.sent(&m.to).to_owned());
         for url in [Some(m.origin), arrival].into_iter().flatten() {
             self.release(&url);
             self.held.push(Held { url, until });
@@ -636,15 +652,6 @@ impl NavHistory {
     /// `url` is where the tab is or is going: its reports are no old document's.
     fn release(&mut self, url: &str) {
         self.held.retain(|h| h.url != url);
-    }
-
-    /// How long a move sent now has until the engine should have reported it.
-    fn move_window(&self) -> Duration {
-        if self.loading {
-            LOADING_WINDOW
-        } else {
-            MOVE_WINDOW
-        }
     }
 
     /// The cursor arrives at `target` from `from` (decision 3's commit).
