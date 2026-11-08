@@ -42,7 +42,15 @@ fn the_webkit_host_environment_is_the_same_under_every_runtime() {
     let settings = HostSettings { dark: true, download_dir: Some("/mnt/c/dl".into()) };
     let env = webkit_env("https://a", 4000, &token, &settings).unwrap();
     let names: Vec<_> = env.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["VIEW_SETTINGS", "VIEW_INITIAL_URL_HEX", "VIEW_TCP_PORT", "VIEW_TOKEN"]);
+    assert_eq!(
+        names,
+        [
+            host_env::ENV_SETTINGS,
+            host_env::ENV_WEBKIT_INITIAL_URL_HEX,
+            host_env::ENV_WEBKIT_TCP_PORT,
+            host_env::ENV_WEBKIT_TOKEN
+        ]
+    );
     let wsl = webkit_shell_command("https://a", 4000, &token, "/x", &settings).unwrap();
     for (name, value) in &env {
         assert!(wsl.contains(&format!("{name}={value} ")), "{name} in {wsl}");
@@ -1204,7 +1212,7 @@ fn the_webkit_command_carries_the_settings_as_hex_only() {
     let token = [7u8; transport::TOKEN_LEN];
     let settings = HostSettings { dark: true, download_dir: Some("/mnt/c/Users/Zoë Q/it's \"dl\" $(x)".into()) };
     let shell = webkit_shell_command("https://a", 4000, &token, "/x", &settings).unwrap();
-    assert!(shell.starts_with(&format!("VIEW_SETTINGS={} ", settings.to_hex())), "{shell}");
+    assert!(shell.starts_with(&format!("{}={} ", host_env::ENV_SETTINGS, settings.to_hex())), "{shell}");
     assert!(!shell.contains("Zo") && !shell.contains("$(x)"), "{shell}");
     let long = HostSettings { dark: false, download_dir: Some("d".repeat(5000)) };
     let refused = webkit_shell_command("https://a", 4000, &token, "/x", &long).unwrap_err();

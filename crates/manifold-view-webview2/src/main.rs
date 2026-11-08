@@ -608,8 +608,8 @@ fn exit_fatal(control: &mut transport::LocalTransport, reason: &str) -> ! {
 /// alone.
 fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     let options = scheme::environment_options().map_err(webview2_com::Error::WindowsError)?;
-    let user_data =
-        std::env::var_os("VIEW_WEBVIEW2_USER_DATA").map(|dir| windows::core::HSTRING::from(dir.as_os_str()));
+    let user_data = std::env::var_os(manifold_view_protocol::host_env::ENV_WEBVIEW2_USER_DATA)
+        .map(|dir| windows::core::HSTRING::from(dir.as_os_str()));
     let (tx, rx) = mpsc::channel();
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
@@ -702,8 +702,8 @@ fn create_composition_controller(
         // in-memory cookie store. A profile per live host gives each tab its own store, as a CEF tab has. Manifold
         // reuses names from a small pool (WebView2 remembers every profile name in `Local State`) and deletes the
         // directory a profile leaves (`process_manager::claim_webview2_slot`).
-        let name =
-            std::env::var("VIEW_WEBVIEW2_PROFILE").unwrap_or_else(|_| format!("manifold_{}", std::process::id()));
+        let name = std::env::var(manifold_view_protocol::host_env::ENV_WEBVIEW2_PROFILE)
+            .unwrap_or_else(|_| format!("manifold_{}", std::process::id()));
         options.SetProfileName(&HSTRING::from(name.as_str()))?;
         eprintln!("jar: InPrivate profile {name}");
         Ok((env10, options))

@@ -19,6 +19,23 @@ pub const ENV_AWAIT_COOKIES: &str = "VIEW_AWAIT_COOKIES";
 /// WebKit host under WSL reads it from its command line, where hex is shell-safe.
 pub const ENV_SETTINGS: &str = "VIEW_SETTINGS";
 
+// One engine's own variables: only its host reads them, but they are named here too, once for both sides
+// (`gate`'s `host_variables_are_named_only_in_host_env`).
+/// CEF: this host's own `root_cache_path`, a folder no other CEF process uses.
+pub const ENV_CEF_CACHE_DIR: &str = "VIEW_CACHE_DIR";
+/// WebView2: the profile name this host uses, one no other live host of this manifold uses.
+pub const ENV_WEBVIEW2_PROFILE: &str = "VIEW_WEBVIEW2_PROFILE";
+/// WebView2: the user-data folder this manifold's WebView2 hosts share, and no other manifold's.
+pub const ENV_WEBVIEW2_USER_DATA: &str = "VIEW_WEBVIEW2_USER_DATA";
+/// WebKit: the first URL, as hex, shell-safe on the WSL command line.
+pub const ENV_WEBKIT_INITIAL_URL_HEX: &str = "VIEW_INITIAL_URL_HEX";
+/// WebKit: the port of manifold's TCP listener.
+pub const ENV_WEBKIT_TCP_PORT: &str = "VIEW_TCP_PORT";
+/// WebKit: the connection token, as hex.
+pub const ENV_WEBKIT_TOKEN: &str = "VIEW_TOKEN";
+/// WebKit: the address manifold's listener is on.
+pub const ENV_WEBKIT_HOST_IP: &str = "VIEW_HOST_IP";
+
 /// How long a host started with `ENV_AWAIT_COOKIES` waits for manifold's `SetCookies` before navigating. The seed goes
 /// out when the UI thread lands the spawn, so a long stall there uses up this wait; a late seed still applies, from the
 /// next load on.
@@ -28,7 +45,7 @@ pub const COOKIE_SEED_WAIT: Duration = Duration::from_secs(5);
 const DEFAULT_URL: &str = "https://example.com";
 
 /// The shared part of a local host's startup environment. Per-engine variables (CEF's cache dir, WebView2's profile
-/// name, WebKit's TCP settings) stay with their hosts.
+/// name and folder, WebKit's TCP settings) are read by their hosts, under the names above.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostEnv {
     pub socket_id: String,

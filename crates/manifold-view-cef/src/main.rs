@@ -126,7 +126,8 @@ fn main() {
     // given root, so CEF's machine-wide default would allow one CEF tab at
     // a time. `cache_path` stays empty: browsing data lives in memory, since
     // the directory doesn't outlive the tab anyway.
-    let cache_dir = std::env::var("VIEW_CACHE_DIR").expect("VIEW_CACHE_DIR env var required");
+    use manifold_view_protocol::host_env::ENV_CEF_CACHE_DIR;
+    let cache_dir = std::env::var(ENV_CEF_CACHE_DIR).unwrap_or_else(|_| panic!("{ENV_CEF_CACHE_DIR} env var required"));
 
     let settings = Settings {
         root_cache_path: cache_dir.as_str().into(),

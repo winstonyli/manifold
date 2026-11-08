@@ -194,6 +194,20 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
     assert_eq!(users, ["manifold/src/worker.rs"], "catch_unwind belongs to worker.rs alone");
 }
 
+/// A host's startup variable is named once, in `manifold_view_protocol::host_env`, and both the app that writes it and
+/// the host that reads it use that constant: a name spelled on each side can drift apart silently.
+#[test]
+fn host_variables_are_named_only_in_host_env() {
+    let spelled: Vec<String> = all_sources()
+        .into_iter()
+        .filter(|(p, s)| {
+            p != "manifold-view-protocol/src/host_env.rs" && p != "gate/src/limits.rs" && s.contains("\"VIEW_")
+        })
+        .map(|(p, _)| p)
+        .collect();
+    assert!(spelled.is_empty(), "{spelled:?} spell a host variable: use its `host_env::ENV_*` constant");
+}
+
 /// The store is the bottom layer: nothing in it, tests included, names the app above it, so it can become its own
 /// crate (plan item CRT1). Only a `crate::` path is seen; one reached through a re-export is not.
 #[test]

@@ -44,9 +44,9 @@ pub(super) fn webkit_env(
     }
     let mut env = vec![
         (host_env::ENV_SETTINGS, settings_hex),
-        ("VIEW_INITIAL_URL_HEX", url_hex),
-        ("VIEW_TCP_PORT", port.to_string()),
-        ("VIEW_TOKEN", transport::to_hex(token)),
+        (host_env::ENV_WEBKIT_INITIAL_URL_HEX, url_hex),
+        (host_env::ENV_WEBKIT_TCP_PORT, port.to_string()),
+        (host_env::ENV_WEBKIT_TOKEN, transport::to_hex(token)),
     ];
     // The tests' shortened stall timeout (`downloads::StallWatch`) crosses into WSL like the rest; digits only, since
     // it lands in a shell string.
@@ -73,7 +73,8 @@ pub(super) fn webkit_shell_command(
         .map(|(name, value)| format!("{name}={value} "))
         .collect();
     Ok(format!(
-        "{assignments}VIEW_HOST_IP=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        "{assignments}{}=$(ip route | awk '/^default/ {{print $3}}') xvfb-run -a {}",
+        host_env::ENV_WEBKIT_HOST_IP,
         shell_quote(binary_path),
     ))
 }
@@ -125,7 +126,9 @@ pub(super) fn spawn_webkit_tab(
         HostRuntime::Native => {
             // manifold itself needs a display on Linux, so the host inherits it.
             let mut command = Command::new(&host);
-            command.envs(webkit_env(initial_url, port, &token, settings)?).env("VIEW_HOST_IP", "127.0.0.1");
+            command
+                .envs(webkit_env(initial_url, port, &token, settings)?)
+                .env(host_env::ENV_WEBKIT_HOST_IP, "127.0.0.1");
             command
         }
     };

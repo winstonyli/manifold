@@ -39,24 +39,29 @@ fn ended_short(promised: Option<u64>, received: u64) -> bool {
 }
 
 fn main() {
-    manifold_view_protocol::host_env::apply(&manifold_view_protocol::host_env::settings_from_env());
+    use manifold_view_protocol::host_env::{
+        self, ENV_WEBKIT_HOST_IP, ENV_WEBKIT_INITIAL_URL_HEX, ENV_WEBKIT_TCP_PORT, ENV_WEBKIT_TOKEN,
+    };
+    host_env::apply(&host_env::settings_from_env());
     // Hex of the UTF-8 URL (process_manager.rs's webkit_shell_command): page text crosses the WSL shells
     // only as hex. A missing variable keeps the old default; a malformed one is a bug in the host.
-    let initial_url = match std::env::var("VIEW_INITIAL_URL_HEX") {
-        Ok(hex) => String::from_utf8(transport::from_hex(&hex).expect("VIEW_INITIAL_URL_HEX must be hex"))
-            .expect("VIEW_INITIAL_URL_HEX must spell UTF-8"),
+    let initial_url = match std::env::var(ENV_WEBKIT_INITIAL_URL_HEX) {
+        Ok(hex) => String::from_utf8(
+            transport::from_hex(&hex).unwrap_or_else(|| panic!("{ENV_WEBKIT_INITIAL_URL_HEX} must be hex")),
+        )
+        .unwrap_or_else(|_| panic!("{ENV_WEBKIT_INITIAL_URL_HEX} must spell UTF-8")),
         Err(_) => "https://example.com".to_string(),
     };
-    let port: u16 = std::env::var("VIEW_TCP_PORT")
-        .expect("VIEW_TCP_PORT env var required")
+    let port: u16 = std::env::var(ENV_WEBKIT_TCP_PORT)
+        .unwrap_or_else(|_| panic!("{ENV_WEBKIT_TCP_PORT} env var required"))
         .parse()
-        .expect("VIEW_TCP_PORT must be a u16");
+        .unwrap_or_else(|_| panic!("{ENV_WEBKIT_TCP_PORT} must be a u16"));
     // The Windows host's own gateway IP, computed by process_manager.rs's
     // spawn command (`ip route`'s default gateway) — not 127.0.0.1. WSL2's
     // NAT networking refuses a guest-to-127.0.0.1-on-host connection
     // outright (ECONNREFUSED), so the host is only reachable this way. See
     // manifold_view_protocol::transport::connect_remote's doc comment.
-    let host_ip = std::env::var("VIEW_HOST_IP").expect("VIEW_HOST_IP env var required");
+    let host_ip = std::env::var(ENV_WEBKIT_HOST_IP).unwrap_or_else(|_| panic!("{ENV_WEBKIT_HOST_IP} env var required"));
 
     // Single TCP connection back to manifold, used for both directions
     // via a cloned handle — mirrors process_manager.rs's spawn_webkit_tab
@@ -66,8 +71,10 @@ fn main() {
     // use).
     // The secret process_manager.rs generated for this spawn; manifold drops any
     // connection that doesn't send it first.
-    let token = transport::token_from_hex(&std::env::var("VIEW_TOKEN").expect("VIEW_TOKEN env var required"))
-        .expect("VIEW_TOKEN must be 32 hex digits");
+    let token = transport::token_from_hex(
+        &std::env::var(ENV_WEBKIT_TOKEN).unwrap_or_else(|_| panic!("{ENV_WEBKIT_TOKEN} env var required")),
+    )
+    .unwrap_or_else(|| panic!("{ENV_WEBKIT_TOKEN} must be 32 hex digits"));
     let control = transport::connect_remote(&host_ip, port, &token).expect("connect to manifold");
     let stream = control.into_inner();
     let read_stream = stream.try_clone().expect("clone control stream");

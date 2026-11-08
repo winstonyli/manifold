@@ -953,7 +953,7 @@ fn prepare_cef(kind: ViewKind, custom: Option<&Path>) -> Result<Prepared, SpawnE
     };
     let n = CEF_CACHE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let cache_dir = cef_cache_root().join(format!("{}-{n}", std::process::id()));
-    let env = vec![("VIEW_CACHE_DIR", cache_dir.clone().into_os_string())];
+    let env = vec![(host_env::ENV_CEF_CACHE_DIR, cache_dir.clone().into_os_string())];
     Ok(Prepared { exe, env, cache_dir: Some(cache_dir), profile_slot: None, fresh: false })
 }
 
@@ -970,8 +970,8 @@ fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, 
     let slot = claim_webview2_slot(&udf);
     Ok(Prepared {
         env: vec![
-            ("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(slot).into()),
-            ("VIEW_WEBVIEW2_USER_DATA", udf.clone().into_os_string()),
+            (host_env::ENV_WEBVIEW2_PROFILE, webview2_profile_name(slot).into()),
+            (host_env::ENV_WEBVIEW2_USER_DATA, udf.clone().into_os_string()),
         ],
         cache_dir: Some(webview2_profile_dir(&udf, slot)),
         profile_slot: Some(slot),
