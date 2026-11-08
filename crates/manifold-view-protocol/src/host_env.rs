@@ -1,8 +1,8 @@
 //! What manifold tells a local view-host at startup, through the environment (not argv: CEF parses its own argv as a
 //! Chromium command line), and the bounded wait for the cookie-jar seed. The app's settings a host acts on
 //! (`HostSettings`) come the same way at spawn, as hex (`ENV_SETTINGS`), and later as `HostToView::SetSettings`; a host
-//! applies both with `apply`. `process_manager::spawn_tab` writes it with the `ENV_*` names; every host reads it here,
-//! so the contract is stated once.
+//! applies both with `apply`. `process_manager::spawn_tab` writes it with the `ENV_*` names; every host reads the shared
+//! part here (`HostEnv`) and its engine's own variables in its `main`, under the same names, so each name is stated once.
 
 use std::time::Duration;
 
