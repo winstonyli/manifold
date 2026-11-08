@@ -286,6 +286,25 @@ fn a_plain_move_records_what_navigate_tab_records() {
     assert_eq!(app.doc.mirror.url(tab), "https://b/", "the url is edited, so it is shared");
 }
 
+/// A move the engine never answers (a download, a 204) ends at its deadline with the tab back on the page it shows,
+/// shared; a loading tab waits.
+#[test]
+fn a_move_with_no_report_reverts_the_tab_at_its_deadline() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-move-expires");
+    let now = Instant::now();
+    app.trail_pick(tab, 1);
+    app.expire_trail_moves(now);
+    assert_eq!(tab_url(&app, tab), "https://b/", "inside its window");
+    let late = now + std::time::Duration::from_secs(31);
+    app.nodes.get_mut(&tab).and_then(|n| n.as_tab_mut()).unwrap().loading = true;
+    app.expire_trail_moves(late);
+    assert_eq!(tab_url(&app, tab), "https://b/", "a loading tab waits");
+    app.nodes.get_mut(&tab).and_then(|n| n.as_tab_mut()).unwrap().loading = false;
+    app.expire_trail_moves(late);
+    assert_eq!((tab_url(&app, tab), app.doc.mirror.url(tab)), ("https://c/", "https://c/"));
+    assert!(!app.scoped.nav_history[&tab].move_pending(late));
+}
+
 /// `NavigationStateChanged` for `tab` at `url`.
 fn report(app: &mut App, tab: NodeId, url: &str, loading: bool) {
     let msg = ViewToHost::NavigationStateChanged {

@@ -882,6 +882,21 @@ fn a_page_navigation_during_a_trail_move_hides_the_origins_late_reports() {
     assert_eq!((urls(&h), h.at), (vec!["a", "b", "b2"], 2));
 }
 
+/// A move no report answers ends at its deadline, naming the page the tab is still on; a committed one arrived.
+#[test]
+fn a_move_with_no_report_expires_at_its_deadline_to_the_cursors_url() {
+    let now = Instant::now();
+    let later = now + MOVE_WINDOW + Duration::from_secs(1);
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    assert_eq!(h.expire(now), None, "inside its window");
+    assert_eq!(h.expire(later), Some("b".to_owned()));
+    assert!(!h.move_pending(later) && h.expire(later).is_none(), "once");
+    assert_eq!(h.go(Dir::Back, false, false, later), NavAction::Navigate("a".into()));
+    h.observe("a", "", false, false, later);
+    assert_eq!(h.expire(later + MOVE_WINDOW + Duration::from_secs(1)), None, "a committed move arrived");
+}
+
 /// A committed move ended by another url: the origin finishing late is held, but a load of it is a real return.
 #[test]
 fn a_committed_move_ended_by_another_url_holds_the_origins_settled_report() {

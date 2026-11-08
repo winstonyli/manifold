@@ -289,9 +289,7 @@ impl NavHistory {
             return true;
         }
         // 2: a move whose arrival never came.
-        if self.pending.as_ref().is_some_and(|m| now > m.deadline) {
-            self.pending = None;
-        }
+        self.expire(now);
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
         // of what an ended move was waiting on is held, and restarts its hold; a committed one's origin, settled only.
@@ -631,6 +629,13 @@ impl NavHistory {
             self.retire(now, true);
             self.release(url);
         }
+    }
+
+    /// Drops a move past its deadline (fold step 2), holding nothing. When it never arrived, returns the cursor's URL:
+    /// the page the tab is still on, which the host shows again in place of the one it sent (`expire_trail_moves`).
+    pub(crate) fn expire(&mut self, now: Instant) -> Option<String> {
+        let m = self.pending.take_if(|m| now > m.deadline)?;
+        (!m.committed).then(|| self.entries[self.at].url.clone())
     }
 
     /// Starts a move to `to` in place of any pending one.

@@ -52,6 +52,31 @@ impl App {
         }
     }
 
+    /// Ends each trail move past its deadline that no report answered (a download, a 204, an engine that dropped it),
+    /// rather than at a next report that may never come: the tab shows, and shares, the page it is still on again. A
+    /// loading tab waits; its reports will decide (fold step 2).
+    pub(crate) fn expire_trail_moves(&mut self, now: Instant) {
+        let mut reverted = Vec::new();
+        for (&id, history) in &mut self.scoped.nav_history {
+            let Some(node) = self.nodes.get(&id).and_then(|n| n.as_tab()) else { continue };
+            if node.loading {
+                continue;
+            }
+            if let Some(url) = history.expire(now).filter(|url| *url != node.url) {
+                reverted.push((id, url));
+            }
+        }
+        for (id, url) in &reverted {
+            if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
+                node.url.clone_from(url);
+            }
+            self.edit_url(*id, url);
+        }
+        if !reverted.is_empty() {
+            self.save_session();
+        }
+    }
+
     fn send_nav_action(&mut self, id: NodeId, action: NavAction) {
         let message = match action {
             NavAction::GoBack => HostToView::GoBack,

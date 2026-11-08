@@ -59,7 +59,9 @@ impl App {
     /// too, and frame uploads run last so none lands on a removed tab.
     pub(crate) fn drain_tab_events(&mut self) {
         let frame_updates = self.drain_view_ipc();
-        self.poll_text_timers(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.poll_text_timers(now);
+        self.expire_trail_moves(now);
         self.idle_sweep();
         self.tick_fetchers();
         self.upload_frames(frame_updates);
