@@ -350,7 +350,8 @@ fn a_new_engines_report_of_the_url_a_move_left_is_stale_for_longer() {
 fn an_idle_engines_report_of_the_url_a_move_left_is_real_after_the_window() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-idle-origin");
     app.trail_pick(tab, 1);
-    let late = Instant::now() + std::time::Duration::from_secs(4);
+    // Past the 30 s a move waits for its first report (`history::LOADING_WINDOW`).
+    let late = Instant::now() + std::time::Duration::from_secs(31);
     assert!(!app.scoped.nav_history.get_mut(&tab).unwrap().observe("https://c/", "", true, false, late));
 }
 

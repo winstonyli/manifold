@@ -179,7 +179,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    - Another known limit: a script `history.forward()` is read as a Back when the cursor's parent and `fwd` have the same URL, because `inferred()` tries Back first; the `lin` shadow heals on a later mismatch fork.
    - A new engine navigation (the fork rule, or a plain move's commit) truncates `lin` after `lin_at`, pushes the
      arrival entry's index, and sets `lin_at` to it.
-   - A move started while the engine is loading gets the long window (`LOADING_WINDOW`), and `view_reset` counts as loading: a woken WebView2 was quiet for 5.8-6 s before its first report, and the arrival then read as a redirect (`2026-11-07-navlog-back`).
+   - Every move waits the long window (`LOADING_WINDOW`, 30 s) for its first report, and from each report on, 3 s after a settled one and 30 s after a loading one. A woken WebView2 was quiet for 5.8-6 s before its first report, and the arrival then read as a redirect (`2026-11-07-navlog-back`); a slow server, or Servo (which reports only when a document commits), likewise, and the move's expiry then reverted the tab's url while its page was still on the way (Decide j1, 2026-11-08). A move with no report at all (a download, a 204 an engine never reports) so reverts after 30 s. `view_reset` still counts as loading, for the holds a move leaves.
    - On `view_reset` (the engine was replaced, so its list is empty) the pending move is cleared, and: if the tab's URL matches the cursor entry, `lin =
      [at]`, `lin_at = 0`; if it does not, the arena is emptied as `entries.clear()` does today (`nav_history.rs:111-114`),
      and the next report creates the root. `view_reset` runs only when a history already exists (`spawn_result.rs:37`); a new

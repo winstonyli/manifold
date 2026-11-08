@@ -20,11 +20,12 @@ use std::time::{Duration, Instant};
 
 /// Most entries kept per tab, and most slots in the engine-list shadow.
 const MAX_ENTRIES: usize = 50;
-/// How long a move waits for the engine to report its arrival.
+/// How long a move waits for the engine's next report after a settled one.
 const MOVE_WINDOW: Duration = Duration::from_secs(3);
-/// The same while the engine is loading: a busy machine can take longer than `MOVE_WINDOW` between two reports of one
-/// navigation (measured 2026-10-15, `gate sleep` history on WebView2 under load), and a new engine longer before its
-/// first (`2026-11-07-navlog-back`).
+/// The same after a loading report, and before the move's first: a busy machine can take longer than `MOVE_WINDOW`
+/// between two reports of one navigation (measured 2026-10-15, `gate sleep` history on WebView2 under load), a new
+/// engine longer before its first (`2026-11-07-navlog-back`), and a slow server or Servo (which reports only when a
+/// document commits) longer before a move's arrival.
 const LOADING_WINDOW: Duration = Duration::from_secs(30);
 
 /// How long the engine may stay quiet after a report (or after a move is sent) whose `loading` flag this is.
@@ -645,7 +646,9 @@ impl NavHistory {
         let sent = self.sent(&to).to_owned();
         self.release(&origin);
         self.release(&sent);
-        let deadline = now + window(self.loading);
+        // The engine has said nothing of this navigation yet: as long as a load may take (`LOADING_WINDOW`), until a
+        // report restarts it (step 3).
+        let deadline = now + LOADING_WINDOW;
         self.pending = Some(Move { to, origin, deadline, committed: false, started: false });
     }
 

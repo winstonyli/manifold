@@ -458,7 +458,7 @@ fn a_stale_move_changes_nothing_and_go_waits_for_it() {
     let before = (h.entries.clone(), h.at, h.lin.clone(), h.lin_at);
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
     assert_eq!(h.go(Dir::Back, true, false, now + Duration::from_secs(1)), NavAction::None, "a second press");
-    let later = now + Duration::from_secs(4);
+    let later = now + LOADING_WINDOW + Duration::from_secs(1);
     h.observe("b", "", false, false, later);
     assert_eq!((h.entries.clone(), h.at, h.lin.clone(), h.lin_at), before);
     assert!(h.pending.is_none());
@@ -523,9 +523,10 @@ fn a_move_with_no_reports_expires_after_the_window() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
-    assert!(h.move_pending(now + Duration::from_secs(3)));
-    assert!(!h.move_pending(now + Duration::from_secs(4)));
-    h.observe("a", "", false, false, now + Duration::from_secs(4));
+    let past = now + LOADING_WINDOW + Duration::from_secs(1);
+    assert!(h.move_pending(now + LOADING_WINDOW));
+    assert!(!h.move_pending(past));
+    h.observe("a", "", false, false, past);
     assert_eq!(urls(&h), ["a", "b", "a"], "a late arrival with no reports in between forks");
 }
 
@@ -886,15 +887,32 @@ fn a_page_navigation_during_a_trail_move_hides_the_origins_late_reports() {
 #[test]
 fn a_move_with_no_report_expires_at_its_deadline_to_the_cursors_url() {
     let now = Instant::now();
-    let later = now + MOVE_WINDOW + Duration::from_secs(1);
+    let later = now + LOADING_WINDOW + Duration::from_secs(1);
     let mut h = NavHistory::visited(&["a", "b"]);
     assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
-    assert_eq!(h.expire(now), None, "inside its window");
+    assert_eq!(h.expire(now + LOADING_WINDOW), None, "inside its window");
     assert_eq!(h.expire(later), Some("b".to_owned()));
     assert!(!h.move_pending(later) && h.expire(later).is_none(), "once");
     assert_eq!(h.go(Dir::Back, false, false, later), NavAction::Navigate("a".into()));
     h.observe("a", "", false, false, later);
     assert_eq!(h.expire(later + MOVE_WINDOW + Duration::from_secs(1)), None, "a committed move arrived");
+}
+
+/// A move the engine hasn't answered yet waits as long as a load may (a slow server, Servo reporting only at commit), so
+/// a late arrival is the move's and not a fork; once the engine reports, its quiet time is measured from that report.
+#[test]
+fn a_move_waits_the_loading_window_for_its_first_report() {
+    let now = Instant::now();
+    let slow = now + MOVE_WINDOW + Duration::from_secs(1);
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    assert_eq!(h.expire(slow), None, "no report yet");
+    h.observe("a", "", false, false, slow);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0), "the late arrival is the Back");
+    let t = slow + MOVE_WINDOW + Duration::from_secs(1);
+    assert_eq!(h.go(Dir::Forward, false, false, t), NavAction::Navigate("b".into()));
+    h.observe("a", "", false, false, t);
+    assert_eq!(h.expire(t + MOVE_WINDOW + Duration::from_secs(1)), Some("a".to_owned()), "quiet after a report");
 }
 
 /// A committed move ended by another url: the origin finishing late is held, but a load of it is a real return.
