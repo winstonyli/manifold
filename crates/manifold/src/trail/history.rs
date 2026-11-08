@@ -249,7 +249,7 @@ impl NavHistory {
         })
     }
 
-    /// Step 3's hold on what a replaced move was waiting on (`held`).
+    /// Step 3's hold on what an ended move was waiting on (`held`).
     fn holds(&self, url: &str, now: Instant) -> bool {
         self.held.iter().any(|h| h.url == url && now <= h.until)
     }
@@ -259,8 +259,8 @@ impl NavHistory {
         (self.entries.clone(), self.at)
     }
 
-    /// Decision 3's fold, steps 1 to 6. `false` when the report is held (step 4b, plan D1): nothing changed, not even
-    /// `loading`.
+    /// Decision 3's fold, steps 1 to 6. `false` when the report is set aside without touching the trail or `loading`: a
+    /// held url's (step 3) or a loading report a settled one will decide (step 4b, plan D1).
     fn fold(&mut self, url: &str, loading: bool, can_go_forward: bool, now: Instant) -> bool {
         // 1: the first report makes the root.
         if self.entries.is_empty() {
@@ -278,7 +278,7 @@ impl NavHistory {
         }
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
-        // of what an ended move was waiting on is held whole, and extends its hold as an origin's report does.
+        // of what an ended move was waiting on is held whole, and restarts its hold.
         self.held.retain(|h| now <= h.until);
         if let Some(h) = self.held.iter_mut().find(|h| h.url == url) {
             h.until = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };

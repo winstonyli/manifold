@@ -551,13 +551,13 @@ fn a_fresh_navigation_during_a_plain_move_leaves_the_target_alone() {
     assert_eq!((h.at, h.entries[2].parent), (2, Some(1)));
 }
 
-/// `a`, then `b` loading, then a held loading `a` and a settled `a` that is no Back (no Forward flag): a redirect
+/// `a`, then `b` loading, then a discarded loading `a` (4b) and a settled `a` that is no Back (no Forward flag): a redirect
 /// of b's load, so b's entry is rewritten to `a` and the cursor shares its parent's URL.
 fn equal_parent(now: Instant) -> NavHistory {
     let mut h = NavHistory::visited(&["a"]);
     h.observe("b", "", true, false, now);
     h.observe("a", "", true, false, now);
-    assert_eq!(urls(&h), ["a", "b"], "held");
+    assert_eq!(urls(&h), ["a", "b"], "discarded");
     h.observe("a", "", false, false, now);
     assert_eq!((urls(&h), h.at), (vec!["a", "a"], 1));
     h
@@ -589,10 +589,10 @@ fn the_cursors_own_url_wins_over_an_inferred_back() {
 #[test]
 fn a_script_back_is_inferred_and_a_link_to_the_parents_url_forks() {
     let now = Instant::now();
-    // history.back(): the loading report (old flags) is held, the settled one has Forward set.
+    // history.back(): the loading report (old flags) is discarded, the settled one has Forward set.
     let mut h = NavHistory::visited(&["a", "b"]);
     h.observe("a", "", true, false, now);
-    assert_eq!((h.entries.len(), h.at, h.loading), (2, 1, false), "held: nothing changes");
+    assert_eq!((h.entries.len(), h.at, h.loading), (2, 1, false), "discarded: nothing changes");
     h.observe("a", "", false, true, now);
     assert_eq!((h.entries.len(), h.at, h.lin_at, h.entries[0].fwd), (2, 0, 0, Some(1)));
     // A link to the parent's URL: the settled report has no Forward flag.
@@ -600,7 +600,7 @@ fn a_script_back_is_inferred_and_a_link_to_the_parents_url_forks() {
     h.observe("a", "", true, false, now);
     h.observe("a", "", false, false, now);
     assert_eq!((urls(&h), h.at, h.entries[2].parent), (vec!["a", "b", "a"], 2, Some(1)));
-    // The same from a fresh cursor entry: the held report must not make the settled one b's redirect.
+    // The same from a fresh cursor entry: the discarded report must not make the settled one b's redirect.
     let mut h = NavHistory::visited(&["a", "b", "c"]);
     back(&mut h, now);
     assert!(h.fresh);
@@ -611,13 +611,13 @@ fn a_script_back_is_inferred_and_a_link_to_the_parents_url_forks() {
 }
 
 #[test]
-fn a_held_report_then_another_url_forks_or_rewrites_by_the_earlier_loading() {
+fn a_discarded_report_then_another_url_forks_or_rewrites_by_the_earlier_loading() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     h.observe("a", "", true, false, now);
     h.observe("x", "", true, false, now);
-    assert_eq!((urls(&h), h.at), (vec!["a", "b", "x"], 2), "a fork from b; the held a never got an entry");
-    // b was still loading when the held report came: x is b's redirect.
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "x"], 2), "a fork from b; the discarded a never got an entry");
+    // b was still loading when the discarded report came: x is b's redirect.
     let mut h = NavHistory::visited(&["a"]);
     h.observe("b", "", true, false, now);
     h.observe("a", "", true, false, now);
@@ -626,14 +626,14 @@ fn a_held_report_then_another_url_forks_or_rewrites_by_the_earlier_loading() {
 }
 
 #[test]
-fn a_held_report_then_a_repeat_or_a_late_settled_report() {
+fn a_discarded_report_then_a_repeat_or_a_late_settled_report() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     h.observe("a", "", true, false, now);
     h.observe("a", "", true, false, now);
     h.observe("a", "Page A", false, true, now);
     assert_eq!((h.at, h.entries.len(), h.entries[0].title.as_str()), (0, 2, "Page A"));
-    // The settled report decides alone: how long ago the held one came does not matter (plan D1).
+    // The settled report decides alone: how long ago the discarded one came does not matter (plan D1).
     let mut h = NavHistory::visited(&["a", "b"]);
     h.observe("a", "", true, false, now);
     h.observe("a", "", false, true, now + Duration::from_secs(10));
@@ -667,7 +667,7 @@ fn an_inferred_forward_needs_the_flag_except_at_the_last_slot() {
 }
 
 #[test]
-fn go_while_a_report_is_held_moves_as_usual() {
+fn go_after_a_discarded_report_moves_as_usual() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b", "c"]);
     back(&mut h, now);
