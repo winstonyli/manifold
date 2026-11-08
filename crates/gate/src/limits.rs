@@ -209,7 +209,9 @@ fn view_words(source: &str) -> Vec<&str> {
     let mut words = Vec::new();
     for line in source.lines().filter(|l| !l.trim_start().starts_with("//")) {
         for (at, _) in line.match_indices("VIEW_") {
-            if at > 0 && is_word(line.as_bytes()[at - 1]) {
+            // A word byte before it makes a longer word, unless it ends an escape (`\n`, `\t`).
+            let bytes = line.as_bytes();
+            if at > 0 && is_word(bytes[at - 1]) && !(at > 1 && bytes[at - 2] == b'\\') {
                 continue;
             }
             let len =
@@ -247,8 +249,8 @@ fn host_variables_are_named_only_in_host_env() {
 #[test]
 fn view_words_finds_a_name_wherever_code_spells_it() {
     let code =
-        "let a = \"VIEW_X\";\nformat!(\"{s}VIEW_Y=1\");\nformat!(\"VIEW_{x}\");\n// VIEW_NOTE\nPREVIEW_ROWS; VIEW_KIND";
-    assert_eq!(view_words(code), ["VIEW_X", "VIEW_Y", "VIEW_", "VIEW_KIND"]);
+        "let a = \"VIEW_X\";\nformat!(\"{s}VIEW_Y=1\");\nformat!(\"VIEW_{x}\");\n// VIEW_NOTE\nPREVIEW_ROWS; VIEW_KIND\n\"A=1\\nVIEW_Z=2\\tVIEW_W\"";
+    assert_eq!(view_words(code), ["VIEW_X", "VIEW_Y", "VIEW_", "VIEW_KIND", "VIEW_Z", "VIEW_W"]);
 }
 
 /// The store is the bottom layer: nothing in it, tests included, names the app above it, so it can become its own
