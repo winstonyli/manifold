@@ -185,9 +185,12 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    - On `view_reset` (the engine was replaced, so its list is empty) the pending move is cleared, and: if the tab's URL matches the cursor entry, `lin =
      [at]`, `lin_at = 0`; if it does not, or there is no tree (a one-page tree is not saved), the tree becomes a root at that
      URL, so the engine's reports of the page the tab already showed are no visit (2026-11-08; until then the arena was
-     emptied and the next report made the root). `view_reset` runs for every tab that lands on the page it showed
-     (`SpawnPurpose::lands_existing`: a crash, a swap, a restore, a wake); a new tab's first report creates the root
-     through the "empty" fold step.
+     emptied and the next report made the root). One exception: when the URL is a pending move's sent page not yet
+     reached (the engine was replaced between sending and the first report), the tree stays, the move stays as a plain
+     one with a fresh `LOADING_WINDOW`, and `lin = [None]`, so the new engine's arrival commits it and is the visit.
+     `view_reset` runs for every tab that lands on the page it showed (`SpawnPurpose::lands_existing`: a crash, a swap,
+     a restore, a wake), except a respawn of a trail still empty (a new tab replaced before its first report); a new
+     tab's first report creates the root through the "empty" fold step.
    - `lin` is not persisted: after a restart `view_reset` rebuilds it, so the first Back/Forward after a restart is a
      plain `Navigate`.
    Cost, documented: a plain `Navigate` loses scroll position and form state (native moves keep them).

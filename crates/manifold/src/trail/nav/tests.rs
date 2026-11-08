@@ -383,6 +383,31 @@ fn a_woken_tabs_page_adds_no_history_row() {
     assert_eq!(history_urls(&app), Vec::<&str>::new());
 }
 
+/// A sent page whose engine is replaced before it reports is still a visit when the new engine reports it.
+#[test]
+fn a_sent_page_whose_engine_is_replaced_before_it_reports_adds_its_row() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-typed-respawn-history");
+    app.navigate_tab(tab, "https://typed/".into());
+    app.handle_view_message(tab, ViewToHost::Crashed { reason: "boom".into() });
+    let _new = land_spawn(&mut app, tab);
+    report(&mut app, tab, "https://typed/", true);
+    report(&mut app, tab, "https://typed/", false);
+    assert_eq!(history_urls(&app), ["https://typed/"]);
+}
+
+/// A new tab whose engine is replaced before its first report: that report is still the first page's visit.
+#[test]
+fn a_new_tab_respawned_before_its_first_report_adds_its_row() {
+    let mut app = app_on(&session("trail-new-tab-respawn-history"), 1);
+    let tab = app.spawn_tab_at("https://new/", egui::Vec2::ZERO, None, None);
+    let _peer = land_spawn(&mut app, tab);
+    app.handle_view_message(tab, ViewToHost::Crashed { reason: "boom".into() });
+    let _new = land_spawn(&mut app, tab);
+    report(&mut app, tab, "https://new/", true);
+    report(&mut app, tab, "https://new/", false);
+    assert_eq!(history_urls(&app), ["https://new/"]);
+}
+
 /// `NavigationStateChanged` for `tab` at `url`.
 fn report(app: &mut App, tab: NodeId, url: &str, loading: bool) {
     let msg = ViewToHost::NavigationStateChanged {
@@ -418,7 +443,7 @@ fn a_typed_url_survives_the_origins_leftover_reports() {
 #[test]
 fn a_new_engines_report_of_the_url_a_move_left_is_stale_for_longer() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-woken-origin");
-    app.scoped.nav_history.get_mut(&tab).unwrap().view_reset("https://c/");
+    app.scoped.nav_history.get_mut(&tab).unwrap().view_reset("https://c/", Instant::now());
     app.trail_pick(tab, 1);
     let late = Instant::now() + std::time::Duration::from_secs(6);
     assert!(app.scoped.nav_history.get_mut(&tab).unwrap().observe("https://c/", "", true, false, late));

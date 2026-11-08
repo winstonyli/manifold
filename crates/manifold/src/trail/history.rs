@@ -738,13 +738,26 @@ impl NavHistory {
 
     /// The tab's engine was started on the page at `url` it already showed (decision 4): a wake, a restore, a crash or
     /// an engine swap. A tree whose cursor is not at `url` (none yet, the tab moved while the app was closed, or the
-    /// file is stale) is replaced by a root at `url`, so the engine's reports of it are not a visit.
-    pub(crate) fn view_reset(&mut self, url: &str) {
+    /// file is stale) is replaced by a root at `url`, so the engine's reports of it are not a visit. A page sent but
+    /// not reached is the exception: the move waits on for the new engine's arrival there.
+    pub(crate) fn view_reset(&mut self, url: &str, now: Instant) {
         // The old engine's documents are gone with it.
-        self.pending = None;
+        let waiting = self.pending.take().filter(|m| !m.committed && self.sent(&m.to) == url);
         self.held.clear();
         // The new engine is loading `url`, though it can take seconds to say so.
         self.loading = true;
+        if let Some(m) = waiting {
+            // The new engine has no list to step through, and nothing in it before the arrival.
+            let to = match m.to {
+                To::Native(t) => To::Plain(t),
+                to => to,
+            };
+            self.pending = Some(Move { to, deadline: now + LOADING_WINDOW, started: false, ..m });
+            self.lin = vec![None];
+            self.lin_at = 0;
+            self.fresh = false;
+            return;
+        }
         if self.entries.get(self.at).is_none_or(|e| e.url != url) {
             self.dirty |= !self.entries.is_empty();
             self.entries.clear();

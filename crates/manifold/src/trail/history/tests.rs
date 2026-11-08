@@ -139,7 +139,7 @@ fn view_reset_rebuilds_lin_and_makes_the_cursor_entry_fresh() {
     let mut h = NavHistory::visited(&["a", "b"]);
     back(&mut h, now);
     h.observe("a", "", false, true, now);
-    h.view_reset("a");
+    h.view_reset("a", Instant::now());
     assert_eq!((h.lin.clone(), h.lin_at, h.fresh), (vec![Some(0)], 0, true));
     h.observe("a", "", true, false, now);
     h.observe("a2", "", true, false, now);
@@ -152,7 +152,7 @@ fn view_reset_with_another_url_makes_a_root_there() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     h.dirty = false;
-    h.view_reset("x");
+    h.view_reset("x", Instant::now());
     assert_eq!((urls(&h), h.at, h.lin.clone(), h.dirty), (vec!["x"], 0, vec![Some(0)], true));
     h.observe("x", "", false, false, now);
     assert_eq!((urls(&h), h.at, h.lin.clone()), (vec!["x"], 0, vec![Some(0)]));
@@ -163,10 +163,37 @@ fn view_reset_with_another_url_makes_a_root_there() {
 fn view_reset_of_an_empty_trail_makes_a_root() {
     let now = Instant::now();
     let mut h = NavHistory::default();
-    h.view_reset("x");
+    h.view_reset("x", Instant::now());
     assert_eq!(h.cursor_url(), Some("x"));
     h.observe("x2", "", true, false, now);
     assert_eq!(urls(&h), ["x2"], "the engine's redirect rewrites the fresh root");
+}
+
+/// A page sent but not reached when the engine is replaced is the page the new engine loads: the move waits on for
+/// it, and the new engine's list holds nothing before it.
+#[test]
+fn view_reset_keeps_a_move_to_the_page_the_new_engine_loads() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.view_reset("b", now);
+    assert_eq!(h.cursor_url(), Some("a"), "not reached yet");
+    h.observe("b", "", true, false, now);
+    assert_eq!((urls(&h), h.cursor_url()), (vec!["a", "b"], Some("b")));
+    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()), "no engine slot before b");
+}
+
+/// The same for a native move: the new engine has no list to step through, so it is a plain one.
+#[test]
+fn view_reset_keeps_a_native_move_as_a_plain_one() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
+    h.view_reset("a", now);
+    assert_eq!(h.cursor_url(), Some("b"), "not reached yet");
+    h.observe("a", "", false, false, now);
+    assert_eq!(h.cursor_url(), Some("a"));
+    assert_eq!(h.go(Dir::Forward, false, true, now), NavAction::Navigate("b".into()), "no engine slot after a");
 }
 
 #[test]
@@ -174,7 +201,7 @@ fn view_reset_drops_a_pending_move() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
-    h.view_reset("b");
+    h.view_reset("b", Instant::now());
     assert!(h.pending.is_none());
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()), "a new engine has no slot before b");
 }
@@ -220,7 +247,7 @@ fn eviction_of_a_chain_drops_the_root_and_moves_a_root_cursor() {
 fn an_evicted_lin_slot_is_a_tombstone_and_native_back_still_lines_up() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
-    h.view_reset("b");
+    h.view_reset("b", Instant::now());
     assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
     h.observe("a", "", false, false, now);
     visit(&mut h, &["c"], now);
@@ -320,7 +347,7 @@ fn a_saved_tree_round_trips_and_a_restored_tab_goes_back_by_navigate() {
     let r = loaded.get_mut(&node(1)).unwrap();
     assert_eq!((&r.entries, r.at), (&lists[&node(1)].entries, lists[&node(1)].at));
     assert!(r.lin.is_empty(), "lin is not saved");
-    r.view_reset("c");
+    r.view_reset("c", Instant::now());
     assert_eq!(r.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()));
 }
 
@@ -438,7 +465,7 @@ fn the_origin_settling_after_a_plain_move_starts_is_not_a_redirect() {
     // After a wake the engine knows only c, whose load is still finishing when Back (a plain move to b) arrives.
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b", "c"]);
-    h.view_reset("c");
+    h.view_reset("c", Instant::now());
     assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("b".to_owned()));
     h.observe("b", "", true, false, now);
     assert_eq!((h.at, h.lin.clone()), (1, vec![Some(2), Some(1)]));
@@ -508,7 +535,7 @@ fn a_move_sent_to_a_new_engine_waits_for_its_first_report() {
     let late = now + Duration::from_secs(6);
     for origin_first in [true, false] {
         let mut h = NavHistory::visited(&["a", "b"]);
-        h.view_reset("b");
+        h.view_reset("b", Instant::now());
         assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
         if origin_first {
             h.observe("b", "", true, false, late);
@@ -800,7 +827,7 @@ fn a_typed_navigation_that_ends_at_its_origin_shows_the_origin_and_adds_nothing(
 fn the_origins_own_load_finishing_does_not_end_a_typed_navigation() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a"]);
-    h.view_reset("a");
+    h.view_reset("a", Instant::now());
     h.navigate("b", now);
     assert!(h.observe("a", "", true, false, now));
     assert!(h.observe("a", "", false, false, now), "still hidden");

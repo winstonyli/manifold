@@ -27,9 +27,12 @@ impl App {
             return;
         }
         // A tab landing on the page it showed (crash, swap, restore, wake) knows only `url`: its trail restarts there
-        // (`NavHistory::view_reset`), so that page is no visit. A new tab's first report is one.
-        if purpose.lands_existing() {
-            self.scoped.nav_history.entry(id).or_default().view_reset(&url);
+        // (`NavHistory::view_reset`), so that page is no visit. A new tab's first report is one, even when its engine
+        // was replaced before making it: a respawn of a trail still empty leaves it so.
+        let trail = self.scoped.nav_history.get(&id);
+        let never_reported = matches!(purpose, SpawnPurpose::Respawn) && trail.is_none_or(|h| h.cursor_url().is_none());
+        if purpose.lands_existing() && !never_reported {
+            self.scoped.nav_history.entry(id).or_default().view_reset(&url, std::time::Instant::now());
         }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
