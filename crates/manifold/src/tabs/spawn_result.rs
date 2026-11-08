@@ -26,10 +26,10 @@ impl App {
         if generation != self.spawns.session_generation {
             return;
         }
-        // A replaced engine (crash, wake, swap) knows only `url`: the trail's engine-list shadow restarts there, and a
-        // trail whose cursor is elsewhere is dropped (`NavHistory::view_reset`).
-        if let Some(history) = self.scoped.nav_history.get_mut(&id) {
-            history.view_reset(&url);
+        // A tab landing on the page it showed (crash, swap, restore, wake) knows only `url`: its trail restarts there
+        // (`NavHistory::view_reset`), so that page is no visit. A new tab's first report is one.
+        if purpose.lands_existing() {
+            self.scoped.nav_history.entry(id).or_default().view_reset(&url);
         }
         // A group dissolved while this spawn was still in flight (spawning
         // is async, see this fn's own doc comment) would otherwise leave
@@ -56,9 +56,7 @@ impl App {
         } else {
             (parent, group, anchor, muted)
         };
-        if matches!(purpose, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
-            && self.spawns.pending_respawn_focus == Some(id)
-        {
+        if purpose.lands_existing() && self.spawns.pending_respawn_focus == Some(id) {
             self.spawns.pending_respawn_focus = None;
         }
         match result {

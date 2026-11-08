@@ -470,12 +470,6 @@ impl NavHistory {
         self.pending.as_ref().is_some_and(|m| !m.committed && m.to.target().is_some() && now <= m.deadline)
     }
 
-    /// Whether the pending move, of any kind, has arrived; `None` with no move. A report that turns `Some(false)` into
-    /// `Some(true)` is the arrival of the page the host sent.
-    pub(crate) fn move_arrived(&self) -> Option<bool> {
-        self.pending.as_ref().map(|m| m.committed)
-    }
-
     /// A row of the branch list (decision 8): a plain move to `target`, never native (plan D3). Ignored for the
     /// cursor entry, an index out of range, and while a move is pending.
     pub(crate) fn go_to(&mut self, target: usize, now: Instant) -> NavAction {
@@ -742,27 +736,25 @@ impl NavHistory {
         self.entries.len() - 1
     }
 
-    /// The tab's engine was replaced and knows only the page at `url` (decision 4). A tree whose cursor is not at
-    /// `url` (the tab moved while the app was closed, or the file is stale) is emptied, and the next report makes a
-    /// new root.
+    /// The tab's engine was started on the page at `url` it already showed (decision 4): a wake, a restore, a crash or
+    /// an engine swap. A tree whose cursor is not at `url` (none yet, the tab moved while the app was closed, or the
+    /// file is stale) is replaced by a root at `url`, so the engine's reports of it are not a visit.
     pub(crate) fn view_reset(&mut self, url: &str) {
         // The old engine's documents are gone with it.
         self.pending = None;
         self.held.clear();
         // The new engine is loading `url`, though it can take seconds to say so.
         self.loading = true;
-        if self.entries.get(self.at).is_some_and(|e| e.url == url) {
-            self.lin = vec![Some(self.at)];
-            self.lin_at = 0;
-            self.fresh = true;
-            return;
+        if self.entries.get(self.at).is_none_or(|e| e.url != url) {
+            self.dirty |= !self.entries.is_empty();
+            self.entries.clear();
+            let serial = self.take_serial();
+            self.entries.push(Entry { url: url.to_owned(), title: String::new(), parent: None, fwd: None, serial });
+            self.at = 0;
         }
-        self.dirty |= !self.entries.is_empty();
-        self.entries.clear();
-        self.at = 0;
-        self.lin.clear();
+        self.lin = vec![Some(self.at)];
         self.lin_at = 0;
-        self.fresh = false;
+        self.fresh = true;
     }
 
     /// The trail itself has a Back: the cursor is not the root.

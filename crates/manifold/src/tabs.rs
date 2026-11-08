@@ -166,6 +166,13 @@ pub(crate) enum SpawnPurpose {
     Wake,
 }
 
+impl SpawnPurpose {
+    /// The spawn lands a tab that already existed, on the page it showed; the others open a new tab.
+    pub(crate) fn lands_existing(&self) -> bool {
+        matches!(self, SpawnPurpose::Respawn | SpawnPurpose::Restore | SpawnPurpose::Wake)
+    }
+}
+
 /// A pending `process_manager::spawn_tab` call's outcome, carried back to
 /// the main/event-loop thread via `EventLoopProxy` — see `App::spawn_tab_async`
 /// for why this exists: spawning WebKit's view-host blocks on a cold WSL2

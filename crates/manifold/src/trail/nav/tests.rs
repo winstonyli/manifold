@@ -350,6 +350,39 @@ fn a_typed_url_that_ends_where_it_began_leaves_no_row() {
     assert_eq!((tab_url(&app, tab), history_urls(&app)), ("https://c/", Vec::<&str>::new()));
 }
 
+/// Lands the parked spawn of `id` on a fake host.
+fn land_spawn(app: &mut App, id: NodeId) -> Peer {
+    let at = app.test_spawns.iter().position(|(spawn, _)| spawn.id == id).expect("the spawn is parked");
+    let (spawn, generation) = app.test_spawns.remove(at);
+    let (tab, peer) = crate::process_manager::ViewTab::fake(spawn.kind);
+    let result = Ok(tab);
+    app.handle_tab_spawn_result(crate::tabs::TabSpawnOutcome { spawn, generation, result, jar: Default::default() });
+    peer
+}
+
+/// A new tab's first page is a visit: it goes into the browsing history when the engine reports it.
+#[test]
+fn a_new_tabs_first_page_adds_a_history_row() {
+    let mut app = app_on(&session("trail-new-tab-history"), 1);
+    let tab = app.spawn_tab_at("https://new/", egui::Vec2::ZERO, None, None);
+    let _peer = land_spawn(&mut app, tab);
+    report(&mut app, tab, "https://new/", true);
+    report(&mut app, tab, "https://new/", false);
+    assert_eq!(history_urls(&app), ["https://new/"]);
+}
+
+/// A tab woken on the page it already showed visits nothing: a one-page trail is not saved, so its trail is empty.
+#[test]
+fn a_woken_tabs_page_adds_no_history_row() {
+    let mut app = app_on(&session("trail-wake-history"), 1);
+    let tab = add(&mut app, Kind::Tab, sleeping_tab("https://slept/", "S"));
+    app.wake_tab(tab, ViewKind::Webview2);
+    let _peer = land_spawn(&mut app, tab);
+    report(&mut app, tab, "https://slept/", true);
+    report(&mut app, tab, "https://slept/", false);
+    assert_eq!(history_urls(&app), Vec::<&str>::new());
+}
+
 /// `NavigationStateChanged` for `tab` at `url`.
 fn report(app: &mut App, tab: NodeId, url: &str, loading: bool) {
     let msg = ViewToHost::NavigationStateChanged {

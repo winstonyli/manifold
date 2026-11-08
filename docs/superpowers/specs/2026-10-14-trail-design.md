@@ -67,8 +67,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    2. a stale pending move (past its deadline) is dropped (`expire`). No report may ever come (a download, a 204, an
       engine that dropped the move), so the host also expires moves each frame (`expire_trail_moves`, from
       `drain_tab_events`): an uncommitted one sets the tab's url back to the cursor's and shares it, unless the tab is
-      loading, whose reports will decide. The browsing history gets a page the host sent only at its arrival (the
-      report that commits the move, `move_arrived`; 2026-11-08), so a move that never arrives, however it ends,
+      loading, whose reports will decide. The browsing history gets a row exactly when a report moves the trail's
+      cursor to another URL, a new tab's root included (2026-11-08), so a move that never arrives, however it ends,
       leaves no row, nor does the page the tab shows coming back into its bar after one (a 204).
    3. pending move, native, plain or new (a URL the host sent: typed, Home, a history row; `navigate`, 2026-11-07, which
       replaced the host-side `reported_url` substitution, see `docs/decisions/2026-11-07-stale-url-suppression.md`).
@@ -183,9 +183,11 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      arrival entry's index, and sets `lin_at` to it.
    - Every move waits the long window (`LOADING_WINDOW`, 30 s) for its first report, and from each report on, 3 s after a settled one and 30 s after a loading one. A woken WebView2 was quiet for 5.8-6 s before its first report, and the arrival then read as a redirect (`2026-11-07-navlog-back`); a slow server, or Servo (which reports only when a document commits), likewise, and the move's expiry then reverted the tab's url while its page was still on the way (Decide j1, 2026-11-08). A move with no report at all (a download, a 204 an engine never reports) so reverts after 30 s. `view_reset` still counts as loading, for the holds a move leaves.
    - On `view_reset` (the engine was replaced, so its list is empty) the pending move is cleared, and: if the tab's URL matches the cursor entry, `lin =
-     [at]`, `lin_at = 0`; if it does not, the arena is emptied as `entries.clear()` does today (`nav_history.rs:111-114`),
-     and the next report creates the root. `view_reset` runs only when a history already exists (`spawn_result.rs:37`); a new
-     tab's first report creates the root through the "empty" fold step.
+     [at]`, `lin_at = 0`; if it does not, or there is no tree (a one-page tree is not saved), the tree becomes a root at that
+     URL, so the engine's reports of the page the tab already showed are no visit (2026-11-08; until then the arena was
+     emptied and the next report made the root). `view_reset` runs for every tab that lands on the page it showed
+     (`SpawnPurpose::lands_existing`: a crash, a swap, a restore, a wake); a new tab's first report creates the root
+     through the "empty" fold step.
    - `lin` is not persisted: after a restart `view_reset` rebuilds it, so the first Back/Forward after a restart is a
      plain `Navigate`.
    Cost, documented: a plain `Navigate` loses scroll position and form state (native moves keep them).
@@ -325,7 +327,7 @@ index, a second root, or a `fwd` that is not a child drops the list; the dirty t
 changes; a repeated old URL after `GoBack` does not clear the pending move; a mismatching arrival after `GoBack` forks
 instead of moving the cursor; a plain `Navigate` sibling pick does not push twice; an eviction that drops a `lin` slot
 leaves a tombstone and native Back still lines up; an evicted `fwd` becomes `None`; `view_reset` with a differing URL
-empties a restored tree and the next report makes a new root; a `left_to`-only history is not saved; a redirect resolution sets `lin[lin_at]` with no truncate or push; a stale
+replaces a restored tree with a root at that URL; a `left_to`-only history is not saved; a redirect resolution sets `lin[lin_at]` with no truncate or push; a stale
 pending move leaves the tree and `lin` untouched; a plain move whose arrival is a redirect rewrites the target; a
 session replace clears the stashed lists; a move whose target URL equals the origin's commits at `go()`; a fresh
 navigation during a pending plain move leaves the target's URL untouched; the redirect report order (`T` loading, then

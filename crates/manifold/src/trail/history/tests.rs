@@ -148,14 +148,25 @@ fn view_reset_rebuilds_lin_and_makes_the_cursor_entry_fresh() {
 }
 
 #[test]
-fn view_reset_with_another_url_empties_the_tree_and_the_next_report_makes_a_root() {
+fn view_reset_with_another_url_makes_a_root_there() {
     let now = Instant::now();
     let mut h = NavHistory::visited(&["a", "b"]);
     h.dirty = false;
     h.view_reset("x");
-    assert!(h.entries.is_empty() && h.lin.is_empty() && h.dirty);
+    assert_eq!((urls(&h), h.at, h.lin.clone(), h.dirty), (vec!["x"], 0, vec![Some(0)], true));
     h.observe("x", "", false, false, now);
     assert_eq!((urls(&h), h.at, h.lin.clone()), (vec!["x"], 0, vec![Some(0)]));
+}
+
+/// An empty trail (a one-page tree is not saved) starts at the page the engine was started on.
+#[test]
+fn view_reset_of_an_empty_trail_makes_a_root() {
+    let now = Instant::now();
+    let mut h = NavHistory::default();
+    h.view_reset("x");
+    assert_eq!(h.cursor_url(), Some("x"));
+    h.observe("x2", "", true, false, now);
+    assert_eq!(urls(&h), ["x2"], "the engine's redirect rewrites the fresh root");
 }
 
 #[test]
