@@ -31,16 +31,7 @@ impl Held {
     fn break_all(&self) {
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         held.0 = true;
-        Self::shut(&mut held.1);
-    }
-
-    /// Breaks every kept connection; ones kept from now on stay open.
-    fn drain(&self) {
-        Self::shut(&mut self.0.lock().unwrap_or_else(PoisonError::into_inner).1);
-    }
-
-    fn shut(streams: &mut Vec<TcpStream>) {
-        for stream in streams.drain(..) {
+        for stream in held.1.drain(..) {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
@@ -260,17 +251,12 @@ impl Proxy {
         self.refuse.store(refuse, Ordering::SeqCst);
     }
 
-    /// Closes the tunnels held so far, so one launch's stalled install doesn't outlive it into the next.
-    pub fn drain_tunnels(&self) {
-        self.hold.held.drain();
-    }
-
     pub fn url(&self) -> String {
         format!("http://{}:{}", crate::http::site_host(), self.hold.addr.port())
     }
 }
 
-/// What an instance's app reaches instead of the internet (one per gate process, `instance::offline`). A real
+/// What an instance's app reaches instead of the internet (one per instance, dropped with it). A real
 /// server answers on its own time, so a favicon would land before a shot or after it; `env` sends the app's fetches to
 /// the proxy, and the local servers past it. The host's own fetches read `HTTPS_PROXY`; WebView2 ignores it and takes
 /// `--proxy-server` from `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`. CEF reads neither (PARKED.md "CEF in the gate is
@@ -412,34 +398,23 @@ mod tests {
         assert!(String::from_utf8_lossy(&get(port, "x:443", "", 10)).starts_with("HTTP/1.1 200"));
     }
 
-    /// A tunnel held by one launch's install is closed for the next launch, and the proxy still holds new ones.
+    /// An instance's stalled install ends with it: dropping the proxy (with its `Offline`) closes the tunnels it held.
     #[test]
-    fn draining_closes_held_tunnels_and_keeps_holding_new_ones() {
+    fn dropping_the_proxy_closes_its_held_tunnels() {
         let proxy = Proxy::start(false).unwrap();
         let port = proxy.hold.addr.port();
-        let held = |n: usize| {
-            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-            while proxy.hold.held.0.lock().unwrap().1.len() != n {
-                assert!(std::time::Instant::now() < deadline, "never held {n} tunnels");
-                thread::yield_now();
-            }
-        };
-        let tunnel = || {
-            let mut s = TcpStream::connect((crate::http::site_host().as_str(), port)).unwrap();
-            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            write!(s, "CONNECT x:443 HTTP/1.1\r\n\r\n").unwrap();
-            let mut buf = [0u8; 64];
-            let n = s.read(&mut buf).unwrap();
-            assert!(buf[..n].starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&buf[..n]));
-            s
-        };
-        let mut first = tunnel();
-        held(1);
-        proxy.drain_tunnels();
-        let mut buf = [0u8; 1];
-        assert!(matches!(first.read(&mut buf), Ok(0) | Err(_)), "the drained tunnel is still open");
-        held(0);
-        let _second = tunnel();
-        held(1);
+        let mut s = TcpStream::connect((crate::http::site_host().as_str(), port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(s, "CONNECT x:443 HTTP/1.1\r\n\r\n").unwrap();
+        let mut buf = [0u8; 64];
+        let n = s.read(&mut buf).unwrap();
+        assert!(buf[..n].starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&buf[..n]));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while proxy.hold.held.0.lock().unwrap().1.is_empty() {
+            assert!(std::time::Instant::now() < deadline, "the tunnel was never held");
+            thread::yield_now();
+        }
+        drop(proxy);
+        assert!(matches!(s.read(&mut buf), Ok(0) | Err(_)), "the tunnel outlived its proxy");
     }
 }

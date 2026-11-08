@@ -16,7 +16,7 @@ use std::io::{self, Write};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Mutex, PoisonError};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -166,26 +166,15 @@ pub struct Instance {
     work: PathBuf,
     /// The instance's stdout+stderr.
     pub log: PathBuf,
-    /// What the app reaches instead of the internet (`offline`); `None` only for `launch_online`.
-    offline: Option<&'static Offline>,
-}
-
-/// The gate process's one `Offline`, shared by every instance it launches: WebView2 refuses a second set of browser
-/// arguments on a user-data folder already in use (0x8007139f), and every instance from one exe shared that folder
-/// until each app got its own (`process_manager::webview2_user_data`, 2026-11-07), so the proxy address in them could
-/// not differ between instances. Each `gate all` stage is its own process.
-fn offline() -> io::Result<&'static Offline> {
-    static OFFLINE: OnceLock<Offline> = OnceLock::new();
-    if let Some(offline) = OFFLINE.get() {
-        return Ok(offline);
-    }
-    let started = Offline::start()?;
-    Ok(OFFLINE.get_or_init(|| started))
+    /// What the app reaches instead of the internet, its own (each app has its own WebView2 user-data folder, so the
+    /// proxy address in its browser arguments can differ, `process_manager::webview2_user_data`); `None` only for
+    /// `launch_online`. Dropped with the instance, which closes its tunnels.
+    offline: Option<Offline>,
 }
 
 impl Instance {
     /// Starts `exe --headless --profile-dir PROFILE` at BelowNormal in the kill-on-close job, its output in
-    /// `WORK/LOG_NAME`, offline (`offline`, shared by the process's instances). The caller seeds the profile first
+    /// `WORK/LOG_NAME`, offline (an `Offline` of its own). The caller seeds the profile first
     /// (`seed_settings`). The exports go to `WORK`.
     pub fn launch(exe: &Path, profile: &Path, work: &Path, log_name: &str) -> io::Result<Instance> {
         Self::launch_env(exe, profile, work, log_name, &[])
@@ -199,10 +188,7 @@ impl Instance {
         log_name: &str,
         envs: &[(&str, &str)],
     ) -> io::Result<Instance> {
-        let offline = offline()?;
-        // The proxy outlives the instance: each launch starts it refusing again, with no tunnel left open.
-        offline.proxy.set_refuse(true);
-        offline.proxy.drain_tunnels();
+        let offline = Offline::start()?;
         let mut inst = Self::spawn(exe, profile, work, log_name, &offline.env(envs))?;
         inst.offline = Some(offline);
         Ok(inst)
@@ -219,10 +205,9 @@ impl Instance {
         Self::spawn(exe, profile, work, log_name, envs)
     }
 
-    /// The proxy this instance's fetches go to (`launch` and `launch_env` only), shared with the process's other
-    /// instances.
-    pub fn proxy(&self) -> Option<&'static Proxy> {
-        self.offline.map(|o| &o.proxy)
+    /// The proxy this instance's fetches go to (`launch` and `launch_env` only).
+    pub fn proxy(&self) -> Option<&Proxy> {
+        self.offline.as_ref().map(|o| &o.proxy)
     }
 
     fn spawn(exe: &Path, profile: &Path, work: &Path, log_name: &str, envs: &[(&str, &str)]) -> io::Result<Instance> {
@@ -446,15 +431,6 @@ mod tests {
         let taken = take_logs();
         assert_eq!(taken.iter().filter(|p| **p == log).count(), 1, "deduplicated: {taken:?}");
         assert!(!take_logs().contains(&log), "take empties the list");
-    }
-
-    #[test]
-    fn every_instance_gets_the_same_webview2_arguments() {
-        let arguments = || {
-            let env = offline().unwrap().env(&[]);
-            env.into_iter().find(|(name, _)| *name == "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap().1.to_string()
-        };
-        assert_eq!(arguments(), arguments());
     }
 
     #[test]
