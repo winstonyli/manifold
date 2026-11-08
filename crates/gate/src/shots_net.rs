@@ -256,7 +256,7 @@ impl Proxy {
     }
 }
 
-/// What an instance's app reaches instead of the internet (`Instance::launch_env` starts one per instance). A real
+/// What an instance's app reaches instead of the internet (one per gate process, `instance::offline`). A real
 /// server answers on its own time, so a favicon would land before a shot or after it; `env` sends the app's fetches to
 /// the proxy, and the local servers past it. The host's own fetches read `HTTPS_PROXY`; WebView2 ignores it and takes
 /// `--proxy-server` from `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`. CEF reads neither (PARKED.md "CEF in the gate is
