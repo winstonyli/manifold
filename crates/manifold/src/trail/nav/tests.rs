@@ -305,16 +305,48 @@ fn a_move_with_no_report_reverts_the_tab_at_its_deadline() {
     assert!(!app.scoped.nav_history[&tab].move_pending(late));
 }
 
-/// The page a reverted move never reached leaves the browsing history it was put in when sent.
+/// Urls in the browsing history, oldest first.
+fn history_urls(app: &App) -> Vec<&str> {
+    app.history.iter().map(|e| e.url.as_str()).collect()
+}
+
+/// A move's page goes into the browsing history when the engine reports it, not when it is sent.
+#[test]
+fn a_move_adds_its_history_row_when_it_arrives() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-move-arrives-history");
+    app.trail_pick(tab, 1);
+    assert_eq!(history_urls(&app), Vec::<&str>::new(), "sent, not reached");
+    report(&mut app, tab, "https://b/", false);
+    assert_eq!(history_urls(&app), ["https://b/"]);
+}
+
+/// A move that never arrives, by its deadline, adds no row.
 #[test]
 fn a_reverted_move_leaves_no_history_row() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-move-expires-history");
-    app.history.push(crate::history::HistoryEntry { title: "B".into(), url: "https://b/".into() });
-    let before = app.history.clone();
     app.trail_pick(tab, 1);
-    assert_eq!(app.history.len(), before.len() + 1, "sent: a row for it");
     app.expire_trail_moves(Instant::now() + std::time::Duration::from_secs(31));
-    assert_eq!(app.history, before, "never reached: the row is gone, an earlier visit stays");
+    assert_eq!(history_urls(&app), Vec::<&str>::new());
+}
+
+/// A typed url replaced before it arrives adds no row; the one that arrives does.
+#[test]
+fn a_replaced_typed_url_leaves_no_history_row() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-typed-replaced-history");
+    app.navigate_tab(tab, "https://first/".into());
+    app.navigate_tab(tab, "https://second/".into());
+    report(&mut app, tab, "https://second/", false);
+    assert_eq!(history_urls(&app), ["https://second/"]);
+}
+
+/// A typed url whose load ends where it began (an attachment, a 204) adds no row for itself.
+#[test]
+fn a_typed_url_that_ends_where_it_began_leaves_no_row_for_it() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-typed-204-history");
+    app.navigate_tab(tab, "https://file/".into());
+    report(&mut app, tab, "https://c/", true);
+    report(&mut app, tab, "https://c/", false);
+    assert!(!history_urls(&app).contains(&"https://file/"), "{:?}", history_urls(&app));
 }
 
 /// `NavigationStateChanged` for `tab` at `url`.

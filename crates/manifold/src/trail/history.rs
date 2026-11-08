@@ -470,6 +470,12 @@ impl NavHistory {
         self.pending.as_ref().is_some_and(|m| !m.committed && m.to.target().is_some() && now <= m.deadline)
     }
 
+    /// Whether the pending move, of any kind, has arrived; `None` with no move. A report that turns `Some(false)` into
+    /// `Some(true)` is the arrival of the page the host sent.
+    pub(crate) fn move_arrived(&self) -> Option<bool> {
+        self.pending.as_ref().map(|m| m.committed)
+    }
+
     /// A row of the branch list (decision 8): a plain move to `target`, never native (plan D3). Ignored for the
     /// cursor entry, an index out of range, and while a move is pending.
     pub(crate) fn go_to(&mut self, target: usize, now: Instant) -> NavAction {

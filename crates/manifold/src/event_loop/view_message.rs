@@ -41,13 +41,11 @@ impl App {
                 if !self.nodes.get(&tab_id).is_some_and(|n| n.as_tab().is_some()) {
                     return false;
                 }
-                let stale = self.scoped.nav_history.entry(tab_id).or_default().observe(
-                    &url,
-                    &title,
-                    loading,
-                    can_go_forward,
-                    std::time::Instant::now(),
-                );
+                let trail = self.scoped.nav_history.entry(tab_id).or_default();
+                let awaiting = trail.move_arrived() == Some(false);
+                let stale = trail.observe(&url, &title, loading, can_go_forward, std::time::Instant::now());
+                // A page the host sent (`load_url`) is already the node's url: its arrival is the visit.
+                let arrived = awaiting && trail.move_arrived() == Some(true);
                 let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };
@@ -58,7 +56,7 @@ impl App {
                     Some(settled) => self.spawns.skip_convert.insert(tab_id, settled),
                     None => self.spawns.skip_convert.remove(&tab_id),
                 };
-                if url_changed {
+                if url_changed || arrived {
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);

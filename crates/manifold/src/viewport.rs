@@ -202,26 +202,7 @@ impl App {
 
     /// Loads `url` in tab `tab_id`, shown and shared at once, with the trail left to its caller.
     pub(crate) fn load_url(&mut self, tab_id: NodeId, url: String) {
-        if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
-            // Recorded here, not left to `NavigationStateChanged`'s own
-            // history-recording: this sets `node.url` immediately
-            // (synchronously, before the engine round-trips its own
-            // confirmation), so that handler's own `node.url != url` check
-            // would already be false by the time its event arrives,
-            // silently missing every address-bar-driven navigation. Title
-            // isn't known yet at this point (the page hasn't loaded), so
-            // this entry shows as its bare url until superseded by a later
-            // one -- `build_history_popup` already falls back to the url
-            // for an empty title.
-            if node.url != url {
-                self.history.push(history::HistoryEntry { title: String::new(), url: url.clone() });
-                if self.history.len() > history::MAX_HISTORY_ENTRIES {
-                    self.history.remove(0);
-                }
-                self.list_popups.history_dirty = true;
-                self.list_popups.history_matches_cache = None;
-            }
-        }
+        // The browsing history gets the page when the engine reports it (the trail's arrival, `NavigationStateChanged`).
         if let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) {
             node.url = url.clone();
             node.tab.send(&HostToView::Navigate { url: url.clone(), referrer: None });

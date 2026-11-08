@@ -68,13 +68,7 @@ impl App {
         }
         for (id, url) in &reverted {
             if let Some(node) = self.nodes.get_mut(id).and_then(|n| n.as_tab_mut()) {
-                let sent = std::mem::replace(&mut node.url, url.clone());
-                // The untitled row `load_url` added when it sent the page: never reached, so not a visit.
-                if let Some(at) = self.history.iter().rposition(|e| e.url == sent && e.title.is_empty()) {
-                    self.history.remove(at);
-                    self.list_popups.history_dirty = true;
-                    self.list_popups.history_matches_cache = None;
-                }
+                node.url.clone_from(url);
             }
             self.edit_url(*id, url);
         }
