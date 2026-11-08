@@ -857,6 +857,46 @@ fn a_typed_url_during_a_back_hides_the_backs_late_arrival() {
     assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
 }
 
+/// A typed url replaced by Back: the typed page, if the engine still reaches it, is not a page of the trail.
+#[test]
+fn back_during_a_typed_url_hides_the_typed_pages_late_arrival() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["p", "a"]);
+    h.navigate("b", now);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("p".into()));
+    assert!(h.observe("b", "", true, false, now), "the typed page loading, held");
+    assert!(h.observe("b", "", false, false, now), "and finishing, held");
+    h.observe("p", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["p", "a"], 0));
+}
+
+/// Typing the url shown ends the typed move without a new one; what it was waiting on is still held.
+#[test]
+fn typing_the_url_shown_during_a_typed_url_hides_the_first_typed_page() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.navigate("a", now);
+    assert!(h.observe("b", "", true, false, now));
+    assert!(h.observe("b", "", false, false, now));
+    assert!(!h.observe("a", "", false, false, now), "the page shown is not held");
+    assert_eq!((urls(&h), h.at), (vec!["a"], 0));
+}
+
+/// An old document still loading keeps its hold, as the origin's loading reports keep a move's.
+#[test]
+fn a_held_pages_loading_report_extends_its_hold() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", false, false, now);
+    h.navigate("c", now);
+    assert!(h.observe("a", "", true, false, now + Duration::from_secs(1)));
+    assert!(h.observe("a", "", false, false, now + Duration::from_secs(4)), "past MOVE_WINDOW, still held");
+    h.observe("c", "", false, false, now + Duration::from_secs(5));
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
+}
+
 /// What a replaced move hid stops being hidden when the new move goes there.
 #[test]
 fn back_to_the_page_a_hold_covers_still_arrives() {

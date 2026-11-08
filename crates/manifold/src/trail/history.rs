@@ -129,9 +129,9 @@ struct Move {
     to: To,
     /// The cursor's URL when the move started; the cursor stays there until the commit.
     origin: String,
-    /// What the move this one replaced was still waiting on (its origin and older, and its target if it hadn't
-    /// arrived), less this move's target: until the deadline every report of them is an old document's, held.
-    older: Vec<String>,
+    /// The URL the host sent (a trail move: its target's). If the move is replaced before it arrives, a report of it
+    /// is the replaced navigation's (`NavHistory::held`).
+    sent: String,
     deadline: Instant,
     /// The cursor is at the target; the origin's old document may still report (in any order, some engines settling
     /// the target before the origin's last report), so its settled report is held until the deadline.
@@ -139,6 +139,13 @@ struct Move {
     /// A load began after the move did: a loading report of `origin` while the last report was settled. A settled one
     /// next means the navigation ended without leaving (an attachment, a 204).
     started: bool,
+}
+
+/// A URL an old document may still report: what a move the host replaced was still waiting on.
+#[derive(Clone, Debug)]
+struct Held {
+    url: String,
+    until: Instant,
 }
 
 /// Where a move goes.
@@ -183,6 +190,9 @@ pub(crate) struct NavHistory {
     /// The engine's cursor in `lin`.
     lin_at: usize,
     pending: Option<Move>,
+    /// What moves the host replaced or ended were still waiting on (`retire`): every report of these is an old
+    /// document's, held until `until`.
+    held: Vec<Held>,
     /// Bumped by every eviction, which shifts the indices after it: an open Back/Forward popup recentres on it
     /// (`popups/dropdowns.rs`). Page ids do not need it: they carry the page's `serial`.
     epoch: u32,
@@ -214,7 +224,7 @@ impl NavHistory {
     ) -> bool {
         let before = self.saved_form();
         let same_page = self.entries.get(self.at).is_some_and(|e| e.url == url);
-        let stale = self.is_stale_origin(url, loading, now) || self.holds_older(url, now);
+        let stale = self.is_stale_origin(url, loading, now) || self.holds(url, now);
         if self.fold(url, loading, can_go_forward, now)
             && !title.is_empty()
             && (same_page || !loading)
@@ -239,9 +249,9 @@ impl NavHistory {
         })
     }
 
-    /// Step 3's hold on what a replaced move was waiting on (`Move::older`).
-    fn holds_older(&self, url: &str, now: Instant) -> bool {
-        self.pending.as_ref().is_some_and(|m| now <= m.deadline && m.older.iter().any(|u| u == url))
+    /// Step 3's hold on what a replaced move was waiting on (`held`).
+    fn holds(&self, url: &str, now: Instant) -> bool {
+        self.held.iter().any(|h| h.url == url && now <= h.until)
     }
 
     /// What a save writes; a change in it is a change worth saving.
@@ -268,8 +278,10 @@ impl NavHistory {
         }
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
-        // of what a replaced move was waiting on is held whole.
-        if self.holds_older(url, now) {
+        // of what a replaced move was waiting on is held whole, and extends its hold as an origin's report does.
+        self.held.retain(|h| now <= h.until);
+        if let Some(h) = self.held.iter_mut().find(|h| h.url == url) {
+            h.until = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
             return false;
         }
         if let Some(m) = self.pending.clone() {
@@ -574,6 +586,8 @@ impl NavHistory {
         };
         if url == self.entries[from].url {
             // No report could tell the arrival from the origin. A plain move sends nothing: the tab shows that page.
+            self.retire(now);
+            self.release(&url);
             let before = self.saved_form();
             self.commit(target, from, if native { LinStep::Native } else { LinStep::Replace });
             self.dirty |= before != self.saved_form();
@@ -591,23 +605,36 @@ impl NavHistory {
         if self.entries.get(self.at).is_some_and(|e| e.url != url) {
             self.begin(To::New, url, now);
         } else {
-            self.pending = None;
+            self.retire(now);
+            self.release(url);
         }
     }
 
-    /// Starts a move to `to` (whose URL is `url`) in place of any pending one, keeping what that one still held.
-    fn begin(&mut self, to: To, url: &str, now: Instant) {
+    /// Starts a move to `to` (whose URL is `sent`) in place of any pending one.
+    fn begin(&mut self, to: To, sent: &str, now: Instant) {
+        self.retire(now);
         let origin = self.entries[self.at].url.clone();
-        let mut older = Vec::new();
-        if let Some(m) = self.pending.take().filter(|m| now <= m.deadline) {
-            let arrival = m.to.target().filter(|_| !m.committed).map(|t| self.entries[t].url.clone());
-            older = m.older.into_iter().chain([m.origin]).chain(arrival).collect();
-            older.retain(|u| *u != origin && u != url);
-            older.sort();
-            older.dedup();
-        }
+        self.release(&origin);
+        self.release(sent);
         let deadline = now + self.move_window();
-        self.pending = Some(Move { to, origin, older, deadline, committed: false, started: false });
+        self.pending = Some(Move { to, origin, sent: sent.to_owned(), deadline, committed: false, started: false });
+    }
+
+    /// Ends the pending move for one the host starts: what it was still waiting on, its origin and its unreached
+    /// target, is held (`held`) for as long as a new move would wait.
+    fn retire(&mut self, now: Instant) {
+        let Some(m) = self.pending.take().filter(|m| now <= m.deadline) else { return };
+        let until = now + self.move_window();
+        let arrival = (!m.committed).then_some(m.sent);
+        for url in [Some(m.origin), arrival].into_iter().flatten() {
+            self.release(&url);
+            self.held.push(Held { url, until });
+        }
+    }
+
+    /// `url` is where the tab is or is going: its reports are no old document's.
+    fn release(&mut self, url: &str) {
+        self.held.retain(|h| h.url != url);
     }
 
     /// How long a move sent now has until the engine should have reported it.
@@ -675,7 +702,9 @@ impl NavHistory {
     /// `url` (the tab moved while the app was closed, or the file is stale) is emptied, and the next report makes a
     /// new root.
     pub(crate) fn view_reset(&mut self, url: &str) {
+        // The old engine's documents are gone with it.
         self.pending = None;
+        self.held.clear();
         // The new engine is loading `url`, though it can take seconds to say so.
         self.loading = true;
         if self.entries.get(self.at).is_some_and(|e| e.url == url) {
