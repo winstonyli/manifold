@@ -832,6 +832,43 @@ fn a_second_typed_url_replaces_the_first_and_the_origin_stays_hidden() {
     assert_eq!((urls(&h), h.at), (vec!["a", "c"], 1));
 }
 
+/// A move replaced before its hold ran out passes the hold on: the old document's late finish is still hidden.
+#[test]
+fn a_second_typed_url_after_the_first_arrived_still_holds_the_first_origin() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", false, false, now);
+    h.navigate("c", now);
+    assert!(h.observe("a", "", false, false, now), "a's late finish, held");
+    h.observe("c", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
+}
+
+/// The same for a move that hadn't arrived: its arrival, if the engine still makes it, is not a page of the trail.
+#[test]
+fn a_typed_url_during_a_back_hides_the_backs_late_arrival() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.navigate("c", now);
+    assert!(h.observe("a", "", false, false, now), "the Back's arrival, hidden");
+    h.observe("c", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
+}
+
+/// What a replaced move hid stops being hidden when the new move goes there.
+#[test]
+fn back_to_the_page_a_hold_covers_still_arrives() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", false, false, now);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    assert!(!h.observe("a", "", false, false, now), "the arrival");
+    assert_eq!((urls(&h), h.at), (vec!["a", "b"], 0));
+}
+
 #[test]
 fn typing_the_url_shown_or_into_an_empty_trail_starts_no_move() {
     let now = Instant::now();

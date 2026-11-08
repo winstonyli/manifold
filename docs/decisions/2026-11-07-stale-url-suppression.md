@@ -18,6 +18,10 @@ spec decision 3, step 3), and a trail move loads through `App::load_url`, keepin
 - The origin is the cursor's URL (`origin: String`, replacing `from`); no move on an empty trail (parked) or to the
   cursor's own URL.
 - A `New` move commits on the first report of another URL as a push, never a redirect of the origin's own load.
+- A move that replaces a live one (a second typed url, Back during a typed one) keeps what it was still waiting on
+  (`Move::older`): its origin and older, and its target if it hadn't arrived, less the new target. Until the new
+  deadline every report of them is held whole (2026-11-07, review of 77898981: the replaced hold let `a`'s late finish
+  push `a, b, a`).
 
 ## Before 2026-11-07
 

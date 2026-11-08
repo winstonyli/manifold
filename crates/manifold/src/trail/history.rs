@@ -129,6 +129,9 @@ struct Move {
     to: To,
     /// The cursor's URL when the move started; the cursor stays there until the commit.
     origin: String,
+    /// What the move this one replaced was still waiting on (its origin and older, and its target if it hadn't
+    /// arrived), less this move's target: until the deadline every report of them is an old document's, held.
+    older: Vec<String>,
     deadline: Instant,
     /// The cursor is at the target; the origin's old document may still report (in any order, some engines settling
     /// the target before the origin's last report), so its settled report is held until the deadline.
@@ -211,7 +214,7 @@ impl NavHistory {
     ) -> bool {
         let before = self.saved_form();
         let same_page = self.entries.get(self.at).is_some_and(|e| e.url == url);
-        let stale = self.is_stale_origin(url, loading, now);
+        let stale = self.is_stale_origin(url, loading, now) || self.holds_older(url, now);
         if self.fold(url, loading, can_go_forward, now)
             && !title.is_empty()
             && (same_page || !loading)
@@ -234,6 +237,11 @@ impl NavHistory {
                     _ => loading || !m.started,
                 }
         })
+    }
+
+    /// Step 3's hold on what a replaced move was waiting on (`Move::older`).
+    fn holds_older(&self, url: &str, now: Instant) -> bool {
+        self.pending.as_ref().is_some_and(|m| now <= m.deadline && m.older.iter().any(|u| u == url))
     }
 
     /// What a save writes; a change in it is a change worth saving.
@@ -259,7 +267,11 @@ impl NavHistory {
             self.pending = None;
         }
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
-        // origin's settled report until its deadline: the old document finishing, not a redirect (step 5).
+        // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
+        // of what a replaced move was waiting on is held whole.
+        if self.holds_older(url, now) {
+            return false;
+        }
         if let Some(m) = self.pending.clone() {
             let stale = self.is_stale_origin(url, loading, now);
             if m.committed {
@@ -568,7 +580,7 @@ impl NavHistory {
             return if native { action } else { NavAction::None };
         }
         let to = if native { To::Native(target) } else { To::Plain(target) };
-        self.begin(to, now);
+        self.begin(to, &url, now);
         action
     }
 
@@ -576,16 +588,26 @@ impl NavHistory {
     /// page it leaves can't report over it. None for the cursor's own URL, as in `start` (no report could tell the
     /// arrival from the origin), or on an empty trail (no origin; the engine's first report makes the root).
     pub(crate) fn navigate(&mut self, url: &str, now: Instant) {
-        self.pending = None;
         if self.entries.get(self.at).is_some_and(|e| e.url != url) {
-            self.begin(To::New, now);
+            self.begin(To::New, url, now);
+        } else {
+            self.pending = None;
         }
     }
 
-    fn begin(&mut self, to: To, now: Instant) {
+    /// Starts a move to `to` (whose URL is `url`) in place of any pending one, keeping what that one still held.
+    fn begin(&mut self, to: To, url: &str, now: Instant) {
         let origin = self.entries[self.at].url.clone();
+        let mut older = Vec::new();
+        if let Some(m) = self.pending.take().filter(|m| now <= m.deadline) {
+            let arrival = m.to.target().filter(|_| !m.committed).map(|t| self.entries[t].url.clone());
+            older = m.older.into_iter().chain([m.origin]).chain(arrival).collect();
+            older.retain(|u| *u != origin && u != url);
+            older.sort();
+            older.dedup();
+        }
         let deadline = now + self.move_window();
-        self.pending = Some(Move { to, origin, deadline, committed: false, started: false });
+        self.pending = Some(Move { to, origin, older, deadline, committed: false, started: false });
     }
 
     /// How long a move sent now has until the engine should have reported it.
