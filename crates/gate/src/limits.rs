@@ -32,7 +32,7 @@ fn crates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-/// Every `.rs` file under a crate's `src`, as `(path under crates/, source)`.
+/// Every `.rs` file of a crate (`src`, `tests` and `build.rs`), as `(path under crates/, source)`.
 fn all_sources() -> Vec<(String, String)> {
     fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
@@ -46,9 +46,12 @@ fn all_sources() -> Vec<(String, String)> {
     }
     let mut files = Vec::new();
     for krate in std::fs::read_dir(crates_dir()).unwrap().flatten() {
-        let src = krate.path().join("src");
-        if src.is_dir() {
-            walk(&src, &mut files);
+        for dir in ["src", "tests"].map(|d| krate.path().join(d)).into_iter().filter(|d| d.is_dir()) {
+            walk(&dir, &mut files);
+        }
+        let build = krate.path().join("build.rs");
+        if build.is_file() {
+            files.push(build);
         }
     }
     let mut found = Vec::new();
@@ -194,18 +197,58 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
     assert_eq!(users, ["manifold/src/worker.rs"], "catch_unwind belongs to worker.rs alone");
 }
 
+/// Rust items whose names start `VIEW_`, which `host_variables_are_named_only_in_host_env` would otherwise read as
+/// host variables. An entry no code uses fails, so the list only shrinks.
+const VIEW_ITEMS: &[&str] =
+    &["VIEW_INBOX", "VIEW_JOB", "VIEW_KIND", "VIEW_KINDS", "VIEW_MESSAGES_PER_DRAIN", "VIEW_TO_HOST_VARIANTS"];
+
+/// The `VIEW_…` words in `source`'s code lines (a comment line is skipped): a `VIEW_` not inside a longer word, with
+/// the capitals, digits and underscores after it.
+fn view_words(source: &str) -> Vec<&str> {
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut words = Vec::new();
+    for line in source.lines().filter(|l| !l.trim_start().starts_with("//")) {
+        for (at, _) in line.match_indices("VIEW_") {
+            if at > 0 && is_word(line.as_bytes()[at - 1]) {
+                continue;
+            }
+            let len =
+                line[at..].bytes().take_while(|&b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_').count();
+            words.push(&line[at..at + len]);
+        }
+    }
+    words
+}
+
 /// A host's startup variable is named once, in `manifold_view_protocol::host_env`, and both the app that writes it and
-/// the host that reads it use that constant: a name spelled on each side can drift apart silently.
+/// the host that reads it use that constant: a name spelled on each side can drift apart silently. Any `VIEW_` word in
+/// code elsewhere (in a string, a shell line, `format!("VIEW_{x}")`) fails unless it is one of `VIEW_ITEMS`.
 #[test]
 fn host_variables_are_named_only_in_host_env() {
-    let spelled: Vec<String> = all_sources()
-        .into_iter()
-        .filter(|(p, s)| {
-            p != "manifold-view-protocol/src/host_env.rs" && p != "gate/src/limits.rs" && s.contains("\"VIEW_")
-        })
-        .map(|(p, _)| p)
-        .collect();
-    assert!(spelled.is_empty(), "{spelled:?} spell a host variable: use its `host_env::ENV_*` constant");
+    let mut spelled = Vec::new();
+    let mut used = std::collections::BTreeSet::new();
+    for (path, source) in all_sources() {
+        if path == "manifold-view-protocol/src/host_env.rs" || path == "gate/src/limits.rs" {
+            continue;
+        }
+        for word in view_words(&source) {
+            if let Some(item) = VIEW_ITEMS.iter().find(|&&i| i == word) {
+                used.insert(*item);
+            } else {
+                spelled.push(format!("{path}: {word}"));
+            }
+        }
+    }
+    assert!(spelled.is_empty(), "{spelled:#?} spell a host variable: use its `host_env::ENV_*` constant");
+    let unused: Vec<_> = VIEW_ITEMS.iter().filter(|w| !used.contains(*w)).collect();
+    assert!(unused.is_empty(), "{unused:?} are in no code: delete them from VIEW_ITEMS");
+}
+
+#[test]
+fn view_words_finds_a_name_wherever_code_spells_it() {
+    let code =
+        "let a = \"VIEW_X\";\nformat!(\"{s}VIEW_Y=1\");\nformat!(\"VIEW_{x}\");\n// VIEW_NOTE\nPREVIEW_ROWS; VIEW_KIND";
+    assert_eq!(view_words(code), ["VIEW_X", "VIEW_Y", "VIEW_", "VIEW_KIND"]);
 }
 
 /// The store is the bottom layer: nothing in it, tests included, names the app above it, so it can become its own
