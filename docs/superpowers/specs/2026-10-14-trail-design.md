@@ -56,7 +56,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    replica's URL and a restore all fork alike.
    A user move (Back, Forward, a sibling pick) is one mechanism, a **pending move**: `go()` changes nothing in the tree
    (one exception: the equal-URL commit in step 3). It
-   records `Move { target: usize (entry index), from: usize (entry index), native: bool, deadline: Instant }` and returns
+   records `Move { to: To (Native(entry) | Plain(entry) | New), origin: String (the cursor's URL), sent: String (the URL
+   the host sent), deadline: Instant, committed: bool, started: bool }` and returns
    the action for the caller (`GoBack`/`GoForward` or `Navigate(url)`). `at`, `fwd`, `lin` and `lin_at` change only when the
    move commits on its arrival, so a move that never arrives has nothing to undo. `go()` and `observe` take `now` (tests
    need no sleeps); `go()` is ignored while a non-stale move is pending (a rapid second press would otherwise send a second
@@ -75,26 +76,31 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       A report whose URL equals `target`'s URL commits a native or plain move. A new move commits on the first report of
       any other URL, whatever the engine made of the URL sent, as a push by step 6's rule (never step 5's rewrite: the
       origin's own load is not being redirected), and becomes a committed plain move at the pushed entry. A new move is
-      not pending for `go()`: Back and Forward replace it. A report equal to neither drops a trail move and falls
-      to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
+      not pending for `go()`: Back and Forward replace it. A report equal to neither ends a trail move (its origin held,
+      below) and falls to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
       `target` URL report is a known limit and forks).
-      **Held urls.** A move that ends before its reports do leaves them to an old document. `retire` puts what the move
-      was still waiting on in `held`: its origin, and its unreached target when the host ended the move (`begin`, and a
-      `go()` or `navigate` to the cursor's URL), not when the page did (the last case above). Before anything else in
-      this step, a report of a held url is held whole (`observe` returns true, the trail and tab are unchanged) and
-      extends its hold by 3 s, or 30 s if loading; a hold starts at the same window a new move would get. `release`
-      drops a url's hold when the cursor or a new move goes there; a view reset clears the list. Why, and the reviews
-      that found each gap: `docs/decisions/2026-11-07-stale-url-suppression.md`. Known limits, both because no engine
-      gives a report a navigation id, so a hold can only be timed: a real navigation to a held url within its hold (a
-      link back to the page just left, a redirect onto it) goes unrecorded until it reports after a quiet stretch of the
-      window (each report inside the hold extends it), and an
-      arrival the engine renamed (a typed url that redirects) is not known in advance, so it is not held.
+      **Held urls.** A move that ends before its reports do leaves them to an old document. `retire` puts what a live
+      move (not past its deadline; step 2 drops an expired one with nothing held) was still waiting on in `held`: its
+      origin, and its target if unreached when the host ended the move (`begin`, and a `go()`, `go_to` or `navigate` to
+      the cursor's URL), not when the page did (an uncommitted trail move ended by a report equal to neither, above).
+      `release` drops a url's holds: `begin` releases the new move's origin and target, so of a replaced move only what
+      differs from the new one stays held, and a `go()`, `go_to` or `navigate` to the cursor's URL releases that URL. A
+      view reset clears the list. Before anything else in this step, a report of a held url is held whole (`observe`
+      returns true, the trail and tab are unchanged) and sets its hold to end 3 s from now, or 30 s if loading (so a
+      settled report can shorten a 30 s hold); a hold starts with the window a new move would get (30 s while the tab
+      is loading). Why, and the reviews that found each gap: `docs/decisions/2026-11-07-stale-url-suppression.md`.
+      Known limits, all because no engine gives a report a navigation id, so a hold can only be timed: a real navigation
+      to a held url within its hold (a link or `history.back()` to the page just left, a redirect onto it) goes
+      unrecorded, also by step 4b, unless the url reports again after a quiet stretch of its window; an arrival the
+      engine renamed (a typed url that redirects) is not known in advance, so it is not held; and a committed move ended
+      by a report of another URL is not retired, so the origin's settled report after it can fork (holding it whole
+      would swallow a real return to the origin, which the committed rule below lets through when loading).
       A committed move stays as `committed` until its deadline or the first report of a URL other than the origin and
-      `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at `from`'s URL meanwhile is
+      `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at the origin's URL meanwhile is
       held (the old document finishing after a wake, in any order against the target's reports: not a redirect, which
       step 5 would read it as). `observe` returns true for such a report and the tab keeps its url and title. Measured
       2026-10-15 by `gate sleep` history on WebView2, WebKit and Servo.
-      If `target`'s URL equals `from`'s URL no report can tell them apart, so `go()` commits at once (and `navigate` to
+      If `target`'s URL equals the cursor's URL no report can tell them apart, so `go()` commits at once (and `navigate` to
       the cursor's URL starts no move; nor does one on an empty trail, whose first report makes the root). Native: the engine
       moves a real slot (`GoBack`/`GoForward`), `lin_at` +- 1, and the action is returned. Plain: the tab already shows
       that page and a same-URL `Navigate` is a reload that replaces the slot (measured 2026-10-15: WebView2 keeps the forward entry, CEF consistent; WebKit not run; Servo: see decision 12), so

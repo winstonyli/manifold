@@ -18,13 +18,10 @@ spec decision 3, step 3), and a trail move loads through `App::load_url`, keepin
 - The origin is the cursor's URL (`origin: String`, replacing `from`); no move on an empty trail (parked) or to the
   cursor's own URL.
 - A `New` move commits on the first report of another URL as a push, never a redirect of the origin's own load.
-- A move the host ends early (another move, or a typed url or same-url move that starts none) is retired: its origin,
-  and the url it sent if it hadn't arrived, go to `NavHistory::held`; a trail move the page ends with a navigation of
-  its own retires its origin only. Every report of a held url is held whole for as long as a new move would wait,
-  extended by each of its reports as an origin's is; a url is released when the cursor or a new move goes there, and a
-  view reset clears the list (2026-11-07, two reviews of 77898981 and one of e029e441: dropped holds let late reports
-  push `a, b, a`, `p, a, b, p`, `a, b` and `a, b, a`). The holds are timed because no engine gives a report a
-  navigation id; what that costs is in the trail spec's fold step 3 (`docs/superpowers/specs/2026-10-14-trail-design.md`).
+- A move that ends before its reports do is retired into `NavHistory::held`, whose rules and known limits are the
+  trail spec's fold step 3 "Held urls" (`docs/superpowers/specs/2026-10-14-trail-design.md`). Why: two reviews of
+  77898981 and one of e029e441 (2026-11-07) found that dropping a replaced move's holds let late reports push
+  `a, b, a`, `p, a, b, p`, `a, b` and `a, b, a`. The holds are timed because no engine gives a report a navigation id.
 
 ## Before 2026-11-07
 
