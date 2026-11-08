@@ -305,6 +305,18 @@ fn a_move_with_no_report_reverts_the_tab_at_its_deadline() {
     assert!(!app.scoped.nav_history[&tab].move_pending(late));
 }
 
+/// The page a reverted move never reached leaves the browsing history it was put in when sent.
+#[test]
+fn a_reverted_move_leaves_no_history_row() {
+    let (mut app, tab, _peer) = tab_with_a_sibling("trail-move-expires-history");
+    app.history.push(crate::history::HistoryEntry { title: "B".into(), url: "https://b/".into() });
+    let before = app.history.clone();
+    app.trail_pick(tab, 1);
+    assert_eq!(app.history.len(), before.len() + 1, "sent: a row for it");
+    app.expire_trail_moves(Instant::now() + std::time::Duration::from_secs(31));
+    assert_eq!(app.history, before, "never reached: the row is gone, an earlier visit stays");
+}
+
 /// `NavigationStateChanged` for `tab` at `url`.
 fn report(app: &mut App, tab: NodeId, url: &str, loading: bool) {
     let msg = ViewToHost::NavigationStateChanged {

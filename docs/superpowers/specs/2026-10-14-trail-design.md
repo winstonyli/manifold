@@ -66,8 +66,9 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
    1. empty: create the root, `lin = [0]`, `lin_at = 0`.
    2. a stale pending move (past its deadline) is dropped (`expire`). No report may ever come (a download, a 204, an
       engine that dropped the move), so the host also expires moves each frame (`expire_trail_moves`, from
-      `drain_tab_events`): an uncommitted one sets the tab's url back to the cursor's and shares it, unless the tab is
-      loading, whose reports will decide.
+      `drain_tab_events`): an uncommitted one sets the tab's url back to the cursor's and shares it, and drops the
+      untitled browsing-history row `load_url` added for the page it never reached, unless the tab is loading, whose
+      reports will decide.
    3. pending move, native, plain or new (a URL the host sent: typed, Home, a history row; `navigate`, 2026-11-07, which
       replaced the host-side `reported_url` substitution, see `docs/decisions/2026-11-07-stale-url-suppression.md`).
       Until the commit a report equal to the origin's URL (the cursor's when the move started) is held: the trail does

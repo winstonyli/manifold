@@ -5,7 +5,7 @@
 
 use crate::profile::file::ProfileFile;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryEntry {
     pub title: String,
     pub url: String,
