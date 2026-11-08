@@ -150,8 +150,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       `T2`); else (J5) if it already has children the redirect is pushed as a child (a rewrite would change the page its
       children were reached from; the equal-child check above applies, and `fwd(at)` is set to that child); else rewritten.
    6. the fork rule above (sets `fwd(at)` to the new or reused child).
-   *Fresh* is a `bool`: "the cursor entry is fresh". It is set by a commit, and by `view_reset` when the tab's URL matches
-   `at` (a restored or replaced view reloads the entry, and a redirect there must rewrite it). Steps 5 and 6 read it first.
+   *Fresh* is a `bool`: "the cursor entry is fresh". It is set by a commit, and by every `view_reset`, whose cursor is then at
+   the tab's URL (a restored or replaced view reloads the entry, and a redirect there must rewrite it). Steps 5 and 6 read it first.
    It is cleared on every cursor change (a commit sets it anew; a fork, a reused child, a J5 push, a dropped move, an
    eviction that moves the cursor), so it never needs remapping, and at the end of **every** fold branch (steps 3's ignore
    and step 4 included, with the `loading` update) by a settled (`!loading`) report other than the one report that
