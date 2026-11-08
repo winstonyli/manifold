@@ -43,9 +43,12 @@ impl App {
                 }
                 let trail = self.scoped.nav_history.entry(tab_id).or_default();
                 let awaiting = trail.move_arrived() == Some(false);
+                let shown = trail.cursor_url().map(str::to_owned);
                 let stale = trail.observe(&url, &title, loading, can_go_forward, std::time::Instant::now());
                 // A page the host sent (`load_url`) is already the node's url: its arrival is the visit.
                 let arrived = awaiting && trail.move_arrived() == Some(true);
+                // The page the tab already showed, back in the bar after a sent page that never came (a 204): no visit.
+                let returned = shown.as_deref() == Some(url.as_str());
                 let Some(node) = self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()) else {
                     return false;
                 };
@@ -56,7 +59,7 @@ impl App {
                     Some(settled) => self.spawns.skip_convert.insert(tab_id, settled),
                     None => self.spawns.skip_convert.remove(&tab_id),
                 };
-                if url_changed || arrived {
+                if (url_changed && !returned) || arrived {
                     self.history.push(history::HistoryEntry { title: title.clone(), url: url.clone() });
                     if self.history.len() > history::MAX_HISTORY_ENTRIES {
                         self.history.remove(0);

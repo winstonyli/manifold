@@ -339,14 +339,15 @@ fn a_replaced_typed_url_leaves_no_history_row() {
     assert_eq!(history_urls(&app), ["https://second/"]);
 }
 
-/// A typed url whose load ends where it began (an attachment, a 204) adds no row for itself.
+/// A typed url whose load ends where it began (an attachment, a 204) adds no row: not for itself, and not for the page
+/// the tab never left.
 #[test]
-fn a_typed_url_that_ends_where_it_began_leaves_no_row_for_it() {
+fn a_typed_url_that_ends_where_it_began_leaves_no_row() {
     let (mut app, tab, _peer) = tab_with_a_sibling("trail-typed-204-history");
     app.navigate_tab(tab, "https://file/".into());
     report(&mut app, tab, "https://c/", true);
     report(&mut app, tab, "https://c/", false);
-    assert!(!history_urls(&app).contains(&"https://file/"), "{:?}", history_urls(&app));
+    assert_eq!((tab_url(&app, tab), history_urls(&app)), ("https://c/", Vec::<&str>::new()));
 }
 
 /// `NavigationStateChanged` for `tab` at `url`.

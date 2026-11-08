@@ -602,6 +602,11 @@ impl NavHistory {
         self.entries.get(entry).map(|e| e.url.as_str())
     }
 
+    /// The URL of the page the tab shows; `None` before the first report.
+    pub(crate) fn cursor_url(&self) -> Option<&str> {
+        self.entry_url(self.at)
+    }
+
     /// Starts a move to `target` from the cursor.
     fn start(&mut self, target: usize, native: bool, now: Instant) -> NavAction {
         let from = self.at;

@@ -69,7 +69,7 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       `drain_tab_events`): an uncommitted one sets the tab's url back to the cursor's and shares it, unless the tab is
       loading, whose reports will decide. The browsing history gets a page the host sent only at its arrival (the
       report that commits the move, `move_arrived`; 2026-11-08), so a move that never arrives, however it ends,
-      leaves no row.
+      leaves no row, nor does the page the tab shows coming back into its bar after one (a 204).
    3. pending move, native, plain or new (a URL the host sent: typed, Home, a history row; `navigate`, 2026-11-07, which
       replaced the host-side `reported_url` substitution, see `docs/decisions/2026-11-07-stale-url-suppression.md`).
       Until the commit a report equal to the origin's URL (the cursor's when the move started) is held: the trail does
