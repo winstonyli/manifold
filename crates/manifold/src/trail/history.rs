@@ -278,7 +278,7 @@ impl NavHistory {
         }
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
-        // of what a replaced move was waiting on is held whole, and extends its hold as an origin's report does.
+        // of what an ended move was waiting on is held whole, and extends its hold as an origin's report does.
         self.held.retain(|h| now <= h.until);
         if let Some(h) = self.held.iter_mut().find(|h| h.url == url) {
             h.until = now + if loading { LOADING_WINDOW } else { MOVE_WINDOW };
@@ -319,7 +319,8 @@ impl NavHistory {
                 self.loading = loading;
                 return true;
             } else {
-                self.pending = None;
+                // The page navigated on its own: the target won't come, but the origin's document may still report.
+                self.retire(now, false);
                 self.fresh = false;
             }
         }
@@ -586,7 +587,7 @@ impl NavHistory {
         };
         if url == self.entries[from].url {
             // No report could tell the arrival from the origin. A plain move sends nothing: the tab shows that page.
-            self.retire(now);
+            self.retire(now, true);
             self.release(&url);
             let before = self.saved_form();
             self.commit(target, from, if native { LinStep::Native } else { LinStep::Replace });
@@ -605,14 +606,14 @@ impl NavHistory {
         if self.entries.get(self.at).is_some_and(|e| e.url != url) {
             self.begin(To::New, url, now);
         } else {
-            self.retire(now);
+            self.retire(now, true);
             self.release(url);
         }
     }
 
     /// Starts a move to `to` (whose URL is `sent`) in place of any pending one.
     fn begin(&mut self, to: To, sent: &str, now: Instant) {
-        self.retire(now);
+        self.retire(now, true);
         let origin = self.entries[self.at].url.clone();
         self.release(&origin);
         self.release(sent);
@@ -620,12 +621,12 @@ impl NavHistory {
         self.pending = Some(Move { to, origin, sent: sent.to_owned(), deadline, committed: false, started: false });
     }
 
-    /// Ends the pending move for one the host starts: what it was still waiting on, its origin and its unreached
-    /// target, is held (`held`) for as long as a new move would wait.
-    fn retire(&mut self, now: Instant) {
+    /// Ends the pending move: what it was still waiting on, its origin and (with `target`) its unreached target, is
+    /// held (`held`) for as long as a new move would wait.
+    fn retire(&mut self, now: Instant, target: bool) {
         let Some(m) = self.pending.take().filter(|m| now <= m.deadline) else { return };
         let until = now + self.move_window();
-        let arrival = (!m.committed).then_some(m.sent);
+        let arrival = (target && !m.committed).then_some(m.sent);
         for url in [Some(m.origin), arrival].into_iter().flatten() {
             self.release(&url);
             self.held.push(Held { url, until });

@@ -857,6 +857,20 @@ fn a_typed_url_during_a_back_hides_the_backs_late_arrival() {
     assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
 }
 
+/// A move the page ends with a navigation of its own: the origin's late reports are the old document's.
+#[test]
+fn a_page_navigation_during_a_trail_move_hides_the_origins_late_reports() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.observe("a", "", false, true, now);
+    assert_eq!(h.go(Dir::Forward, false, false, now), NavAction::Navigate("b".into()));
+    h.observe("b2", "", true, false, now);
+    assert!(h.observe("a", "", false, false, now), "the origin finishing, held");
+    h.observe("b2", "", false, false, now);
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "b2"], 2));
+}
+
 /// A typed url replaced by Back: the typed page, if the engine still reaches it, is not a page of the trail.
 #[test]
 fn back_during_a_typed_url_hides_the_typed_pages_late_arrival() {
