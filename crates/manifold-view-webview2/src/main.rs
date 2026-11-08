@@ -603,14 +603,19 @@ fn exit_fatal(control: &mut transport::LocalTransport, reason: &str) -> ! {
     std::process::exit(1)
 }
 
+/// The environment over the user-data folder manifold names in `VIEW_WEBVIEW2_USER_DATA`, shared by its WebView2 hosts
+/// and no other manifold's (`process_manager::webview2_user_data`); WebView2's default, `<this exe>.WebView2`, when run
+/// alone.
 fn create_environment() -> webview2_com::Result<ICoreWebView2Environment> {
     let options = scheme::environment_options().map_err(webview2_com::Error::WindowsError)?;
+    let user_data =
+        std::env::var_os("VIEW_WEBVIEW2_USER_DATA").map(|dir| windows::core::HSTRING::from(dir.as_os_str()));
     let (tx, rx) = mpsc::channel();
     CreateCoreWebView2EnvironmentCompletedHandler::wait_for_async_operation(
         Box::new(move |handler| unsafe {
             webview2_com::Microsoft::Web::WebView2::Win32::CreateCoreWebView2EnvironmentWithOptions(
                 windows::core::PCWSTR::null(),
-                windows::core::PCWSTR::null(),
+                user_data.as_ref().map_or(windows::core::PCWSTR::null(), |dir| windows::core::PCWSTR(dir.as_ptr())),
                 &options,
                 &handler,
             )

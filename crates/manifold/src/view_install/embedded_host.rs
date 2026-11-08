@@ -1,8 +1,7 @@
 //! The hosts carried inside `manifold.exe`: `build.rs` embeds each `Delivery::Embedded` row of `manifold_hosts` when
 //! its variable (`Host::embed_var`) names a file, and `ensure` puts it at a stable path under `engine-hosts/` so a
 //! bare `manifold.exe` works offline. That path is `Host::installed_in`, a folder of its own per host (`<id>/`), so
-//! the `.WebView2` user-data folder WebView2 keys on the exe path, the lock file and the `.old` leftover all stay out
-//! of the flat host folder. A build without the variable embeds nothing for that host: `ensure` returns `None` and the
+//! the lock file and the `.old` leftover stay out of the flat host folder. A build without the variable embeds nothing for that host: `ensure` returns `None` and the
 //! host in place is used, as before.
 
 use manifold_hosts::{Host, Os};

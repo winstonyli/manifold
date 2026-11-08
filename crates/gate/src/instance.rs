@@ -171,8 +171,9 @@ pub struct Instance {
 }
 
 /// The gate process's one `Offline`, shared by every instance it launches: WebView2 refuses a second set of browser
-/// arguments on a user-data folder already in use (0x8007139f), and every instance from one exe shares that folder, so
-/// the proxy address in them can't differ between instances. Each `gate all` stage is its own process.
+/// arguments on a user-data folder already in use (0x8007139f), and every instance from one exe shared that folder
+/// until each app got its own (`process_manager::webview2_user_data`, 2026-11-07), so the proxy address in them could
+/// not differ between instances. Each `gate all` stage is its own process.
 fn offline() -> io::Result<&'static Offline> {
     static OFFLINE: OnceLock<Offline> = OnceLock::new();
     if let Some(offline) = OFFLINE.get() {

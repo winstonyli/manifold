@@ -957,19 +957,23 @@ fn prepare_cef(kind: ViewKind, custom: Option<&Path>) -> Result<Prepared, SpawnE
     Ok(Prepared { exe, env, cache_dir: Some(cache_dir), profile_slot: None, fresh: false })
 }
 
-/// WebView2: an embedded host is put in place before its path is used (the profile slot is keyed on it). A sibling
-/// host wins as it does everywhere else; a build that embeds nothing extracts nothing. Each host gets a profile name
-/// of its own among the live hosts, reused once a host is gone.
+/// WebView2: an embedded host is put in place before its path is used. A sibling host wins as it does everywhere
+/// else; a build that embeds nothing extracts nothing. Every host of this manifold shares its user-data folder
+/// (`webview2_user_data`), and gets a profile name of its own among the live hosts, reused once a host is gone.
 fn prepare_webview2(kind: ViewKind, _custom: Option<&Path>) -> Result<Prepared, SpawnError> {
     let extracted = match view_hosts_dir() {
         Some(dir) if sibling_host(kind).is_none() => embedded_host::ensure(kind.desc().host, &dir)?,
         _ => None,
     };
     let exe = view_binary_path(kind);
-    let slot = claim_webview2_slot(&exe);
+    let udf = webview2_user_data();
+    let slot = claim_webview2_slot(&udf);
     Ok(Prepared {
-        env: vec![("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(slot).into())],
-        cache_dir: Some(webview2_profile_dir(&exe, slot)),
+        env: vec![
+            ("VIEW_WEBVIEW2_PROFILE", webview2_profile_name(slot).into()),
+            ("VIEW_WEBVIEW2_USER_DATA", udf.clone().into_os_string()),
+        ],
+        cache_dir: Some(webview2_profile_dir(&udf, slot)),
         profile_slot: Some(slot),
         fresh: extracted.is_some(),
         exe,
@@ -1136,13 +1140,13 @@ pub(crate) use availability::{
 };
 use job::assign_to_view_job;
 #[cfg(all(test, windows))]
-use profiles::take_webview2_slot;
+use profiles::clear_webview2_slot;
 use profiles::{
     cef_cache_root, claim_webview2_slot, free_webview2_slot, remove_cache_dir, webview2_profile_dir,
-    webview2_profile_name, CACHE_REMOVALS, CEF_CACHE_COUNTER, MAX_TAB_LOG_BYTES,
+    webview2_profile_name, webview2_user_data, CACHE_REMOVALS, CEF_CACHE_COUNTER, MAX_TAB_LOG_BYTES,
 };
 #[cfg(test)]
-use profiles::{claim_slot, sweep_cache_dirs, sweep_view_logs_in, WEBVIEW2_PROFILE_POOL, WEBVIEW2_PROFILE_PREFIX};
+use profiles::{claim_slot, sweep_cache_dirs, sweep_view_logs_in, WEBVIEW2_PROFILE_POOL};
 pub use profiles::{
     finish_cache_removals, sweep_cef_cache, sweep_frame_files, sweep_view_logs, sweep_webview2_profiles,
 };

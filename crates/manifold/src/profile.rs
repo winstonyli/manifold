@@ -107,6 +107,12 @@ pub fn cef_cache_dir() -> Option<PathBuf> {
     Some(dir()?.join("cef-cache"))
 }
 
+/// Where WebView2 engine-hosts keep their browser data: one user-data folder per manifold process, shared by its
+/// WebView2 hosts (see `process_manager::webview2_user_data`). `None` like `dir()`.
+pub fn webview2_data_dir() -> Option<PathBuf> {
+    Some(dir()?.join("webview2"))
+}
+
 /// This profile's replica id: a random nonzero `u64`, generated once and kept in the `replica` file of `dir()`, so it
 /// names this installation across launches (the `closed` field's value, which `Ctrl+Shift+T` matches to find what
 /// this replica closed; the per-launch `ActorId` cannot). Two instances on one profile are one replica. Without a
@@ -201,6 +207,7 @@ mod tests {
         assert_eq!(super::dir(), None);
         assert_eq!(super::view_data_dir(), None);
         assert_eq!(super::cef_cache_dir(), None);
+        assert_eq!(super::webview2_data_dir(), None);
         assert_eq!(super::content_dir(), None);
         assert_eq!(super::jars_dir(), None);
         assert_eq!(super::pictures_dir(), None);

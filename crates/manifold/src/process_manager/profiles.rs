@@ -25,7 +25,7 @@ pub(super) static CEF_CACHE_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The same for an exited WebView2 host's profile folder, and then its
 /// `slot` is freed either way: the shared browser process keeps a closed
 /// profile's folder open while it lives, but its InPrivate cookies went with
-/// the host (`take_webview2_slot`).
+/// the host (`clear_webview2_slot`).
 pub(super) fn remove_cache_dir(dir: PathBuf, slot: Option<usize>) {
     let removal = std::thread::spawn(move || {
         for _ in 0..50 {
@@ -119,7 +119,7 @@ pub(super) fn sweep_view_logs_in(dir: &Path, max_age: Duration, keep_crashes: us
 /// if that works. Dirs touched in the last minute are skipped, since their
 /// CEF may not have opened its files yet.
 pub fn sweep_cef_cache() {
-    sweep_cache_dirs(&cef_cache_root(), "", Duration::from_secs(60));
+    sweep_cache_dirs(&cef_cache_root(), Duration::from_secs(60));
 }
 
 /// What a WebView2 host's profile directory is named: manifold hands each host a profile name `manifold_<slot>`
@@ -137,79 +137,48 @@ pub(super) fn webview2_profile_name(slot: usize) -> String {
     format!("manifold_{slot}")
 }
 
-/// WebView2's default user-data folder for hosts run from `host_exe`, `<host exe>.WebView2`, which the host does not
-/// override.
-fn webview2_user_data(host_exe: &Path) -> PathBuf {
-    let mut udf = host_exe.as_os_str().to_owned();
-    udf.push(".WebView2");
-    PathBuf::from(udf)
+/// Parent of every manifold process's WebView2 user-data folder. Temp when there's no profile (always under `cargo
+/// test`), as `cef_cache_root`.
+fn webview2_data_root() -> PathBuf {
+    crate::profile::webview2_data_dir().unwrap_or_else(|| std::env::temp_dir().join("manifold-webview2"))
 }
 
-/// Where WebView2 keeps the profiles of hosts run from `host_exe`.
-fn webview2_profiles_root(host_exe: &Path) -> PathBuf {
-    webview2_user_data(host_exe).join("EBWebView")
+/// This manifold's WebView2 user-data folder, `<root>/<manifold pid>`, which its hosts get in
+/// `VIEW_WEBVIEW2_USER_DATA`: one per process, so two instances, on one profile or two, never share a browser process,
+/// its profile names or its `Local State`. WebView2's own default, `<host exe>.WebView2`, was shared by every instance
+/// running that host.
+pub(super) fn webview2_user_data() -> PathBuf {
+    webview2_data_root().join(std::process::id().to_string())
 }
 
-pub(super) fn webview2_profile_dir(host_exe: &Path, slot: usize) -> PathBuf {
-    webview2_profiles_root(host_exe).join(format!("{WEBVIEW2_PROFILE_PREFIX}{slot}"))
+pub(super) fn webview2_profile_dir(udf: &Path, slot: usize) -> PathBuf {
+    udf.join("EBWebView").join(format!("{WEBVIEW2_PROFILE_PREFIX}{slot}"))
 }
 
-/// The profile slots this manifold's WebView2 hosts hold, each with its lock file (`take_webview2_slot`).
-static WEBVIEW2_SLOTS: std::sync::Mutex<std::collections::BTreeMap<usize, Option<std::fs::File>>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+/// The profile slots this manifold's WebView2 hosts hold.
+static WEBVIEW2_SLOTS: std::sync::Mutex<std::collections::BTreeSet<usize>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
-/// Records and returns the lowest slot not in `busy` that `take` can claim (`None`: in use outside `busy`). Past every
-/// claimable slot it keeps counting, so it always returns one; a result `>= WEBVIEW2_PROFILE_POOL` is beyond the pool.
-pub(super) fn claim_slot<G>(
-    busy: &mut std::collections::BTreeMap<usize, G>,
-    mut take: impl FnMut(usize) -> Option<G>,
-) -> usize {
-    let mut n = 0;
-    loop {
-        if let std::collections::btree_map::Entry::Vacant(free) = busy.entry(n) {
-            if let Some(guard) = take(n) {
-                free.insert(guard);
-                return n;
-            }
-        }
-        n += 1;
-    }
+/// Records and returns the lowest slot not in `busy`; a result `>= WEBVIEW2_PROFILE_POOL` is beyond the pool.
+pub(super) fn claim_slot(busy: &mut std::collections::BTreeSet<usize>) -> usize {
+    (0..).find(|&n| busy.insert(n)).expect("a free slot")
 }
 
-/// Claims slot `n` of the user-data folder `udf` against everything outside this process: its lock file
-/// (`manifold-profile-<n>.lock`, held open without sharing, so another manifold instance using the same folder skips
-/// it). Its leftover profile folder is deleted if it can be; one that cannot is still open in the browser process
-/// all hosts share, which keeps a profile loaded after its last host exits. That does not block reuse: the cookies
-/// are InPrivate, in memory, and a new host with the name starts with an empty store (shown by `gate jar`'s
+/// Deletes slot `n`'s leftover profile folder in `udf` if it can. One that cannot is still open in the browser
+/// process all hosts share, which keeps a profile loaded after its last host exits. That does not block reuse: the
+/// cookies are InPrivate, in memory, and a new host with the name starts with an empty store (shown by `gate jar`'s
 /// reuse run, runtime 154.0.4258.53); while the name is still closing the host tries again (`retry_while_busy`).
-/// A lock file that cannot be created at all (not a sharing violation) gives a
-/// claim without a lock.
-pub(super) fn take_webview2_slot(udf: &Path, n: usize) -> Option<Option<std::fs::File>> {
-    let _ = std::fs::create_dir_all(udf);
-    let mut open = std::fs::OpenOptions::new();
-    open.create(true).truncate(false).write(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        open.share_mode(0);
-    }
-    const ERROR_SHARING_VIOLATION: i32 = 32;
-    let lock = match open.open(udf.join(format!("manifold-profile-{n}.lock"))) {
-        Ok(file) => Some(file),
-        Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => return None,
-        Err(_) => None,
-    };
-    let _ = std::fs::remove_dir_all(udf.join("EBWebView").join(format!("{WEBVIEW2_PROFILE_PREFIX}{n}")));
-    Some(lock)
+pub(super) fn clear_webview2_slot(udf: &Path, n: usize) {
+    let _ = std::fs::remove_dir_all(webview2_profile_dir(udf, n));
 }
 
-/// The lowest free profile slot for a new WebView2 host run from `host_exe`. Freed by `free_webview2_slot` only once
-/// the host process has exited and its folder's deletion has been tried, so a live host's profile is never handed to
-/// another.
-pub(super) fn claim_webview2_slot(host_exe: &Path) -> usize {
-    let udf = webview2_user_data(host_exe);
+/// The lowest free profile slot for a new WebView2 host in the user-data folder `udf`. Freed by `free_webview2_slot`
+/// only once the host process has exited and its folder's deletion has been tried, so a live host's profile is never
+/// handed to another.
+pub(super) fn claim_webview2_slot(udf: &Path) -> usize {
     let mut slots = WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = claim_slot(&mut slots, |n| take_webview2_slot(&udf, n));
+    let n = claim_slot(&mut slots);
+    clear_webview2_slot(udf, n);
     if n >= WEBVIEW2_PROFILE_POOL {
         eprintln!(
             "webview2: all {WEBVIEW2_PROFILE_POOL} pooled profiles are in use; using {} (adds one Local State entry)",
@@ -223,18 +192,18 @@ pub(super) fn free_webview2_slot(n: usize) {
     WEBVIEW2_SLOTS.lock().unwrap_or_else(|e| e.into_inner()).remove(&n);
 }
 
-/// Deletes WebView2 host profiles `remove_cache_dir` could not (the shared browser process still held them, or
-/// manifold was killed), as `sweep_cef_cache` does; only `WEBVIEW2_PROFILE_PREFIX` dirs are touched.
+/// Deletes the WebView2 user-data folders of manifold processes that are gone (each leaves its own,
+/// `webview2_user_data`), as `sweep_cef_cache` does: a live one's browser process holds its files, so it can't be
+/// renamed aside. Profiles inside a live folder that `remove_cache_dir` could not delete go when their slot is reused.
 pub fn sweep_webview2_profiles() {
-    let root = webview2_profiles_root(&view_binary_path(ViewKind::Webview2));
-    sweep_cache_dirs(&root, WEBVIEW2_PROFILE_PREFIX, Duration::from_secs(60));
+    sweep_cache_dirs(&webview2_data_root(), Duration::from_secs(60));
 }
 
-/// Sweeps the dirs in `root` whose names start with `prefix`.
-pub(super) fn sweep_cache_dirs(root: &Path, prefix: &str, min_age: Duration) {
+/// Sweeps the dirs in `root`.
+pub(super) fn sweep_cache_dirs(root: &Path, min_age: Duration) {
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(prefix) || !entry.path().is_dir() {
+        if !entry.path().is_dir() {
             continue;
         }
         let path = entry.path();

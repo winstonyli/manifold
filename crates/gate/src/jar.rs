@@ -32,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
-use manifold_hosts::{Os, CEF_RUNTIME_DIR, WEBVIEW2};
+use manifold_hosts::CEF_RUNTIME_DIR;
 use serde_json::{json, Value};
 
 use crate::check::{check, check_eq, check_is, note_failure, Section};
@@ -484,11 +484,10 @@ impl Probe {
 
     /// Ten WebView2 tabs opened and closed in turn: Local State may gain no profile names outside the pool.
     fn ten(&self) -> io::Result<()> {
-        let webview2 = WEBVIEW2.file_name(Os::here());
-        let local_state = self.exe.with_file_name(format!("{webview2}.WebView2/EBWebView/Local State"));
-        let before = profile_names(&local_state).unwrap_or_default();
         self.rm_jars();
+        let pid = std::cell::Cell::new(0);
         let jar_log = self.run("ten", "webview2", "/whoami?c", |inst, _| {
+            pid.set(inst.pid());
             // Focus is on C at first and on nothing after a close; NEXTTAB from nothing lands on C (the first tab), so
             // later rounds need two to reach the new tab. The 6 s after a close lets the slot be freed (see `reuse`).
             for i in 1..=10 {
@@ -503,8 +502,10 @@ impl Probe {
             }
             Ok(())
         })?;
+        // The app's own user-data folder (`process_manager::webview2_user_data`), new this run: every name is added.
+        let local_state = self.profile.join("webview2").join(pid.get().to_string()).join("EBWebView/Local State");
         let after = profile_names(&local_state).unwrap_or_default();
-        let added: Vec<&String> = after.iter().filter(|n| !before.contains(n)).collect();
+        let added: Vec<&String> = after.iter().collect();
         let pool =
             after.iter().filter(|n| n.strip_prefix("manifold_").is_some_and(|d| d.len() == 1 && d < "8")).count();
         println!("ten tabs: Local State profile names added this run: {added:?}; pool names present: {pool} of 8");
