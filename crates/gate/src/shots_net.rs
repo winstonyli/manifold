@@ -31,7 +31,16 @@ impl Held {
     fn break_all(&self) {
         let mut held = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         held.0 = true;
-        for stream in held.1.drain(..) {
+        Self::shut(&mut held.1);
+    }
+
+    /// Breaks every kept connection; ones kept from now on stay open.
+    fn drain(&self) {
+        Self::shut(&mut self.0.lock().unwrap_or_else(PoisonError::into_inner).1);
+    }
+
+    fn shut(streams: &mut Vec<TcpStream>) {
+        for stream in streams.drain(..) {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
@@ -251,6 +260,11 @@ impl Proxy {
         self.refuse.store(refuse, Ordering::SeqCst);
     }
 
+    /// Closes the tunnels held so far, so one launch's stalled install doesn't outlive it into the next.
+    pub fn drain_tunnels(&self) {
+        self.hold.held.drain();
+    }
+
     pub fn url(&self) -> String {
         format!("http://{}:{}", crate::http::site_host(), self.hold.addr.port())
     }
@@ -396,5 +410,36 @@ mod tests {
         assert!(String::from_utf8_lossy(&get(port, "x:443", "", usize::MAX)).starts_with("HTTP/1.1 502"));
         proxy.set_refuse(false);
         assert!(String::from_utf8_lossy(&get(port, "x:443", "", 10)).starts_with("HTTP/1.1 200"));
+    }
+
+    /// A tunnel held by one launch's install is closed for the next launch, and the proxy still holds new ones.
+    #[test]
+    fn draining_closes_held_tunnels_and_keeps_holding_new_ones() {
+        let proxy = Proxy::start(false).unwrap();
+        let port = proxy.hold.addr.port();
+        let held = |n: usize| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while proxy.hold.held.0.lock().unwrap().1.len() != n {
+                assert!(std::time::Instant::now() < deadline, "never held {n} tunnels");
+                thread::yield_now();
+            }
+        };
+        let tunnel = || {
+            let mut s = TcpStream::connect((crate::http::site_host().as_str(), port)).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            write!(s, "CONNECT x:443 HTTP/1.1\r\n\r\n").unwrap();
+            let mut buf = [0u8; 64];
+            let n = s.read(&mut buf).unwrap();
+            assert!(buf[..n].starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&buf[..n]));
+            s
+        };
+        let mut first = tunnel();
+        held(1);
+        proxy.drain_tunnels();
+        let mut buf = [0u8; 1];
+        assert!(matches!(first.read(&mut buf), Ok(0) | Err(_)), "the drained tunnel is still open");
+        held(0);
+        let _second = tunnel();
+        held(1);
     }
 }
