@@ -43,8 +43,6 @@ impl Shots {
             &format!("log-eng-{name}"),
             &[("APPDATA", &appdata), ("MANIFOLD_HOST_PINS_FILE", &pins_file)],
         )?;
-        // The proxy outlives the instance (`instance::offline`): each one starts it refusing again.
-        self.inst.proxy().expect("launched offline").set_refuse(true);
         send!(self, format!("RESIZE {} 1000", self.size.0), "WAITTABS", "WAITIDLE")
     }
 

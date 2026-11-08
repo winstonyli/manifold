@@ -199,6 +199,8 @@ impl Instance {
         envs: &[(&str, &str)],
     ) -> io::Result<Instance> {
         let offline = offline()?;
+        // The proxy outlives the instance: each launch starts it refusing again.
+        offline.proxy.set_refuse(true);
         let mut inst = Self::spawn(exe, profile, work, log_name, &offline.env(envs))?;
         inst.offline = Some(offline);
         Ok(inst)
