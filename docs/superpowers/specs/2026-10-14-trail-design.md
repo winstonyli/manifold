@@ -150,8 +150,9 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       `T2`); else (J5) if it already has children the redirect is pushed as a child (a rewrite would change the page its
       children were reached from; the equal-child check above applies, and `fwd(at)` is set to that child); else rewritten.
    6. the fork rule above (sets `fwd(at)` to the new or reused child).
-   *Fresh* is a `bool`: "the cursor entry is fresh". It is set by a commit, and by every `view_reset`, whose cursor is then at
-   the tab's URL (a restored or replaced view reloads the entry, and a redirect there must rewrite it). Steps 5 and 6 read it first.
+   *Fresh* is a `bool`: "the cursor entry is fresh". It is set by a commit, and by a `view_reset` that keeps no move, whose cursor is then at
+   the tab's URL (a restored or replaced view reloads the entry, and a redirect there must rewrite it); one that keeps a
+   move clears it, since the new engine loads the move's target, not the cursor. Steps 5 and 6 read it first.
    It is cleared on every cursor change (a commit sets it anew; a fork, a reused child, a J5 push, a dropped move, an
    eviction that moves the cursor), so it never needs remapping, and at the end of **every** fold branch (steps 3's ignore
    and step 4 included, with the `loading` update) by a settled (`!loading`) report other than the one report that
@@ -188,6 +189,9 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      emptied and the next report made the root). One exception: when the URL is a pending move's sent page not yet
      reached (the engine was replaced between sending and the first report), the tree stays, the move stays as a plain
      one with a fresh `LOADING_WINDOW`, and `lin = [None]`, so the new engine's arrival commits it and is the visit.
+     A native move reaches this only through an engine swap, which starts the new engine at the old one's own URL
+     (`StateSnapshot`), already the target if the `GoBack` landed before its report; a crash restarts at the tab's URL,
+     which a native move leaves at the origin, so the move is dropped.
      `view_reset` runs for every tab that lands on the page it showed (`SpawnPurpose::lands_existing`: a crash, a swap,
      a restore, a wake), except a respawn of a trail still empty (a new tab replaced before its first report); a new
      tab's first report creates the root through the "empty" fold step.
@@ -334,8 +338,10 @@ replaces a restored tree with a root at that URL; a `left_to`-only history is no
 pending move leaves the tree and `lin` untouched; a plain move whose arrival is a redirect rewrites the target; a
 session replace clears the stashed lists; a move whose target URL equals the origin's commits at `go()`; a fresh
 navigation during a pending plain move leaves the target's URL untouched; the redirect report order (`T` loading, then
-`T2`) on a target with children rewrites it; `view_reset` while a move is pending clears it; `fresh` is cleared by a settled report, a mid-trail reload redirect (not
-fresh) pushes a child, Back onto an entry with children then a redirect rewrites it, and `view_reset` makes the entry fresh;
+`T2`) on a target with children rewrites it; `view_reset` while a move is pending clears it, unless the new engine loads the move's unreached sent page, which keeps
+it as a plain move; `fresh` is cleared by a settled report, a mid-trail reload redirect (not
+fresh) pushes a child, Back onto an entry with children then a redirect rewrites it, and a `view_reset` that keeps no
+move makes the entry fresh;
 a plain equal-URL move leaves `lin.len()` unchanged and returns no action; an inferred Back
 (script `history.back()`: URL equals the parent's, settled report with `can_go_forward` true) moves the cursor, while a
 link click to the parent's URL (settled, `can_go_forward` false) forks, including with a fresh cursor entry (a discarded
