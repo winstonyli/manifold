@@ -83,20 +83,22 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       move (not past its deadline; step 2 drops an expired one with nothing held) was still waiting on in `held`: its
       origin, and its target if unreached when the host ended the move (`begin`, and a `go()`, `go_to` or `navigate` to
       the cursor's URL), not when the page did (an uncommitted trail move ended by a report equal to neither, above).
+      A committed move the page ended (a report of another URL, below) holds its origin as the committed rule did:
+      settled reports only, and a loading one ends the hold, a real return to the origin; the origin's own loading
+      report ending the move keeps no hold. A committed move the host ended holds its origin whole.
       `release` drops a url's holds: `begin` releases the new move's origin and target, so of a replaced move only what
       differs from the new one stays held, and a `go()`, `go_to` or `navigate` to the cursor's URL releases that URL. A
-      view reset clears the list. Before anything else in this step, a report of a held url is held whole (`observe`
+      view reset clears the list. Before anything else in this step, a report a hold covers is held whole (`observe`
       returns true, the trail and tab are unchanged) and sets its hold to end 3 s from now, or 30 s if loading (so a
       settled report can shorten a 30 s hold); a hold starts with the window a new move would get (30 s while the tab
       is loading). Why, and the reviews that found each gap: `docs/decisions/2026-11-07-stale-url-suppression.md`.
       Known limits, all because no engine gives a report a navigation id, so a hold can only be timed: a real navigation
       to a held url within its hold (a link or `history.back()` to the page just left, a redirect onto it) goes
       unrecorded, also by step 4b, unless the url reports again after a quiet stretch of its window; an arrival the
-      engine renamed (a typed url that redirects) is not known in advance, so it is not held; and a committed move ended
-      by a report of another URL is not retired, so the origin's settled report after it can fork (holding it whole
-      would swallow a real return to the origin, which the committed rule below lets through when loading).
-      A committed move stays as `committed` until its deadline or the first report of a URL other than the origin and
-      `target`, whatever the loading flag: it no longer blocks `go()`, but a settled report at the origin's URL meanwhile is
+      engine renamed (a typed url that redirects) is not known in advance, so it is not held; and a real return to a
+      committed move's origin that sends no loading report goes unrecorded within the hold.
+      A committed move stays as `committed` until its deadline or the first report that is neither `target`'s URL nor
+      a settled report of the origin: it no longer blocks `go()`, but a settled report at the origin's URL meanwhile is
       held (the old document finishing after a wake, in any order against the target's reports: not a redirect, which
       step 5 would read it as). `observe` returns true for such a report and the tab keeps its url and title. Measured
       2026-10-15 by `gate sleep` history on WebView2, WebKit and Servo.

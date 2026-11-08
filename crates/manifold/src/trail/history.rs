@@ -152,6 +152,16 @@ struct Move {
 struct Held {
     url: String,
     until: Instant,
+    /// A committed move's origin: only its settled reports are an old document's; a loading one is a real return to
+    /// it, and ends the hold.
+    settled: bool,
+}
+
+impl Held {
+    /// Whether this hold covers a report of `url` with this loading flag.
+    fn covers(&self, url: &str, loading: bool) -> bool {
+        self.url == url && !(loading && self.settled)
+    }
 }
 
 /// Where a move goes.
@@ -230,7 +240,7 @@ impl NavHistory {
     ) -> bool {
         let before = self.saved_form();
         let same_page = self.entries.get(self.at).is_some_and(|e| e.url == url);
-        let stale = self.is_stale_origin(url, loading, now) || self.holds(url, now);
+        let stale = self.is_stale_origin(url, loading, now) || self.holds(url, loading, now);
         if self.fold(url, loading, can_go_forward, now)
             && !title.is_empty()
             && (same_page || !loading)
@@ -256,8 +266,8 @@ impl NavHistory {
     }
 
     /// Step 3's hold on what an ended move was waiting on (`held`).
-    fn holds(&self, url: &str, now: Instant) -> bool {
-        self.held.iter().any(|h| h.url == url && now <= h.until)
+    fn holds(&self, url: &str, loading: bool, now: Instant) -> bool {
+        self.held.iter().any(|h| h.covers(url, loading) && now <= h.until)
     }
 
     /// What a save writes; a change in it is a change worth saving.
@@ -284,9 +294,9 @@ impl NavHistory {
         }
         // 3: a pending move waits through its origin's reports and commits at its arrival. A committed one holds the
         // origin's settled report until its deadline: the old document finishing, not a redirect (step 5). A report
-        // of what an ended move was waiting on is held whole, and restarts its hold.
-        self.held.retain(|h| now <= h.until);
-        if let Some(h) = self.held.iter_mut().find(|h| h.url == url) {
+        // of what an ended move was waiting on is held, and restarts its hold; a committed one's origin, settled only.
+        self.held.retain(|h| now <= h.until && (h.url != url || h.covers(url, loading)));
+        if let Some(h) = self.held.iter_mut().find(|h| h.covers(url, loading)) {
             h.until = now + window(loading);
             return false;
         }
@@ -297,7 +307,9 @@ impl NavHistory {
                     return false;
                 }
                 if m.to.target().is_none_or(|t| self.entries[t].url != url) {
-                    self.pending = None;
+                    // Another page, or a load of the origin (a real return, which keeps no hold on it).
+                    self.retire(now, false);
+                    self.release(url);
                 }
             } else if stale {
                 let started = loading && !self.loading;
@@ -640,15 +652,17 @@ impl NavHistory {
         }
     }
 
-    /// Ends the pending move: what it was still waiting on, its origin and (with `target`) its unreached target, is
-    /// held (`held`) for as long as a new move would wait.
-    fn retire(&mut self, now: Instant, target: bool) {
+    /// Ends the pending move: what it was still waiting on, its origin and (when the host replaced it, `by_host`) its
+    /// unreached target, is held (`held`) for as long as a new move would wait. When the page moved on by itself, a
+    /// committed move's origin is held as the committed rule holds it: settled reports only.
+    fn retire(&mut self, now: Instant, by_host: bool) {
         let Some(m) = self.pending.take().filter(|m| now <= m.deadline) else { return };
         let until = now + window(self.loading);
-        let arrival = (target && !m.committed).then(|| self.sent(&m.to).to_owned());
-        for url in [Some(m.origin), arrival].into_iter().flatten() {
-            self.release(&url);
-            self.held.push(Held { url, until });
+        let arrival = (by_host && !m.committed).then(|| self.sent(&m.to).to_owned());
+        let origin = Held { url: m.origin, until, settled: !by_host && m.committed };
+        for held in [Some(origin), arrival.map(|url| Held { url, until, settled: false })].into_iter().flatten() {
+            self.release(&held.url);
+            self.held.push(held);
         }
     }
 

@@ -882,6 +882,22 @@ fn a_page_navigation_during_a_trail_move_hides_the_origins_late_reports() {
     assert_eq!((urls(&h), h.at), (vec!["a", "b", "b2"], 2));
 }
 
+/// A committed move ended by another url: the origin finishing late is held, but a load of it is a real return.
+#[test]
+fn a_committed_move_ended_by_another_url_holds_the_origins_settled_report() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.observe("a", "", false, false, now);
+    h.observe("c", "", true, false, now);
+    h.observe("c", "", false, false, now);
+    assert!(h.observe("b", "", false, false, now), "the origin finishing, held");
+    assert_eq!((urls(&h), h.at), (vec!["a", "b", "c"], 2));
+    assert!(!h.observe("b", "", true, false, now), "a load of the origin is not held");
+    h.observe("b", "", false, false, now);
+    assert_eq!(h.entries[h.at].url, "b", "the return is recorded");
+}
+
 /// A typed url replaced by Back: the typed page, if the engine still reaches it, is not a page of the trail.
 #[test]
 fn back_during_a_typed_url_hides_the_typed_pages_late_arrival() {
