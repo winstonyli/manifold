@@ -24,7 +24,6 @@ const PROD_ALLOWED: &[(&str, usize)] = &[
 const TEST_ALLOWED: &[(&str, usize)] = &[
     ("manifold-hosts/src/lib.rs", 353),
     ("manifold-view-protocol/src/transport.rs", 274),
-    ("manifold-view-protocol/src/frame_sink.rs", 273),
     ("manifold-view-protocol/src/downloads.rs", 262),
 ];
 

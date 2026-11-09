@@ -18,6 +18,9 @@ pub const ENV_AWAIT_COOKIES: &str = "VIEW_AWAIT_COOKIES";
 /// The app's settings at spawn, as `HostSettings::to_hex`; later changes arrive as `HostToView::SetSettings`. The
 /// WebKit host under WSL reads it from its command line, where hex is shell-safe.
 pub const ENV_SETTINGS: &str = "VIEW_SETTINGS";
+/// Set (to anything) by `gate hostrate`: every `FrameSink::take` logs `[frame] 1` (a frame sent) or `[frame] 0` (a
+/// poll that found nothing), so the gate can count frames and loop turns from the host log.
+pub const ENV_FRAME_STATS: &str = "VIEW_FRAME_STATS";
 
 // One engine's own variables: only its host reads them, but they are named here too, once for both sides
 // (`gate`'s `host_variables_are_named_only_in_host_env`).
@@ -111,6 +114,12 @@ impl HostSettings {
 /// `ENV_SETTINGS` for a host that reads no other `HostEnv` variable (WebKit).
 pub fn settings_from_env() -> HostSettings {
     settings_from(std::env::var(ENV_SETTINGS).ok().as_deref())
+}
+
+/// Whether `ENV_FRAME_STATS` is set, read once.
+pub fn frame_stats() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os(ENV_FRAME_STATS).is_some())
 }
 
 /// The settings `ENV_SETTINGS` holds: the defaults when it is missing, or (logged) when it is not `to_hex`'s.

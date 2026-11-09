@@ -2,6 +2,7 @@
 //! alone is reused), and a process's CPU time.
 
 use std::mem::{size_of, zeroed};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -39,6 +40,11 @@ pub(crate) fn creation_time(pid: u32) -> Option<u64> {
     process_times(pid).map(|(created, _)| created)
 }
 
+/// The CPU time `pid` has used so far, kernel plus user.
+pub(crate) fn cpu_time(pid: u32) -> Option<Duration> {
+    process_times(pid).map(|(_, cpu)| Duration::from_nanos(cpu * 100))
+}
+
 /// Every process of this user the snapshot lists and whose creation time can be read (the others cannot be ours).
 pub(crate) fn snapshot() -> Vec<Proc> {
     let mut out = Vec::new();
@@ -62,4 +68,24 @@ pub(crate) fn snapshot() -> Vec<Proc> {
         CloseHandle(snap);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+
+    #[test]
+    fn cpu_time_of_this_process_rises() {
+        let me = std::process::id();
+        let before = cpu_time(me).expect("this process's CPU time");
+        let start = Instant::now();
+        let mut x = 0u64;
+        while start.elapsed() < Duration::from_millis(200) {
+            x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(7));
+        }
+        let after = cpu_time(me).expect("this process's CPU time");
+        assert!(after >= before + Duration::from_millis(15), "{before:?} -> {after:?}");
+    }
 }

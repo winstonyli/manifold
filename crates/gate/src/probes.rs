@@ -62,6 +62,14 @@ const TEXT: &str = "<!doctype html><title>text</title><style>.x{color:STYLEMARK}
 <p>jumps   over
  the lazy dog</p>";
 
+/// A page whose pixels change on every frame, for the frame-rate probe (`hostrate`): a hard-edged conic gradient,
+/// larger than the window so its edges stay out of view, turning once a second. A uniform box would change no pixels,
+/// so the host's damage check would send nothing.
+const ANIMATE: &str = "<!doctype html><title>animate</title><style>body{margin:0;overflow:hidden}\
+div{position:fixed;left:-50vmax;top:-50vmax;width:200vmax;height:200vmax;\
+background:conic-gradient(#e33 0 25%,#3a3 0 50%,#33e 0 75%,#ec3 0);animation:spin 1s infinite linear}\
+@keyframes spin{to{transform:rotate(1turn)}}</style><div></div>";
+
 /// A page taller than any window, for the sleep probe: it reports its scroll position on load and after each scroll
 /// settles, and `?dirty` makes its input differ from the default.
 const TALL: &str = "<!doctype html><title>tall</title><input id=i>\n\
@@ -71,7 +79,8 @@ fetch('/s?e=load&y=' + Math.round(scrollY));\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=scroll&y=' + Math.round(scrollY)), 300);\n});\n</script>";
 
 /// The local site: `/` reports keydowns (`/k`), `/plane` scroll positions (`/w`), `/tall` vertical scrolls (`/s`),
-/// `/text` a fixed page for the page-text probe, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
+/// `/text` a fixed page for the page-text probe (and a still page for `hostrate`), `/animate` a page that changes every
+/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
@@ -136,6 +145,7 @@ impl Site {
                 "/pixel.png" => response("200 OK", &[], "image/png", &png),
                 "/plane" => response("200 OK", &[], "text/html", PLANE.as_bytes()),
                 "/text" => response("200 OK", &[], "text/html", TEXT.as_bytes()),
+                "/animate" => response("200 OK", &[], "text/html", ANIMATE.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
@@ -463,7 +473,7 @@ pub(crate) fn key(ctx: &mut Ctx) -> io::Result<()> {
 }
 
 /// The host logs (`manifold-<tab>.log`) the case's own TEMP holds.
-fn host_logs(tmp: &Path) -> Vec<PathBuf> {
+pub(crate) fn host_logs(tmp: &Path) -> Vec<PathBuf> {
     fs::read_dir(tmp)
         .into_iter()
         .flatten()

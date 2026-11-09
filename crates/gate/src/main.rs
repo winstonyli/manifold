@@ -23,6 +23,8 @@ mod download;
 #[cfg(windows)]
 mod focus;
 mod fresh;
+#[cfg(windows)]
+mod hostrate;
 mod http;
 mod iframe_typing;
 #[cfg(windows)]
@@ -154,6 +156,7 @@ mod windows_main {
         Stage::work("unresponsive", crate::stress::unresponsive),
         Stage::work("focus-loss", crate::focus::focus_loss).listed_as(""),
         Stage::work("bad-url", crate::probes::bad_url),
+        Stage::work("hostrate", crate::hostrate::hostrate),
         Stage::work("failed-spawn", crate::probes::failed_spawn),
         Stage::work("wheel", crate::probes::wheel),
         Stage::work("key", crate::probes::key),
