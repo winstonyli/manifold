@@ -16,36 +16,20 @@
 //! killed them. Cleanup here touches only recorded processes named `manifold*` or `msedgewebview2`.
 
 use std::io;
-use std::mem::{size_of, zeroed};
 use std::time::Duration;
 
 use manifold_hosts::CEF_RUNTIME_DIR;
-use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-};
-use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME,
-    PROCESS_TERMINATE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_SUSPEND_RESUME, PROCESS_TERMINATE};
 
 use crate::check::check;
 use crate::instance::{poll, seed_settings, Instance, STEP_TIMEOUT};
 use crate::probes::views;
+use crate::procs::{creation_time, snapshot, Proc};
 use crate::windows_main::Ctx;
 
 /// How long the dead processes get to disappear after the kill.
 const DEATH_WAIT: Duration = Duration::from_secs(15);
-
-/// A process as one snapshot saw it. `created` (FILETIME ticks) tells it from a later process that reused its id.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Proc {
-    pid: u32,
-    ppid: u32,
-    created: u64,
-    /// The image name in lower case, as `manifold-view-cef.exe`.
-    name: String,
-}
 
 /// `root` and every process below it: a child is one whose parent id is a member's and which was created no earlier
 /// than that member, so an id reused after its parent died does not join.
@@ -72,45 +56,6 @@ fn alive(p: &Proc, now: &[Proc]) -> bool {
 /// Whether cleanup may kill a leftover: only the app and the engine processes this stage starts.
 fn ours(p: &Proc) -> bool {
     p.name.starts_with("manifold") || p.name.starts_with("msedgewebview2")
-}
-
-fn creation_time(pid: u32) -> Option<u64> {
-    // SAFETY: plain Win32 calls; the handle is closed before returning and the out parameters are locals.
-    unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-        if handle.is_null() {
-            return None;
-        }
-        let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) = zeroed();
-        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
-        CloseHandle(handle);
-        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
-    }
-}
-
-/// Every process of this user the snapshot lists and whose creation time can be read (the others cannot be ours).
-fn snapshot() -> Vec<Proc> {
-    let mut out = Vec::new();
-    // SAFETY: the snapshot handle is closed before returning; `entry` is a local with `dwSize` set as the API needs.
-    unsafe {
-        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snap == INVALID_HANDLE_VALUE {
-            return out;
-        }
-        let mut entry: PROCESSENTRY32W = zeroed();
-        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-        let mut more = Process32FirstW(snap, &mut entry);
-        while more != 0 {
-            if let Some(created) = creation_time(entry.th32ProcessID) {
-                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
-                let name = String::from_utf16_lossy(&entry.szExeFile[..len]).to_lowercase();
-                out.push(Proc { pid: entry.th32ProcessID, ppid: entry.th32ParentProcessID, created, name });
-            }
-            more = Process32NextW(snap, &mut entry);
-        }
-        CloseHandle(snap);
-    }
-    out
 }
 
 /// Force-kills `p` if it is still the process recorded (same creation time).

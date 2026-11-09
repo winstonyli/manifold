@@ -45,6 +45,8 @@ mod nonce;
 mod package;
 mod page_text;
 mod probes;
+#[cfg(windows)]
+mod procs;
 mod profile;
 #[cfg(windows)]
 mod release_check;
