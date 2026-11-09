@@ -1,24 +1,75 @@
+use std::sync::{Arc, Mutex};
+
 use super::*;
 
-#[test]
-fn the_first_message_wait_pumps_until_one_arrives() {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut pumps = 0;
-    let got = wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {
-        pumps += 1;
-        if pumps == 3 {
-            tx.send(crate::HostToView::GetState).unwrap();
+type Slot = Arc<Mutex<Option<mpsc::Receiver<HostToView>>>>;
+type Seen = Arc<Mutex<Vec<Option<HostToView>>>>;
+
+/// A wake closure that, at each wake, takes one message from the inbox and records what it found: a wake that
+/// comes before its message, a second wake for one message, or a wake while the slot is still empty records `None`.
+/// The slot exists because `spawn_host_reader` returns the receiver after taking the closure.
+fn recording_wake() -> (Slot, Seen, impl Fn() + Send + 'static) {
+    let (slot, seen): (Slot, Seen) = Default::default();
+    let (s, r) = (slot.clone(), seen.clone());
+    let wake = move || {
+        let got = s.lock().unwrap().as_ref().and_then(|rx| rx.try_recv().ok());
+        r.lock().unwrap().push(got);
+    };
+    (slot, seen, wake)
+}
+
+/// Waits (up to 5 s) for `n` wakes, then until the reader has exited (its sender is gone, so no later wake can come),
+/// and returns every wake recorded. A message still in the inbox then is one no wake took: it fails here.
+fn wakes_after_exit(slot: &Slot, seen: &Seen, n: usize) -> Vec<Option<HostToView>> {
+    let end = Instant::now() + Duration::from_secs(5);
+    while seen.lock().unwrap().len() < n {
+        assert!(Instant::now() < end, "only {:?} after 5 s", seen.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    loop {
+        match slot.lock().unwrap().as_ref().unwrap().try_recv() {
+            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::TryRecvError::Empty) => {}
+            Ok(msg) => panic!("{msg:?} arrived with no wake to take it"),
         }
-    });
-    assert!(matches!(got, Some(crate::HostToView::GetState)));
-    assert_eq!(pumps, 3);
+        assert!(Instant::now() < end, "the reader did not exit within 5 s");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    seen.lock().unwrap().clone()
+}
+
+/// A reader on one end of a local TCP pair, with its receiver in `slot` before the host end (`host`) writes anything.
+fn reader_then_host(slot: &Slot, wake: impl Fn() + Send + 'static, host: impl FnOnce(TcpStream) + Send + 'static) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let view_end = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (host_end, _) = listener.accept().unwrap();
+    *slot.lock().unwrap() = Some(spawn_host_reader(MessageChannel::new(view_end), wake));
+    std::thread::spawn(move || host(host_end)).join().unwrap();
 }
 
 #[test]
-fn the_first_message_wait_ends_on_a_closed_channel() {
-    let (tx, rx) = std::sync::mpsc::channel::<crate::HostToView>();
-    drop(tx);
-    assert!(wait_for_first_message(&rx, std::time::Duration::from_secs(5), || {}).is_none());
+fn every_wake_finds_its_message() {
+    let (slot, seen, wake) = recording_wake();
+    reader_then_host(&slot, wake, |stream| {
+        let mut out = MessageChannel::new(stream);
+        out.send_version().unwrap();
+        for _ in 0..3 {
+            out.send(&HostToView::GetState).unwrap();
+        }
+        // dropped: the reader adds its own Shutdown
+    });
+    let seen = wakes_after_exit(&slot, &seen, 4);
+    assert_eq!(seen.len(), 4, "{seen:?}");
+    assert!(seen[..3].iter().all(Option::is_some), "{seen:?}");
+    assert!(matches!(seen[3], Some(HostToView::Shutdown)), "{seen:?}");
+}
+
+#[test]
+fn a_host_gone_before_its_version_wakes() {
+    let (slot, seen, wake) = recording_wake();
+    reader_then_host(&slot, wake, drop);
+    let seen = wakes_after_exit(&slot, &seen, 1);
+    assert!(matches!(seen[..], [Some(HostToView::Shutdown)]), "{seen:?}");
 }
 
 /// Pins the WebKit-view-host hang fix: `accept_remote` must not call
@@ -105,25 +156,22 @@ fn a_dropped_host_becomes_shutdown() {
         stream.write_all(&crate::PROTOCOL_VERSION.to_le_bytes()).unwrap();
         // dropped: the engine's reader must turn this into Shutdown
     });
-    let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
+    let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()), || {});
     host.join().unwrap();
     assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToView::Shutdown));
 }
 
 #[test]
 fn a_wrong_version_from_the_host_becomes_shutdown() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let host = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+    let (slot, seen, wake) = recording_wake();
+    reader_then_host(&slot, wake, |mut stream| {
         stream.write_all(&(crate::PROTOCOL_VERSION + 1).to_le_bytes()).unwrap();
         // A well-formed Navigate after it must never be delivered. Best
         // effort: the reader may already have hung up on the bad version.
         let _ = MessageChannel::new(stream).send(&HostToView::Navigate { url: "https://x".into(), referrer: None });
     });
-    let rx = spawn_host_reader(MessageChannel::new(TcpStream::connect(("127.0.0.1", port)).unwrap()));
-    host.join().unwrap();
-    assert!(matches!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), HostToView::Shutdown));
+    let seen = wakes_after_exit(&slot, &seen, 1);
+    assert!(matches!(seen[..], [Some(HostToView::Shutdown)]), "{seen:?}");
 }
 
 /// The host speaks `PROTOCOL_VERSION`; manifold's number decides which side the host's log line says to rebuild.
@@ -199,7 +247,7 @@ fn the_view_inbox_is_bounded_and_loses_nothing() {
             progress.store(i + 1, Ordering::SeqCst);
         }
     });
-    let rx = spawn_host_reader(MessageChannel::new(view_kind));
+    let rx = spawn_host_reader(MessageChannel::new(view_kind), || {});
     // Proves an absence: the count stops moving once the inbox and the socket buffers are full.
     let mut last = usize::MAX;
     let end = Instant::now() + Duration::from_secs(20);

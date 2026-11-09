@@ -4,7 +4,8 @@
 //! applies both with `apply`. `process_manager::spawn_tab` writes it with the `ENV_*` names; every host reads the shared
 //! part here (`HostEnv`) and its engine's own variables in its `main`, under the same names, so each name is stated once.
 
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::{transport, HostSettings, HostToView};
 
@@ -83,14 +84,32 @@ impl HostEnv {
     }
 
     /// For a jar engine, waits up to `COOKIE_SEED_WAIT` for manifold's first message (`SetCookies`, sent first to
-    /// hosts started with `ENV_AWAIT_COOKIES`), calling `pump` between polls so the engine's own loop keeps running.
-    /// Any other first message is returned for the host's loop rather than dropped. Nothing is waited for otherwise.
-    pub fn await_cookies(&self, rx: &std::sync::mpsc::Receiver<HostToView>, pump: impl FnMut()) -> StartupMessages {
+    /// hosts started with `ENV_AWAIT_COOKIES`). Each time the inbox is empty it calls `idle(deadline)`, which runs the
+    /// engine's own loop until a wake (the reader's, after a message) or `deadline`. Any other first message is
+    /// returned for the host's loop rather than dropped. Nothing is waited for otherwise.
+    pub fn await_cookies(&self, rx: &mpsc::Receiver<HostToView>, idle: impl FnMut(Instant)) -> StartupMessages {
+        self.await_cookies_within(rx, COOKIE_SEED_WAIT, idle)
+    }
+
+    fn await_cookies_within(
+        &self,
+        rx: &mpsc::Receiver<HostToView>,
+        timeout: Duration,
+        mut idle: impl FnMut(Instant),
+    ) -> StartupMessages {
         let mut got = StartupMessages::default();
         if !self.await_cookies {
             return got;
         }
-        match transport::wait_for_first_message(rx, COOKIE_SEED_WAIT, pump) {
+        let deadline = Instant::now() + timeout;
+        let first = loop {
+            match rx.try_recv() {
+                Ok(msg) => break Some(msg),
+                Err(mpsc::TryRecvError::Empty) if Instant::now() < deadline => idle(deadline),
+                Err(_) => break None,
+            }
+        };
+        match first {
             Some(HostToView::SetCookies(json)) => got.cookies = Some(json),
             Some(other) => got.first_message = Some(other),
             None => eprintln!("jar: no seed received"),
@@ -141,7 +160,6 @@ pub fn apply(settings: &HostSettings) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
 
     #[test]
     fn the_url_defaults_and_the_socket_id_is_required() {
@@ -208,11 +226,55 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         tx.send(HostToView::SetCookies("[]".into())).unwrap();
-        let got = env.await_cookies(&rx, || {});
+        let got = env.await_cookies(&rx, |_| {});
         assert_eq!((got.cookies.as_deref(), got.first_message.is_some()), (Some("[]"), false));
         tx.send(HostToView::GetCookies).unwrap();
-        let got = env.await_cookies(&rx, || {});
+        let got = env.await_cookies(&rx, |_| {});
         assert!(got.cookies.is_none() && matches!(got.first_message, Some(HostToView::GetCookies)));
+    }
+
+    fn awaiting() -> HostEnv {
+        HostEnv {
+            socket_id: "t".into(),
+            initial_url: "u".into(),
+            await_cookies: true,
+            settings: HostSettings::default(),
+        }
+    }
+
+    #[test]
+    fn await_cookies_idles_until_the_cookies_arrive() {
+        let (tx, rx) = mpsc::channel();
+        let mut deadlines = Vec::new();
+        let start = Instant::now();
+        let got = awaiting().await_cookies(&rx, |deadline| {
+            deadlines.push(deadline);
+            if deadlines.len() == 3 {
+                tx.send(HostToView::SetCookies("[]".into())).unwrap();
+            }
+        });
+        assert_eq!(got.cookies.as_deref(), Some("[]"));
+        assert_eq!(deadlines.len(), 3, "idle ran once per empty look");
+        assert!(deadlines.iter().all(|d| *d == deadlines[0]), "one deadline for the whole wait");
+        assert!(deadlines[0] >= start + COOKIE_SEED_WAIT - Duration::from_millis(100));
+    }
+
+    #[test]
+    fn await_cookies_stops_at_its_deadline() {
+        let (tx, rx) = mpsc::channel::<HostToView>();
+        let (done_tx, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut idles = 0;
+            let got = awaiting().await_cookies_within(&rx, Duration::from_millis(50), |_| {
+                idles += 1;
+                assert!(idles < 2000, "idle ran 2,000 times: the deadline is not checked");
+                std::thread::sleep(Duration::from_millis(1));
+            });
+            done_tx.send((got.cookies, got.first_message.is_some())).unwrap();
+        });
+        let got = done.recv_timeout(Duration::from_secs(1)).expect("an empty result within 1 s");
+        assert_eq!(got, (None, false));
+        drop(tx); // alive until here, so the wait ended on its deadline, not on a closed channel
     }
 
     #[test]
@@ -225,7 +287,7 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         tx.send(HostToView::SetCookies("[]".into())).unwrap();
-        let got = env.await_cookies(&rx, || {});
+        let got = env.await_cookies(&rx, |_| {});
         assert!(got.cookies.is_none() && got.first_message.is_none());
         assert!(matches!(rx.try_recv(), Ok(HostToView::SetCookies(_))), "still queued for the loop");
     }

@@ -26,9 +26,10 @@ use capture::Capture;
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
+use manifold_view_protocol::wake::WakeEvent;
 use manifold_view_protocol::{transport, FrameSink, HostToView, InputEvent, ViewToHost};
 use webview2_com::Microsoft::Web::WebView2::Win32::{
     ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller, ICoreWebView2Environment,
@@ -155,8 +156,13 @@ fn main() {
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_view`/`control` are one-directional (HostToView
     // in, ViewToHost out) -- see transport.rs's own doc comment.
+    // The loop waits on this between turns: the reader sets it after each message.
+    let wake = Arc::new(WakeEvent::new().expect("wake event"));
     let (host_to_view, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
-    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, {
+        let w = wake.clone();
+        move || w.set()
+    });
 
     // Composition hosting against a real, off-screen host window -- see
     // docs/superpowers/specs/2026-09-20-composition-hosting-migration-design.md
@@ -242,7 +248,7 @@ fn main() {
 
     // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut startup = host_env.await_cookies(&rx, window::pump_messages);
+    let mut startup = host_env.await_cookies(&rx, |deadline| wake.wait(deadline));
     if let Some(json) = &startup.cookies {
         seed_cookies(&webview, in_private, json);
     }

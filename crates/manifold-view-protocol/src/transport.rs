@@ -35,39 +35,38 @@ fn skew_with_app(app: u32) -> Option<crate::Skew> {
     crate::Skew::between(Some(crate::PROTOCOL_VERSION), app)
 }
 
-/// An engine's reader thread: forwards each `HostToView` from
-/// `from_host` into the returned channel, so the engine's main thread (which
-/// has to keep driving its browser's event loop) only ever polls it. Stops
-/// after forwarding `Shutdown`. If the connection drops instead,
+/// An engine's reader thread: forwards each `HostToView` from `from_host` into the returned channel and calls `wake`
+/// after each one, so the engine's main thread can wait on its engine and a wake (`WakeEvent`) rather than poll the
+/// channel on a clock. Every message goes through one send-then-wake site, so a wake never comes before its message.
+/// Stops after forwarding `Shutdown`. If the connection drops instead,
 /// manifold.exe died without its normal teardown (force-killed, crashed):
 /// the thread sends a `Shutdown` of its own, so the engine exits through
 /// its usual path instead of running orphaned. Before this was shared, only
 /// the WebKit and Servo engines did that; WebKit's orphan was seen live at
 /// ~45% CPU after `taskkill /F /IM manifold.exe`.
 /// Reads manifold's `PROTOCOL_VERSION` first; a mismatch is logged naming which side to rebuild (`Skew`)
-/// and is a `Shutdown`.
+/// and, like a failed read, is a `Shutdown`.
 /// The channel holds `VIEW_INBOX` messages; past that the reader waits for the engine to take one.
 pub fn spawn_host_reader<S: Read + Write + Send + 'static>(
     mut from_host: MessageChannel<S>,
+    wake: impl Fn() + Send + 'static,
 ) -> mpsc::Receiver<HostToView> {
     let (tx, rx) = mpsc::sync_channel(VIEW_INBOX);
     std::thread::spawn(move || {
-        match from_host.recv_version().map(skew_with_app) {
-            Ok(None) => {}
+        let mut next = match from_host.recv_version().map(skew_with_app) {
+            Ok(None) => None,
             Ok(Some(skew)) => {
                 eprintln!("{skew}");
-                let _ = tx.send(HostToView::Shutdown);
-                return;
+                Some(HostToView::Shutdown)
             }
-            Err(_) => {
-                let _ = tx.send(HostToView::Shutdown);
-                return;
-            }
-        }
+            Err(_) => Some(HostToView::Shutdown),
+        };
         loop {
-            let msg = from_host.recv::<HostToView>().unwrap_or(HostToView::Shutdown);
+            let msg = next.take().unwrap_or_else(|| from_host.recv::<HostToView>().unwrap_or(HostToView::Shutdown));
             let is_shutdown = matches!(msg, HostToView::Shutdown);
-            if tx.send(msg).is_err() || is_shutdown {
+            let sent = tx.send(msg).is_ok();
+            wake();
+            if !sent || is_shutdown {
                 break;
             }
         }
@@ -280,26 +279,6 @@ pub fn connect_remote(host: &str, port: u16, token: &Token) -> io::Result<Remote
     let mut channel = MessageChannel::new(stream);
     channel.send_version()?;
     Ok(channel)
-}
-
-/// The first message from manifold, waiting up to `timeout` and calling
-/// `pump` between polls so the engine's own loop keeps running (CEF work,
-/// window messages). `None` on timeout or a closed channel.
-pub fn wait_for_first_message(
-    rx: &mpsc::Receiver<HostToView>,
-    timeout: Duration,
-    mut pump: impl FnMut(),
-) -> Option<HostToView> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        pump();
-        match rx.try_recv() {
-            Ok(msg) => return Some(msg),
-            Err(mpsc::TryRecvError::Empty) => std::thread::sleep(Duration::from_millis(8)),
-            Err(mpsc::TryRecvError::Disconnected) => return None,
-        }
-    }
-    None
 }
 
 #[cfg(test)]

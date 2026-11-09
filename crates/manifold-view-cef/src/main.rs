@@ -151,7 +151,8 @@ fn main() {
     // convention as manifold-view-servo (see manifold_view_protocol::transport).
     let (host_to_view, mut control) =
         manifold_view_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
-    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view);
+    // No wake yet: the loop polls (PARKED "Hosts other than WebView2 still poll").
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, || {});
 
     let sink: render_handler::SharedFrameSink =
         std::rc::Rc::new(std::cell::RefCell::new(manifold_view_protocol::FrameSink::shared(&socket_id)));
@@ -185,7 +186,10 @@ fn main() {
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut startup = host_env.await_cookies(&rx, do_message_loop_work);
+    let mut startup = host_env.await_cookies(&rx, |_| {
+        do_message_loop_work();
+        std::thread::sleep(Duration::from_millis(8));
+    });
     let mut first_message = startup.first_message.take();
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
     let mut may_hold_cookies = startup.cookies.is_some_and(|json| jar_cookies::seed(&json) > 0);
