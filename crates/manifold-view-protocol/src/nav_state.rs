@@ -30,10 +30,11 @@ pub struct NavState {
 
 impl NavState {
     /// The state of a browser the host created at `url`: that first navigation is the host's
-    /// (`NavLabel::created_by_host`). `dirty` says whether it is sent on the first tick: CEF sends it at once, WebView2
-    /// waits for its first navigation event.
+    /// (`NavLabel::created_by_host`), and under way, so a report sent before the engine says so does not read as a
+    /// finished load (the trail would take it as the page settling). `dirty` says whether it is sent on the first
+    /// tick: CEF sends it at once, WebView2 waits for its first navigation event.
     pub fn new(url: String, dirty: bool) -> Self {
-        Self { url, label: NavLabel::created_by_host(Instant::now()), dirty, ..Self::default() }
+        Self { url, label: NavLabel::created_by_host(Instant::now()), loading: true, dirty, ..Self::default() }
     }
 
     /// If dirty: clears it and returns the message, then applies the label's reset (a finished navigation's label is
@@ -130,6 +131,13 @@ mod tests {
         s.label.user_started = Some(false);
         assert_eq!(fields(s.take_message().unwrap()).5, Some(false));
         assert_eq!(s.label.user_started, Some(false));
+    }
+
+    /// A browser just created has not loaded its page: its first report must not read as a finished load.
+    #[test]
+    fn a_host_created_state_is_loading() {
+        let mut s = NavState::new(String::from("https://a.test/"), true);
+        assert!(fields(s.take_message().unwrap()).4);
     }
 
     #[test]
