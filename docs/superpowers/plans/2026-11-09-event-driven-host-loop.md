@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Event-driven host loop, WebView2 first: implementation plan
