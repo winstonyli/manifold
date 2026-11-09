@@ -11,7 +11,6 @@ pub mod nav_state;
 pub mod render;
 mod stamp;
 pub mod transport;
-#[cfg(windows)]
 pub mod wake;
 pub mod wheel;
 
