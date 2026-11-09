@@ -135,6 +135,8 @@ impl PendingWrites {
         })
     }
 
+    /// Used by `check_graph_matches_document` and tests only.
+    #[cfg(any(test, debug_assertions))]
     pub(crate) fn tree_queued(&self, node: NodeId, field: u32) -> bool {
         self.tree_edits(node, field).next().is_some()
     }
