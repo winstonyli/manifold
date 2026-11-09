@@ -196,6 +196,48 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
     assert_eq!(users, ["manifold/src/worker.rs"], "catch_unwind belongs to worker.rs alone");
 }
 
+/// The `thread::sleep(` calls in each host source, outside comments and inline tests. A host's loop waits on its engine
+/// and its inbox (`WakeEvent`, or the engine's own wait), never on a clock: a count rises only with a parked stopgap
+/// beside it, and otherwise only falls; a listed file that is gone fails too. Every `manifold-view-*` crate is scanned,
+/// but of `manifold-view-protocol` only `host_env.rs` (the startup wait), absent here at 0; `transport.rs`'s
+/// connect retries are not a host loop. The scan matches the literal `thread::sleep(` (every sleep in the host crates
+/// is spelled that way), so an imported bare `sleep(` slips past it; other clock waits under 50 ms (`recv_timeout`,
+/// `park_timeout`, a short `MsgWait` timeout; none is in a host crate) are caught only when `gate hostrate` is run by
+/// hand (its still-page poll ceiling), as is a swap that keeps a file's count.
+const HOST_SLEEPS: &[(&str, usize)] = &[
+    ("manifold-view-cef/src/main.rs", 1),        // loop poll, until the CEF plan
+    ("manifold-view-servo/src/main.rs", 1),      // loop poll, until the Servo plan
+    ("manifold-view-webkitgtk/src/main.rs", 1),  // loop poll, until a paint signal is found
+    ("manifold-view-webview2/src/main.rs", 2),   // loop poll (the event-driven plan's Task 5); profile-busy retry
+    ("manifold-view-webview2/src/window.rs", 1), // taskbar retry on its own thread, not the loop
+];
+
+#[test]
+fn host_loops_do_not_sleep() {
+    let scanned = |path: &str| {
+        path.starts_with("manifold-view-")
+            && (!path.starts_with("manifold-view-protocol/") || path == "manifold-view-protocol/src/host_env.rs")
+    };
+    let mut problems = Vec::new();
+    let mut seen = Vec::new();
+    for (path, source) in sources().into_iter().filter(|(p, _)| scanned(p)) {
+        let production = source.lines().take(measure(&source).0);
+        let count =
+            production.filter(|l| !l.trim_start().starts_with("//")).filter(|l| l.contains("thread::sleep(")).count();
+        let allowed = HOST_SLEEPS.iter().find(|(p, _)| *p == path).map_or(0, |&(_, n)| n);
+        if count != allowed {
+            problems.push(format!("{path}: {count} thread::sleep calls, {allowed} listed; wait on an event instead"));
+        }
+        seen.push(path);
+    }
+    for (path, _) in HOST_SLEEPS {
+        if !seen.iter().any(|p| p == path) {
+            problems.push(format!("{path}: listed but not found; delete its entry"));
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
 /// Rust items whose names start `VIEW_`, which `host_variables_are_named_only_in_host_env` would otherwise read as
 /// host variables. An entry no code uses fails, so the list only shrinks.
 const VIEW_ITEMS: &[&str] =
