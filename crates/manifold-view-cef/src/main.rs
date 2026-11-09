@@ -11,6 +11,7 @@ mod pages;
 mod render_handler;
 mod render_process_handler;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use cef::args::Args;
@@ -18,6 +19,7 @@ use cef::*;
 #[cfg(windows)]
 use manifold_view_protocol::job;
 use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
+use manifold_view_protocol::wake::WakeEvent;
 use manifold_view_protocol::{HostToView, InputEvent, ViewToHost};
 
 use app::{AppBuilder, ViewApp};
@@ -81,7 +83,10 @@ fn main() {
     // Harmless for the actual browser-process invocation below despite
     // being the same instance -- CEF never calls that getter outside a
     // renderer subprocess.
-    let mut cef_app = AppBuilder::build(ViewApp::new());
+    // What the loop below waits on: CEF's pump requests (`app.rs`) and the reader set it. Subprocesses make one too,
+    // and nothing sets it there.
+    let wake = Arc::new(WakeEvent::new().expect("wake event"));
+    let mut cef_app = AppBuilder::build(ViewApp::new(wake.clone()));
     let ret = execute_process(Some(args.as_main_args()), Some(&mut cef_app), std::ptr::null_mut());
 
     if !is_browser_process {
@@ -151,8 +156,16 @@ fn main() {
     // convention as manifold-view-servo (see manifold_view_protocol::transport).
     let (host_to_view, mut control) =
         manifold_view_protocol::transport::connect_local_pair(&socket_id).expect("connect to manifold control sockets");
-    // No wake yet: the loop polls (PARKED "Hosts other than WebView2 still poll").
-    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, || {});
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, {
+        let wake = wake.clone();
+        move || wake.set()
+    });
+    // One turn's wait: until a message, a pump request or `deadline`, then the pump. The pump comes after the wait, so
+    // the next turn's drain and reads see what its callbacks did.
+    let idle = |deadline| {
+        wake.wait(deadline);
+        do_message_loop_work();
+    };
 
     let sink: render_handler::SharedFrameSink =
         std::rc::Rc::new(std::cell::RefCell::new(manifold_view_protocol::FrameSink::shared(&socket_id)));
@@ -186,10 +199,7 @@ fn main() {
     let browser_settings = BrowserSettings { windowless_frame_rate: 60, ..Default::default() };
     // Cookie-jar seeding: wait (bounded) for `SetCookies` so the cookies are in place before the first navigation.
     // Any other first message is kept for the loop below rather than dropped.
-    let mut startup = host_env.await_cookies(&rx, |_| {
-        do_message_loop_work();
-        std::thread::sleep(Duration::from_millis(8));
-    });
+    let mut startup = host_env.await_cookies(&rx, idle);
     let mut first_message = startup.first_message.take();
     // Whether this host was seeded with cookies or has reported some (`jar_cookies::JarPull::poll`).
     let mut may_hold_cookies = startup.cookies.is_some_and(|json| jar_cookies::seed(&json) > 0);
@@ -223,14 +233,14 @@ fn main() {
     // HostToView::SetVisible's doc comment.
     let mut visible = true;
     // Set once `HostToView::Shutdown` calls `close_browser` -- the loop
-    // keeps pumping (`do_message_loop_work` below) until `closed` flips,
+    // keeps pumping (`idle`) until `closed` flips,
     // which is what actually drives `on_before_close` to fire, or until
     // `SHUTDOWN_GRACE` passes (`shutdown_due`).
     let mut shutting_down: Option<std::time::Instant> = None;
 
+    // The first drain runs after a pump, as it always has: a `Navigate` needs the browser's main frame.
+    do_message_loop_work();
     loop {
-        do_message_loop_work();
-
         while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToView::Navigate { url, .. } => {
@@ -503,7 +513,7 @@ fn main() {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(8));
+        idle(last_audio_poll + AUDIO_PLAYING_POLL_INTERVAL);
     }
 }
 

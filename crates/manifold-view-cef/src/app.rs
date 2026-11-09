@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use cef::{self, rc::Rc, BrowserProcessHandler, ImplBrowserProcessHandler, WrapBrowserProcessHandler, *};
+use manifold_view_protocol::wake::WakeEvent;
 
 use crate::render_process_handler::{RenderProcessHandlerBuilder, ViewRenderProcessHandler};
 
@@ -7,11 +10,14 @@ use crate::render_process_handler::{RenderProcessHandlerBuilder, ViewRenderProce
 /// behave in a headless-friendly way (no crash-restore UI, no error
 /// dialogs — this process has no window at all).
 #[derive(Clone)]
-pub struct ViewApp {}
+pub struct ViewApp {
+    /// The host loop's wake, which CEF's pump requests set (`ViewBrowserProcessHandler`).
+    wake: Arc<WakeEvent>,
+}
 
 impl ViewApp {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(wake: Arc<WakeEvent>) -> Self {
+        Self { wake }
     }
 }
 
@@ -57,7 +63,7 @@ wrap_app! {
 
         fn browser_process_handler(&self) -> Option<cef::BrowserProcessHandler> {
             Some(BrowserProcessHandlerBuilder::build(
-                ViewBrowserProcessHandler::new(),
+                ViewBrowserProcessHandler::new(self.app.wake.clone()),
             ))
         }
 
@@ -80,11 +86,13 @@ impl AppBuilder {
 }
 
 #[derive(Clone)]
-pub struct ViewBrowserProcessHandler {}
+pub struct ViewBrowserProcessHandler {
+    wake: Arc<WakeEvent>,
+}
 
 impl ViewBrowserProcessHandler {
-    pub fn new() -> Self {
-        Self {}
+    pub fn new(wake: Arc<WakeEvent>) -> Self {
+        Self { wake }
     }
 }
 
@@ -93,7 +101,15 @@ wrap_browser_process_handler! {
         handler: ViewBrowserProcessHandler,
     }
 
-    impl BrowserProcessHandler {}
+    impl BrowserProcessHandler {
+        // CEF calls this from any thread when it wants `do_message_loop_work`; the host loop pumps once the wake ends
+        // its wait. On Windows CEF 152 only asked for 0 (plan `2026-11-09-cef-event-driven-loop.md`; Linux not
+        // measured). A positive delay is pumped at once, which CEF allows, and its delayed task then runs on a later
+        // turn: PARKED "CEF does not signal delayed pump work".
+        fn on_schedule_message_pump_work(&self, _delay_ms: i64) {
+            self.handler.wake.set();
+        }
+    }
 }
 
 impl BrowserProcessHandlerBuilder {
