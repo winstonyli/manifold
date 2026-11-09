@@ -16,7 +16,7 @@ use webkit2gtk::{
 const DEFAULT_WIDTH: i32 = 1024;
 const DEFAULT_HEIGHT: i32 = 768;
 
-/// At most one frame per this, as WebView2's own `FRAME_INTERVAL`: about 30 fps.
+/// At most one frame per this: about 30 fps.
 const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 
 /// What the user can do about a download WebKit reports `failed` with `error`: its three `DownloadError` codes, a

@@ -205,7 +205,7 @@ const HOST_SLEEPS: &[(&str, usize)] = &[
     ("manifold-view-cef/src/main.rs", 2), // loop poll and startup idle, until the CEF plan
     ("manifold-view-servo/src/main.rs", 1), // loop poll, until the Servo plan
     ("manifold-view-webkitgtk/src/main.rs", 1), // loop poll, until a paint signal is found
-    ("manifold-view-webview2/src/main.rs", 2), // loop poll (the event-driven plan's Task 5); profile-busy retry
+    ("manifold-view-webview2/src/main.rs", 1), // profile-busy retry at startup, not the loop
     ("manifold-view-webview2/src/window.rs", 1), // taskbar retry on its own thread, not the loop
 ];
 

@@ -1,5 +1,5 @@
 //! WebView2 view-host (see the M6 plan). Structured to mirror
-//! `manifold-view-cef/src/main.rs`'s shape (fixed-tick poll loop, the
+//! `manifold-view-cef/src/main.rs`'s shape (a loop that waits on `WakeEvent`, the
 //! shared `manifold_view_protocol::nav_state` state) since CEF is the closest existing
 //! analog: a real Windows process, no visible window, same-machine IPC.
 //! WebView2 is hosted via the Composition controller against a
@@ -56,13 +56,6 @@ const ERROR_BUSY: windows::core::HRESULT = windows::core::HRESULT(0x800700AA_u32
 /// 2026-11-06). A failed card is what waiting too little costs, a later page what waiting does.
 const PROFILE_RELEASE_WAIT: Duration = Duration::from_secs(60);
 const PROFILE_RETRY_PAUSE: Duration = Duration::from_millis(100);
-/// Caps how often a captured frame is actually acted on and sent to
-/// manifold -- see the cap's own call-site doc comment for why this
-/// exists (unlike CEF/Servo/WebKit, WGC produces a new frame every vsync
-/// regardless of whether content changed, which measurably overloaded
-/// manifold without this). ~30fps is plenty for a tab preview/thumbnail
-/// use case and well below what caused the observed overload.
-const FRAME_INTERVAL: Duration = Duration::from_millis(33);
 /// How often the capture's D3D device is checked for removal (`Capture::device_lost`).
 const DEVICE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -114,7 +107,7 @@ fn main() {
     // single one fails with CO_E_NOTINITIALIZED (HRESULT 0x800401F0, starting
     // with the very first environment-creation call). Apartment-threaded (STA), not multi-threaded, since WebView2
     // is a UI-affine component tied to the thread that pumps its message
-    // loop (see window::pump_messages, called from this same thread below).
+    // loop (see `WakeEvent::wait`, called from this same thread below).
     unsafe {
         let _ =
             windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
@@ -156,7 +149,9 @@ fn main() {
     // both named pipes before spawning us (listen_local_pair), we just
     // connect. `host_to_view`/`control` are one-directional (HostToView
     // in, ViewToHost out) -- see transport.rs's own doc comment.
-    // The loop waits on this between turns: the reader sets it after each message.
+    // The loop waits on this between turns: the reader sets it after each message, and each wait dispatches the
+    // thread's window messages, which WebView2's own multi-process routing and the `DispatcherQueue` that
+    // Composition hosting runs on (see above) need pumped.
     let wake = Arc::new(WakeEvent::new().expect("wake event"));
     let (host_to_view, mut control) = transport::connect_local_pair(&socket_id).expect("connect to manifold");
     let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, {
@@ -268,25 +263,9 @@ fn main() {
     let mut sink = FrameSink::shared(&socket_id);
     let mut last_size = (0, 0);
     let mut visible = true;
-    // Unlike CEF/Servo (which only paint on invalidation, so a static page
-    // naturally settles to a low steady-state frame rate) or WebKit (its
-    // own GTK-driven capture), `Windows.Graphics.Capture` produces a new
-    // frame on every compositor vsync *regardless of whether page content
-    // actually changed* -- a real page can flood ~60-70
-    // `FrameReady` messages/sec continuously, even fully static, which
-    // measurably overloaded manifold's per-frame handling badly enough
-    // to make it stop responding to headless stdin commands for tens of
-    // seconds. `TryGetNextFrame` itself can't be told to slow down (no
-    // rate-control knob exists on the capture session), so this throttles
-    // at the polling level instead: skip acting on a new frame entirely
-    // unless enough wall time has passed, capping our own outgoing rate
-    // independent of the compositor's.
-    let mut last_frame_sent = std::time::Instant::now() - FRAME_INTERVAL;
     let mut last_device_check = std::time::Instant::now();
 
     loop {
-        window::pump_messages();
-
         while let Some(msg) = first_message.take().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToView::Navigate { url, .. } => unsafe {
@@ -340,7 +319,12 @@ fn main() {
                     }
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
-                HostToView::SetCookies(json) => seed_cookies(&webview, in_private, &json),
+                // `seed_cookies` runs a nested message loop whose handlers may fill cells this turn already read,
+                // so the next wait returns at once instead of sleeping until the device check.
+                HostToView::SetCookies(json) => {
+                    seed_cookies(&webview, in_private, &json);
+                    wake.set();
+                }
                 HostToView::GetCookies => {
                     // On the shared profile the answer would hold the user's real cookies, and an empty answer
                     // would read as a logout: say nothing.
@@ -503,12 +487,13 @@ fn main() {
             }
         }
 
-        if visible && last_frame_sent.elapsed() >= FRAME_INTERVAL {
+        // Every frame goes out: the damage check and the app's one-frame slot absorb unchanged frames, and a
+        // still page sends none (t1, 2026-11-09).
+        if visible {
             if let Some(size) = capture.with_latest_frame(|src, pitch, w, h| {
                 sink.offer(src, pitch, w, h);
                 (w, h)
             }) {
-                last_frame_sent = std::time::Instant::now();
                 if size != last_size {
                     // Logged permanently -- a frame-size change is rare
                     // enough post-migration that seeing it in the log is
@@ -533,7 +518,7 @@ fn main() {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(8));
+        wake.wait(last_device_check + DEVICE_CHECK_INTERVAL);
     }
 }
 

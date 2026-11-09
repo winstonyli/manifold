@@ -23,9 +23,8 @@ use windows::Win32::Graphics::Gdi::HBRUSH;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::UI::Shell::ITaskbarList;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, PeekMessageW, RegisterClassW, SetWindowPos, ShowWindow,
-    TranslateMessage, CS_HREDRAW, CS_VREDRAW, MSG, PM_REMOVE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOZORDER,
-    SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE, WS_OVERLAPPEDWINDOW,
+    CreateWindowExW, DefWindowProcW, RegisterClassW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOZORDER, SW_SHOWNOACTIVATE, WNDCLASSW, WS_EX_NOACTIVATE, WS_OVERLAPPEDWINDOW,
 };
 
 const CLASS_NAME: PCWSTR = w!("ManifoldWebView2Host");
@@ -148,21 +147,5 @@ pub fn hide_from_taskbar(hwnd: HWND) {
 pub fn resize(hwnd: HWND, width: u32, height: u32) {
     unsafe {
         let _ = SetWindowPos(hwnd, None, 0, 0, width as i32, height as i32, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    }
-}
-
-/// Non-blocking drain of this thread's Win32 message queue -- WebView2's
-/// own internal multi-process message routing (and the `DispatcherQueue`
-/// Composition hosting runs on, see `main`) needs this pumped regularly;
-/// `PM_REMOVE` (not a blocking `GetMessageW`)
-/// keeps this composing with the tick loop's own fixed-interval sleep
-/// rather than blocking the whole view-host on window messages.
-pub fn pump_messages() {
-    unsafe {
-        let mut msg = MSG::default();
-        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
     }
 }
