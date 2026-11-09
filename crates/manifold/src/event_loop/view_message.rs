@@ -26,8 +26,8 @@ impl App {
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }
-            // Every report the old engine sent before it has arrived: the swap restarts where they left the tab
-            // (`finish_swap`).
+            // The old engine's reports of every change it made before `GetState` have arrived (the host sends them
+            // first): the swap restarts where they left the tab (`finish_swap`).
             ViewToHost::StateSnapshot => {
                 let target =
                     self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());

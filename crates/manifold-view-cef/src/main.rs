@@ -285,7 +285,9 @@ fn main() {
                     }
                 }
                 HostToView::GetState => {
-                    let _ = control.send(&ViewToHost::StateSnapshot);
+                    for m in nav_state.borrow_mut().answer_get_state() {
+                        let _ = control.send(&m);
+                    }
                 }
                 HostToView::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
                 HostToView::GetCookies => pull = Some(jar_cookies::start_pull()),

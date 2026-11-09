@@ -371,6 +371,70 @@ fn main() {
             pumped += 1;
         }
 
+        // Polled before the messages are read, so a `GetState` among them is answered after the state this pump
+        // left (the snapshot comes after every report: `ViewToHost::StateSnapshot`).
+        // The history's current item, not `uri()`: `uri()` is the pending page from the moment a load starts, while
+        // `can_go_back`/`can_go_forward` follow the history at commit. The item moves with them, so a poll never
+        // pairs a new url with the old page's flags (a page-script Back read as a fork on that).
+        let url =
+            webview.back_forward_list().and_then(|l| l.current_item()).and_then(|i| i.uri()).or_else(|| webview.uri());
+        let nav_now = (
+            url.map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
+            webview.title().map(|t| t.to_string()).unwrap_or_default(),
+            webview.can_go_back(),
+            webview.can_go_forward(),
+            webview.is_loading(),
+        );
+        if nav_now != last_nav {
+            let was_loading = last_nav.4;
+            last_nav = nav_now.clone();
+            let _ = to_host.send(&ViewToHost::NavigationStateChanged {
+                url: nav_now.0,
+                title: nav_now.1,
+                can_go_back: nav_now.2,
+                can_go_forward: nav_now.3,
+                loading: nav_now.4,
+                // Polled state carries no cause; `decide-policy`'s
+                // `NavigationAction` (is_user_gesture, navigation_type)
+                // would.
+                user_started: None,
+            });
+            // Loading just finished -- check once whether the page that
+            // loaded is a raw JSON response, or anything else non-HTML (see
+            // `ViewToHost::JsonBody`/`RedirectableContent`'s own doc
+            // comments for why this checks `document.contentType` rather
+            // than guessing from the url). The `"json\n"`/`"type\n"`
+            // prefixes disambiguate the two outcomes over one script-eval
+            // round trip -- safe since they're prepended here before any
+            // real page content, never something a real JSON body could
+            // itself start with by coincidence.
+            if was_loading && !nav_now.4 {
+                let pending_json = pending_json_body.clone();
+                let pending_redirect = pending_redirect_content_type.clone();
+                webview.run_javascript(
+                    manifold_view_protocol::PAGE_KIND_SCRIPT,
+                    gtk::gio::Cancellable::NONE,
+                    move |result| {
+                        if let Ok(js_result) = result {
+                            if let Some(value) = js_result.js_value() {
+                                if value.is_string() {
+                                    match manifold_view_protocol::PageKindReply::parse(&value.to_str()) {
+                                        Some(manifold_view_protocol::PageKindReply::Json(body)) => {
+                                            *pending_json.borrow_mut() = Some(body)
+                                        }
+                                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
+                                            *pending_redirect.borrow_mut() = Some(t)
+                                        }
+                                        None => {}
+                                    }
+                                }
+                            }
+                        }
+                    },
+                );
+            }
+        }
+
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 HostToView::Navigate { url, .. } => {
@@ -505,68 +569,6 @@ fn main() {
                 HostToView::Shutdown => {
                     return;
                 }
-            }
-        }
-
-        // The history's current item, not `uri()`: `uri()` is the pending page from the moment a load starts, while
-        // `can_go_back`/`can_go_forward` follow the history at commit. The item moves with them, so a poll never
-        // pairs a new url with the old page's flags (a page-script Back read as a fork on that).
-        let url =
-            webview.back_forward_list().and_then(|l| l.current_item()).and_then(|i| i.uri()).or_else(|| webview.uri());
-        let nav_now = (
-            url.map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone()),
-            webview.title().map(|t| t.to_string()).unwrap_or_default(),
-            webview.can_go_back(),
-            webview.can_go_forward(),
-            webview.is_loading(),
-        );
-        if nav_now != last_nav {
-            let was_loading = last_nav.4;
-            last_nav = nav_now.clone();
-            let _ = to_host.send(&ViewToHost::NavigationStateChanged {
-                url: nav_now.0,
-                title: nav_now.1,
-                can_go_back: nav_now.2,
-                can_go_forward: nav_now.3,
-                loading: nav_now.4,
-                // Polled state carries no cause; `decide-policy`'s
-                // `NavigationAction` (is_user_gesture, navigation_type)
-                // would.
-                user_started: None,
-            });
-            // Loading just finished -- check once whether the page that
-            // loaded is a raw JSON response, or anything else non-HTML (see
-            // `ViewToHost::JsonBody`/`RedirectableContent`'s own doc
-            // comments for why this checks `document.contentType` rather
-            // than guessing from the url). The `"json\n"`/`"type\n"`
-            // prefixes disambiguate the two outcomes over one script-eval
-            // round trip -- safe since they're prepended here before any
-            // real page content, never something a real JSON body could
-            // itself start with by coincidence.
-            if was_loading && !nav_now.4 {
-                let pending_json = pending_json_body.clone();
-                let pending_redirect = pending_redirect_content_type.clone();
-                webview.run_javascript(
-                    manifold_view_protocol::PAGE_KIND_SCRIPT,
-                    gtk::gio::Cancellable::NONE,
-                    move |result| {
-                        if let Ok(js_result) = result {
-                            if let Some(value) = js_result.js_value() {
-                                if value.is_string() {
-                                    match manifold_view_protocol::PageKindReply::parse(&value.to_str()) {
-                                        Some(manifold_view_protocol::PageKindReply::Json(body)) => {
-                                            *pending_json.borrow_mut() = Some(body)
-                                        }
-                                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
-                                            *pending_redirect.borrow_mut() = Some(t)
-                                        }
-                                        None => {}
-                                    }
-                                }
-                            }
-                        }
-                    },
-                );
             }
         }
 

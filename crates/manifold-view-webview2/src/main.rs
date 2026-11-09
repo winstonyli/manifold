@@ -329,7 +329,9 @@ fn main() {
                     visible = v;
                 }
                 HostToView::GetState => {
-                    let _ = control.send(&ViewToHost::StateSnapshot);
+                    for m in nav_state.borrow_mut().answer_get_state() {
+                        let _ = control.send(&m);
+                    }
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
                 HostToView::SetCookies(json) => seed_cookies(&webview, in_private, &json),

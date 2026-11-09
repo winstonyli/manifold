@@ -433,8 +433,9 @@ pub enum ViewToHost {
         /// engine can't tell (Servo, WebKit), or no navigation is under way.
         user_started: Option<bool>,
     },
-    /// The reply to `GetState`. It carries nothing: it comes after every report the engine sent before it, so the swap
-    /// restarts at the tab's URL those left. Nothing else moves across a swap: storage stays in each engine, and the
+    /// The reply to `GetState`. It carries nothing: the host sends it after reporting every change its engine had
+    /// made when `GetState` was read (`NavState::answer_get_state`; WebKitGTK polls before it reads messages), so the
+    /// swap restarts at the tab's URL those reports left. Nothing else moves across a swap: storage stays in each engine, and the
     /// engines expose only relative back/forward, no history list to copy.
     StateSnapshot,
     PageState(PageState),

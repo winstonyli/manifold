@@ -30,7 +30,8 @@ pub struct NavState {
 
 impl NavState {
     /// The state of a browser the host created at `url`: that first navigation is the host's
-    /// (`NavLabel::created_by_host`), and under way, so a report sent before the engine says so does not read as a
+    /// (`NavLabel::created_by_host`, which only the hosts that label navigations read: CEF and WebView2; Servo's
+    /// messages say `user_started: None` regardless), and under way, so a report sent before the engine says so does not read as a
     /// finished load (the trail would take it as the page settling). `dirty` says whether it is sent on the first
     /// tick: CEF sends it at once, WebView2 and Servo wait for their first event.
     pub fn new(url: String, dirty: bool) -> Self {
@@ -55,6 +56,13 @@ impl NavState {
             self.label.user_started = None;
         }
         Some(message)
+    }
+
+    /// The answer to `HostToView::GetState`: the state if a change is pending, then `StateSnapshot`. A host reads
+    /// `GetState` after pumping its engine but before its tick's `take_message`, so without this the change would
+    /// reach the host after the reply, and the swap would restart where the tab was before it (`finish_swap`).
+    pub fn answer_get_state(&mut self) -> impl Iterator<Item = ViewToHost> {
+        self.take_message().into_iter().chain([ViewToHost::StateSnapshot])
     }
 }
 
@@ -138,6 +146,23 @@ mod tests {
     fn a_host_created_state_is_loading() {
         let mut s = NavState::new(String::from("https://a.test/"), true);
         assert!(fields(s.take_message().unwrap()).4);
+    }
+
+    /// A change the engine made before `GetState` was read reaches the host before the reply, so the swap restarts
+    /// where it left the tab.
+    #[test]
+    fn the_get_state_answer_sends_a_pending_change_before_the_snapshot() {
+        let mut s = NavState::new(String::from("https://a.test/"), false);
+        s.url = String::from("https://b.test/");
+        s.dirty = true;
+        let answer: Vec<ViewToHost> = s.answer_get_state().collect();
+        assert!(
+            matches!(&answer[..], [ViewToHost::NavigationStateChanged { url, .. }, ViewToHost::StateSnapshot] if url == "https://b.test/")
+        );
+        assert!(
+            matches!(&s.answer_get_state().collect::<Vec<_>>()[..], [ViewToHost::StateSnapshot]),
+            "nothing pending"
+        );
     }
 
     #[test]

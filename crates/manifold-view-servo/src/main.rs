@@ -274,7 +274,9 @@ fn main() {
                     visible = v;
                 }
                 HostToView::GetState => {
-                    let _ = control.send(&ViewToHost::StateSnapshot);
+                    for m in delegate.nav.borrow_mut().answer_get_state() {
+                        let _ = control.send(&m);
+                    }
                 }
                 // This engine has no cookie jar to seed or read; stays silent.
                 HostToView::SetCookies(_) | HostToView::GetCookies => {}
