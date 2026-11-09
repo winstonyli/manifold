@@ -21,11 +21,8 @@ const PROD_ALLOWED: &[(&str, usize)] = &[
     ("gate/src/smoke.rs", 1258),
 ];
 /// Inline test blocks at or over `TEST_BLOCK_LIMIT` today, with the block's line count.
-const TEST_ALLOWED: &[(&str, usize)] = &[
-    ("manifold-hosts/src/lib.rs", 353),
-    ("manifold-view-protocol/src/transport.rs", 274),
-    ("manifold-view-protocol/src/downloads.rs", 262),
-];
+const TEST_ALLOWED: &[(&str, usize)] =
+    &[("manifold-hosts/src/lib.rs", 353), ("manifold-view-protocol/src/downloads.rs", 262)];
 
 fn crates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
