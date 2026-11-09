@@ -85,7 +85,8 @@ impl SavedScroll {
     }
 
     /// Feed each `NavigationStateChanged`'s `loading`; true once a load has
-    /// started and finished (a not-yet-started engine reports `false` too).
+    /// started and finished (an engine's first report can be `false` before its load starts: Servo's state starts
+    /// idle, where `NavState::new` starts loading).
     pub(crate) fn on_loading(&mut self, loading: bool) -> bool {
         if loading {
             self.seen_loading = true;

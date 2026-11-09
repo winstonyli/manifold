@@ -191,9 +191,9 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      [at]`, `lin_at = 0`; if it does not, or there is no tree (a one-page tree is not saved), the tree becomes a root at that
      URL, so the engine's reports of the page the tab already showed are no visit (2026-11-08; until then the arena was
      emptied and the next report made the root). One exception: when the URL is a pending move's sent page not yet
-     reached (the engine was replaced between sending and the first report), the tree stays, the move stays as a plain
-     one with a fresh `LOADING_WINDOW`, and `lin = [None]`, marked `kept`, so the new engine's arrival commits it and
-     is the visit, redirected or not (step 3). Should it expire instead, `loading` is cleared: the new engine was
+     reached (the engine was replaced between sending and the first report), the tree stays, the move stays with a fresh
+     `LOADING_WINDOW`, and `lin = [None]`, marked `kept`, so the new engine's arrival commits it and is the visit,
+     redirected or not (step 3; `kept` changes only a plain move, since a `New` one already takes any other URL). Should it expire instead, `loading` is cleared: the new engine was
      loading the target, not the cursor's page, so a late report of another URL is a new page, not a rewrite of the
      page the tab stayed on.
      Only a plain or `New` move is kept: every replacement (crash, swap, restore, wake) restarts at the tab's URL,
