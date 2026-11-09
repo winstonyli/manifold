@@ -274,10 +274,7 @@ fn main() {
                     visible = v;
                 }
                 HostToView::GetState => {
-                    // The url is the only piece the swap sequence replays.
-                    let _ = control.send(&ViewToHost::StateSnapshot(manifold_view_protocol::TabState {
-                        url: delegate.nav.borrow().url.clone(),
-                    }));
+                    let _ = control.send(&ViewToHost::StateSnapshot);
                 }
                 // This engine has no cookie jar to seed or read; stays silent.
                 HostToView::SetCookies(_) | HostToView::GetCookies => {}

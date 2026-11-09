@@ -7,9 +7,7 @@ use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
-use manifold_view_protocol::{
-    transport, DownloadFailure, FailureKind, HostToView, MessageChannel, TabState, ViewToHost,
-};
+use manifold_view_protocol::{transport, DownloadFailure, FailureKind, HostToView, MessageChannel, ViewToHost};
 use webkit2gtk::{
     BackForwardListExt, BackForwardListItemExt, DownloadExt, FindControllerExt, FindOptions, URIRequestExt,
     URIResponseExt, WebContextExt, WebView, WebViewExt,
@@ -415,8 +413,7 @@ fn main() {
                     }
                 }
                 HostToView::GetState => {
-                    let url = webview.uri().map(|u| u.to_string()).unwrap_or_else(|| last_nav.0.clone());
-                    let _ = to_host.send(&ViewToHost::StateSnapshot(TabState { url }));
+                    let _ = to_host.send(&ViewToHost::StateSnapshot);
                 }
                 // This engine has no cookie jar to seed or read; stays silent.
                 HostToView::SetCookies(_) | HostToView::GetCookies => {}

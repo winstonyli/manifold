@@ -329,8 +329,7 @@ fn main() {
                     visible = v;
                 }
                 HostToView::GetState => {
-                    let url = nav_state.borrow().url.clone();
-                    let _ = control.send(&ViewToHost::StateSnapshot(manifold_view_protocol::TabState { url }));
+                    let _ = control.send(&ViewToHost::StateSnapshot);
                 }
                 // A seed that arrives after the first navigation (not the expected path) still goes in.
                 HostToView::SetCookies(json) => seed_cookies(&webview, in_private, &json),

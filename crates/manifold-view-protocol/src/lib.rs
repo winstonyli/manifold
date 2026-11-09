@@ -18,7 +18,7 @@ pub use frame_sink::{copy_changed_rows, FrameSink};
 pub use host_env::{HostEnv, StartupMessages};
 pub use messages::{
     clean_page_text, modifiers, page_text_reply, restore_scroll_script, DownloadFailure, FailureKind, HostSettings,
-    HostToView, InputEvent, KeyCode, MouseButton, PageKindReply, PageState, TabState, ViewToHost, PAGE_KIND_SCRIPT,
+    HostToView, InputEvent, KeyCode, MouseButton, PageKindReply, PageState, ViewToHost, PAGE_KIND_SCRIPT,
     PAGE_STATE_SCRIPT, PAGE_TEXT_SCRIPT, TEXT_CAP_UNITS,
 };
 pub use stamp::host_protocol;
@@ -36,7 +36,8 @@ pub use transport::{LocalTransport, RemoteTransport};
 /// 6: `HostToView::QueryPageText`, `ViewToHost::PageText`.
 /// 7: `HostToView::SetSettings` (the theme and the download folder) replaces `SetTheme`.
 /// 8: `ViewToHost::DownloadFailed` carries a `DownloadFailure` (why: a `FailureKind` and the engine's or OS's words).
-pub const PROTOCOL_VERSION: u32 = 8;
+/// 9: `ViewToHost::StateSnapshot` carries nothing (`TabState` is gone: the swap restarts at the tab's url).
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Starts the one line a view host writes to stderr (its per-tab log) when it cannot start at all and
 /// exits before connecting, e.g. a CEF runtime that doesn't support the host's API version. manifold shows the rest

@@ -1234,8 +1234,7 @@ fn a_remote_view_parked_during_a_swap_respawn_is_swapped_to_when_it_lands() {
     assert!(app.save_session());
     app.start_swap_to(tab, ViewKind::Cef);
     assert!(app.save_session());
-    let snapshot = manifold_view_protocol::TabState { url: "https://s/".into() };
-    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
+    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot);
     assert_eq!(app.test_spawns.len(), 1, "the swap's respawn is in flight");
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     remote_set(&mut other, tab, field::VIEW_KIND, view_kind(ViewKind::Webview2));

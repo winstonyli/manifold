@@ -26,8 +26,9 @@ impl App {
                 self.apply_pulled_cookies(tab_id, &json);
                 self.release_cookie_hold(tab_id);
             }
-            // The old engine's url is not read: the swap restarts where the tab is (`finish_swap`).
-            ViewToHost::StateSnapshot(_) => {
+            // Every report the old engine sent before it has arrived: the swap restarts where they left the tab
+            // (`finish_swap`).
+            ViewToHost::StateSnapshot => {
                 let target =
                     self.nodes.get_mut(&tab_id).and_then(|n| n.as_tab_mut()).and_then(|t| t.swap_target.take());
                 if let Some(target) = target {

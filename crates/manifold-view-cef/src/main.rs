@@ -18,7 +18,7 @@ use cef::*;
 #[cfg(windows)]
 use manifold_view_protocol::job;
 use manifold_view_protocol::nav_state::{new_shared_json_body, new_shared_nav_state, new_shared_redirect_content_type};
-use manifold_view_protocol::{HostToView, InputEvent, TabState, ViewToHost};
+use manifold_view_protocol::{HostToView, InputEvent, ViewToHost};
 
 use app::{AppBuilder, ViewApp};
 use client::{new_shared_audio_playing, new_shared_page_state, new_shared_page_text, ClientBuilder};
@@ -285,7 +285,7 @@ fn main() {
                     }
                 }
                 HostToView::GetState => {
-                    let _ = control.send(&ViewToHost::StateSnapshot(TabState { url: nav_state.borrow().url.clone() }));
+                    let _ = control.send(&ViewToHost::StateSnapshot);
                 }
                 HostToView::SetCookies(json) => may_hold_cookies |= jar_cookies::seed(&json) > 0,
                 HostToView::GetCookies => pull = Some(jar_cookies::start_pull()),

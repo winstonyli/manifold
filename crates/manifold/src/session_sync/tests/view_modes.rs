@@ -21,18 +21,26 @@ fn a_swap_saves_its_target_before_the_state_snapshot() {
     assert_eq!(swap_target(&app, tab), Some(ViewKind::Cef));
 }
 
-/// A swap restarts the tab where the tab is, as a crash does, not at the old engine's snapshot url: that can run a
-/// report ahead of the tab, or fall behind it while the swap waits for its cookies.
+/// A swap restarts the tab where the old engine's reports left it, as a crash does: a page that moved on while the
+/// swap waited for the snapshot restarts on the page it moved to.
 #[test]
-fn a_swap_restarts_at_the_tabs_url_not_the_snapshots() {
+fn a_swap_restarts_where_the_old_engines_reports_left_the_tab() {
     let path = temp_dir("engine-swap-url").join("session.mnf");
     let mut app = app_on(&path, 1);
     let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
     app.start_swap_to(tab, ViewKind::Cef);
-    let snapshot = manifold_view_protocol::TabState { url: "https://ahead/".into() };
-    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
+    let moved = manifold_view_protocol::ViewToHost::NavigationStateChanged {
+        url: "https://moved/".into(),
+        title: String::new(),
+        can_go_back: true,
+        can_go_forward: false,
+        loading: false,
+        user_started: None,
+    };
+    app.handle_view_message(tab, moved);
+    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot);
     let urls: Vec<&str> = app.test_spawns.iter().map(|(spawn, _)| spawn.url.as_str()).collect();
-    assert_eq!(urls, ["https://s/"]);
+    assert_eq!(urls, ["https://moved/"]);
 }
 
 /// A switch whose new engine fails to start falls back to the old one, and writes it back when the
@@ -112,8 +120,7 @@ fn a_swap_waiting_for_its_cookies_is_still_the_one_swap() {
     let mut other = Journal::open(&path, ActorId(2)).unwrap();
     app.start_swap_to(tab, ViewKind::Webview2);
     assert!(app.save_session());
-    let snapshot = manifold_view_protocol::TabState { url: "https://s/".into() };
-    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
+    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot);
     assert!(app.cookies.cookie_holds.contains_key(&tab), "parked for the cookies");
     assert_eq!(swap_target(&app, tab), None);
     app.start_swap_to(tab, ViewKind::Servo);

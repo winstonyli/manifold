@@ -1,18 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-/// Engine-agnostic snapshot of a tab. Cookies/localStorage/IndexedDB are
-/// intentionally excluded: they live inside each engine's own storage
-/// backend and do not transfer across an engine swap. A full navigable
-/// history list is excluded too — CEF and WebKitGTK's embedding APIs (and
-/// Servo's, going by the pinned 0.5.0 `WebView`) only expose *relative*
-/// back/forward navigation plus can-go-back/can-go-forward flags, not an
-/// enumerable/indexable entry list, so there is nothing to snapshot beyond
-/// the current URL. See `HostToView::GoBack`/`GoForward`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct TabState {
-    pub url: String,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MouseButton {
     Left,
@@ -245,6 +232,7 @@ pub enum HostToView {
     /// yet settled into the frame its card keeps). The engine's own event/message-loop pump keeps running regardless (the page keeps
     /// executing, title/url keep updating), only the final capture-and-send step is gated on this.
     SetVisible(bool),
+    /// An engine swap asks the old engine for `ViewToHost::StateSnapshot` before replacing it.
     GetState,
     /// Asks for the page's scroll position and dirty-form flag
     /// (`PAGE_STATE_SCRIPT`); the engine answers with `ViewToHost::PageState`.
@@ -445,7 +433,10 @@ pub enum ViewToHost {
         /// engine can't tell (Servo, WebKit), or no navigation is under way.
         user_started: Option<bool>,
     },
-    StateSnapshot(TabState),
+    /// The reply to `GetState`. It carries nothing: it comes after every report the engine sent before it, so the swap
+    /// restarts at the tab's URL those left. Nothing else moves across a swap: storage stays in each engine, and the
+    /// engines expose only relative back/forward, no history list to copy.
+    StateSnapshot,
     PageState(PageState),
     /// The engine's whole cookie jar as a JSON array of `jar::Cookie` (name, value, domain, path, expires,
     /// secure, http_only, same_site), the answer to `HostToView::GetCookies`.
@@ -779,9 +770,9 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 8;
+    const RECORDED_FOR_VERSION: u32 = 9;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0x2570_6fd6_8e8a_4e19;
+    const RECORDED_FINGERPRINT: u64 = 0xf879_2192_ef68_aaf2;
     const HOST_TO_VIEW_VARIANTS: usize = 22;
     const VIEW_TO_HOST_VARIANTS: usize = 17;
     const INPUT_EVENT_VARIANTS: usize = 7;
@@ -822,7 +813,7 @@ mod wire_shape_tests {
         match m {
             ViewToHost::FrameReady { .. } => 0,
             ViewToHost::NavigationStateChanged { .. } => 1,
-            ViewToHost::StateSnapshot(_) => 2,
+            ViewToHost::StateSnapshot => 2,
             ViewToHost::PageState(_) => 3,
             ViewToHost::Cookies(_) => 4,
             ViewToHost::Crashed { .. } => 5,
@@ -947,7 +938,7 @@ mod wire_shape_tests {
                 loading: true,
                 user_started: Some(true),
             },
-            ViewToHost::StateSnapshot(TabState { url: "https://example.com".into() }),
+            ViewToHost::StateSnapshot,
             ViewToHost::PageState(PageState { scroll_x: 1.0, scroll_y: 2.0, dirty_form: true }),
             ViewToHost::Cookies("[]".into()),
             ViewToHost::Crashed { reason: "gone".into() },
