@@ -4,7 +4,7 @@ use std::rc::Rc;
 use gtk::gdk;
 use gtk::prelude::*;
 use javascriptcore::ValueExt;
-use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
+use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton, ScrollDelta};
 use webkit2gtk::{WebView, WebViewExt};
 
 /// `(x, y, href)` for a right-click that landed on a link — see
@@ -105,7 +105,8 @@ pub fn send_input(
                 modifiers_to_gdk(modifiers),
             );
         }
-        InputEvent::Scroll { x, y, delta_x, delta_y, .. } => {
+        InputEvent::Scroll { x, y, delta, .. } => {
+            let (delta_x, delta_y) = gdk_smooth_delta(delta);
             send_scroll_event(&window, pointer_device, x, y, delta_x, delta_y);
         }
         InputEvent::KeyDown { key, modifiers: mods } => {
@@ -243,12 +244,26 @@ fn send_button_or_motion_event(
     ev.put();
 }
 
+/// CSS px taken as one smooth-scroll unit, WebKit's `Scrollbar::pixelsPerLineStep`. Too small: under the gate a unit
+/// scrolled 101 px across and 83 down, so a pixel scroll goes about twice as far as asked (PARKED "WebKitGTK wheel
+/// distance").
+const PX_PER_STEP: f64 = 40.0;
+
+/// A `ScrollDelta` as GDK's smooth delta: one unit per wheel notch, as GTK reports a wheel, and both signs the
+/// opposite of `ScrollDelta`'s (GDK scrolls right and down on positive). Pixels become steps of `PX_PER_STEP`.
+fn gdk_smooth_delta(delta: ScrollDelta) -> (f64, f64) {
+    let (x, y) = match delta {
+        ScrollDelta::Lines { x, y } => (x, y),
+        ScrollDelta::Pixels { x, y } => (x / PX_PER_STEP, y / PX_PER_STEP),
+    };
+    (-x, -y)
+}
+
 /// `GdkScrollDirection::Smooth` + `delta_x`/`delta_y` is the modern,
-/// pixel-precise scroll path (what a real trackpad/precision mouse wheel
+/// continuous scroll path (what a real trackpad/precision mouse wheel
 /// reports) — the legacy `Up`/`Down`/`Left`/`Right` directions are a
 /// coarser fallback for old discrete-notch mice that WebKitGTK also still
-/// understands, but smooth is the better match for
-/// `InputEvent::Scroll`'s own already-continuous `delta_x`/`delta_y`.
+/// understands, but smooth carries a fractional notch or a touchpad's pixels.
 fn send_scroll_event(window: &gdk::Window, device: Option<&gdk::Device>, x: f64, y: f64, delta_x: f64, delta_y: f64) {
     use gdk::glib::translate::{IntoGlib, ToGlibPtr, ToGlibPtrMut};
 

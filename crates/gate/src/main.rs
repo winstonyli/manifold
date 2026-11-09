@@ -153,7 +153,7 @@ mod windows_main {
         Stage::work("focus-loss", crate::focus::focus_loss).listed_as(""),
         Stage::work("bad-url", crate::probes::bad_url),
         Stage::work("failed-spawn", crate::probes::failed_spawn),
-        Stage::work("hscroll", crate::probes::hscroll),
+        Stage::work("wheel", crate::probes::wheel),
         Stage::work("key", crate::probes::key),
         Stage::work("page-kind", crate::probes::page_kind),
         Stage::work("download", crate::download::download),

@@ -175,6 +175,7 @@ fn main() {
     // `BrowserHost::find` needs both repeated on every call, even a plain
     // `FindNext`/`FindPrevious` continuation of an already-running search.
     let mut find_term: Option<(String, bool)> = None;
+    let mut wheel = manifold_view_protocol::wheel::WheelUnits::default();
 
     let window_info = WindowInfo {
         windowless_rendering_enabled: true as _,
@@ -261,7 +262,7 @@ fn main() {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
                         nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
-                    input::send_input(&browser, event);
+                    input::send_input(&browser, event, &mut wheel);
                 }
                 HostToView::SetZoom { factor } => {
                     // CEF's own `zoom_level` is log-scale (Chromium's

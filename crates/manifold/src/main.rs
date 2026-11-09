@@ -116,7 +116,7 @@ use input::*;
 use json::level::{JsonEdit, JsonLevel};
 use level::{CardEntry, EdgeCurve, EdgeKind, LevelEdge, LevelScan, Origin};
 use links::LinkGesture;
-use manifold_view_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ViewToHost};
+use manifold_view_protocol::{modifiers, HostToView, InputEvent, KeyCode, MouseButton, ScrollDelta, ViewToHost};
 use mirror::Carried;
 use node::*;
 use popups::*;

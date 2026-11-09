@@ -75,6 +75,21 @@ fn mouse_button(rest: &str, state: ElementState) -> Option<Parsed> {
     job(move |app, el| button_at(app, el, at, button, state))
 }
 
+/// `SCROLL`/`WHEEL x y dx dy`: the cursor to (x, y), then a real `MouseWheel` of `delta(dx, dy)`.
+fn wheel(rest: &str, delta: fn(f64, f64) -> MouseScrollDelta) -> Option<Parsed> {
+    let mut parts = rest.split_whitespace();
+    let (x, y) = coords(&mut parts)?;
+    let (dx, dy) = coords(&mut parts)?;
+    let delta = delta(dx, dy);
+    job(move |app, el| {
+        cursor_to(app, el, x, y);
+        app.dispatch_window_event(
+            el,
+            WindowEvent::MouseWheel { device_id: DeviceId::dummy(), delta, phase: TouchPhase::Moved },
+        );
+    })
+}
+
 /// `CLICK x y [button] [ctrl]`.
 pub(super) fn parse_click(rest: &str) -> Option<((f64, f64), MouseButton, bool)> {
     let mut parts = rest.split_whitespace();
@@ -244,21 +259,11 @@ pub(super) const VERBS: &[Verb] = &[
         let (x, y) = coords(&mut rest.split_whitespace())?;
         job(move |app, el| app.debug_click(el, x, y, MouseButton::Left, 3, false))
     }),
-    pointer_row("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy)", |rest| {
-        let mut parts = rest.split_whitespace();
-        let (x, y) = coords(&mut parts)?;
-        let (delta_x, delta_y) = coords(&mut parts)?;
-        job(move |app, el| {
-            cursor_to(app, el, x, y);
-            app.dispatch_window_event(
-                el,
-                WindowEvent::MouseWheel {
-                    device_id: DeviceId::dummy(),
-                    delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(delta_x, delta_y)),
-                    phase: TouchPhase::Moved,
-                },
-            );
-        })
+    pointer_row("SCROLL x y dx dy", "Scroll at (x, y) by (dx, dy) physical pixels, as a touchpad does (positive dy scrolls up)", |rest| {
+        wheel(rest, |dx, dy| MouseScrollDelta::PixelDelta(PhysicalPosition::new(dx, dy)))
+    }),
+    pointer_row("WHEEL x y dx dy", "Turn the mouse wheel at (x, y) by (dx, dy) notches (fractions too; positive dy scrolls up)", |rest| {
+        wheel(rest, |dx, dy| MouseScrollDelta::LineDelta(dx as f32, dy as f32))
     }),
     // A click on the address bar, then select-all and typing: focus is requested now, and the text is typed as egui
     // `Text` input in the first frame the bar has it (see `debug_address_bar_typing`).

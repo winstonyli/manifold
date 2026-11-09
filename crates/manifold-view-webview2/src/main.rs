@@ -233,7 +233,7 @@ fn main() {
     let find_state = find::register(&environment, &webview).ok();
     let pending_audio_playing = audio::register(&webview).ok();
     let pending_context_menu: input::PendingContextMenu = Default::default();
-    let drag_state: input::DragState = Default::default();
+    let pointer = input::Pointer::default();
     let (pending_download, stall_check) = match download::register(&webview) {
         Ok((pending, check)) => (Some(pending), Some(check)),
         Err(_) => (None, None),
@@ -315,7 +315,7 @@ fn main() {
                     if matches!(event, InputEvent::MouseDown { .. } | InputEvent::KeyDown { .. }) {
                         nav_state.borrow_mut().label.last_input = Some(std::time::Instant::now());
                     }
-                    input::send_input(&webview, &comp_controller, event, &pending_context_menu, &drag_state);
+                    input::send_input(&webview, &comp_controller, event, &pending_context_menu, &pointer);
                 }
                 HostToView::SetZoom { factor } => unsafe {
                     // Linear, unlike CEF's log-scale zoom_level -- direct

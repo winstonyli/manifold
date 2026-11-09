@@ -98,19 +98,17 @@ pub(crate) type Wake = Arc<dyn Fn() + Send + Sync>;
 const WRITER_STACK: usize = 256 * 1024;
 
 /// `next` folded into `prev` when the engine needs only the result: the latest pointer position or size, or the sum of
-/// a run of wheel steps. `None` keeps both. Only the queue's newest unwritten message is ever `prev`, so a merge never
-/// moves a message past another one. A modifier change ends a run (the page may react to it).
+/// a run of wheel steps in one unit (`ScrollDelta::plus`). `None` keeps both. Only the queue's newest unwritten message
+/// is ever `prev`, so a merge never moves a message past another one. A modifier change ends a run (the page may react
+/// to it).
 pub(crate) fn coalesce(prev: &HostToView, next: &HostToView) -> Option<HostToView> {
     use HostToView::{Input, Resize};
     use InputEvent::{MouseMove, Scroll};
     match (prev, next) {
         (Input(MouseMove { modifiers: a, .. }), Input(MouseMove { modifiers: b, .. })) if a == b => Some(next.clone()),
         (Resize { .. }, Resize { .. }) => Some(next.clone()),
-        (
-            Input(Scroll { delta_x: dx, delta_y: dy, modifiers: a, .. }),
-            Input(Scroll { x, y, delta_x, delta_y, modifiers: b }),
-        ) if a == b => {
-            Some(Input(Scroll { x: *x, y: *y, delta_x: dx + delta_x, delta_y: dy + delta_y, modifiers: *b }))
+        (Input(Scroll { delta: before, modifiers: a, .. }), Input(Scroll { x, y, delta, modifiers: b })) if a == b => {
+            Some(Input(Scroll { x: *x, y: *y, delta: before.plus(*delta)?, modifiers: *b }))
         }
         _ => None,
     }

@@ -226,6 +226,10 @@ const STEPS: &[Step] = &[
         engine: Some("webkit"),
         ..step("download-webkit", Mode::Light)
     },
+    Step { stage: "wheel", env: &[("VIEWS", "webview2")], ..step("wheel", Mode::Ui) },
+    Step { stage: "wheel", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("wheel-cef", Mode::Ui) },
+    Step { stage: "wheel", env: &[("VIEWS", "servo")], engine: Some("servo"), ..step("wheel-servo", Mode::Ui) },
+    Step { stage: "wheel", env: &[("VIEWS", "webkit")], engine: Some("webkit"), ..step("wheel-webkit", Mode::Ui) },
     step("link", Mode::Ui),
     step("unknown-type", Mode::Ui),
     step("closed", Mode::Ui),
@@ -421,7 +425,7 @@ mod tests {
         assert_eq!(Mode::parse("most"), None);
     }
 
-    /// A host a step of this run needs is judged by its dep-info; `cef` has no `ui` step, so `ui` does not ask.
+    /// A host a step of this run needs is judged by its dep-info; a run that lists no engine does not ask.
     #[test]
     fn a_stale_host_stops_only_a_run_that_uses_it() {
         if std::env::var_os("ALLOW_STALE").is_some() {
@@ -447,7 +451,7 @@ mod tests {
         let stale = stale_hosts(Mode::Light, &cef, root);
         assert_eq!(stale.len(), 1, "{stale:?}");
         assert!(stale[0].contains("manifold-view-cef.exe is older than") && stale[0].contains("src.rs"), "{stale:?}");
-        assert_eq!(stale_hosts(Mode::Ui, &cef, root), Vec::<String>::new(), "no `ui` step needs CEF");
+        assert_eq!(stale_hosts(Mode::Ui, &cef, root).len(), 1, "`wheel-cef` is a `ui` step");
         assert_eq!(stale_hosts(Mode::Full, &[], root), Vec::<String>::new(), "not asked for");
     }
 
@@ -457,6 +461,10 @@ mod tests {
         assert_eq!(
             ui,
             [
+                "wheel",
+                "wheel-cef",
+                "wheel-servo",
+                "wheel-webkit",
                 "link",
                 "unknown-type",
                 "closed",

@@ -5,7 +5,8 @@ use std::time::Duration;
 use dpi::PhysicalSize;
 use manifold_view_protocol::nav_state::NavState;
 use manifold_view_protocol::{
-    modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ViewToHost,
+    modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ScrollDelta,
+    ViewToHost,
 };
 use servo::{
     Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent,
@@ -20,6 +21,8 @@ use webrender_api::units::DevicePoint;
 
 const DEFAULT_WIDTH: u32 = 1024;
 const DEFAULT_HEIGHT: u32 = 768;
+/// CSS px a wheel notch scrolls: Edge's 100 at Windows' default 3 lines a notch.
+const NOTCH_PX: f64 = 100.0;
 
 /// M1 drives Servo with a busy-poll loop rather than a real wake-based
 /// event loop, so this waker is intentionally a no-op. Revisit if CPU
@@ -384,10 +387,19 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
             translate_mouse_button(button),
             webview_point(x, y),
         ))),
-        HostInputEvent::Scroll { x, y, delta_x, delta_y, .. } => Some(ServoInputEvent::Wheel(WheelEvent::new(
-            WheelDelta { x: delta_x, y: delta_y, z: 0.0, mode: WheelMode::DeltaPixel },
-            webview_point(x, y),
-        ))),
+        HostInputEvent::Scroll { x, y, delta, .. } => {
+            // Servo scrolls by the pixels it is given whatever the mode (the mode is what the page's `wheel` event
+            // reports), and leaves a notch's distance to the embedder: servoshell uses 76 px, this host Edge's 100
+            // (`wheel::WheelUnits`), so a notch goes as far as in the Chromium tabs. Its CSS px are the surface's.
+            let (x_px, y_px, mode) = match delta {
+                ScrollDelta::Lines { x, y } => (x * NOTCH_PX, y * NOTCH_PX, WheelMode::DeltaLine),
+                ScrollDelta::Pixels { x, y } => (x, y, WheelMode::DeltaPixel),
+            };
+            Some(ServoInputEvent::Wheel(WheelEvent::new(
+                WheelDelta { x: x_px, y: y_px, z: 0.0, mode },
+                webview_point(x, y),
+            )))
+        }
         HostInputEvent::KeyDown { key, modifiers } => {
             Some(ServoInputEvent::Keyboard(KeyboardEvent::new_without_event(
                 KeyState::Down,

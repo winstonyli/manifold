@@ -534,23 +534,13 @@ impl App {
         let chrome_height = self.chrome_height_px() as f64;
         let modifiers = self.page_input.key_modifiers;
         if let Some(node) = self.focused_tab_mut() {
-            // `LineDelta` is a fixed synthetic unit
-            // (`* 20.0`), not a measurement of anything;
-            // `PixelDelta` is already a real physical-pixel
-            // amount, which is the space every engine's
-            // surface (and so this event's `x`/`y`) is in --
-            // neither needs converting.
-            let (dx, dy) = match delta {
-                winit::event::MouseScrollDelta::LineDelta(x, y) => (x as f64 * 20.0, y as f64 * 20.0),
-                winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
+            // Passed on in the device's own unit: each view host turns notches or pixels into its engine's unit
+            // once (`ScrollDelta`).
+            let delta = match delta {
+                winit::event::MouseScrollDelta::LineDelta(x, y) => ScrollDelta::Lines { x: x as f64, y: y as f64 },
+                winit::event::MouseScrollDelta::PixelDelta(p) => ScrollDelta::Pixels { x: p.x, y: p.y },
             };
-            node.tab.send(&HostToView::Input(InputEvent::Scroll {
-                x,
-                y: y - chrome_height,
-                delta_x: dx,
-                delta_y: dy,
-                modifiers,
-            }));
+            node.tab.send(&HostToView::Input(InputEvent::Scroll { x, y: y - chrome_height, delta, modifiers }));
         }
     }
 

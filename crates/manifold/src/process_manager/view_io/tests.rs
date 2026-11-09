@@ -1,4 +1,5 @@
 use super::*;
+use crate::ScrollDelta;
 
 #[test]
 fn frame_rows_are_whole_rows_or_none() {
@@ -37,8 +38,8 @@ fn mouse(x: f64, modifiers: u8) -> HostToView {
     HostToView::Input(InputEvent::MouseMove { x, y: 0.0, modifiers })
 }
 
-fn scroll(delta_y: f64) -> HostToView {
-    HostToView::Input(InputEvent::Scroll { x: 1.0, y: 2.0, delta_x: 0.0, delta_y, modifiers: 0 })
+fn scroll(delta: ScrollDelta) -> HostToView {
+    HostToView::Input(InputEvent::Scroll { x: 1.0, y: 2.0, delta, modifiers: 0 })
 }
 
 fn resize(width: u32) -> HostToView {
@@ -77,14 +78,24 @@ fn a_run_of_mouse_moves_or_resizes_keeps_only_the_latest() {
 fn a_run_of_scrolls_adds_up() {
     let mut queue = SendQueue::default();
     for _ in 0..4 {
-        queue.push(scroll(-1.5));
+        queue.push(scroll(ScrollDelta::Lines { x: 0.0, y: -1.5 }));
     }
     let out = drain(&mut queue);
     assert_eq!(out.len(), 1);
     assert!(matches!(
         out[0],
-        HostToView::Input(InputEvent::Scroll { x, y, delta_y, .. }) if delta_y == -6.0 && x == 1.0 && y == 2.0
+        HostToView::Input(InputEvent::Scroll { x, y, delta: ScrollDelta::Lines { y: dy, .. }, .. })
+            if dy == -6.0 && x == 1.0 && y == 2.0
     ));
+}
+
+#[test]
+fn notches_and_pixels_stay_apart() {
+    let mut queue = SendQueue::default();
+    for delta in [ScrollDelta::Lines { x: 0.0, y: 1.0 }, ScrollDelta::Pixels { x: 0.0, y: 1.0 }] {
+        queue.push(scroll(delta));
+    }
+    assert_eq!(drain(&mut queue).len(), 2);
 }
 
 #[test]

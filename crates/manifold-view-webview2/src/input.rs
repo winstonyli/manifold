@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2, ICoreWebView2CompositionController, COREWEBVIEW2_MOUSE_EVENT_KIND,
+    ICoreWebView2, ICoreWebView2CompositionController, ICoreWebView2Controller3, COREWEBVIEW2_MOUSE_EVENT_KIND,
     COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOUBLE_CLICK,
     COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN, COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
     COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOUBLE_CLICK, COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN,
@@ -35,22 +35,29 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_MOUSE_EVENT_VIRTUAL_KEYS_SHIFT,
 };
 use webview2_com::{CallDevToolsProtocolMethodCompletedHandler, ExecuteScriptCompletedHandler};
-use windows::core::HSTRING;
+use windows::core::{Interface, HSTRING};
 use windows::Win32::Foundation::POINT;
 
+use manifold_view_protocol::wheel::WheelUnits;
 use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 
 /// `(x, y, href)` for a right-click that landed on a link — see
 /// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment.
 pub type PendingContextMenu = Rc<RefCell<Option<(f64, f64, String)>>>;
 
-/// Is the left button currently down? Tracked across `MouseDown`/
-/// `MouseMove`/`MouseUp` because `manifold_view_protocol::InputEvent::MouseMove`
-/// carries no button state of its own (only the held modifier keys), so
-/// this project's own view-host has to remember it, to know whether to
-/// include the left-button virtual key on a `SendMouseInput` move (so
-/// Chromium's own drag/selection handling sees the button as held).
-pub type DragState = Rc<Cell<bool>>;
+/// What the mouse path remembers between events.
+#[derive(Default)]
+pub struct Pointer {
+    /// Is the left button currently down? Tracked across `MouseDown`/
+    /// `MouseMove`/`MouseUp` because `manifold_view_protocol::InputEvent::MouseMove`
+    /// carries no button state of its own (only the held modifier keys), so
+    /// this project's own view-host has to remember it, to know whether to
+    /// include the left-button virtual key on a `SendMouseInput` move (so
+    /// Chromium's own drag/selection handling sees the button as held).
+    left_held: Cell<bool>,
+    /// The fraction of a wheel unit each scroll left over.
+    wheel: RefCell<WheelUnits>,
+}
 
 fn call_cdp(webview: &ICoreWebView2, method: &str, params: serde_json::Value) {
     let handler = CallDevToolsProtocolMethodCompletedHandler::create(Box::new(|_error, _result| Ok(())));
@@ -114,12 +121,12 @@ pub fn send_input(
     comp_controller: &ICoreWebView2CompositionController,
     event: InputEvent,
     pending_context_menu: &PendingContextMenu,
-    drag_state: &DragState,
+    pointer: &Pointer,
 ) {
     match event {
         InputEvent::MouseDown { x, y, button, modifiers: mods, click_count } => {
             if button == MouseButton::Left {
-                drag_state.set(true);
+                pointer.left_held.set(true);
             }
             unsafe {
                 let _ = comp_controller.SendMouseInput(
@@ -131,7 +138,7 @@ pub fn send_input(
             }
         }
         InputEvent::MouseMove { x, y, modifiers: mods } => {
-            let keys = mouse_keys(drag_state.get().then_some(MouseButton::Left), mods);
+            let keys = mouse_keys(pointer.left_held.get().then_some(MouseButton::Left), mods);
             unsafe {
                 let _ = comp_controller.SendMouseInput(
                     COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
@@ -144,7 +151,7 @@ pub fn send_input(
         // Right-click's href-detection JS is kept (it doesn't depend on how
         // the click was delivered) but a real button-up is sent first.
         InputEvent::MouseUp { x, y, button: MouseButton::Right, modifiers: mods, .. } => {
-            drag_state.set(false);
+            pointer.left_held.set(false);
             unsafe {
                 let _ = comp_controller.SendMouseInput(
                     COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP,
@@ -176,7 +183,7 @@ pub fn send_input(
             }
         }
         InputEvent::MouseUp { x, y, button, modifiers: mods, .. } => {
-            drag_state.set(false);
+            pointer.left_held.set(false);
             let kind = match button {
                 MouseButton::Left => COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP,
                 MouseButton::Middle => COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP,
@@ -187,17 +194,27 @@ pub fn send_input(
                     comp_controller.SendMouseInput(kind, mouse_keys(None, mods), 0, POINT { x: x as i32, y: y as i32 });
             }
         }
-        // One wheel event per axis (the composition API takes a single delta). The host's deltas
-        // already follow Windows' wheel convention (winit passes `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL`
-        // through), so neither is negated; a zero axis sends nothing.
-        InputEvent::Scroll { x, y, delta_x, delta_y, modifiers: mods } => unsafe {
+        // One wheel event per axis (the composition API takes a single delta), in wheel units (`WheelUnits`):
+        // pixels go through the page's CSS scale, which WebView2 picks itself (`RasterizationScale`). The deltas
+        // already follow Windows' wheel convention (winit passes `WM_MOUSEWHEEL`/`WM_MOUSEHWHEEL` through), so
+        // neither is negated; a zero axis sends nothing.
+        InputEvent::Scroll { x, y, delta, modifiers: mods } => unsafe {
+            let css_scale = comp_controller
+                .cast::<ICoreWebView2Controller3>()
+                .and_then(|c| {
+                    let mut scale = 1.0;
+                    c.RasterizationScale(&mut scale).map(|()| scale)
+                })
+                .unwrap_or(1.0);
+            let (units_x, units_y) = pointer.wheel.borrow_mut().convert(delta, css_scale);
             let at = POINT { x: x as i32, y: y as i32 };
-            for (kind, delta) in [
-                (COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, delta_y),
-                (COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, delta_x),
+            // Windows' horizontal wheel scrolls right on positive, the opposite of `ScrollDelta`'s x.
+            for (kind, units) in [
+                (COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL, units_y),
+                (COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, -units_x),
             ] {
-                if delta as i32 != 0 {
-                    let _ = comp_controller.SendMouseInput(kind, mouse_keys(None, mods), delta as i32 as u32, at);
+                if units != 0 {
+                    let _ = comp_controller.SendMouseInput(kind, mouse_keys(None, mods), units as u32, at);
                 }
             }
         },

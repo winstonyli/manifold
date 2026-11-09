@@ -154,7 +154,32 @@ pub mod modifiers {
     pub const SUPER: u8 = 1 << 3;
 }
 
-/// Every `x`/`y` below (and `Scroll`'s `delta_x`/`delta_y`) is in **physical
+/// How far a wheel or touchpad asked to scroll, in the unit its device reports, as winit gives it: each view host
+/// converts it once into its engine's own unit (`wheel::WheelUnits` for the Chromium engines). winit's sign: positive
+/// values move the content right and down, so positive `y` scrolls up (toward the top of the page) and positive `x`
+/// scrolls left, as CEF and Servo read them; Windows' and GDK's horizontal wheel scrolls right on positive.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ScrollDelta {
+    /// Wheel notches (winit's `LineDelta`; fractional from a high-resolution wheel or a Windows touchpad). The
+    /// engine decides how far a notch goes, as it does for its own browser.
+    Lines { x: f64, y: f64 },
+    /// Physical pixels of the engine's surface (winit's `PixelDelta`, from a touchpad), the same space as the
+    /// coordinates below.
+    Pixels { x: f64, y: f64 },
+}
+
+impl ScrollDelta {
+    /// The two steps as one, when they are in the same unit (a queued run of wheel steps sums); `None` otherwise.
+    pub fn plus(self, next: ScrollDelta) -> Option<ScrollDelta> {
+        match (self, next) {
+            (Self::Lines { x, y }, Self::Lines { x: nx, y: ny }) => Some(Self::Lines { x: x + nx, y: y + ny }),
+            (Self::Pixels { x, y }, Self::Pixels { x: nx, y: ny }) => Some(Self::Pixels { x: x + nx, y: y + ny }),
+            _ => None,
+        }
+    }
+}
+
+/// Every `x`/`y` below is in **physical
 /// pixels of the engine's own rendered surface**, relative to its top-left
 /// corner — the exact same space as `HostToView::Resize`'s `width`/
 /// `height`. Not CSS pixels, and not DPI-independent logical points.
@@ -188,7 +213,7 @@ pub enum InputEvent {
     /// its press's count.
     MouseDown { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
     MouseUp { x: f64, y: f64, button: MouseButton, modifiers: u8, click_count: u8 },
-    Scroll { x: f64, y: f64, delta_x: f64, delta_y: f64, modifiers: u8 },
+    Scroll { x: f64, y: f64, delta: ScrollDelta, modifiers: u8 },
     KeyDown { key: KeyCode, modifiers: u8 },
     KeyUp { key: KeyCode, modifiers: u8 },
     /// The actual text a keypress produced (after layout/shift/dead-key
@@ -771,9 +796,9 @@ mod wire_shape_tests {
     use std::io::Cursor;
 
     /// The `PROTOCOL_VERSION` that `RECORDED_FINGERPRINT` was recorded for.
-    const RECORDED_FOR_VERSION: u32 = 9;
+    const RECORDED_FOR_VERSION: u32 = 10;
     /// The fingerprint of the wire shape at `RECORDED_FOR_VERSION`.
-    const RECORDED_FINGERPRINT: u64 = 0xf879_2192_ef68_aaf2;
+    const RECORDED_FINGERPRINT: u64 = 0x54fd_cff8_ed82_c27e;
     const HOST_TO_VIEW_VARIANTS: usize = 22;
     const VIEW_TO_HOST_VARIANTS: usize = 17;
     const INPUT_EVENT_VARIANTS: usize = 7;
@@ -885,7 +910,12 @@ mod wire_shape_tests {
                 modifiers: modifiers::CONTROL,
                 click_count: 3,
             },
-            InputEvent::Scroll { x: 1.0, y: 2.0, delta_x: 3.0, delta_y: 4.0, modifiers: modifiers::SUPER },
+            InputEvent::Scroll {
+                x: 1.0,
+                y: 2.0,
+                delta: ScrollDelta::Lines { x: 3.0, y: 4.0 },
+                modifiers: modifiers::SUPER,
+            },
             InputEvent::KeyDown { key, modifiers: modifiers::SHIFT },
             InputEvent::KeyUp { key, modifiers: modifiers::CONTROL },
             InputEvent::Char { codepoint: 0x1F600 },
@@ -1013,6 +1043,12 @@ mod wire_shape_tests {
         let press = |button| InputEvent::MouseDown { x: 0.0, y: 0.0, button, modifiers: 0, click_count: 1 };
         let mut bytes = frames(&inputs);
         bytes.extend(frames(&buttons.map(press)));
+        // The `ScrollDelta` variant `input_samples` doesn't carry (exhaustive: a new one doesn't compile until listed).
+        let pixels = ScrollDelta::Pixels { x: 5.0, y: 6.0 };
+        match pixels {
+            ScrollDelta::Lines { .. } | ScrollDelta::Pixels { .. } => {}
+        }
+        bytes.extend(frames(&[InputEvent::Scroll { x: 0.0, y: 0.0, delta: pixels, modifiers: 0 }]));
         bytes.extend(frames(
             &KeyCode::ALL.iter().map(|&key| InputEvent::KeyDown { key, modifiers: 0 }).collect::<Vec<_>>(),
         ));

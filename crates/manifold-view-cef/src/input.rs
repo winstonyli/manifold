@@ -1,4 +1,5 @@
 use cef::*;
+use manifold_view_protocol::wheel::WheelUnits;
 use manifold_view_protocol::{modifiers, InputEvent, KeyCode, MouseButton};
 
 /// CEF's `EventFlags`/`modifiers` fields are plain `u32`s combining
@@ -57,7 +58,7 @@ fn utf16_units(codepoint: u32) -> Vec<u16> {
 /// dispatching directly instead of returning a value, since CEF's
 /// `BrowserHost` methods are fire-and-forget (`send_*_event`) rather than a
 /// single `notify_input_event` call.
-pub fn send_input(browser: &Browser, event: InputEvent) {
+pub fn send_input(browser: &Browser, event: InputEvent, wheel: &mut WheelUnits) {
     let Some(host) = browser.host() else {
         return;
     };
@@ -74,9 +75,14 @@ pub fn send_input(browser: &Browser, event: InputEvent) {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
             host.send_mouse_click_event(Some(&mouse_event), mouse_button_to_cef(button), 1, click_count as i32);
         }
-        InputEvent::Scroll { x, y, delta_x, delta_y, modifiers } => {
+        // CEF reads its wheel deltas as wheel units, as WebView2 does (120 moved the page 100 CSS px), and its
+        // CSS px are the surface's (`device_scale_factor` 1.0). Its signs are `ScrollDelta`'s.
+        InputEvent::Scroll { x, y, delta, modifiers } => {
             let mouse_event = MouseEvent { x: x as i32, y: y as i32, modifiers: modifiers_to_event_flags(modifiers) };
-            host.send_mouse_wheel_event(Some(&mouse_event), delta_x as i32, delta_y as i32);
+            let (units_x, units_y) = wheel.convert(delta, 1.0);
+            if (units_x, units_y) != (0, 0) {
+                host.send_mouse_wheel_event(Some(&mouse_event), units_x, units_y);
+            }
         }
         InputEvent::KeyDown { key, modifiers } => {
             // CEF distinguishes RAWKEYDOWN (what the OS message loop would

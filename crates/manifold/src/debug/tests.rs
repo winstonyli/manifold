@@ -60,7 +60,10 @@ fn rows_are_reader_ops_or_jobs_and_only_mouse_rows_are_pointer() {
         assert!(matches!(parse_line(line), Some(Line::Run(job)) if !job.pointer), "{line}");
     }
     let pointer: Vec<&str> = VERBS.iter().filter(|v| v.pointer).map(Verb::word).collect();
-    assert_eq!(pointer, ["MOUSEMOVE", "MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK", "TRIPLECLICK", "SCROLL"]);
+    assert_eq!(
+        pointer,
+        ["MOUSEMOVE", "MOUSEDOWN", "MOUSEUP", "CLICK", "DOUBLECLICK", "TRIPLECLICK", "SCROLL", "WHEEL"]
+    );
 }
 
 /// Every verb has a sample line that parses, and every sampled verb is in the table.
@@ -74,6 +77,7 @@ fn every_verb_has_a_parsing_sample() {
         "DOUBLECLICK 1 2",
         "TRIPLECLICK 1 2",
         "SCROLL 1 2 0 -3",
+        "WHEEL 1 2 0 -0.5",
         "ADDRESSBAR example.com",
         "ENTER",
         "ESCAPE",

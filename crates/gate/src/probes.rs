@@ -3,7 +3,8 @@
 //!
 //! - `page-kind` (was scripts/page-kind-probe.sh): a tab at a local URL answering `application/json` or `image/png`
 //!   turns into a Json or Image card; a plain HTML page stays a live tab
-//! - `hscroll` (was hscroll-probe.sh): a horizontal wheel scroll moves a 6000 px wide page right, then back
+//! - `wheel` (was hscroll-probe.sh): a wheel notch scrolls a page 100 CSS px, as in Edge, right and back, then down,
+//!   and the sign of each axis is the right way round; a touchpad's pixel scroll moves the page back up
 //! - `key` (was key-probe.sh): the keys `KEYPAGE` sends arrive at the page with the code/key/keyCode `key_codes!` says
 //! - `bad-url` (was bad-url-probe.sh): a view host given an initial URL it cannot open shows about:blank, no panic
 //! - `failed-spawn` (was failed-spawn-probe.sh): a spawn the OS refuses leaves one failed tab card, kept by New and Retry
@@ -49,9 +50,11 @@ pub(crate) const FRAME: &str = "<!doctype html><title>frame</title><body style=\
 addEventListener('input', e => fetch('/v?v=' + encodeURIComponent(e.target.value)));
 \nfor (const t of ['mousedown', 'focusin', 'keydown']) addEventListener(t, () => fetch('/v?e=' + t));
 </script>";
-const WIDE: &str = "<!doctype html><title>wide</title>\n\
-<div style=\"width:6000px;height:400px;background:linear-gradient(90deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
-addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=hscroll&y=' + Math.round(scrollX)), 300);\n});\n</script>";
+/// A page that scrolls both ways, for the wheel probe: it reports its scroll position once each scroll settles.
+const PLANE: &str = "<!doctype html><title>plane</title>\n\
+<div style=\"width:6000px;height:6000px;background:linear-gradient(135deg,#fff,#9cf)\"></div>\n<script>\nlet t;\n\
+addEventListener('scroll', () => {\n  clearTimeout(t);\n  \
+t = setTimeout(() => fetch('/w?x=' + Math.round(scrollX) + '&y=' + Math.round(scrollY)), 300);\n});\n</script>";
 
 /// A page with known text, for the page-text probe: a script and a style (neither is page text) around two paragraphs.
 const TEXT: &str = "<!doctype html><title>text</title><style>.x{color:STYLEMARK}</style>
@@ -67,7 +70,7 @@ if (location.search.includes('dirty')) document.getElementById('i').value = 'dra
 fetch('/s?e=load&y=' + Math.round(scrollY));\nlet t;\n\
 addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => fetch('/s?e=scroll&y=' + Math.round(scrollY)), 300);\n});\n</script>";
 
-/// The local site: `/` reports keydowns (`/k`), `/wide` reports horizontal scrolls (`/s`), `/tall` vertical ones,
+/// The local site: `/` reports keydowns (`/k`), `/plane` scroll positions (`/w`), `/tall` vertical scrolls (`/s`),
 /// `/text` a fixed page for the page-text probe, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
@@ -125,9 +128,13 @@ impl Site {
                     note(format!("{} y={}", param("e"), param("y")));
                     response("204 No Content", &[], "text/plain", b"")
                 }
+                "/w" => {
+                    note(format!("wheel {} {}", param("x"), param("y")));
+                    response("204 No Content", &[], "text/plain", b"")
+                }
                 "/data.json" => response("200 OK", &[], "application/json", br#"{"probe": [1, 2, 3]}"#),
                 "/pixel.png" => response("200 OK", &[], "image/png", &png),
-                "/wide" => response("200 OK", &[], "text/html", WIDE.as_bytes()),
+                "/plane" => response("200 OK", &[], "text/html", PLANE.as_bytes()),
                 "/text" => response("200 OK", &[], "text/html", TEXT.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
@@ -311,45 +318,77 @@ pub(crate) fn page_kind(ctx: &mut Ctx) -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn hscroll(ctx: &mut Ctx) -> io::Result<()> {
+/// CSS px a wheel notch must scroll: Edge's 100, within `NOTCH_SLACK` of the distance expected.
+const NOTCH_PX: i64 = 100;
+const NOTCH_SLACK: f64 = 0.1;
+
+/// The wheel probe's steps: a command, the move (CSS px right, down) it must scroll the page by, and whether that
+/// distance is checked or only its direction. A pixel scroll's distance depends on the display scale.
+const WHEEL_STEPS: [(&str, (i64, i64), bool); 4] = [
+    ("WHEEL 300 200 -2 0", (2 * NOTCH_PX, 0), true),
+    ("WHEEL 300 200 1 0", (-NOTCH_PX, 0), true),
+    ("WHEEL 300 200 0 -3", (0, 3 * NOTCH_PX), true),
+    ("SCROLL 300 200 0 120", (0, -1), false),
+];
+
+/// Whether `view`'s notch is Edge's 100 CSS px. WebKitGTK's is its own (101 px across, 83 down in a run of
+/// 2026-11-08, which fits GTK's viewport^(2/3) per notch; PARKED "WebKitGTK wheel distance"), so it checks only
+/// direction.
+fn notch_is_edges(view: &str) -> bool {
+    view != "webkit"
+}
+
+pub(crate) fn wheel(ctx: &mut Ctx) -> io::Result<()> {
     let (exe, work) = (ctx.exe.as_path(), ctx.work.as_path());
     for_each_view(
-        "hscroll",
+        "wheel",
         exe,
         work,
         |view| {
             let site = Site::start()?;
-            let nodes = vec![tab_node(Some(&site.url("/wide")), view)];
+            let nodes = vec![tab_node(Some(&site.url("/plane")), view)];
             Ok((site, nodes))
         },
         |view, inst, site| {
             inst.settle()?;
-            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the /wide page to load", || site.hits("/wide") > 0)?;
+            inst.step(&["GRAPHDOWN", "GRAPHOPEN"], "the /plane page to load", || site.hits("/plane") > 0)?;
             // A wheel event sent before Tab view is drawn goes nowhere.
             inst.export_until(&format!("tabview-{view}"), State::tab_view)?;
-            inst.send("SCROLL 300 200 240 0")?;
-            inst.barrier()?;
-            // Each scroll reports once it settles; the second must not start before the first has.
-            site.wait_for("hscroll", 1, Duration::from_secs(20));
-            inst.send("SCROLL 300 200 -120 0")?;
-            inst.barrier()?;
-            site.wait_for("hscroll", 2, Duration::from_secs(20));
-            quit(inst, view);
-            // The settled positions, in order: after the positive dx, after the negative one.
-            let at: Vec<Option<i64>> = site
-                .lines()
-                .iter()
-                .filter_map(|l| l.strip_prefix("hscroll y="))
-                .map(|y| y.parse().ok())
-                .chain([None, None])
-                .take(2)
-                .collect();
-            let ok = matches!(at[..], [Some(a), Some(b)] if a > 0 && b < a);
-            if !check(&format!("hscroll {view}: right then back (after +dx={:?} after -dx={:?})", at[0], at[1]), ok) {
-                for l in site.lines() {
-                    println!("    page: {l}");
+            // CEF drops a wheel sent before the view's first frame at Tab view's size.
+            inst.send("WAITIDLE")?;
+            let settled = |n: usize| -> Option<(i64, i64)> {
+                let line = site.lines().into_iter().filter(|l| l.starts_with("wheel ")).nth(n)?;
+                let mut parts = line["wheel ".len()..].split(' ').map(|v| v.parse().ok());
+                Some((parts.next()??, parts.next()??))
+            };
+            let mut before = (0, 0);
+            for (n, (command, want, distance)) in WHEEL_STEPS.into_iter().enumerate() {
+                inst.send(command)?;
+                inst.barrier()?;
+                // Each scroll reports once it settles; the next must not start before it has.
+                site.wait_for("wheel ", n + 1, Duration::from_secs(20));
+                let at = settled(n);
+                let moved = at.map(|at| (at.0 - before.0, at.1 - before.1));
+                let exact = distance && notch_is_edges(view);
+                // Per axis: within `NOTCH_SLACK` of the move, or the same way (not at all where none is asked).
+                let fits = |want: i64, got: i64| {
+                    if exact {
+                        (got - want).abs() as f64 <= NOTCH_SLACK * want.abs().max(NOTCH_PX) as f64
+                    } else {
+                        got.signum() == want.signum()
+                    }
+                };
+                let ok = moved.is_some_and(|m| fits(want.0, m.0) && fits(want.1, m.1));
+                let shown = if exact { format!("{want:?}") } else { format!("the way of {want:?}") };
+                if !check(&format!("wheel {view}: {command} scrolls by {shown} (got {moved:?}, at {at:?})"), ok) {
+                    for l in site.lines() {
+                        println!("    page: {l}");
+                    }
+                    break;
                 }
+                before = at.unwrap_or(before);
             }
+            quit(inst, view);
             Ok(())
         },
     );
