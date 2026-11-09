@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Event-driven CEF host loop: implementation plan
@@ -13,7 +13,7 @@ status: draft
 - CEF's `on_schedule_message_pump_work`, which only calls `set()`;
 - one `idle(deadline)` closure, `wake.wait(deadline)` then `do_message_loop_work()`, which `await_cookies` and the end of the loop both call.
 
-`WakeEvent` gains a non-Windows implementation in the same file, so the CEF host has no platform branch (decision c1, pending).
+`WakeEvent` gains a non-Windows implementation in the same file, so the CEF host has no platform branch (decision c1).
 
 **Tech Stack:** Rust; the `cef` crate 152.1.0 (CEF 152.0.6); `windows-sys` 0.59 in the protocol crate; std `Mutex` and `Condvar` elsewhere; `gate hostrate` and the CEF gate stages.
 
@@ -65,7 +65,7 @@ Survey: workflow `wf_37caadc4-02c`, 2026-11-09, read-only. Four readers covered 
 - WSL builds run from `/mnt/c/Users/Winston Li/Documents/GitHub/manifold` with `CARGO_TARGET_DIR=$HOME/mf-target`, kept off `/mnt/c` as README.md:21 advises (`target-linux` on `/mnt/c` is the WebKit host's). From git-bash, set `MSYS_NO_PATHCONV=1`.
 - Python never reads stdin (`python -P f.py < /dev/null`).
 
-## Decisions this plan assumes (pending)
+## Decisions (b1 and c1 chosen 2026-11-09)
 
 - **b1:** the callback ignores `delay_ms` and adds no fallback timer. The alternatives:
   - b2, a due-time cell, would add a `Mutex<Option<Instant>>` and a `min` into `idle`'s deadline in Task 2.
