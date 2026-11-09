@@ -32,7 +32,7 @@ impl NavState {
     /// The state of a browser the host created at `url`: that first navigation is the host's
     /// (`NavLabel::created_by_host`), and under way, so a report sent before the engine says so does not read as a
     /// finished load (the trail would take it as the page settling). `dirty` says whether it is sent on the first
-    /// tick: CEF sends it at once, WebView2 waits for its first navigation event.
+    /// tick: CEF sends it at once, WebView2 and Servo wait for their first event.
     pub fn new(url: String, dirty: bool) -> Self {
         Self { url, label: NavLabel::created_by_host(Instant::now()), loading: true, dirty, ..Self::default() }
     }

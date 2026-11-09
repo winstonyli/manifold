@@ -176,7 +176,7 @@ fn main() {
 
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),
-        nav: RefCell::new(NavState { url: initial_url.clone(), ..Default::default() }),
+        nav: RefCell::new(NavState::new(initial_url.clone(), false)),
         context_menu_link: RefCell::new(None),
         json_body: Rc::new(RefCell::new(None)),
         redirect_content_type: Rc::new(RefCell::new(None)),
@@ -324,8 +324,8 @@ fn main() {
             }
         }
 
-        // Servo's `NavigationRequest` carries only the url, so `nav.label` stays at its default and every message
-        // says `user_started: None`.
+        // Servo's `NavigationRequest` carries only the url, so after the host's own first navigation
+        // (`NavState::new`) `nav.label` stays at its default and every message says `user_started: None`.
         if let Some(m) = delegate.nav.borrow_mut().take_message() {
             let _ = control.send(&m);
         }
