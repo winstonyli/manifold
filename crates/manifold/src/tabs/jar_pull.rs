@@ -6,7 +6,8 @@ use super::*;
 /// An engine answer parked until the tab's cookies arrive (`App::hold_for_cookies`).
 pub(crate) enum Held {
     PageState(PageState),
-    Snapshot(ViewKind, String),
+    /// A swap's old engine answered `GetState`: the tab moves to this engine, at the tab's url (`finish_swap`).
+    Snapshot(ViewKind),
 }
 
 /// How long a sleep or swap waits for the host's `Cookies` reply before going ahead without it.
@@ -205,7 +206,7 @@ impl App {
     pub(crate) fn run_held(&mut self, id: NodeId, held: Held) {
         match held {
             Held::PageState(state) => self.finish_sleep(id, state),
-            Held::Snapshot(target, url) => self.finish_swap(id, target, url),
+            Held::Snapshot(target) => self.finish_swap(id, target),
         }
     }
 

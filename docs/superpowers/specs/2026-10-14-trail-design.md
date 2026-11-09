@@ -196,9 +196,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      is the visit, redirected or not (step 3). Should it expire instead, `loading` is cleared: the new engine was
      loading the target, not the cursor's page, so a late report of another URL is a new page, not a rewrite of the
      page the tab stayed on.
-     A native move reaches this only through an engine swap, which starts the new engine at the old one's own URL
-     (`StateSnapshot`), already the target if the `GoBack` landed before its report; a crash restarts at the tab's URL,
-     which a native move leaves at the origin, so the move is dropped.
+     Only a plain or `New` move is kept: every replacement (crash, swap, restore, wake) restarts at the tab's URL,
+     which those set when sent and a native move leaves at the origin, so a native move is dropped.
      `view_reset` runs for every tab that lands on the page it showed (`SpawnPurpose::lands_existing`: a crash, a swap,
      a restore, a wake), except a respawn of a trail still empty (a new tab replaced before its first report); a new
      tab's first report creates the root through the "empty" fold step.

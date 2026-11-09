@@ -769,15 +769,14 @@ impl App {
     /// from the new jar (the engine-swap path, same engine). Does nothing while another host change is on its way
     /// (`host_change_pending`): that one replaces the host anyway.
     pub(crate) fn switch_jar_now(&mut self, id: NodeId) {
-        let Some((kind, url)) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| (t.tab.kind, t.url.clone()))
-        else {
+        let Some(kind) = self.nodes.get(&id).and_then(|n| n.as_tab()).map(|t| t.tab.kind) else {
             return;
         };
         if !self.can_switch_jar_now(id) {
             return;
         }
         self.pull_cookies(id);
-        if let Some(held) = self.hold_for_cookies(id, Held::Snapshot(kind, url)) {
+        if let Some(held) = self.hold_for_cookies(id, Held::Snapshot(kind)) {
             self.run_held(id, held);
         }
     }

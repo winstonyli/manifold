@@ -484,10 +484,10 @@ fn a_bad_dump_reports_where_without_echoing_a_value() {
 fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
     let now = std::time::Instant::now();
     let mut state = CookieState::default();
-    for (id, url) in [(node(1), "https://a/"), (node(2), "https://b/")] {
+    for (id, kind) in [(node(1), crate::ViewKind::Webview2), (node(2), crate::ViewKind::Cef)] {
         state.jar_tabs.insert(id, (d(), TabCookies::default()));
         state.jar_reseed.insert(id);
-        state.cookie_holds.insert(id, (now, crate::tabs::Held::Snapshot(crate::ViewKind::Webview2, url.into())));
+        state.cookie_holds.insert(id, (now, crate::tabs::Held::Snapshot(kind)));
         state.jar_pulls.insert(id, now);
         state.jar_silent.insert(id, 1);
     }
@@ -496,7 +496,7 @@ fn cookie_state_forget_drops_one_tabs_entries_and_returns_its_hold() {
 
     let held = state.forget(node(1));
 
-    assert!(matches!(held, Some((_, crate::tabs::Held::Snapshot(_, s))) if s == "https://a/"));
+    assert!(matches!(held, Some((_, crate::tabs::Held::Snapshot(crate::ViewKind::Webview2)))));
     assert!(
         !state.jar_tabs.contains_key(&node(1))
             && !state.jar_reseed.contains(&node(1))

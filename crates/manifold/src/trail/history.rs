@@ -759,12 +759,9 @@ impl NavHistory {
         // The new engine is loading `url`, though it can take seconds to say so.
         self.loading = true;
         if let Some(m) = waiting {
-            // The new engine has no list to step through, and nothing in it before the arrival.
-            let to = match m.to {
-                To::Native(t) => To::Plain(t),
-                to => to,
-            };
-            self.pending = Some(Move { to, deadline: now + LOADING_WINDOW, started: false, kept: true, ..m });
+            // A plain or new move: a native one leaves the tab's url, where every replacement restarts, at its origin.
+            // The new engine has nothing in its list before the arrival.
+            self.pending = Some(Move { deadline: now + LOADING_WINDOW, started: false, kept: true, ..m });
             self.lin = vec![None];
             self.lin_at = 0;
             self.fresh = false;

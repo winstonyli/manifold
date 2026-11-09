@@ -183,19 +183,6 @@ fn view_reset_keeps_a_move_to_the_page_the_new_engine_loads() {
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()), "no engine slot before b");
 }
 
-/// The same for a native move: the new engine has no list to step through, so it is a plain one.
-#[test]
-fn view_reset_keeps_a_native_move_as_a_plain_one() {
-    let now = Instant::now();
-    let mut h = NavHistory::visited(&["a", "b"]);
-    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
-    h.view_reset("a", now);
-    assert_eq!(h.cursor_url(), Some("b"), "not reached yet");
-    h.observe("a", "", false, false, now);
-    assert_eq!(h.cursor_url(), Some("a"));
-    assert_eq!(h.go(Dir::Forward, false, true, now), NavAction::Navigate("b".into()), "no engine slot after a");
-}
-
 /// A kept move's new engine loads only the page it was sent, so its first report of another URL is that page,
 /// redirected: the move arrives and renames its target, and the page it left is untouched.
 #[test]

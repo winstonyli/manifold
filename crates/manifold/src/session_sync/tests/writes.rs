@@ -202,7 +202,7 @@ fn a_crash_respawn_a_swap_and_a_reload_delete_nothing() {
     app.insert_content(source, json, egui::Vec2::ZERO, None).unwrap();
     assert!(app.save_session());
     start_respawn(&mut app, crashed);
-    app.finish_swap(swapped, ViewKind::Webview2, "https://s/".into());
+    app.finish_swap(swapped, ViewKind::Webview2);
     assert!(app.spawns.spawning.contains_key(&swapped) && !app.nodes.contains_key(&swapped), "swapping");
     let moved = dir.join("moved.json");
     std::fs::write(&moved, b"[2]").unwrap();

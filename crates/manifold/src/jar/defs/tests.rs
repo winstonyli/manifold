@@ -540,7 +540,7 @@ fn a_pending_sleep_or_hold_blocks_switch_jar_now() {
     assert!(app.host_change_pending(t));
     app.scoped.pending_sleeps.clear();
     app.cookies.jar_pulls.insert(t, std::time::Instant::now());
-    let held = crate::tabs::Held::Snapshot(crate::process_manager::ViewKind::Cef, "http://x/".into());
+    let held = crate::tabs::Held::Snapshot(crate::process_manager::ViewKind::Cef);
     assert!(app.hold_for_cookies(t, held).is_none());
     assert!(app.host_change_pending(t), "a swap or switch parked waiting for its cookies");
 }

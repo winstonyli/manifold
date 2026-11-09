@@ -557,7 +557,7 @@ fn sleep_answer() -> tabs::Held {
 }
 
 fn swap_answer() -> tabs::Held {
-    tabs::Held::Snapshot(process_manager::ViewKind::Cef, "http://x/".into())
+    tabs::Held::Snapshot(process_manager::ViewKind::Cef)
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn closing_a_tab_clears_its_cookie_bookkeeping() {
     app.cookies.jar_silent.insert(tab, 2);
     app.cookies
         .cookie_holds
-        .insert(tab, (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::ViewKind::Cef, String::new())));
+        .insert(tab, (std::time::Instant::now(), tabs::Held::Snapshot(process_manager::ViewKind::Cef)));
     app.remove_tab(tab);
     assert!(
         !app.cookies.jar_tabs.contains_key(&tab)

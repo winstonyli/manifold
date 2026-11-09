@@ -21,6 +21,20 @@ fn a_swap_saves_its_target_before_the_state_snapshot() {
     assert_eq!(swap_target(&app, tab), Some(ViewKind::Cef));
 }
 
+/// A swap restarts the tab where the tab is, as a crash does, not at the old engine's snapshot url: that can run a
+/// report ahead of the tab, or fall behind it while the swap waits for its cookies.
+#[test]
+fn a_swap_restarts_at_the_tabs_url_not_the_snapshots() {
+    let path = temp_dir("engine-swap-url").join("session.mnf");
+    let mut app = app_on(&path, 1);
+    let (tab, _peer) = live_tab(&mut app, ViewKind::Servo, "https://s/");
+    app.start_swap_to(tab, ViewKind::Cef);
+    let snapshot = manifold_view_protocol::TabState { url: "https://ahead/".into() };
+    app.handle_view_message(tab, manifold_view_protocol::ViewToHost::StateSnapshot(snapshot));
+    let urls: Vec<&str> = app.test_spawns.iter().map(|(spawn, _)| spawn.url.as_str()).collect();
+    assert_eq!(urls, ["https://s/"]);
+}
+
 /// A switch whose new engine fails to start falls back to the old one, and writes it back when the
 /// fallback starts; a fallback that fails too leaves a failed card on the old engine.
 #[test]
@@ -32,7 +46,7 @@ fn a_failed_swap_writes_the_old_view_back() {
     assert!(app.save_session());
     assert_eq!(stored(&app, tab, field::VIEW_KIND), view_kind(ViewKind::Cef));
     // The old engine's state arrived: its host is dropped and the new one spawns.
-    app.finish_swap(tab, ViewKind::Cef, "https://s/".into());
+    app.finish_swap(tab, ViewKind::Cef);
     assert_eq!(app.test_spawns.len(), 1);
     fail_spawns(&mut app);
     let fallback = &app.test_spawns.first().expect("the fallback is in flight").0;

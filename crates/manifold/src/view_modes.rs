@@ -273,17 +273,19 @@ impl App {
     pub(crate) fn swap_in_flight(&self, id: NodeId) -> Option<ViewKind> {
         let tab = self.nodes.get(&id)?.as_tab()?;
         tab.swap_target.or(match self.cookies.cookie_holds.get(&id) {
-            Some((_, crate::tabs::Held::Snapshot(target, _))) => Some(*target),
+            Some((_, crate::tabs::Held::Snapshot(target))) => Some(*target),
             _ => None,
         })
     }
 
-    pub(crate) fn finish_swap(&mut self, tab_id: NodeId, target: ViewKind, url: String) {
+    /// Replaces tab `tab_id`'s host by one of `target`, at the tab's url as a crash does: the old engine's own url can
+    /// run a report ahead of the tab, or behind it while the swap waits for cookies, and the trail follows the tab.
+    pub(crate) fn finish_swap(&mut self, tab_id: NodeId, target: ViewKind) {
         let Some(spawn) = self.nodes.get(&tab_id).and_then(|n| {
-            let old = n.as_tab()?.tab.kind;
+            let tab = n.as_tab()?;
             Some(TabSpawn {
-                fallback_kind: Some(old),
-                ..TabSpawn::respawn(tab_id, n, self.doc.mirror.carried(tab_id), target, url)?
+                fallback_kind: Some(tab.tab.kind),
+                ..TabSpawn::respawn(tab_id, n, self.doc.mirror.carried(tab_id), target, tab.url.clone())?
             })
         }) else {
             return;
