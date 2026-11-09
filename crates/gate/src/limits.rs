@@ -196,13 +196,15 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
 /// The `thread::sleep(` calls in each host source, outside comments and inline tests. A host's loop waits on its engine
 /// and its inbox (`WakeEvent`, or the engine's own wait), never on a clock: a count rises only with a parked stopgap
 /// beside it, and otherwise only falls; a listed file that is gone fails too. Every `manifold-view-*` crate is scanned,
-/// but of `manifold-view-protocol` only `host_env.rs` (the startup wait), absent here at 0; `transport.rs`'s
-/// connect retries are not a host loop. The scan matches the literal `thread::sleep(` (every sleep in the host crates
-/// is spelled that way), so an imported bare `sleep(` slips past it; other clock waits under 50 ms (`recv_timeout`,
-/// `park_timeout`, a short `MsgWait` timeout; none is in a host crate) are caught only when `gate hostrate` is run by
-/// hand (its still-page poll ceiling), as is a swap that keeps a file's count.
+/// the shared protocol crate included, since its `WakeEvent`, `FrameSink` and stall check run on every host's loop
+/// thread; the sleeps listed there are not on a host loop. The scan matches the literal `thread::sleep(` (every sleep
+/// in the host crates is spelled that way), so an imported bare `sleep(` slips past it; other clock waits under 50 ms
+/// (`recv_timeout`, `park_timeout`, a short `MsgWait` timeout; none is in a host crate) are caught only when
+/// `gate hostrate` is run by hand (its still-page poll ceiling), as is a swap that keeps a file's count.
 const HOST_SLEEPS: &[(&str, usize)] = &[
     ("manifold-view-cef/src/main.rs", 2), // loop poll and startup idle, until the CEF plan
+    ("manifold-view-protocol/src/bin/render_stub.rs", 1), // a test double's "mismatch-linger" mode
+    ("manifold-view-protocol/src/transport.rs", 2), // the app's waits for a host to connect, not a host loop
     ("manifold-view-servo/src/main.rs", 1), // loop poll, until the Servo plan
     ("manifold-view-webkitgtk/src/main.rs", 1), // loop poll, until a paint signal is found
     ("manifold-view-webview2/src/main.rs", 1), // profile-busy retry at startup, not the loop
@@ -211,13 +213,9 @@ const HOST_SLEEPS: &[(&str, usize)] = &[
 
 #[test]
 fn host_loops_do_not_sleep() {
-    let scanned = |path: &str| {
-        path.starts_with("manifold-view-")
-            && (!path.starts_with("manifold-view-protocol/") || path == "manifold-view-protocol/src/host_env.rs")
-    };
     let mut problems = Vec::new();
     let mut seen = Vec::new();
-    for (path, source) in sources().into_iter().filter(|(p, _)| scanned(p)) {
+    for (path, source) in sources().into_iter().filter(|(p, _)| p.starts_with("manifold-view-")) {
         let production = source.lines().take(measure(&source).0);
         let count =
             production.filter(|l| !l.trim_start().starts_with("//")).filter(|l| l.contains("thread::sleep(")).count();
