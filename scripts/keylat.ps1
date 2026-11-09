@@ -2,6 +2,8 @@
 #
 #   keylat.ps1 -Build a=<exe>,b=<exe> [-Order a,b,b,a] [-Trials 25]
 #
+# A build whose exe is msedge.exe or chrome.exe is run as a browser app window on the same page, for a native baseline.
+#
 # Each exe is launched with --debug-commands in a visible window (its WebView2 host exe and DLLs must sit beside it,
 # as in target/debug, so copy a build's whole set to its own directory). The window loads a page that flips its
 # background on every key; the script sends a real key (keybd_event) and polls one screen pixel (GDI) until it
@@ -144,8 +146,14 @@ try {
     "machine cpu before: $cpu%"
     foreach ($name in $Order) {
         $prof = Join-Path $work "prof-$name-$([guid]::NewGuid().ToString('N').Substring(0, 6))"
-        $p = Start-Process -FilePath $exes[$name] -PassThru `
-            -ArgumentList '--debug-commands', '--profile-dir', "`"$prof`"", '--script', "`"$work\keylat.script`""
+        # A Chromium browser (Edge: `EdgeCore\<version>\msedge.exe`) is the native baseline: it opens the page itself as
+        # an app window on a fresh profile; InPrivate with sync off, or Edge signs the profile in to the Windows account,
+        # syncs its extensions and opens a dialog that takes the foreground.
+        $launchArgs = '--debug-commands', '--profile-dir', "`"$prof`"", '--script', "`"$work\keylat.script`""
+        if ((Split-Path -Leaf $exes[$name]) -in 'msedge.exe', 'chrome.exe') {
+            $launchArgs = "--user-data-dir=`"$prof`"", '--no-first-run', '--no-default-browser-check', '--inprivate', '--disable-sync', '--disable-extensions', "--app=$page"
+        }
+        $p = Start-Process -FilePath $exes[$name] -PassThru -ArgumentList $launchArgs
         try {
             Wait-Until { [K]::FindMain($p.Id) -ne [IntPtr]::Zero } 40 'main window'
             # The scripted ENTER only reaches egui when the window has the OS focus: take it before the script gets there.
