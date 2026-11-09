@@ -761,6 +761,10 @@ impl NavHistory {
         if let Some(m) = waiting {
             // A plain or new move: a native one leaves the tab's url, where every replacement restarts, at its origin.
             // The new engine has nothing in its list before the arrival.
+            debug_assert!(
+                !matches!(m.to, To::Native(_)),
+                "a native move's target is never the url a replacement loads"
+            );
             self.pending = Some(Move { deadline: now + LOADING_WINDOW, started: false, kept: true, ..m });
             self.lin = vec![None];
             self.lin_at = 0;

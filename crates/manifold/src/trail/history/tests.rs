@@ -183,6 +183,18 @@ fn view_reset_keeps_a_move_to_the_page_the_new_engine_loads() {
     assert_eq!(h.go(Dir::Back, true, false, now), NavAction::Navigate("a".into()), "no engine slot before b");
 }
 
+/// A native move leaves the tab's url at its origin, where every replacement restarts, so `view_reset` never sees its
+/// target; a caller that passed it one is caught.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "a native move's target is never the url a replacement loads")]
+fn view_reset_at_a_native_moves_target_is_a_bug() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
+    h.view_reset("a", now);
+}
+
 /// A kept move's new engine loads only the page it was sent, so its first report of another URL is that page,
 /// redirected: the move arrives and renames its target, and the page it left is untouched.
 #[test]
