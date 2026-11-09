@@ -16,13 +16,18 @@ manifold-pages.workspace = true
 
 # The kill-on-close job (`job.rs`). Windows only: this crate is also built on Linux for the WebKitGTK host.
 # `JOBOBJECT_EXTENDED_LIMIT_INFORMATION` embeds an `IO_COUNTERS` (Threading) and `CreateJobObjectW` takes a
-# `SECURITY_ATTRIBUTES` pointer (Security); windows-sys gates each namespace behind its own feature.
+# `SECURITY_ATTRIBUTES` pointer (Security); windows-sys gates each namespace behind its own feature. `WakeEvent`
+# (`wake.rs`) waits with `MsgWaitForMultipleObjectsEx` (WindowsAndMessaging); its test window needs `WNDCLASSW`
+# (Gdi, for the brush field) and `GetModuleHandleW` (LibraryLoader).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_JobObjects",
+    "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [[bin]]
