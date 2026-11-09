@@ -112,7 +112,9 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
     inst.export_until(&format!("tabview-{view}-{phase}"), State::tab_view)?;
     inst.send("WAITIDLE")?;
     let host = find_host(&inst, label)?;
+    // Registered now, not at the end, so a failure anywhere below prints the host's tail.
     let logs = host_logs(&tmp);
+    logs.iter().for_each(|l| register_log(l));
     if logs.len() != 1 {
         return Err(io::Error::other(format!("{} host logs in {}, wanted 1", logs.len(), tmp.display())));
     }
@@ -150,7 +152,6 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
         println!("{label}: control-message answer times {} ms", shown.join(" "));
     }
     quit(&mut inst, label);
-    register_log(&log.path);
 
     let short = format!("hostrate {view}");
     if phase == "animate" {
