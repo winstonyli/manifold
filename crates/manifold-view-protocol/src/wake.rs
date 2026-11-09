@@ -201,6 +201,16 @@ mod tests {
     }
 
     #[test]
+    fn a_later_deadline_after_a_wake_is_kept() {
+        let ev = WakeEvent::new().unwrap();
+        ev.set();
+        ev.wait(Instant::now() + Duration::from_millis(30)); // ends on the event; the 30 ms arm is still pending
+        let start = Instant::now();
+        ev.wait(start + Duration::from_millis(100)); // must re-arm, not end when the old arm fires
+        assert!(start.elapsed() >= Duration::from_millis(90), "{:?}", start.elapsed());
+    }
+
+    #[test]
     fn a_past_deadline_returns_at_once() {
         let ev = WakeEvent::new().unwrap();
         let start = Instant::now();
