@@ -35,6 +35,9 @@ const LATENCY_BOUND: Duration = Duration::from_millis(400);
 const LATENCY_TRIALS: usize = 5;
 /// A `[frame]` line this long after the one before it marks a quiet turn (the device check), the worst moment to send.
 const QUIET_GAP: Duration = Duration::from_millis(800);
+/// After the quiet turn, this long with no host turn before sending: WebView2's engine often posts its own pump message
+/// 13-43 ms after a device check, and a send just before it measured that turn instead of a missing wake (2026-11-09).
+const SETTLE: Duration = Duration::from_millis(100);
 
 const PHASES: [(&str, &str); 2] = [("animate", "/animate"), ("still", "/text")];
 
@@ -187,7 +190,7 @@ fn answer_time(inst: &mut Instance, site: &Site, log: &mut LogTail, target: &str
     inst.send("WAITIDLE")?;
     inst.barrier()?;
     let before = site.hits(target);
-    // Send right after a host turn: a host with no wake then waits a whole device-check period. A turn some window
+    // Send soon after a host turn (`SETTLE`): a host with no wake then waits nearly a whole device-check period. A turn some window
     // message woke would leave it less, so wait for a line after a quiet stretch; a polling host never goes quiet,
     // so after 3 s take the next line.
     log.new_lines()?;
@@ -202,6 +205,13 @@ fn answer_time(inst: &mut Instance, site: &Site, log: &mut LogTail, target: &str
                 break;
             }
             last = now;
+        }
+        sleep(Duration::from_millis(2));
+    }
+    let mut settled = Instant::now();
+    while settled.elapsed() < SETTLE && begin.elapsed() < Duration::from_secs(5) {
+        if log.new_frame_lines()? > 0 {
+            settled = Instant::now();
         }
         sleep(Duration::from_millis(2));
     }
