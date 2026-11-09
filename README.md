@@ -138,7 +138,8 @@ Debug commands read and write any path the user can (the `EXPORT*` and `IMPORT*`
 
 Commands:
 - `MOUSEMOVE <x> <y>`, `MOUSEDOWN <x> <y> [left|right|middle]`, `MOUSEUP <x> <y> [left|right|middle]`, `CLICK <x> <y> [left|right|middle]`, `DOUBLECLICK <x> <y>` — dispatched as genuine synthetic `winit::event::WindowEvent`s, not a logic bypass, so they exercise real egui hit-testing exactly like real input would.
-- `SCROLL <x> <y> <delta_x> <delta_y>`
+- `SCROLL <x> <y> <delta_x> <delta_y>`: a touchpad scroll of physical pixels (winit's signs: positive x scrolls left, positive y up)
+- `WHEEL <x> <y> <delta_x> <delta_y>`: a mouse wheel scroll of notches, same signs
 - `ADDRESSBAR <text>` — in Tab view, focuses the address bar, then types the text over its contents as egui key/text events, so suggestions update through the real `TextEdit` path.
 - `ENTER`, `ESCAPE`, `ARROWDOWN`, `ARROWUP` are real `egui::Event::Key` presses injected into the next frame's input, not calls into the handlers. `winit::event::KeyEvent` has no public constructor, so they enter at the egui level; see `debug`'s doc comment. Headless mode marks the window focused for egui, which otherwise reports no widget focus in an unfocused window.
 - `ENTER` — in the focused address bar, navigates using its text or the highlighted suggestion.

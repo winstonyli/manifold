@@ -391,12 +391,13 @@ fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
             // Servo scrolls by the pixels it is given whatever the mode (the mode is what the page's `wheel` event
             // reports), and leaves a notch's distance to the embedder: servoshell uses 76 px, this host Edge's 100
             // (`wheel::WheelUnits`), so a notch goes as far as in the Chromium tabs. Its CSS px are the surface's.
-            let (x_px, y_px, mode) = match delta {
-                ScrollDelta::Lines { x, y } => (x * NOTCH_PX, y * NOTCH_PX, WheelMode::DeltaLine),
-                ScrollDelta::Pixels { x, y } => (x, y, WheelMode::DeltaPixel),
+            // Both are sent as pixels, as Edge reports a notch to the page.
+            let (x_px, y_px) = match delta {
+                ScrollDelta::Lines { x, y } => (x * NOTCH_PX, y * NOTCH_PX),
+                ScrollDelta::Pixels { x, y } => (x, y),
             };
             Some(ServoInputEvent::Wheel(WheelEvent::new(
-                WheelDelta { x: x_px, y: y_px, z: 0.0, mode },
+                WheelDelta { x: x_px, y: y_px, z: 0.0, mode: WheelMode::DeltaPixel },
                 webview_point(x, y),
             )))
         }
