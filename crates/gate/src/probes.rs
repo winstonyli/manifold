@@ -30,9 +30,13 @@ use crate::state::{State, JAR, TAB};
 use crate::suggest::{query_param, url_query};
 use crate::windows_main::Ctx;
 
+/// The key probe's page. Each report waits for the one before it: separate requests race, so the server would log
+/// keys sent close together out of order (CEF once logged Enter third, 2026-11-09).
 const PAGE: &str = "<!doctype html><title>keys</title><textarea id=t autofocus></textarea>\n<script>\n\
 document.getElementById('t').focus();\n\
-addEventListener('keydown', e => {\n  const q = new URLSearchParams({code: e.code, key: e.key, kc: e.keyCode});\n  new Image().src = '/k?' + q;\n});\n</script>";
+let sent = Promise.resolve();\n\
+addEventListener('keydown', e => {\n  const q = new URLSearchParams({code: e.code, key: e.key, kc: e.keyCode});\n  \
+sent = sent.then(() => fetch('/k?' + q)).catch(() => {});\n});\n</script>";
 /// A page of one paragraph for the click-count probe: it reports each mouse release's click count (`detail`) and the
 /// selection a moment later. The line box is 300 px tall, so a click anywhere in it lands on the text's line.
 pub(crate) const CLICKS: &str =
