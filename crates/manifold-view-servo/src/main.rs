@@ -160,8 +160,8 @@ fn main() {
 
     // A dedicated IO thread owns receiving HostToView messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
-    // Send, so it must live entirely on this thread). No wake yet: the loop polls (PARKED "Hosts other than WebView2
-    // still poll").
+    // Send, so it must live entirely on this thread). No wake yet: the loop polls (PARKED "Servo and WebKitGTK still
+    // poll").
     let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, || {});
 
     let rendering_context = Rc::new(
