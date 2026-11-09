@@ -196,6 +196,33 @@ fn view_reset_keeps_a_native_move_as_a_plain_one() {
     assert_eq!(h.go(Dir::Forward, false, true, now), NavAction::Navigate("b".into()), "no engine slot after a");
 }
 
+/// A kept move's new engine loads only the page it was sent, so its first report of another URL is that page,
+/// redirected: the move arrives and renames its target, and the page it left is untouched.
+#[test]
+fn a_kept_moves_first_report_of_another_url_is_its_arrival_redirected() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.view_reset("a", now);
+    h.observe("a2", "", true, false, now);
+    assert_eq!((urls(&h), h.cursor_url()), (vec!["a2", "b"], Some("a2")));
+    h.observe("a3", "", true, false, now);
+    h.observe("a3", "", false, false, now);
+    assert_eq!((urls(&h), h.cursor_url()), (vec!["a3", "b"], Some("a3")), "a later redirect rewrites it too");
+}
+
+/// A kept move that expires leaves the tab on the page it left; the new engine is not loading that page, so a late
+/// report of another URL is a new page after it, not a rewrite of it.
+#[test]
+fn a_kept_move_that_expires_leaves_a_later_redirect_a_new_page() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, false, false, now), NavAction::Navigate("a".into()));
+    h.view_reset("a", now);
+    h.observe("a2", "", true, false, now + LOADING_WINDOW + Duration::from_secs(1));
+    assert_eq!((urls(&h), h.cursor_url()), (vec!["a", "b", "a2"], Some("a2")));
+}
+
 #[test]
 fn view_reset_drops_a_pending_move() {
     let now = Instant::now();

@@ -78,12 +78,15 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       each, 30 s for a loading report). The 204 rule ends that: a loading origin report while the last report was settled
       marks the move started, and a settled origin report after it drops the move and falls to step 4 (an attachment or a
       204 never leaves the page). An engine already loading, or woken at the origin, finishing its own load is no start.
-      A report whose URL equals `target`'s URL commits a native or plain move. A new move commits on the first report of
+      A report whose URL equals `target`'s URL commits a native or plain move; so does, for a move kept across an
+      engine replacement (`kept`, `view_reset` below), the first report of any URL but its origin: the new engine loads
+      only the page sent, so another URL is that page redirected, and the target entry takes it (title cleared). A new move commits on the first report of
       any other URL, whatever the engine made of the URL sent, as a push by step 6's rule (never step 5's rewrite: the
       origin's own load is not being redirected), and becomes a committed plain move at the pushed entry. A new move is
       not pending for `go()`: Back and Forward replace it. A report equal to neither ends a trail move (its origin held,
       below) and falls to the rules below, no rewrite (an unrelated navigation during the window, an error page; a redirect that skips the
-      `target` URL report is a known limit and forks).
+      `target` URL report is a known limit and forks, outside a kept move; why no engine signal settles it: PARKED.md
+      "Trail").
       **Held urls.** A move that ends before its reports do leaves them to an old document. `retire` puts what a live
       move (not past its deadline; step 2 drops an expired one with nothing held) was still waiting on in `held`: its
       origin, and its target if unreached when the host ended the move (`begin`, and a `go()`, `go_to` or `navigate` to
@@ -151,7 +154,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       children were reached from; the equal-child check above applies, and `fwd(at)` is set to that child); else rewritten.
    6. the fork rule above (sets `fwd(at)` to the new or reused child).
    *Fresh* is a `bool`: "the cursor entry is fresh". It is set by a commit, and by a `view_reset` that keeps no move, whose cursor is then at
-   the tab's URL (a restored or replaced view reloads the entry, and a redirect there must rewrite it); one that keeps a
+   the tab's URL (a restored or replaced view reloads the entry, and a redirect there must rewrite it: a host's report
+   before its engine says anything reads as loading, `NavState::new`, so CEF's at-once first report doesn't clear it); one that keeps a
    move clears it, since the new engine loads the move's target, not the cursor. Steps 5 and 6 read it first.
    It is cleared on every cursor change (a commit sets it anew; a fork, a reused child, a J5 push, a dropped move, an
    eviction that moves the cursor), so it never needs remapping, and at the end of **every** fold branch (steps 3's ignore
@@ -188,7 +192,10 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
      URL, so the engine's reports of the page the tab already showed are no visit (2026-11-08; until then the arena was
      emptied and the next report made the root). One exception: when the URL is a pending move's sent page not yet
      reached (the engine was replaced between sending and the first report), the tree stays, the move stays as a plain
-     one with a fresh `LOADING_WINDOW`, and `lin = [None]`, so the new engine's arrival commits it and is the visit.
+     one with a fresh `LOADING_WINDOW`, and `lin = [None]`, marked `kept`, so the new engine's arrival commits it and
+     is the visit, redirected or not (step 3). Should it expire instead, `loading` is cleared: the new engine was
+     loading the target, not the cursor's page, so a late report of another URL is a new page, not a rewrite of the
+     page the tab stayed on.
      A native move reaches this only through an engine swap, which starts the new engine at the old one's own URL
      (`StateSnapshot`), already the target if the `GoBack` landed before its report; a crash restarts at the tab's URL,
      which a native move leaves at the origin, so the move is dropped.
@@ -339,7 +346,8 @@ pending move leaves the tree and `lin` untouched; a plain move whose arrival is 
 session replace clears the stashed lists; a move whose target URL equals the origin's commits at `go()`; a fresh
 navigation during a pending plain move leaves the target's URL untouched; the redirect report order (`T` loading, then
 `T2`) on a target with children rewrites it; `view_reset` while a move is pending clears it, unless the new engine loads the move's unreached sent page, which keeps
-it as a plain move; `fresh` is cleared by a settled report, a mid-trail reload redirect (not
+it as a plain move whose first report of another URL is its arrival, redirected, and whose expiry leaves a later report
+a new page; `fresh` is cleared by a settled report, a mid-trail reload redirect (not
 fresh) pushes a child, Back onto an entry with children then a redirect rewrites it, and a `view_reset` that keeps no
 move makes the entry fresh;
 a plain equal-URL move leaves `lin.len()` unchanged and returns no action; an inferred Back

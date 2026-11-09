@@ -146,6 +146,9 @@ struct Move {
     /// A load began after the move did: a loading report of `origin` while the last report was settled. A settled one
     /// next means the navigation ended without leaving (an attachment, a 204).
     started: bool,
+    /// Kept across an engine replacement (`view_reset`): the new engine loads only the page sent, so its first report
+    /// of another URL than `origin` is the arrival, redirected.
+    kept: bool,
 }
 
 /// A URL an old document may still report: what a move the host replaced was still waiting on.
@@ -322,7 +325,12 @@ impl NavHistory {
             } else if m.origin == url {
                 // The 204 rule: the load it started ended where it began. The cursor's own URL (step 4).
                 self.pending = None;
-            } else if let Some(t) = m.to.target().filter(|&t| self.entries[t].url == url) {
+            } else if let Some(t) = m.to.target().filter(|&t| m.kept || self.entries[t].url == url) {
+                if self.entries[t].url != url {
+                    let entry = &mut self.entries[t];
+                    entry.url = url.to_owned();
+                    entry.title.clear();
+                }
                 let step = if matches!(m.to, To::Native(_)) { LinStep::Native } else { LinStep::Push };
                 self.pending = Some(Move { committed: true, deadline: now + MOVE_WINDOW, ..m });
                 self.commit(t, self.at, step);
@@ -641,6 +649,10 @@ impl NavHistory {
     /// the page the tab is still on, which the host shows again in place of the one it sent (`expire_trail_moves`).
     pub(crate) fn expire(&mut self, now: Instant) -> Option<String> {
         let m = self.pending.take_if(|m| now > m.deadline)?;
+        if m.kept && !m.committed {
+            // The new engine was loading the target, not the cursor's page: a later report is no redirect of it.
+            self.loading = false;
+        }
         (!m.committed).then(|| self.entries[self.at].url.clone())
     }
 
@@ -654,7 +666,7 @@ impl NavHistory {
         // The engine has said nothing of this navigation yet: as long as a load may take (`LOADING_WINDOW`), until a
         // report restarts it (step 3).
         let deadline = now + LOADING_WINDOW;
-        self.pending = Some(Move { to, origin, deadline, committed: false, started: false });
+        self.pending = Some(Move { to, origin, deadline, committed: false, started: false, kept: false });
     }
 
     /// The URL the host sends the engine for a move to `to`.
@@ -752,7 +764,7 @@ impl NavHistory {
                 To::Native(t) => To::Plain(t),
                 to => to,
             };
-            self.pending = Some(Move { to, deadline: now + LOADING_WINDOW, started: false, ..m });
+            self.pending = Some(Move { to, deadline: now + LOADING_WINDOW, started: false, kept: true, ..m });
             self.lin = vec![None];
             self.lin_at = 0;
             self.fresh = false;
