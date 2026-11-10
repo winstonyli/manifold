@@ -19,8 +19,9 @@ pub const ENV_AWAIT_COOKIES: &str = "VIEW_AWAIT_COOKIES";
 /// The app's settings at spawn, as `HostSettings::to_hex`; later changes arrive as `HostToView::SetSettings`. The
 /// WebKit host under WSL reads it from its command line, where hex is shell-safe.
 pub const ENV_SETTINGS: &str = "VIEW_SETTINGS";
-/// Set (to anything) by `gate hostrate`: every `FrameSink::take` logs `[frame] 1` (a frame sent) or `[frame] 0` (a
-/// poll that found nothing), so the gate can count frames and loop turns from the host log.
+/// Set (to anything) by `gate hostrate`: every `FrameSink::take` logs `[frame] 1` (a frame sent), `[frame] 0` (a
+/// poll that found nothing) or `[frame] -` (a turn while hidden), so the gate can count frames and loop turns from
+/// the host log.
 pub const ENV_FRAME_STATS: &str = "VIEW_FRAME_STATS";
 
 // One engine's own variables: only its host reads them, but they are named here too, once for both sides

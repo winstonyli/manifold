@@ -79,7 +79,7 @@ fn main() {
     let mut to_host = MessageChannel::new(stream);
     let from_host = MessageChannel::new(read_stream);
 
-    // No wake yet: the loop polls (PARKED "Servo and WebKitGTK still poll").
+    // No wake yet: the loop polls (PARKED "WebKitGTK still polls").
     let rx = manifold_view_protocol::transport::spawn_host_reader(from_host, || {});
 
     gtk::init().expect("gtk::init (is Xvfb running? DISPLAY set?)");
