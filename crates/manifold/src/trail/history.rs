@@ -139,6 +139,8 @@ struct Move {
     to: To,
     /// The cursor's URL when the move started; the cursor stays there until the commit.
     origin: String,
+    /// The engine list offered Forward from `origin` when the move started: the flag its old document reports with.
+    origin_forward: bool,
     deadline: Instant,
     /// The cursor is at the target; the origin's old document may still report (in any order, some engines settling
     /// the target before the origin's last report), so its settled report is held until the deadline.
@@ -257,15 +259,19 @@ impl NavHistory {
     }
 
     /// Step 3's hold: a report of a pending move's origin inside its window. Before the commit, any but the one that
-    /// ends a started load; after, a settled one whose Forward flag matches the engine list the commit left: one that
-    /// differs comes from a later engine move (page script's history.back(), step 4b), not the old document.
+    /// ends a started load; after, a settled one whose Forward flag the old document could send: the origin's from
+    /// before the move, or the engine list's after the commit. A flag that is neither comes from a later engine move
+    /// (the page script's history.back(), step 4b). A script move whose report has one of those flags reads the same
+    /// as the old document; the first report after the deadline moves the cursor.
     fn is_stale_origin(&self, url: &str, loading: bool, can_go_forward: bool, now: Instant) -> bool {
         self.pending.as_ref().is_some_and(|m| {
             now <= m.deadline
                 && m.origin == url
                 && match m.to.target() {
                     Some(t) if m.committed => {
-                        !loading && self.entries[t].url != url && can_go_forward == (self.lin_at + 1 < self.lin.len())
+                        !loading
+                            && self.entries[t].url != url
+                            && (can_go_forward == m.origin_forward || can_go_forward == self.lin_forward())
                     }
                     _ => loading || !m.started,
                 }
@@ -669,7 +675,14 @@ impl NavHistory {
         // The engine has said nothing of this navigation yet: as long as a load may take (`LOADING_WINDOW`), until a
         // report restarts it (step 3).
         let deadline = now + LOADING_WINDOW;
-        self.pending = Some(Move { to, origin, deadline, committed: false, started: false, kept: false });
+        let origin_forward = self.lin_forward();
+        self.pending =
+            Some(Move { to, origin, origin_forward, deadline, committed: false, started: false, kept: false });
+    }
+
+    /// The engine list offers Forward from its cursor.
+    fn lin_forward(&self) -> bool {
+        self.lin_at + 1 < self.lin.len()
     }
 
     /// The URL the host sends the engine for a move to `to`.

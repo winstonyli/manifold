@@ -888,6 +888,32 @@ fn a_script_back_right_after_a_typed_arrival_is_not_held_as_the_old_document() {
     assert_eq!((urls(&h), h.at, h.lin_at, h.entries[0].fwd), (vec!["a", "b"], 0, 0, Some(1)));
 }
 
+/// The old document's late report carries the flags it had before the move: after a native Back, Forward false where
+/// the engine list now offers Forward. Still the old document, held.
+#[test]
+fn after_a_native_back_the_origins_late_report_with_its_old_flags_is_held() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    assert_eq!(h.go(Dir::Back, true, false, now), NavAction::GoBack);
+    h.observe("a", "", false, true, now);
+    assert!(h.observe("b", "", false, false, now), "b finishing late, with its own flags");
+    assert_eq!((h.at, h.lin_at), (0, 0));
+}
+
+/// The same after a typed url from a page with Forward: the late report says Forward true, the list after the push
+/// ends at the cursor. Still held.
+#[test]
+fn after_a_typed_arrival_the_origins_late_report_with_its_old_forward_is_held() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a", "b"]);
+    h.go(Dir::Back, true, false, now);
+    h.observe("a", "", false, true, now);
+    h.navigate("c", now);
+    h.observe("c", "", false, false, now);
+    assert!(h.observe("a", "", false, true, now), "a finishing late, with its own flags");
+    assert_eq!(h.entries[h.at].url, "c");
+}
+
 #[test]
 fn a_typed_navigation_does_not_block_back_and_back_replaces_it() {
     let now = Instant::now();
