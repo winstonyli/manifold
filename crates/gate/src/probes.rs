@@ -410,26 +410,34 @@ pub(crate) fn wheel(ctx: &mut Ctx) -> io::Result<()> {
 }
 
 /// What the page should log for each key sent, per view kind. CEF sends no DOM `code`, and its modifier keyCode is the
-/// side-specific VK_LSHIFT (160) where WebView2 sends the generic VK_SHIFT (16).
+/// side-specific VK_LSHIFT (160) where WebView2 sends the generic VK_SHIFT (16). Servo gets no `key` for a key that
+/// types text (`key_to_servo_key` sends `Unidentified`, and the page then reads keyCode 0).
 fn expected_keys(view: &str) -> Vec<&'static str> {
-    if view == "cef" {
-        vec![
+    match view {
+        "cef" => vec![
             "key=Enter kc=13",
             "key=ArrowLeft kc=37",
             "key=Shift kc=160",
             "key=7 kc=55",
             "key=PageDown kc=34",
             "key=a kc=65",
-        ]
-    } else {
-        vec![
+        ],
+        "servo" => vec![
+            "code=Enter key=Enter kc=13",
+            "code=ArrowLeft key=ArrowLeft kc=37",
+            "code=ShiftLeft key=Shift kc=16",
+            "code=Digit7 key=Unidentified kc=0",
+            "code=PageDown key=PageDown kc=34",
+            "code=KeyA key=Unidentified kc=0",
+        ],
+        _ => vec![
             "code=Enter key=Enter kc=13",
             "code=ArrowLeft key=ArrowLeft kc=37",
             "code=ShiftLeft key=Shift kc=16",
             "code=Digit7 key=7 kc=55",
             "code=PageDown key=PageDown kc=34",
             "code=KeyA key=a kc=65",
-        ]
+        ],
     }
 }
 
