@@ -306,7 +306,12 @@ fn main() {
                     // match to this project's own `factor` semantics.
                     let _ = controller.SetZoomFactor(factor);
                 },
-                HostToView::SetVisible(v) => sink.set_visible(v),
+                // A hidden WebView2 stops rendering, so its capture stops delivering frames and the loop sleeps
+                // (CEF's `was_hidden` is the same step).
+                HostToView::SetVisible(v) => unsafe {
+                    let _ = controller.SetIsVisible(v);
+                    sink.set_visible(v);
+                },
                 HostToView::GetState => {
                     for m in nav_state.borrow_mut().answer_get_state() {
                         let _ = control.send(&m);
