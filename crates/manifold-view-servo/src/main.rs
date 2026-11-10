@@ -363,7 +363,8 @@ fn main() {
             }
             rendering_context.present();
         }
-        // Outside the paint gate: a failed create is retried on later ticks without a new paint.
+        // Outside the paint gate: a failed create is retried on later turns without a new paint (at worst at the
+        // wait's 1 s backstop).
         if let Some(msg) = sink.take() {
             let _ = control.send(&msg);
         }
