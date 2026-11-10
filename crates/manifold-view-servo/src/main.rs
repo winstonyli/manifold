@@ -184,6 +184,9 @@ fn main() {
         .event_loop_waker(Box::new(LoopWaker(wake.clone())))
         .protocol_registry(pages::registry())
         .build();
+    // Servo's own `log` output reaches the per-tab log only through its logger: errors by default, more with
+    // `RUST_LOG` (e.g. `servo_constellation=warn` shows a load the constellation drops).
+    servo.setup_logging();
 
     // Drained as late as possible before the view is built (see `take_start_url`); the rest is handled by the loop.
     let (initial_url, early) = take_start_url(initial_url, rx.try_iter().collect());
