@@ -451,6 +451,12 @@ pub(crate) fn key(ctx: &mut Ctx) -> io::Result<()> {
             inst.export_state(&format!("state-{view}"))?;
             inst.send("CLICK 300 200")?;
             inst.send("WAITIDLE")?;
+            // Out to the Graph and back (the tab hidden and shown): keys still reach the page without a new click.
+            inst.send("ESCAPE")?;
+            inst.export_until(&format!("graph-{view}"), |s| !s.tab_view())?;
+            inst.send("GRAPHOPEN")?;
+            inst.export_until(&format!("tabview-{view}"), State::tab_view)?;
+            inst.send("WAITIDLE")?;
             for k in ["Enter", "ArrowLeft", "ShiftLeft", "Digit7", "PageDown", "KeyA"] {
                 inst.send(&format!("KEYPAGE {k}"))?;
             }
