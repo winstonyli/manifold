@@ -185,6 +185,10 @@ fn main() {
         .protocol_registry(pages::registry())
         .build();
 
+    // Drained as late as possible before the view is built (see `take_start_url`); the rest is handled by the loop.
+    let (initial_url, early) = take_start_url(initial_url, rx.try_iter().collect());
+    let mut early = early.into_iter();
+
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),
         nav: RefCell::new(NavState::new(initial_url.clone(), false)),
@@ -215,7 +219,7 @@ fn main() {
     loop {
         servo.spin_event_loop();
 
-        while let Ok(msg) = rx.try_recv() {
+        while let Some(msg) = early.next().or_else(|| rx.try_recv().ok()) {
             match msg {
                 HostToView::Navigate { url, .. } => {
                     if let Ok(parsed) = Url::parse(&url) {
@@ -375,6 +379,26 @@ fn main() {
     }
 }
 
+/// Servo drops a load sent before a new view's first document commits (PARKED "Servo drops a load sent before the
+/// previous one commits", case (a)), so the newest `Navigate` that arrived while the host started (one whose url
+/// parses, as the loop requires) becomes the view's first load instead. Returns that url and the other early
+/// messages, in order.
+fn take_start_url(initial_url: String, early: Vec<HostToView>) -> (String, Vec<HostToView>) {
+    let mut start = initial_url;
+    let mut rest = Vec::new();
+    for msg in early {
+        match msg {
+            HostToView::Navigate { url, .. } => {
+                if Url::parse(&url).is_ok() {
+                    start = url;
+                }
+            }
+            other => rest.push(other),
+        }
+    }
+    (start, rest)
+}
+
 fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
     match event {
         HostInputEvent::MouseMove { x, y, .. } => {
@@ -519,6 +543,26 @@ fn translate_mouse_button(button: manifold_view_protocol::MouseButton) -> ServoM
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newest_early_navigate_becomes_the_start_url() {
+        let early = vec![
+            HostToView::Navigate { url: "https://a.test/".into(), referrer: None },
+            HostToView::SetVisible(true),
+            HostToView::Navigate { url: "https://b.test/".into(), referrer: None },
+            HostToView::Navigate { url: "not a url".into(), referrer: None },
+        ];
+        let (start, rest) = take_start_url("https://initial.test/".into(), early);
+        assert_eq!(start, "https://b.test/");
+        assert!(matches!(rest[..], [HostToView::SetVisible(true)]), "{rest:?}");
+    }
+
+    #[test]
+    fn without_an_early_navigate_the_initial_url_stays() {
+        let (start, rest) = take_start_url("https://initial.test/".into(), vec![HostToView::Reload]);
+        assert_eq!(start, "https://initial.test/");
+        assert!(matches!(rest[..], [HostToView::Reload]), "{rest:?}");
+    }
 
     #[test]
     fn every_host_key_has_a_servo_code() {
