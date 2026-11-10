@@ -204,7 +204,6 @@ fn catch_unwind_lives_only_in_the_worker_pool() {
 const HOST_SLEEPS: &[(&str, usize)] = &[
     ("manifold-view-protocol/src/bin/render_stub.rs", 1), // a test double's "mismatch-linger" mode
     ("manifold-view-protocol/src/transport.rs", 2),       // the app's waits for a host to connect, not a host loop
-    ("manifold-view-servo/src/main.rs", 1),               // loop poll, until the Servo plan
     ("manifold-view-webkitgtk/src/main.rs", 1),           // loop poll, until a paint signal is found
     ("manifold-view-webview2/src/main.rs", 1),            // profile-busy retry at startup, not the loop
     ("manifold-view-webview2/src/window.rs", 1),          // taskbar retry on its own thread, not the loop

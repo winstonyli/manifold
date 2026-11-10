@@ -1,9 +1,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use manifold_view_protocol::nav_state::NavState;
+use manifold_view_protocol::wake::WakeEvent;
 use manifold_view_protocol::{
     modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ScrollDelta,
     ViewToHost,
@@ -24,17 +26,17 @@ const DEFAULT_HEIGHT: u32 = 768;
 /// CSS px a wheel notch scrolls: Edge's 100 at Windows' default 3 lines a notch.
 const NOTCH_PX: f64 = 100.0;
 
-/// M1 drives Servo with a busy-poll loop rather than a real wake-based
-/// event loop, so this waker is intentionally a no-op. Revisit if CPU
-/// usage from polling becomes a problem.
+/// Ends the host loop's wait: Servo calls `wake` from any thread when it wants `spin_event_loop`.
 #[derive(Clone)]
-struct NoopWaker;
+struct LoopWaker(Arc<WakeEvent>);
 
-impl EventLoopWaker for NoopWaker {
+impl EventLoopWaker for LoopWaker {
     fn clone_box(&self) -> Box<dyn EventLoopWaker> {
         Box::new(self.clone())
     }
-    fn wake(&self) {}
+    fn wake(&self) {
+        self.0.set();
+    }
 }
 
 struct Delegate {
@@ -160,9 +162,12 @@ fn main() {
 
     // A dedicated IO thread owns receiving HostToView messages so the
     // main thread stays free to drive Servo's event loop (Servo is not
-    // Send, so it must live entirely on this thread). No wake yet: the loop polls (PARKED "Servo and WebKitGTK still
-    // poll").
-    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, || {});
+    // Send, so it must live entirely on this thread). Each message ends the loop's wait, as Servo's own wakes do.
+    let wake = Arc::new(WakeEvent::new().expect("wake event"));
+    let rx = manifold_view_protocol::transport::spawn_host_reader(host_to_view, {
+        let wake = wake.clone();
+        move || wake.set()
+    });
 
     let rendering_context = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT))
@@ -175,8 +180,10 @@ fn main() {
     // worse, not better; the reference code doesn't call it at all here.
     rendering_context.make_current().expect("make rendering context current");
 
-    let servo =
-        ServoBuilder::default().event_loop_waker(Box::new(NoopWaker)).protocol_registry(pages::registry()).build();
+    let servo = ServoBuilder::default()
+        .event_loop_waker(Box::new(LoopWaker(wake.clone())))
+        .protocol_registry(pages::registry())
+        .build();
 
     let delegate = Rc::new(Delegate {
         frame_ready: RefCell::new(false),
@@ -361,7 +368,9 @@ fn main() {
             let _ = control.send(&msg);
         }
 
-        std::thread::sleep(Duration::from_millis(8));
+        // Nothing in this loop is due on a clock: it waits for Servo or a message, and the wait's backstop bounds a
+        // missed wake.
+        wake.wait(Instant::now() + Duration::from_secs(60));
     }
 }
 
