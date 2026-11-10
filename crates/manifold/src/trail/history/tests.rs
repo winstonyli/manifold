@@ -876,6 +876,18 @@ fn after_a_typed_arrival_the_origins_late_finish_is_held_and_a_redirect_rewrites
     assert_eq!((urls(&h), h.at), (vec!["a", "c"], 1), "b redirected to c");
 }
 
+/// The new page's own history.back() inside the arrival's hold, reported as Servo does (one settled report, its flags
+/// from after the move): Forward set where the engine list ends at the cursor, so it is not the old document.
+#[test]
+fn a_script_back_right_after_a_typed_arrival_is_not_held_as_the_old_document() {
+    let now = Instant::now();
+    let mut h = NavHistory::visited(&["a"]);
+    h.navigate("b", now);
+    h.observe("b", "", false, false, now);
+    assert!(!h.observe("a", "", false, true, now), "the engine went back: not stale");
+    assert_eq!((urls(&h), h.at, h.lin_at, h.entries[0].fwd), (vec!["a", "b"], 0, 0, Some(1)));
+}
+
 #[test]
 fn a_typed_navigation_does_not_block_back_and_back_replaces_it() {
     let now = Instant::now();

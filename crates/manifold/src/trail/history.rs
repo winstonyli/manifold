@@ -244,7 +244,7 @@ impl NavHistory {
     ) -> bool {
         let before = self.saved_form();
         let same_page = self.entries.get(self.at).is_some_and(|e| e.url == url);
-        let stale = self.is_stale_origin(url, loading, now) || self.holds(url, loading, now);
+        let stale = self.is_stale_origin(url, loading, can_go_forward, now) || self.holds(url, loading, now);
         if self.fold(url, loading, can_go_forward, now)
             && !title.is_empty()
             && (same_page || !loading)
@@ -257,13 +257,16 @@ impl NavHistory {
     }
 
     /// Step 3's hold: a report of a pending move's origin inside its window. Before the commit, any but the one that
-    /// ends a started load; after, a settled one.
-    fn is_stale_origin(&self, url: &str, loading: bool, now: Instant) -> bool {
+    /// ends a started load; after, a settled one whose Forward flag matches the engine list the commit left: one that
+    /// differs comes from a later engine move (page script's history.back(), step 4b), not the old document.
+    fn is_stale_origin(&self, url: &str, loading: bool, can_go_forward: bool, now: Instant) -> bool {
         self.pending.as_ref().is_some_and(|m| {
             now <= m.deadline
                 && m.origin == url
                 && match m.to.target() {
-                    Some(t) if m.committed => !loading && self.entries[t].url != url,
+                    Some(t) if m.committed => {
+                        !loading && self.entries[t].url != url && can_go_forward == (self.lin_at + 1 < self.lin.len())
+                    }
                     _ => loading || !m.started,
                 }
         })
@@ -303,7 +306,7 @@ impl NavHistory {
             return false;
         }
         if let Some(m) = self.pending.clone() {
-            let stale = self.is_stale_origin(url, loading, now);
+            let stale = self.is_stale_origin(url, loading, can_go_forward, now);
             if m.committed {
                 if stale {
                     return false;
