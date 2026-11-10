@@ -618,4 +618,13 @@ Items 1-8 are done; each says how. Ranked by value for the risk. Line numbers ar
   | Servo (baseline `2026-11-09-hostrate-servo-baseline`: 39.8 fps, 118 polls/s) | 64.2 fps | 1.0 | 1.0 | 5 4 4 5 4 | 411% (Servo renders in-process) |
   | WebView2 | 55.7 fps | 1.1 | **57.3, fails** | 7 | |
 
-  CEF's CPU on this quiet machine confirms the drop the wait run could not (still 8.40% to 4.82%, animating 9.03% to 5.60%). WebView2's hidden failure is PARKED "A hidden WebView2 tab still wakes per captured frame", and the phase is that fix's failing test. Gate `2026-11-09-gate-e1-f3` (full, `WITH_ENGINES="cef servo"`, CPU 22-48%, Defender off): 28 of 30 stages pass; `trail-servo` and `sleep-servo` fail on Back and Forward state, which fails the same way on 9d393a0d with Servo polling (runs `2026-11-09-servo-nav-pre-e1`, `-baseline`, `-head`), so it predates these commits (PARKED "Servo's Back and Forward state is wrong in two gate checks").
+  CEF's CPU on this quiet machine confirms the drop the wait run could not (still 8.40% to 4.82%, animating 9.03% to 5.60%). WebView2's hidden failure was the phase's purpose and is fixed in the next entry. Gate `2026-11-09-gate-e1-f3` (full, `WITH_ENGINES="cef servo"`, CPU 22-48%, Defender off): 28 of 30 stages pass; `trail-servo` and `sleep-servo` fail on Back and Forward state, which fails the same way on 9d393a0d with Servo polling (runs `2026-11-09-servo-nav-pre-e1`, `-baseline`, `-head`), so it predates these commits (PARKED "Servo's Back and Forward state is wrong in two gate checks").
+- **A hidden WebView2 tab stops rendering (2026-11-09, commits a1a6c295 and 2afa4402).** `SetVisible` now also sets the controller's `IsVisible`, the WebView2 counterpart of CEF's `was_hidden`: a hidden page stops rendering, so the capture session delivers no frames and the loop sleeps until its 1 s backstop. Chosen over restarting the capture session or a free-threaded frame pool because it stops the work at the engine, not only the wake. `gate hostrate`'s hidden phase now also opens the tab again and requires 18 frames within 2 s; a mutant that never sets `IsVisible(true)` sends 0 and fails it (run `2026-11-09-hostrate-shown-red`). Run `2026-11-09-hostrate-shown` (CPU 17%, Defender off), all three views passing every phase:
+
+  | View | Hidden, turns/s | Frames after opening again |
+  |---|---|---|
+  | WebView2 (was 57.3 turns/s) | 1.0 | 18 in 455 ms |
+  | CEF | 3 | 19 in 303 ms |
+  | Servo | 1 | 19 in 457 ms |
+
+  Gate `2026-11-09-gate-webview2-isvisible` (full, CPU 23-34%, Defender off): 23 of 23 stages pass. The Servo Back and Forward regression from the previous entry bisects to 77898981 (run `2026-11-09-servo-nav-bisect`; PARKED "Servo's Back and Forward state is wrong in two gate checks").
