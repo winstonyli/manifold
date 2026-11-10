@@ -6,7 +6,8 @@
 //! - `still` (`/text`, plain text): at most 2 frames/s, a poll rate between 0.5 and `STILL_POLL_CEILING` turns/s (the
 //!   check that the loop stopped polling a clock), and a control message answered within `LATENCY_BOUND`
 //! - `hidden` (`/animate`, then Escape to the Graph so the app hides the tab): no frames, and the still page's poll
-//!   rate (a hidden host must not turn at the page's frame rate for frames it throws away)
+//!   rate (a hidden host must not turn at the page's frame rate for frames it throws away); opened again, at least
+//!   `SHOWN_FLOOR` frames in `SHOWN_WINDOW` (the one whole frame resent on show doesn't count as resuming)
 //!
 //! Each prints frames/s, polls/s and the host process's CPU (printed, not checked; the engine's own processes are
 //! left out for every view alike). Polls are `take` calls: one per loop turn for CEF, Servo and WebView2, shown or
@@ -33,6 +34,10 @@ const HOSTRATE_WINDOW: Duration = Duration::from_secs(10);
 const ANIMATE_FLOOR: f64 = 35.0;
 /// A host polling on a clock shorter than 50 ms fails; a loop that waits on its inbox polls about once a second.
 const STILL_POLL_CEILING: f64 = 20.0;
+/// How many frames a hidden animating tab opened again must send, and how long it has (a quarter of `ANIMATE_FLOOR`'s
+/// rate, well above the single whole frame resent on show).
+const SHOWN_WINDOW: Duration = Duration::from_secs(2);
+const SHOWN_FLOOR: usize = 18;
 /// A host that wakes on its inbox answers in tens of ms; one that sees a message only at its 1 s device check, ~1 s.
 const LATENCY_BOUND: Duration = Duration::from_millis(400);
 const LATENCY_TRIALS: usize = 5;
@@ -161,6 +166,19 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
         let shown: Vec<String> = times.iter().map(|t| format!("{}", t.as_millis())).collect();
         println!("{label}: control-message answer times {} ms", shown.join(" "));
     }
+    // Opened again, the animating tab must send frames again: a host that paused its engine on hide resumes it.
+    let mut shown_frames = 0usize;
+    if phase == "hidden" {
+        inst.send("GRAPHOPEN")?;
+        inst.export_until(&format!("tabview-{view}-shown"), State::tab_view)?;
+        log.new_lines()?;
+        let start = Instant::now();
+        while shown_frames < SHOWN_FLOOR && start.elapsed() < SHOWN_WINDOW {
+            sleep(Duration::from_millis(50));
+            shown_frames += log.new_lines()?.iter().filter(|l| *l == "[frame] 1").count();
+        }
+        println!("{label}: {shown_frames} frames in {} ms after opening it again", start.elapsed().as_millis());
+    }
     quit(&mut inst, label);
 
     let short = format!("hostrate {view}");
@@ -176,6 +194,12 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
                 "{short}: a hidden animating tab polls between 0.5 and {STILL_POLL_CEILING} times/s (got {poll_rate:.1}{none})"
             ),
             (0.5..=STILL_POLL_CEILING).contains(&poll_rate),
+        );
+        check(
+            &format!(
+                "{short}: a hidden tab opened again sends frames again (got {shown_frames}, wanted {SHOWN_FLOOR})"
+            ),
+            shown_frames >= SHOWN_FLOOR,
         );
     } else {
         check(
