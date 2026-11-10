@@ -9,7 +9,7 @@
 //! - `bad-url` (was bad-url-probe.sh): a view host given an initial URL it cannot open shows about:blank, no panic
 //! - `failed-spawn` (was failed-spawn-probe.sh): a spawn the OS refuses leaves one failed tab card, kept by New and Retry
 //!
-//! `VIEWS="webview2 cef"` picks the view kinds (default `webview2`; CEF needs its host built). The local site is served
+//! `VIEWS="webview2 cef servo"` picks the view kinds (default `webview2`; CEF and Servo need their hosts built). The local site is served
 //! in process (was scripts/probe_server.py).
 
 use std::fs;
