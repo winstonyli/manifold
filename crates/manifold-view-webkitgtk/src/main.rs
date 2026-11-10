@@ -336,10 +336,9 @@ fn main() {
         });
     }
 
-    let mut sink = manifold_view_protocol::FrameSink::inline();
-    // M5: background tabs stay alive but stop sending frames; see
+    // M5: background tabs stay alive but stop sending frames (`FrameSink::set_visible`); see
     // HostToView::SetVisible's doc comment.
-    let mut visible = true;
+    let mut sink = manifold_view_protocol::FrameSink::inline();
     // When the last frame was sent: `FRAME_INTERVAL` paces `take`.
     let mut sent_at = Instant::now();
     // Last-sent NavigationStateChanged fields, compared each tick against
@@ -470,13 +469,8 @@ fn main() {
                 HostToView::SetZoom { factor } => {
                     webview.set_zoom_level(factor);
                 }
-                HostToView::SetVisible(v) => {
-                    visible = v;
-                    if v {
-                        // A tab shown again gets a frame at once, changed or not.
-                        sink.show();
-                    }
-                }
+                // A tab shown again gets a frame at once, changed or not (`FrameSink::set_visible`).
+                HostToView::SetVisible(v) => sink.set_visible(v),
                 HostToView::GetState => {
                     let _ = to_host.send(&ViewToHost::StateSnapshot);
                 }
@@ -621,7 +615,7 @@ fn main() {
             let _ = to_host.send(&msg);
         }
 
-        if visible {
+        if sink.visible() {
             // Send whatever size the offscreen widget's pixbuf actually is
             // — not gated on it matching the last `Resize` message's
             // width/height. Found live: after a tab is respawned (engine
@@ -651,12 +645,12 @@ fn main() {
                 } else {
                     sink.offer(&tightly_packed_rgba(&pixbuf), pw as usize * 4, pw, ph);
                 }
-                if sent_at.elapsed() >= FRAME_INTERVAL {
-                    if let Some(msg) = sink.take() {
-                        let _ = to_host.send(&msg);
-                        sent_at = Instant::now();
-                    }
-                }
+            }
+        }
+        if sent_at.elapsed() >= FRAME_INTERVAL {
+            if let Some(msg) = sink.take() {
+                let _ = to_host.send(&msg);
+                sent_at = Instant::now();
             }
         }
 

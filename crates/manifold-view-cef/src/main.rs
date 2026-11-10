@@ -229,9 +229,6 @@ fn main() {
     )
     .expect("create CEF browser");
 
-    // M5: background tabs stay alive but stop sending frames; see
-    // HostToView::SetVisible's doc comment.
-    let mut visible = true;
     // Set once `HostToView::Shutdown` calls `close_browser` -- the loop
     // keeps pumping (`idle`) until `closed` flips,
     // which is what actually drives `on_before_close` to fire, or until
@@ -290,10 +287,8 @@ fn main() {
                     }
                 }
                 HostToView::SetVisible(v) => {
-                    if v && !visible {
-                        sink.borrow_mut().show();
-                    }
-                    visible = v;
+                    // M5: a background tab stays alive but sends no frames (the sink holds the flag).
+                    sink.borrow_mut().set_visible(v);
                     // A hidden browser stops painting; showing it repaints.
                     if let Some(host) = browser.host() {
                         host.was_hidden(!v as _);
@@ -459,7 +454,7 @@ fn main() {
         }
 
         // See `AUDIO_PLAYING_POLL_INTERVAL`'s own doc comment for why this
-        // is a poll, not a real event -- fires regardless of `visible`
+        // is a poll, not a real event -- fires whether the tab is shown or not
         // (background-tab audio still needs an accurate indicator, same as
         // every other engine's own passive native read).
         if last_audio_poll.elapsed() >= AUDIO_PLAYING_POLL_INTERVAL {
@@ -488,13 +483,11 @@ fn main() {
             let _ = control.send(&msg);
         }
 
-        if visible {
-            // Taken in its own statement so the `RefMut` is released before the send, and before the next CEF pump
-            // (whose `on_paint` borrows the sink again).
-            let frame = sink.borrow_mut().take();
-            if let Some(msg) = frame {
-                let _ = control.send(&msg);
-            }
+        // Taken in its own statement so the `RefMut` is released before the send, and before the next CEF pump
+        // (whose `on_paint` borrows the sink again).
+        let frame = sink.borrow_mut().take();
+        if let Some(msg) = frame {
+            let _ = control.send(&msg);
         }
 
         if let Some(since) = shutting_down {

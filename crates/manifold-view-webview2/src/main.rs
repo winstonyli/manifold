@@ -262,7 +262,6 @@ fn main() {
     window::hide_from_taskbar(hwnd);
     let mut sink = FrameSink::shared(&socket_id);
     let mut last_size = (0, 0);
-    let mut visible = true;
     let mut last_device_check = std::time::Instant::now();
 
     loop {
@@ -307,12 +306,7 @@ fn main() {
                     // match to this project's own `factor` semantics.
                     let _ = controller.SetZoomFactor(factor);
                 },
-                HostToView::SetVisible(v) => {
-                    if v && !visible {
-                        sink.show();
-                    }
-                    visible = v;
-                }
+                HostToView::SetVisible(v) => sink.set_visible(v),
                 HostToView::GetState => {
                     for m in nav_state.borrow_mut().answer_get_state() {
                         let _ = control.send(&m);
@@ -488,8 +482,8 @@ fn main() {
         }
 
         // Every frame goes out: the damage check and the app's one-frame slot absorb unchanged frames, and a
-        // still page sends none (t1, 2026-11-09).
-        if visible {
+        // still page sends none (t1, 2026-11-09). A hidden tab's frames are not copied.
+        if sink.visible() {
             if let Some(size) = capture.with_latest_frame(|src, pitch, w, h| {
                 sink.offer(src, pitch, w, h);
                 (w, h)
@@ -502,9 +496,9 @@ fn main() {
                     last_size = size;
                 }
             }
-            if let Some(msg) = sink.take() {
-                let _ = control.send(&msg);
-            }
+        }
+        if let Some(msg) = sink.take() {
+            let _ = control.send(&msg);
         }
 
         // `with_latest_frame` swallows the failures a removed device causes, so the tab would freeze silently:

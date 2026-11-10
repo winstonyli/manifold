@@ -178,8 +178,9 @@ fn an_inline_sink_reports_whole_then_bands_then_nothing() {
     let px2 = frame(2, 2, 3);
     assert!(sink.offer(&px2, 8, 2, 2));
     assert_eq!(damage_of(sink.take()), Some(None));
-    // Shown: whole again with no new offer, once.
-    sink.show();
+    // Hidden then shown: whole again with no new offer, once.
+    sink.set_visible(false);
+    sink.set_visible(true);
     assert_eq!(damage_of(sink.take()), Some(None));
     assert!(sink.take().is_none());
 }
@@ -187,12 +188,14 @@ fn an_inline_sink_reports_whole_then_bands_then_nothing() {
 #[test]
 fn show_waits_for_a_frame() {
     let mut sink = FrameSink::inline();
-    sink.show();
+    sink.set_visible(false);
+    sink.set_visible(true);
     assert!(sink.take().is_none(), "no stored frame yet");
     let px = frame(2, 2, 1);
     sink.offer(&px, 8, 2, 2);
     assert_eq!(generation_of(sink.take()), 0, "an inline sink has no file");
-    sink.show();
+    sink.set_visible(false);
+    sink.set_visible(true);
     assert_eq!(damage_of(sink.take()), Some(None));
 }
 
@@ -244,7 +247,8 @@ fn generations_follow_the_size_and_old_files_go() {
     assert_eq!(generation_of(sink.take()), 2);
     assert!(!frame_path(&id, 1).exists(), "the old generation's file is gone");
     assert!(frame_path(&id, 2).exists());
-    sink.show();
+    sink.set_visible(false);
+    sink.set_visible(true);
     assert_eq!(generation_of(sink.take()), 2);
     drop(sink);
     remove_frame_file(&id);
@@ -272,6 +276,36 @@ fn a_resize_does_not_wait_for_a_reader() {
 #[test]
 fn frame_label_tells_a_frame_from_a_poll() {
     let frame = ViewToHost::FrameReady { generation: 0, width: 1, height: 1, damage: None, pixels: None };
-    assert_eq!(frame_label(&Some(frame)), "1");
-    assert_eq!(frame_label(&None), "0");
+    assert_eq!(frame_label(true, &Some(frame)), "1");
+    assert_eq!(frame_label(true, &None), "0");
+    assert_eq!(frame_label(false, &None), "-");
+}
+
+#[test]
+fn a_hidden_sink_sends_nothing_and_shows_the_whole_frame_once() {
+    let (w, h) = (2usize, 4usize);
+    let mut sink = FrameSink::inline();
+    assert!(sink.visible(), "a new sink is visible");
+    let mut px = frame(w, h, 1);
+    sink.offer(&px, w * 4, w as u32, h as u32);
+    assert_eq!(damage_of(sink.take()), Some(None));
+    sink.set_visible(false);
+    assert!(!sink.visible());
+    px[w * 4] = 7;
+    sink.offer(&px, w * 4, w as u32, h as u32);
+    assert!(sink.take().is_none(), "hidden: nothing is sent");
+    sink.set_visible(false);
+    assert!(sink.take().is_none(), "hiding twice changes nothing");
+    sink.set_visible(true);
+    assert_eq!(damage_of(sink.take()), Some(None), "shown: the whole frame");
+    assert!(sink.take().is_none(), "once");
+}
+
+#[test]
+fn showing_a_visible_sink_resends_nothing() {
+    let mut sink = FrameSink::inline();
+    sink.offer(&frame(2, 2, 1), 8, 2, 2);
+    assert!(sink.take().is_some());
+    sink.set_visible(true);
+    assert!(sink.take().is_none());
 }

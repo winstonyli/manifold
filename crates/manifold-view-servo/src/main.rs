@@ -204,11 +204,6 @@ fn main() {
     let mut sink = manifold_view_protocol::FrameSink::shared(&socket_id);
     let mut width = DEFAULT_WIDTH;
     let mut height = DEFAULT_HEIGHT;
-    // M5: background tabs stay alive but stop sending frames; manifold
-    // defaults every newly spawned tab to visible and explicitly turns it
-    // off right after if it isn't the focused one, so `true` here matches
-    // pre-M5 single-tab behavior for any caller that never sends this.
-    let mut visible = true;
 
     loop {
         servo.spin_event_loop();
@@ -271,11 +266,10 @@ fn main() {
                     // capture-and-FrameReady-send block below stays gated
                     // shut forever and manifold never gets a fresh
                     // texture to display.
-                    if v && !visible {
+                    if v && !sink.visible() {
                         *delegate.frame_ready.borrow_mut() = true;
-                        sink.show();
                     }
-                    visible = v;
+                    sink.set_visible(v);
                 }
                 HostToView::GetState => {
                     for m in delegate.nav.borrow_mut().answer_get_state() {
@@ -353,7 +347,7 @@ fn main() {
             let _ = control.send(&ViewToHost::RedirectableContent { content_type });
         }
 
-        if visible && *delegate.frame_ready.borrow() {
+        if sink.visible() && *delegate.frame_ready.borrow() {
             *delegate.frame_ready.borrow_mut() = false;
             webview.paint();
             let rect = euclid::Box2D::from_size(euclid::Size2D::new(width as i32, height as i32));
@@ -363,10 +357,8 @@ fn main() {
             rendering_context.present();
         }
         // Outside the paint gate: a failed create is retried on later ticks without a new paint.
-        if visible {
-            if let Some(msg) = sink.take() {
-                let _ = control.send(&msg);
-            }
+        if let Some(msg) = sink.take() {
+            let _ = control.send(&msg);
         }
 
         std::thread::sleep(Duration::from_millis(8));

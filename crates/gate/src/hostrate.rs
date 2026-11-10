@@ -5,9 +5,12 @@
 //! - `animate` (`/animate`, a page that changes every frame): the host sends at least `ANIMATE_FLOOR` frames/s
 //! - `still` (`/text`, plain text): at most 2 frames/s, a poll rate between 0.5 and `STILL_POLL_CEILING` turns/s (the
 //!   check that the loop stopped polling a clock), and a control message answered within `LATENCY_BOUND`
+//! - `hidden` (`/animate`, then Escape to the Graph so the app hides the tab): no frames, and the still page's poll
+//!   rate (a hidden host must not turn at the page's frame rate for frames it throws away)
 //!
 //! Each prints frames/s, polls/s and the host process's CPU (printed, not checked; the engine's own processes are
-//! left out for every view alike). Polls are `take` calls: one per visible loop turn for CEF, Servo and WebView2.
+//! left out for every view alike). Polls are `take` calls: one per loop turn for CEF, Servo and WebView2, shown or
+//! hidden (`[frame] -`).
 
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom};
@@ -39,7 +42,7 @@ const QUIET_GAP: Duration = Duration::from_millis(800);
 /// 13-43 ms after a device check, and a send just before it measured that turn instead of a missing wake (2026-11-09).
 const SETTLE: Duration = Duration::from_millis(100);
 
-const PHASES: [(&str, &str); 2] = [("animate", "/animate"), ("still", "/text")];
+const PHASES: [(&str, &str); 3] = [("animate", "/animate"), ("still", "/text"), ("hidden", "/animate")];
 
 /// A host log read so far: its path and how many bytes of complete lines have been taken.
 struct LogTail {
@@ -120,6 +123,13 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
     }
     let mut log = LogTail { path: logs[0].clone(), read: 0 };
     log.new_lines()?;
+    if phase == "hidden" {
+        inst.send("ESCAPE")?;
+        // The window starts once the host has applied `SetVisible(false)`: its first hidden turn.
+        poll(&format!("{label}: a hidden turn ([frame] -) after leaving Tab view"), STEP_TIMEOUT, || {
+            log.new_lines().is_ok_and(|lines| lines.iter().any(|l| l == "[frame] -"))
+        })?;
+    }
 
     // The window: frames and polls from the log, CPU from the host process.
     let (cpu0, start) = (cpu_time(host.pid).unwrap_or_default(), Instant::now());
@@ -158,6 +168,14 @@ fn run_phase(exe: &Path, work: &Path, view: &str, phase: &str, path: &str, label
         check(
             &format!("{short}: an animating page sends at least {ANIMATE_FLOOR} frames/s (got {frame_rate:.1}{none})"),
             frame_rate >= ANIMATE_FLOOR,
+        );
+    } else if phase == "hidden" {
+        check(&format!("{short}: a hidden tab sends no frames (got {frames}{none})"), polls > 0 && frames == 0);
+        check(
+            &format!(
+                "{short}: a hidden animating tab polls between 0.5 and {STILL_POLL_CEILING} times/s (got {poll_rate:.1}{none})"
+            ),
+            (0.5..=STILL_POLL_CEILING).contains(&poll_rate),
         );
     } else {
         check(

@@ -51,7 +51,8 @@ struct Pending {
 }
 
 /// An engine's frame store and what it has not yet reported (survey E2). Every engine offers each frame it gets
-/// and sends what `take` returns; unchanged frames cost a compare and nothing else.
+/// and sends what `take` returns; unchanged frames cost a compare and nothing else. It also holds whether the tab is
+/// shown (`set_visible`): a host calls `take` every loop turn, and a hidden sink sends nothing.
 pub struct FrameSink {
     /// `Some(socket_id)` for a shared frame file, `None` for an in-memory store.
     socket_id: Option<String>,
@@ -68,6 +69,8 @@ pub struct FrameSink {
     create_failure_logged: bool,
     /// Hinted offers since the last one that ignored its hint, modulo `HINT_FULL_EVERY`.
     hinted_offers: u32,
+    /// The app shows this tab (`HostToView::SetVisible`); a new host starts out shown.
+    visible: bool,
 }
 
 impl FrameSink {
@@ -93,6 +96,7 @@ impl FrameSink {
             pending: None,
             create_failure_logged: false,
             hinted_offers: 0,
+            visible: true,
         }
     }
 
@@ -183,23 +187,36 @@ impl FrameSink {
         self.changed = None;
     }
 
-    /// The tab was shown: the next `take` reports the whole stored frame, changed or not.
-    pub fn show(&mut self) {
-        self.whole = true;
+    /// Applies `HostToView::SetVisible`. While hidden `take` sends nothing; once shown again the next `take` reports
+    /// the whole stored frame, changed or not.
+    pub fn set_visible(&mut self, visible: bool) {
+        if visible && !self.visible {
+            self.whole = true;
+        }
+        self.visible = visible;
     }
 
-    /// The `FrameReady` to send now, if anything changed since the last one. With `host_env::frame_stats()` on, each
-    /// call logs `[frame] 1` or `[frame] 0`, so `gate hostrate` can count frames and polls.
+    /// Whether the tab is shown: a host skips capturing frames while it is not.
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    /// The `FrameReady` to send now, if the tab is shown and anything changed since the last one. Call it every loop
+    /// turn: with `host_env::frame_stats()` on, each call logs `[frame] 1`, `0` or `-` (`frame_label`), so
+    /// `gate hostrate` can count frames and turns, hidden or not.
     pub fn take(&mut self) -> Option<ViewToHost> {
         let frame = self.take_inner();
         if crate::host_env::frame_stats() {
-            eprintln!("[frame] {}", frame_label(&frame));
+            eprintln!("[frame] {}", frame_label(self.visible, &frame));
         }
         frame
     }
 
     fn take_inner(&mut self) -> Option<ViewToHost> {
         self.install_pending();
+        if !self.visible {
+            return None;
+        }
         let store = self.store.as_ref()?;
         let damage = if self.whole {
             None
@@ -223,12 +240,13 @@ impl FrameSink {
     }
 }
 
-/// The `[frame]` line's label for what `take` returned: `1` for a frame sent, `0` for a poll that found nothing.
-fn frame_label(frame: &Option<ViewToHost>) -> &'static str {
-    if frame.is_some() {
-        "1"
-    } else {
-        "0"
+/// The `[frame]` line's label for what `take` returned: `1` for a frame sent, `0` for a poll that found nothing, `-`
+/// for a turn while hidden.
+fn frame_label(visible: bool, frame: &Option<ViewToHost>) -> &'static str {
+    match (visible, frame) {
+        (false, _) => "-",
+        (true, Some(_)) => "1",
+        (true, None) => "0",
     }
 }
 
