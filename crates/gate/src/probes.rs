@@ -199,6 +199,15 @@ impl Site {
                     response("200 OK", &[], "text/plain", if armed { b"1" } else { b"0" })
                 }
                 "/swapped" => response("204 No Content", &[], "text/plain", b""),
+                // A page that, a second after load (a pushState during the load reads as a redirect), pushes an
+                // entry and then fetches `/slow`, reporting the reply at `/fetched`.
+                "/spa" => {
+                    let page = "<!doctype html><body>spa<script>onload = () => setTimeout(() => { \
+                                history.pushState({}, '', '/spa2'); \
+                                fetch('/slow').then(() => fetch('/fetched')); }, 1000);</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                "/fetched" => response("204 No Content", &[], "text/plain", b""),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;

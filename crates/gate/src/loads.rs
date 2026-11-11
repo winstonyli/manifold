@@ -31,6 +31,7 @@ const CASES: &[&str] = &[
     "forward",
     "back-pending",
     "back-back",
+    "spa-back",
     "back-page",
     "back-swap",
     "zoom-swap",
@@ -404,6 +405,18 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             let end = c.state("end")?;
             check(&c.label("two Backs over a typed pending load end on /"), end.focused_url() == c.at("/"));
             c.finish(&["load in place", "load in place", "load in place", "history swap", "load in place"]);
+        }
+        "spa-back" => {
+            let mut c = Case::start(ctx, name, view, "/spa")?;
+            c.requested("/slow")?;
+            c.until("pushed", |s| s.focused_url().ends_with("/spa2"))?;
+            c.send("GOBACK")?;
+            let fetched = c.reaches("/fetched", 1);
+            c.then()?;
+            let end = c.state("end")?;
+            check(&c.label("a Back to a pushed entry leaves the page's fetch running"), fetched);
+            check(&c.label("the tab ends on /spa"), end.focused_url() == c.at("/spa"));
+            c.finish(&["history in place"]);
         }
         "back-page" => {
             let mut c = Case::start(ctx, name, view, "/")?;

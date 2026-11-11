@@ -277,12 +277,15 @@ fn main() {
                 },
                 // A Back or Forward cancels a pending load first: WebView2 cancels it itself when the step is the
                 // main frame's, but lets it commit over a step that is only an iframe's (runtime tested 2026-11-10).
+                // Only while loading: `Stop` also aborts the page's own fetches (`gate loads` case `spa-back`).
                 HostToView::GoBack => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoBack(&mut can_go);
                     if can_go.as_bool() {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
-                        let _ = webview.Stop();
+                        if nav_state.borrow().loading {
+                            let _ = webview.Stop();
+                        }
                         let _ = webview.GoBack();
                     }
                 },
@@ -302,7 +305,9 @@ fn main() {
                     let _ = webview.CanGoForward(&mut can_go);
                     if can_go.as_bool() {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
-                        let _ = webview.Stop();
+                        if nav_state.borrow().loading {
+                            let _ = webview.Stop();
+                        }
                         let _ = webview.GoForward();
                     }
                 },
