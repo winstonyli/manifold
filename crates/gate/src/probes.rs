@@ -215,6 +215,27 @@ impl Site {
                     response("200 OK", &[], "text/html", page.as_bytes())
                 }
                 "/fetched" => response("204 No Content", &[], "text/plain", b""),
+                // A chain of pages, each loading the next a moment after load, whose last steps back to the first:
+                // past Servo's 20 kept entries, so that entry was discarded and the Back refetches it. That refetch
+                // waits 4 s. `no-store` keeps WebView2 from serving the Back from its caches.
+                "/deep" => {
+                    const LAST: u32 = 22;
+                    let again =
+                        seen.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|t| *t == target).count();
+                    let n: u32 = param("n").parse().unwrap_or(1);
+                    let script = if again > 1 {
+                        sleep(Duration::from_secs(4));
+                        String::new()
+                    } else if n < LAST {
+                        format!("location.href = '/deep?n={}'", n + 1)
+                    } else {
+                        format!("history.go(-{})", LAST - 1)
+                    };
+                    let page = format!(
+                        "<!doctype html><body>deep {n}<script>onload = () => setTimeout(() => {{ {script} }}, 100);</script>"
+                    );
+                    response("200 OK", &[("Cache-Control", "no-store")], "text/html", page.as_bytes())
+                }
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;

@@ -33,6 +33,7 @@ const CASES: &[&str] = &[
     "back-back",
     "double-slow",
     "spa-back",
+    "deep-back",
     "back-page",
     "back-swap",
     "zoom-swap",
@@ -438,7 +439,7 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             let back = c.state("back")?;
             println!("    Back from blue: {}", back.focused_url());
             if view == "servo" {
-                // PARKED limit 9: the shown view's red commit is painted until blue promotes.
+                // PARKED Servo entry, limit 8: the shown view's red commit is painted until blue promotes.
                 check(&c.label("the red page shows while blue is pending"), !red_seen.is_empty());
             } else {
                 check(&c.label("the red page never shows over the pending blue one"), red_seen.is_empty());
@@ -446,6 +447,20 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             check(&c.label("the tab's url never reads red"), !urls.iter().any(|u| u.contains("ff0000")));
             check(&c.label("Back from blue ends on /"), back.focused_url() == c.at("/"));
             c.finish(&["load in place", "swap", "load in place"]);
+        }
+        "deep-back" => {
+            // The page steps back 21 entries to its first, which Servo discarded, so the Back refetches it; a url
+            // typed during that refetch.
+            let mut c = Case::start(ctx, name, view, "/deep?n=1")?;
+            let refetched = poll("the first page's refetch", WAIT, || c.hits("/deep?n=1") == 2).is_ok();
+            c.type_url("/p2")?;
+            let reached = c.reaches("/p2", 1);
+            c.then()?;
+            let end = c.until("end", |s| s.focused_url().ends_with("/p2"))?;
+            check(&c.label("the page's Back refetches its first entry"), refetched);
+            check(&c.label("a url typed during a page's Back refetch reaches the server"), reached);
+            check(&c.label("the tab ends focused on /p2"), end.focused_url().ends_with("/p2"));
+            c.finish(&["swap"]);
         }
         "spa-back" => {
             let mut c = Case::start(ctx, name, view, "/spa")?;
