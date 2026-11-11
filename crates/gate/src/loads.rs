@@ -31,6 +31,7 @@ const CASES: &[&str] = &[
     "forward",
     "back-pending",
     "back-back",
+    "double-slow",
     "spa-back",
     "back-page",
     "back-swap",
@@ -405,6 +406,46 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             let end = c.state("end")?;
             check(&c.label("two Backs over a typed pending load end on /"), end.focused_url() == c.at("/"));
             c.finish(&["load in place", "load in place", "load in place", "history swap", "load in place"]);
+        }
+        "double-slow" => {
+            // A typed red page that waits 4 s, then a typed blue one that waits 8 s: on Servo the second swaps, and
+            // the shown view's red load commits while the blue view is still pending.
+            let (red, blue) = ("/slow?c=ff0000", "/slow?s=8&c=0000ff");
+            let mut c = Case::start(ctx, name, view, "/")?;
+            c.then()?;
+            c.type_url(red)?;
+            c.requested(red)?;
+            c.type_url(blue)?;
+            c.requested(blue)?;
+            let t = Instant::now();
+            let mut red_seen = Vec::new();
+            let mut urls = Vec::new();
+            while t.elapsed() < Duration::from_secs(14) {
+                let shot = c.shot("t")?;
+                let (r, b) = (pixels(&shot, [255, 0, 0])?, pixels(&shot, [0, 0, 255])?);
+                let url = c.state("t")?.focused_url().rsplit('/').next().unwrap_or("").to_owned();
+                let s = t.elapsed().as_secs_f32();
+                println!("    {s:4.1} s: red {r} px, blue {b} px, url {url}");
+                if r > 10_000 {
+                    red_seen.push(s);
+                }
+                urls.push(url);
+            }
+            c.then()?;
+            c.send("GOBACK")?;
+            c.send("SLEEP 6")?;
+            c.then()?;
+            let back = c.state("back")?;
+            println!("    Back from blue: {}", back.focused_url());
+            if view == "servo" {
+                // PARKED limit 9: the shown view's red commit is painted until blue promotes.
+                check(&c.label("the red page shows while blue is pending"), !red_seen.is_empty());
+            } else {
+                check(&c.label("the red page never shows over the pending blue one"), red_seen.is_empty());
+            }
+            check(&c.label("the tab's url never reads red"), !urls.iter().any(|u| u.contains("ff0000")));
+            check(&c.label("Back from blue ends on /"), back.focused_url() == c.at("/"));
+            c.finish(&["load in place", "swap", "load in place"]);
         }
         "spa-back" => {
             let mut c = Case::start(ctx, name, view, "/spa")?;

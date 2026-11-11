@@ -153,9 +153,16 @@ impl Site {
                 "/animate" => response("200 OK", &[], "text/html", ANIMATE.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
                 // The loads stage's pages. `/slow` holds its headers back, so a second load lands while it is pending.
+                // `s` sets the wait (default 4 s), `c` makes it a full-window colour page.
                 "/slow" => {
-                    sleep(Duration::from_secs(4));
-                    response("200 OK", &[], "text/html", PAGE.as_bytes())
+                    sleep(Duration::from_secs(param("s").parse().unwrap_or(4)));
+                    let c = param("c");
+                    if c.is_empty() {
+                        response("200 OK", &[], "text/html", PAGE.as_bytes())
+                    } else {
+                        let page = format!("<!doctype html><body style='margin:0;height:100vh;background:#{c}'>");
+                        response("200 OK", &[], "text/html", page.as_bytes())
+                    }
                 }
                 // A full-window colour, or with `w` an N CSS px square of it at the top left, on white.
                 "/color" => {
