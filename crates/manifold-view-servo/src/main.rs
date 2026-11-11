@@ -12,13 +12,13 @@ use manifold_view_protocol::{
 use servo::{
     Code, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent, Location, Modifiers,
     MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext,
-    ServoBuilder, SoftwareRenderingContext, WebViewBuilder, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
+    ServoBuilder, SoftwareRenderingContext, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
 use url::Url;
 
 mod pages;
 mod views;
-use views::Delegate;
+use views::{Load, Views};
 use webrender_api::units::DevicePoint;
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -87,12 +87,6 @@ fn main() {
     // `RUST_LOG` (e.g. `servo_constellation=warn` shows a load the constellation drops).
     servo.setup_logging();
 
-    // Drained as late as possible before the view is built (see `take_start_url`); the rest is handled by the loop.
-    let (initial_url, early) = take_start_url(initial_url, rx.try_iter().collect());
-    let mut early = early.into_iter();
-
-    let delegate = Delegate::new(initial_url.clone());
-
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
     // Filled by the `QueryPageText` script callback, drained and sent each tick.
@@ -103,10 +97,7 @@ fn main() {
         eprintln!("initial url {initial_url:?} doesn't parse ({err}); opening about:blank");
         Url::parse("about:blank").expect("about:blank parses")
     });
-    let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
-        .url(start)
-        .delegate(delegate.clone())
-        .build();
+    let mut views = Views::new(&servo, &rendering_context, start, PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
 
     let mut sink = manifold_view_protocol::FrameSink::shared(&socket_id);
     let mut width = DEFAULT_WIDTH;
@@ -114,27 +105,20 @@ fn main() {
 
     loop {
         servo.spin_event_loop();
+        views.promote();
 
-        while let Some(msg) = early.next().or_else(|| rx.try_recv().ok()) {
+        while let Ok(msg) = rx.try_recv() {
+            // Handles to the shown view, so the arms below that change `views` can run beside them.
+            let (webview, delegate) = (views.shown().webview.clone(), views.shown().delegate.clone());
             match msg {
                 HostToView::Navigate { url, .. } => {
                     if let Ok(parsed) = Url::parse(&url) {
-                        webview.load(parsed);
+                        views.load(&servo, &rendering_context, Load::Url(parsed));
                     }
                 }
-                HostToView::GoBack => {
-                    if delegate.nav.borrow().can_go_back {
-                        webview.go_back(1);
-                    }
-                }
-                HostToView::GoForward => {
-                    if delegate.nav.borrow().can_go_forward {
-                        webview.go_forward(1);
-                    }
-                }
-                HostToView::Reload => {
-                    webview.reload();
-                }
+                HostToView::GoBack => views.traverse(&servo, &rendering_context, true),
+                HostToView::GoForward => views.traverse(&servo, &rendering_context, false),
+                HostToView::Reload => views.load(&servo, &rendering_context, Load::Reload),
                 HostToView::Resize { width: w, height: h, .. } => {
                     // A minimized window delivers a real 0x0 `inner_size()`
                     // on Windows — nothing to render either way, and a
@@ -149,7 +133,7 @@ fn main() {
                     // Only the webview: it resizes the rendering context itself, and Servo's painter skips its
                     // viewport update when the context already has the new size (resizing it here left the page
                     // laid out at the old width).
-                    webview.resize(PhysicalSize::new(w, h));
+                    views.resize(PhysicalSize::new(w, h));
                     // A static page paints nothing by itself after a resize, so the old frame would stay on screen
                     // stretched: force one paint at the new size (as `SetVisible` does).
                     *delegate.frame_ready.borrow_mut() = true;
@@ -164,7 +148,7 @@ fn main() {
                     // 100%, clamped internally to [0.1, 10.0]) — matches
                     // `factor`'s own semantics directly, no conversion
                     // needed (contrast CEF's log-scale zoom_level).
-                    webview.set_page_zoom(factor as f32);
+                    views.set_zoom(factor as f32);
                 }
                 HostToView::SetVisible(v) => {
                     // Resuming from background: force one repaint even if
@@ -228,6 +212,7 @@ fn main() {
             }
         }
 
+        let views::View { webview, delegate } = views.shown();
         // Servo's `NavigationRequest` carries only the url, so after the host's own first navigation
         // (`NavState::new`) `nav.label` stays at its default and every message says `user_started: None`.
         if let Some(m) = delegate.nav.borrow_mut().take_message() {
@@ -273,26 +258,6 @@ fn main() {
         // missed wake.
         wake.wait(Instant::now() + Duration::from_secs(60));
     }
-}
-
-/// Servo drops a load sent before a new view's first document commits (PARKED "Servo drops a load sent before the
-/// previous one commits", case (a)), so the newest `Navigate` that arrived while the host started (one whose url
-/// parses, as the loop requires) becomes the view's first load instead. Returns that url and the other early
-/// messages, in order.
-fn take_start_url(initial_url: String, early: Vec<HostToView>) -> (String, Vec<HostToView>) {
-    let mut start = initial_url;
-    let mut rest = Vec::new();
-    for msg in early {
-        match msg {
-            HostToView::Navigate { url, .. } => {
-                if Url::parse(&url).is_ok() {
-                    start = url;
-                }
-            }
-            other => rest.push(other),
-        }
-    }
-    (start, rest)
 }
 
 fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
@@ -435,26 +400,6 @@ fn translate_mouse_button(button: manifold_view_protocol::MouseButton) -> ServoM
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_newest_early_navigate_becomes_the_start_url() {
-        let early = vec![
-            HostToView::Navigate { url: "https://a.test/".into(), referrer: None },
-            HostToView::SetVisible(true),
-            HostToView::Navigate { url: "https://b.test/".into(), referrer: None },
-            HostToView::Navigate { url: "not a url".into(), referrer: None },
-        ];
-        let (start, rest) = take_start_url("https://initial.test/".into(), early);
-        assert_eq!(start, "https://b.test/");
-        assert!(matches!(rest[..], [HostToView::SetVisible(true)]), "{rest:?}");
-    }
-
-    #[test]
-    fn without_an_early_navigate_the_initial_url_stays() {
-        let (start, rest) = take_start_url("https://initial.test/".into(), vec![HostToView::Reload]);
-        assert_eq!(start, "https://initial.test/");
-        assert!(matches!(rest[..], [HostToView::Reload]), "{rest:?}");
-    }
 
     #[test]
     fn every_host_key_has_a_servo_code() {

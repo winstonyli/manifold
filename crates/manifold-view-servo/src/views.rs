@@ -1,9 +1,59 @@
+//! The host's Servo views. Servo drops a load sent to a view while another load may be pending there, and a Back
+//! there is overridden by that pending load, so such a load or Back goes to a new hidden view, which replaces the
+//! shown one once it commits. Otherwise it goes to the shown view, which keeps its history.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use dpi::PhysicalSize;
 use manifold_view_protocol::nav_state::NavState;
-use servo::{EmbedderControl, JSValue, WebView, WebViewDelegate};
+use servo::{
+    EmbedderControl, JSValue, NavigationRequest, RenderingContext, Servo, SoftwareRenderingContext, TraversalId,
+    WebView, WebViewBuilder, WebViewDelegate,
+};
 use url::Url;
+
+#[cfg(test)]
+mod tests;
+
+/// Whether a load or a traversal sent to a view now reaches it.
+#[derive(Default)]
+pub(crate) struct LoadState {
+    /// A load may be pending: set when the view is built, at each load the host sends and at each one the page asks
+    /// for (a link, a form, `location`, an iframe; Servo doesn't say which); cleared when a new document parses its
+    /// head.
+    maybe_pending: bool,
+    /// Traversals sent and not yet complete.
+    traversals: u32,
+}
+
+impl LoadState {
+    pub(crate) fn load_sent(&mut self) {
+        self.maybe_pending = true;
+    }
+
+    pub(crate) fn head_parsed(&mut self) {
+        self.maybe_pending = false;
+    }
+
+    pub(crate) fn traversal_started(&mut self) {
+        self.traversals += 1;
+    }
+
+    pub(crate) fn traversal_complete(&mut self) {
+        self.traversals = self.traversals.saturating_sub(1);
+    }
+
+    /// A load sent now is not dropped.
+    pub(crate) fn load_in_place(&self) -> bool {
+        !self.maybe_pending && self.traversals == 0
+    }
+
+    /// A traversal sent now is not overridden by a pending load.
+    pub(crate) fn history_in_place(&self) -> bool {
+        !self.maybe_pending
+    }
+}
 
 pub(crate) struct Delegate {
     pub(crate) frame_ready: RefCell<bool>,
@@ -28,6 +78,9 @@ pub(crate) struct Delegate {
     /// other branch of the same `document.contentType` check, `Rc`-wrapped
     /// for the same reason.
     pub(crate) redirect_content_type: Rc<RefCell<Option<String>>>,
+    pub(crate) load: RefCell<LoadState>,
+    /// The last `notify_history_changed`; the view has committed once it is non-empty.
+    pub(crate) entries: RefCell<(Vec<Url>, usize)>,
 }
 
 impl Delegate {
@@ -38,7 +91,151 @@ impl Delegate {
             context_menu_link: RefCell::new(None),
             json_body: Rc::new(RefCell::new(None)),
             redirect_content_type: Rc::new(RefCell::new(None)),
+            load: RefCell::new(LoadState::default()),
+            entries: RefCell::new((Vec::new(), 0)),
         })
+    }
+}
+
+/// One Servo `WebView` and its delegate. Dropping it closes the view in Servo.
+pub(crate) struct View {
+    pub webview: WebView,
+    pub delegate: Rc<Delegate>,
+}
+
+impl View {
+    /// A shown view loading `url`, its load marked sent; a caller that wants it pending calls `hide()`.
+    pub(crate) fn build(
+        servo: &Servo,
+        ctx: &Rc<SoftwareRenderingContext>,
+        url: Url,
+        size: PhysicalSize<u32>,
+        zoom: f32,
+    ) -> View {
+        let delegate = Delegate::new(url.to_string());
+        delegate.load.borrow_mut().load_sent();
+        let webview = WebViewBuilder::new(servo, ctx.clone() as Rc<dyn RenderingContext>)
+            .url(url)
+            .delegate(delegate.clone())
+            .build();
+        webview.resize(size);
+        webview.set_page_zoom(zoom);
+        View { webview, delegate }
+    }
+
+    /// The page the view is on: its current entry (which moves when a traversal starts), else before the first
+    /// commit the url it was built at.
+    fn current_url(&self) -> Option<Url> {
+        let entries = self.delegate.entries.borrow();
+        entries
+            .0
+            .get(entries.1)
+            .cloned()
+            .or_else(|| self.webview.url())
+            .or_else(|| Url::parse(&self.delegate.nav.borrow().url).ok())
+    }
+}
+
+pub(crate) enum Load {
+    Url(Url),
+    Reload,
+}
+
+/// The shown view and, while a swap is under way, the hidden view that will replace it.
+pub(crate) struct Views {
+    shown: View,
+    pending: Option<View>,
+    size: PhysicalSize<u32>,
+}
+
+impl Views {
+    pub(crate) fn new(servo: &Servo, ctx: &Rc<SoftwareRenderingContext>, url: Url, size: PhysicalSize<u32>) -> Views {
+        Views { shown: View::build(servo, ctx, url, size, 1.0), pending: None, size }
+    }
+
+    pub(crate) fn shown(&self) -> &View {
+        &self.shown
+    }
+
+    /// A Reload targets the page the user sees, so with a pending view it reloads that page, not the pending one.
+    pub(crate) fn load(&mut self, servo: &Servo, ctx: &Rc<SoftwareRenderingContext>, load: Load) {
+        if self.pending.is_none() && self.shown.delegate.load.borrow().load_in_place() {
+            eprintln!("[views] load in place");
+            self.shown.delegate.load.borrow_mut().load_sent();
+            match load {
+                Load::Url(url) => self.shown.webview.load(url),
+                Load::Reload => self.shown.webview.reload(),
+            }
+            return;
+        }
+        let target = match load {
+            Load::Url(url) => url,
+            Load::Reload => match self.shown.current_url() {
+                Some(url) => url,
+                None => return,
+            },
+        };
+        eprintln!("[views] swap to {target}");
+        self.pending = Some(self.build_pending(servo, ctx, target));
+    }
+
+    /// In place, with no entry lookup: Servo completes an out-of-range traversal at once, so the count can't stick.
+    pub(crate) fn traverse(&mut self, servo: &Servo, ctx: &Rc<SoftwareRenderingContext>, back: bool) {
+        if self.shown.delegate.load.borrow().history_in_place() {
+            eprintln!("[views] history in place");
+            self.pending = None;
+            self.shown.delegate.load.borrow_mut().traversal_started();
+            if back {
+                self.shown.webview.go_back(1);
+            } else {
+                self.shown.webview.go_forward(1);
+            }
+            return;
+        }
+        let (entries, current) = self.shown.delegate.entries.borrow().clone();
+        let target = if back { current.checked_sub(1) } else { current.checked_add(1) };
+        let Some(url) = target.and_then(|i| entries.get(i).cloned()) else { return };
+        eprintln!("[views] history swap to {url}");
+        self.pending = Some(self.build_pending(servo, ctx, url));
+    }
+
+    pub(crate) fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.size = size;
+        self.shown.webview.resize(size);
+        if let Some(p) = &self.pending {
+            p.webview.resize(size);
+        }
+    }
+
+    pub(crate) fn set_zoom(&self, factor: f32) {
+        self.shown.webview.set_page_zoom(factor);
+        if let Some(p) = &self.pending {
+            p.webview.set_page_zoom(factor);
+        }
+    }
+
+    /// Once the pending view has committed it replaces the shown one, which is dropped. Never marked loading
+    /// before: Servo says nothing of a pending view whose load ends in a 204, so the tab would stay loading.
+    pub(crate) fn promote(&mut self) -> bool {
+        if !self.pending.as_ref().is_some_and(|p| !p.delegate.entries.borrow().0.is_empty()) {
+            return false;
+        }
+        let next = self.pending.take().expect("checked");
+        eprintln!("[views] promoted");
+        next.webview.show();
+        self.shown.webview.hide();
+        *next.delegate.frame_ready.borrow_mut() = true;
+        next.delegate.nav.borrow_mut().dirty = true;
+        self.shown = next;
+        true
+    }
+
+    /// Replaces any older pending view: dropping it closes its load.
+    fn build_pending(&mut self, servo: &Servo, ctx: &Rc<SoftwareRenderingContext>, url: Url) -> View {
+        self.pending = None;
+        let view = View::build(servo, ctx, url, self.size, self.shown.webview.page_zoom());
+        view.webview.hide();
+        view
     }
 }
 
@@ -80,6 +277,9 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: servo::LoadStatus) {
+        if matches!(status, servo::LoadStatus::HeadParsed) {
+            self.load.borrow_mut().head_parsed();
+        }
         let complete = matches!(status, servo::LoadStatus::Complete | servo::LoadStatus::Stopped);
         let mut nav = self.nav.borrow_mut();
         nav.loading = !complete;
@@ -110,10 +310,20 @@ impl WebViewDelegate for Delegate {
         }
     }
 
+    /// The request is left to drop, which allows it.
+    fn request_navigation(&self, _webview: WebView, _request: NavigationRequest) {
+        self.load.borrow_mut().load_sent();
+    }
+
+    fn notify_traversal_complete(&self, _webview: WebView, _id: TraversalId) {
+        self.load.borrow_mut().traversal_complete();
+    }
+
     fn notify_history_changed(&self, _webview: WebView, entries: Vec<Url>, current: usize) {
         let mut nav = self.nav.borrow_mut();
         nav.can_go_back = current > 0;
         nav.can_go_forward = current + 1 < entries.len();
         nav.dirty = true;
+        *self.entries.borrow_mut() = (entries, current);
     }
 }
