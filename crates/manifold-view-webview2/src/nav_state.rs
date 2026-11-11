@@ -58,6 +58,7 @@ pub fn register_handlers(
     redirect_content_type: SharedRedirectContentType,
 ) -> Rc<Cell<bool>> {
     let mut token = Default::default();
+    let committed = Rc::new(Cell::new(false));
 
     {
         let state = state.clone();
@@ -91,11 +92,14 @@ pub fn register_handlers(
         let webview_for_json = webview.clone();
         let json_body = json_body.clone();
         let redirect_content_type = redirect_content_type.clone();
+        let committed = committed.clone();
         let handler = NavigationCompletedEventHandler::create(Box::new(move |sender, _args| {
             let mut s = state.borrow_mut();
             s.loading = false;
             s.label.finished = true;
-            if let Some(sender) = &sender {
+            // Before any document commits, `Source` is the engine's own `about:blank`, no page: a first load that
+            // never commits (a 204, or one the next load cancels, as a woken tab's Back does) leaves the url requested.
+            if let Some(sender) = sender.as_ref().filter(|_| committed.get()) {
                 let mut uri = PWSTR::null();
                 if unsafe { sender.Source(&mut uri) }.is_ok() {
                     s.url = take_pwstr(uri);
@@ -177,7 +181,6 @@ pub fn register_handlers(
         }
     }
 
-    let committed = Rc::new(Cell::new(false));
     {
         // A new document committing, or a same-document url change (`history.pushState`/`replaceState`, a new
         // `#fragment`), which starts no navigation, so only this reports it.
