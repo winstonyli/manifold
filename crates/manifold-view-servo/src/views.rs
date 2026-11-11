@@ -237,9 +237,9 @@ impl Views {
 
     /// Once the pending view has committed it replaces the shown one, which is dropped. Never marked loading
     /// before: Servo says nothing of a pending view whose load ends in a 204, so the tab would stay loading.
-    pub(crate) fn promote(&mut self) -> bool {
+    pub(crate) fn promote(&mut self) {
         if !self.pending.as_ref().is_some_and(|p| !p.delegate.entries.borrow().0.is_empty()) {
-            return false;
+            return;
         }
         let next = self.pending.take().expect("checked");
         eprintln!("[views] promoted");
@@ -248,7 +248,6 @@ impl Views {
         *next.delegate.frame_ready.borrow_mut() = true;
         next.delegate.nav.borrow_mut().dirty = true;
         self.shown = next;
-        true
     }
 
     /// Replaces any older pending view: dropping it closes its load.
