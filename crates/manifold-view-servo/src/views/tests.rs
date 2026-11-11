@@ -9,11 +9,40 @@ fn a_sent_load_is_not_in_place() {
 }
 
 #[test]
-fn head_parsed_clears_a_load() {
+fn a_parsed_head_and_a_history_change_clear_a_load_in_either_order() {
     let mut s = LoadState::default();
     s.load_sent();
     s.head_parsed();
+    s.history_changed();
     assert!(s.load_in_place() && s.history_in_place());
+    s.load_sent();
+    s.history_changed();
+    s.head_parsed();
+    assert!(s.load_in_place() && s.history_in_place());
+}
+
+/// The old document sends `HeadParsed` when a script binds a new body, and a history change at `pushState`: neither
+/// alone shows the new document arrived.
+#[test]
+fn either_signal_alone_keeps_a_load_pending() {
+    let mut s = LoadState::default();
+    s.load_sent();
+    s.head_parsed();
+    assert!(!s.load_in_place());
+    let mut s = LoadState::default();
+    s.load_sent();
+    s.history_changed();
+    assert!(!s.load_in_place());
+}
+
+#[test]
+fn a_new_load_forgets_the_signals_before_it() {
+    let mut s = LoadState::default();
+    s.load_sent();
+    s.head_parsed();
+    s.load_sent();
+    s.history_changed();
+    assert!(!s.load_in_place());
 }
 
 #[test]

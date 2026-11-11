@@ -183,6 +183,22 @@ impl Site {
                         "<!doctype html><body>go<script>setTimeout(() => { location.href = '/slow'; }, 1000)</script>";
                     response("200 OK", &[], "text/html", page.as_bytes())
                 }
+                // The page binds a new body once `/slow` has been requested, so the old document sends `HeadParsed` while
+                // that load is pending (once: libservo passes on a load status only when it changes).
+                "/swap" => {
+                    let page = "<!doctype html><body>swap<script>let done = false; \
+                                const t = setInterval(async () => { \
+                                if (done || await (await fetch('/armed')).text() !== '1') return; \
+                                done = true; clearInterval(t); const b = document.createElement('body'); \
+                                b.textContent = 'swapped'; document.documentElement.replaceChild(b, document.body); \
+                                fetch('/swapped'); }, 100)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                "/armed" => {
+                    let armed = seen.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|t| t == "/slow");
+                    response("200 OK", &[], "text/plain", if armed { b"1" } else { b"0" })
+                }
+                "/swapped" => response("204 No Content", &[], "text/plain", b""),
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;

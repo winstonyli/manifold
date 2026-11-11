@@ -19,21 +19,42 @@ mod tests;
 /// Whether a load or a traversal sent to a view now reaches it.
 #[derive(Default)]
 pub(crate) struct LoadState {
-    /// A load may be pending: set when the view is built, at each load the host sends and at each one the page asks
-    /// for (a link, a form, `location`, an iframe; Servo doesn't say which); cleared when a new document parses its
-    /// head.
-    maybe_pending: bool,
+    /// A load may be pending, and which of its arrival's two signals have come since: set when the view is built, at
+    /// each load the host sends and at each one the page asks for (a link, a form, `location`, an iframe; Servo
+    /// doesn't say which); cleared once a document has parsed its head and the history has changed, in either order.
+    /// Neither alone: the old document sends `HeadParsed` whenever a script binds a new body, and a history change at
+    /// `pushState`.
+    maybe_pending: Option<Arrival>,
     /// Traversals sent and not yet complete.
     traversals: u32,
 }
 
+#[derive(Clone, Copy, Default)]
+struct Arrival {
+    head_parsed: bool,
+    history_changed: bool,
+}
+
 impl LoadState {
     pub(crate) fn load_sent(&mut self) {
-        self.maybe_pending = true;
+        self.maybe_pending = Some(Arrival::default());
     }
 
     pub(crate) fn head_parsed(&mut self) {
-        self.maybe_pending = false;
+        self.arrive(|a| a.head_parsed = true);
+    }
+
+    pub(crate) fn history_changed(&mut self) {
+        self.arrive(|a| a.history_changed = true);
+    }
+
+    fn arrive(&mut self, signal: impl FnOnce(&mut Arrival)) {
+        if let Some(a) = self.maybe_pending.as_mut() {
+            signal(a);
+            if a.head_parsed && a.history_changed {
+                self.maybe_pending = None;
+            }
+        }
     }
 
     pub(crate) fn traversal_started(&mut self) {
@@ -46,12 +67,12 @@ impl LoadState {
 
     /// A load sent now is not dropped.
     pub(crate) fn load_in_place(&self) -> bool {
-        !self.maybe_pending && self.traversals == 0
+        self.maybe_pending.is_none() && self.traversals == 0
     }
 
     /// A traversal sent now is not overridden by a pending load.
     pub(crate) fn history_in_place(&self) -> bool {
-        !self.maybe_pending
+        self.maybe_pending.is_none()
     }
 }
 
@@ -325,5 +346,6 @@ impl WebViewDelegate for Delegate {
         nav.can_go_forward = current + 1 < entries.len();
         nav.dirty = true;
         *self.entries.borrow_mut() = (entries, current);
+        self.load.borrow_mut().history_changed();
     }
 }

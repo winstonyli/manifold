@@ -21,6 +21,7 @@ use crate::windows_main::Ctx;
 const CASES: &[&str] = &[
     "dead204",
     "double",
+    "body-swap",
     "live204",
     "reload",
     "reload-early",
@@ -213,6 +214,25 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             // Past /slow's headers and any trail revert the app makes on a dropped move.
             let end = c.until("end", |s| s.focused_url().ends_with("/p2"))?;
             check(&c.label("a url typed over a pending load reaches the server"), reached);
+            check(&c.label("the tab ends focused on /p2"), end.focused_url().ends_with("/p2"));
+            c.finish(&["load in place", "swap"]);
+        }
+        "body-swap" => {
+            let mut c = Case::start(ctx, name, view, "/swap")?;
+            c.then()?;
+            c.type_url("/slow")?;
+            c.requested("/slow")?;
+            // The page's body swap, while /slow holds its headers back.
+            c.requested("/swapped")?;
+            c.send("SLEEP 0.3")?;
+            c.type_url("/p2")?;
+            let reached = c.reaches("/p2", 1);
+            c.then()?;
+            let end = c.until("end", |s| s.focused_url().ends_with("/p2"))?;
+            check(
+                &c.label("a url typed over a pending load reaches the server while the page swaps its body"),
+                reached,
+            );
             check(&c.label("the tab ends focused on /p2"), end.focused_url().ends_with("/p2"));
             c.finish(&["load in place", "swap"]);
         }
