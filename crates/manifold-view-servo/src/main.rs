@@ -102,7 +102,7 @@ impl WebViewDelegate for Delegate {
     }
 
     fn notify_load_status_changed(&self, webview: WebView, status: servo::LoadStatus) {
-        let complete = matches!(status, servo::LoadStatus::Complete);
+        let complete = matches!(status, servo::LoadStatus::Complete | servo::LoadStatus::Stopped);
         let mut nav = self.nav.borrow_mut();
         nav.loading = !complete;
         nav.dirty = true;
@@ -315,7 +315,7 @@ fn main() {
                 HostToView::RestoreScroll { x, y } => {
                     webview.evaluate_javascript(manifold_view_protocol::restore_scroll_script(x, y), |_| {});
                 }
-                // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
+                // Servo's embedding API (`WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see
                 // `manifold_view_protocol::ViewToHost::OpenTabRequested`'s doc
@@ -532,14 +532,10 @@ fn webview_point(x: f64, y: f64) -> WebViewPoint {
 }
 
 fn translate_mouse_button(button: manifold_view_protocol::MouseButton) -> ServoMouseButton {
-    // Our pinned `servo = "0.5.0"` still uses Left/Middle/Right; the
-    // W3C-aligned Primary/Auxiliary/Secondary rename (visible on
-    // doc.servo.org, which tracks the `main` branch) hasn't been published
-    // to crates.io yet.
     match button {
-        manifold_view_protocol::MouseButton::Left => ServoMouseButton::Left,
-        manifold_view_protocol::MouseButton::Middle => ServoMouseButton::Middle,
-        manifold_view_protocol::MouseButton::Right => ServoMouseButton::Right,
+        manifold_view_protocol::MouseButton::Left => ServoMouseButton::Primary,
+        manifold_view_protocol::MouseButton::Middle => ServoMouseButton::Auxiliary,
+        manifold_view_protocol::MouseButton::Right => ServoMouseButton::Secondary,
     }
 }
 
