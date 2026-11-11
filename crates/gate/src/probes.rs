@@ -84,8 +84,8 @@ addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => f
 
 /// The local site: `/` reports keydowns (`/k`), `/plane` scroll positions (`/w`), `/tall` vertical scrolls (`/s`),
 /// `/text` a fixed page for the page-text probe (and a still page for `hostrate`), `/animate` a page that changes every
-/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types; `/slow`, `/color`, `/hop`
-/// and `/go` are the `loads` stage's. Everything the page reports lands in `lines`.
+/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types; `/slow`, `/color`, `/hop`,
+/// `/go`, `/swap` (with `/armed`, `/swapped`), `/spa` (with `/fetched`) and `/deep` are the `loads` stage's. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,

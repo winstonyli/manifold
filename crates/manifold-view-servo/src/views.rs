@@ -20,9 +20,9 @@ mod tests;
 #[derive(Default)]
 pub(crate) struct LoadState {
     /// A load may be pending, and which of its arrival's two signals have come since: set when the view is built, at
-    /// each load the host sends, at each one the page asks for (a link, a form, `location`, an iframe; Servo
-    /// doesn't say which) and at each document fetch (a page's own Back to a discarded entry asks for none); cleared once a document has parsed its head and the history has changed, in either order.
-    /// Neither alone: the old document sends `HeadParsed` whenever a script binds a new body, and a history change at
+    /// each load the host sends, at each one the page asks for (a link, a form, `location`, an iframe; Servo doesn't
+    /// say which) and at each document fetch (a page's own Back to a discarded entry asks for none); cleared once a
+    /// document has parsed its head and the history has changed, in either order. Neither alone: the old document sends `HeadParsed` whenever a script binds a new body, and a history change at
     /// `pushState`.
     maybe_pending: Option<Arrival>,
     /// Traversals sent and not yet complete.
