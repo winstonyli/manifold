@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Servo 0.8 and the hybrid load path: implementation plan
