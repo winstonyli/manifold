@@ -123,8 +123,8 @@ middle of the trail stay reachable as branches. Nothing creates a card unless th
       never reaches it).
    4b. **inferred move** (runs after steps 3 and 4, so also after a stale-move or mismatch drop; page script called
       `history.back()` or `forward()`). Engines report the URL before their `can_go_*` flags settle (WebView2's
-      NavigationStarting reports the new URL with the old position's flags, `nav_state.rs:122-146`; CEF and Servo get URL
-      and flags from separate callbacks), so the flags on a `loading` report cannot be trusted. Inference never decides on
+      SourceChanged reports a committed document's URL before HistoryChanged updates the flags,
+      `manifold-view-webview2/src/nav_state.rs`; CEF and Servo get URL and flags from separate callbacks), so the flags on a `loading` report cannot be trusted. Inference never decides on
       a `loading` report. Nothing is stored between reports: each report's candidate is recomputed from `at`, `lin` and
       `fwd` (`NavHistory::inferred`). Candidates: Back: `parent(at)` is `Some(p)`, `lin_at > 0`,
       `lin[lin_at - 1] == Some(p)` and `entries[p].url` equals the report's URL. Forward: `fwd(at)` is `Some(f)`,

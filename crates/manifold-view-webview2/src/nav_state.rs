@@ -4,6 +4,8 @@
 //! cell and setting `dirty`, coalesced into one `NavigationStateChanged` message per tick by `main.rs`'s loop
 //! (`NavState::take_message`) rather than one message per event.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use manifold_view_protocol::nav_state::{SharedJsonBody, SharedNavState, SharedRedirectContentType};
@@ -43,7 +45,8 @@ fn is_new_document(args: &ICoreWebView2SourceChangedEventArgs) -> bool {
     value.as_bool()
 }
 
-/// Registers all five nav-state event handlers on `webview`. Each handler
+/// Registers all five nav-state event handlers on `webview`, and returns whether a document has committed since (the
+/// engine starts on an uncommitted `about:blank`, see the `Reload` arm in `main.rs`). Each handler
 /// closure is leaked into the event-registration token via `add_*` and
 /// never explicitly removed -- matches this project's other view hosts,
 /// which live exactly as long as the process and never unregister handlers
@@ -53,21 +56,15 @@ pub fn register_handlers(
     state: SharedNavState,
     json_body: SharedJsonBody,
     redirect_content_type: SharedRedirectContentType,
-) {
+) -> Rc<Cell<bool>> {
     let mut token = Default::default();
 
     {
         let state = state.clone();
         let webview_for_query = webview.clone();
+        // Not the target url: the url stays the shown page's until a document commits (`SourceChanged`), so a load that
+        // never commits (a 204, a download, one cancelled by the next) never reports a page the tab did not reach.
         let handler = NavigationStartingEventHandler::create(Box::new(move |_sender, args| {
-            let url = args
-                .as_ref()
-                .and_then(|a| {
-                    let mut uri = PWSTR::null();
-                    unsafe { a.Uri(&mut uri) }.ok()?;
-                    Some(take_pwstr(uri))
-                })
-                .unwrap_or_default();
             let redirected = args.as_ref().is_some_and(is_redirected);
             let mut s = state.borrow_mut();
             // A redirect continues the navigation it came from, and keeps
@@ -77,7 +74,6 @@ pub fn register_handlers(
             if !(redirected && s.label.under_way()) {
                 s.label.label_new(None, Instant::now());
             }
-            s.url = url;
             s.loading = true;
             s.can_go_back = can_go_back(&webview_for_query);
             s.can_go_forward = can_go_forward(&webview_for_query);
@@ -181,24 +177,24 @@ pub fn register_handlers(
         }
     }
 
+    let committed = Rc::new(Cell::new(false));
     {
-        // A same-document url change (`history.pushState`/`replaceState`,
-        // a new `#fragment`) starts no navigation, so only this reports it.
+        // A new document committing, or a same-document url change (`history.pushState`/`replaceState`, a new
+        // `#fragment`), which starts no navigation, so only this reports it.
         let state = state.clone();
+        let committed = committed.clone();
         let handler = SourceChangedEventHandler::create(Box::new(move |sender, args| {
-            if args.as_ref().is_none_or(is_new_document) {
-                return Ok(()); // `NavigationStarting`/`NavigationCompleted` report it
-            }
             let Some(sender) = &sender else { return Ok(()) };
             let mut uri = PWSTR::null();
             if unsafe { sender.Source(&mut uri) }.is_err() {
                 return Ok(());
             }
             let mut s = state.borrow_mut();
-            // During a load it is part of that navigation (a router
-            // rewriting the url as the page starts); otherwise it is a
-            // navigation of its own, already complete.
-            if !s.label.under_way() {
+            if args.as_ref().is_none_or(is_new_document) {
+                committed.set(true);
+            } else if !s.label.under_way() {
+                // During a load it is part of that navigation (a router rewriting the url as the page starts);
+                // otherwise it is a navigation of its own, already complete.
                 s.label.label_new(None, Instant::now());
                 s.label.finished = true;
             }
@@ -210,4 +206,5 @@ pub fn register_handlers(
             let _ = webview.add_SourceChanged(&handler, &mut token);
         }
     }
+    committed
 }
