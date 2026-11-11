@@ -84,7 +84,8 @@ addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => f
 
 /// The local site: `/` reports keydowns (`/k`), `/plane` scroll positions (`/w`), `/tall` vertical scrolls (`/s`),
 /// `/text` a fixed page for the page-text probe (and a still page for `hostrate`), `/animate` a page that changes every
-/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
+/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types; `/slow`, `/color`, `/hop`
+/// and `/go` are the `loads` stage's. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
@@ -151,6 +152,37 @@ impl Site {
                 "/text" => response("200 OK", &[], "text/html", TEXT.as_bytes()),
                 "/animate" => response("200 OK", &[], "text/html", ANIMATE.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
+                // The loads stage's pages. `/slow` holds its headers back, so a second load lands while it is pending.
+                "/slow" => {
+                    sleep(Duration::from_secs(4));
+                    response("200 OK", &[], "text/html", PAGE.as_bytes())
+                }
+                // A full-window colour, or with `w` an N CSS px square of it at the top left, on white.
+                "/color" => {
+                    let (c, w) = (param("c"), param("w"));
+                    let page = if w.is_empty() {
+                        format!("<!doctype html><body style='margin:0;height:100vh;background:#{c}'>")
+                    } else {
+                        format!(
+                            "<!doctype html><body style='margin:0;background:#fff'>\
+                             <div style='width:{w}px;height:{w}px;background:#{c}'></div>"
+                        )
+                    };
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                // An iframe that navigates itself a second after load.
+                "/hop" => {
+                    let page = "<!doctype html><body><iframe src='/color?c=00ff00'></iframe><script>\
+                                setTimeout(() => { document.querySelector('iframe').contentWindow.location.href = \
+                                '/color?c=ff00ff'; }, 1000)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                // The page itself starts a slow top-level load a second after load.
+                "/go" => {
+                    let page =
+                        "<!doctype html><body>go<script>setTimeout(() => { location.href = '/slow'; }, 1000)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;

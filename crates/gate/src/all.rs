@@ -249,6 +249,8 @@ const STEPS: &[Step] = &[
         engine: Some("servo"),
         ..step("sleep-servo", Mode::Ui)
     },
+    Step { stage: "loads", env: &[("VIEWS", "webview2")], ..step("loads", Mode::Light) },
+    Step { stage: "loads", env: &[("VIEWS", "servo")], engine: Some("servo"), ..step("loads-servo", Mode::Ui) },
     step("layout", Mode::Ui),
     step("kill-check", Mode::Full),
     Step { stage: "kill-check", env: &[("VIEWS", "cef")], engine: Some("cef"), ..step("kill-check-cef", Mode::Full) },
@@ -474,6 +476,7 @@ mod tests {
                 "sleep-webkit",
                 "trail-servo",
                 "sleep-servo",
+                "loads-servo",
                 "layout"
             ]
         );
