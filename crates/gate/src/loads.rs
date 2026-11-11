@@ -30,6 +30,7 @@ const CASES: &[&str] = &[
     "back-type",
     "forward",
     "back-pending",
+    "back-back",
     "back-page",
     "back-swap",
     "zoom-swap",
@@ -383,6 +384,26 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             let end = c.state("end")?;
             check(&c.label("a Back over a typed pending load ends on /"), end.focused_url() == c.at("/"));
             c.finish(&["load in place", "load in place", "history swap"]);
+        }
+        "back-back" => {
+            let mut c = Case::start(ctx, name, view, "/")?;
+            c.then()?;
+            for p in ["/p2", "/p3"] {
+                c.type_url(p)?;
+                c.requested(p)?;
+                c.then()?;
+            }
+            c.type_url("/slow")?;
+            c.requested("/slow")?;
+            // Two Backs at once. The app holds the second until the first arrives, so on Servo it comes after the
+            // swapped-in view is shown, which has no entry behind it, and the app sends it as a load.
+            c.send("GOBACK")?;
+            c.send("GOBACK")?;
+            c.send("SLEEP 8")?;
+            c.then()?;
+            let end = c.state("end")?;
+            check(&c.label("two Backs over a typed pending load end on /"), end.focused_url() == c.at("/"));
+            c.finish(&["load in place", "load in place", "load in place", "history swap", "load in place"]);
         }
         "back-page" => {
             let mut c = Case::start(ctx, name, view, "/")?;
