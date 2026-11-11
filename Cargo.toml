@@ -56,8 +56,8 @@ foldhash = "0.2"
 getrandom = "0.3"
 gtk = "0.18"
 # Name rules (names.rs): general categories and Extended_Pictographic for the hidden characters and emoji
-# sequences (already built for url's idna), grapheme clusters for the 64 cap.
-icu_properties = "2.3.0"
+# sequences (already built for url's idna), grapheme clusters for the 64 cap. 2.1, because Servo 0.8's mozjs pins icu 2.1.
+icu_properties = "2.1.1"
 # PNG decoding only by default; crates/manifold adds the other codecs.
 image = { version = "0.25", default-features = false, features = ["png"] }
 interprocess = "2.4.4"
@@ -91,7 +91,7 @@ rfd = "0.15"
 rustls = { version = "0.23.44", default-features = false }
 serde = "1.0.229" # crates/manifold had "1"; both resolve to the same locked version
 serde_json = "1"
-servo = "0.5.0"
+servo = "0.8.0"
 sha1 = "0.10.7"
 sha2 = "0.10.9"
 # Reads the monospace font's character map in names::tests (already in Cargo.lock through epaint). Exact, because

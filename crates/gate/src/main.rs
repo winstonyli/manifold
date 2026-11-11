@@ -42,6 +42,8 @@ mod layout;
 mod limits;
 #[cfg(windows)]
 mod link;
+#[cfg(windows)]
+mod loads;
 mod nonce;
 #[cfg(windows)]
 mod package;
@@ -153,6 +155,7 @@ mod windows_main {
         Stage::work("unknown-type", crate::unknown_type::unknown_type),
         Stage::work("closed", crate::closed::closed),
         Stage::work("trail", crate::trail::trail),
+        Stage::work("loads", crate::loads::loads),
         Stage::work("unresponsive", crate::stress::unresponsive),
         Stage::work("focus-loss", crate::focus::focus_loss).listed_as(""),
         Stage::work("bad-url", crate::probes::bad_url),

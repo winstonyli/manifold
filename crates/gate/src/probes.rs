@@ -84,7 +84,8 @@ addEventListener('scroll', () => {\n  clearTimeout(t);\n  t = setTimeout(() => f
 
 /// The local site: `/` reports keydowns (`/k`), `/plane` scroll positions (`/w`), `/tall` vertical scrolls (`/s`),
 /// `/text` a fixed page for the page-text probe (and a still page for `hostrate`), `/animate` a page that changes every
-/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types. Everything the page reports lands in `lines`.
+/// frame for `hostrate`, `/data.json` and `/pixel.png` answer with their real content types; `/slow`, `/color`, `/hop`,
+/// `/go`, `/swap` (with `/armed`, `/swapped`), `/spa` (with `/fetched`) and `/deep` are the `loads` stage's. Everything the page reports lands in `lines`.
 pub(crate) struct Site {
     server: http::Server,
     lines: Arc<Mutex<Vec<String>>>,
@@ -151,6 +152,90 @@ impl Site {
                 "/text" => response("200 OK", &[], "text/html", TEXT.as_bytes()),
                 "/animate" => response("200 OK", &[], "text/html", ANIMATE.as_bytes()),
                 "/tall" => response("200 OK", &[], "text/html", TALL.as_bytes()),
+                // The loads stage's pages. `/slow` holds its headers back, so a second load lands while it is pending.
+                // `s` sets the wait (default 4 s), `c` makes it a full-window colour page.
+                "/slow" => {
+                    sleep(Duration::from_secs(param("s").parse().unwrap_or(4)));
+                    let c = param("c");
+                    if c.is_empty() {
+                        response("200 OK", &[], "text/html", PAGE.as_bytes())
+                    } else {
+                        let page = format!("<!doctype html><body style='margin:0;height:100vh;background:#{c}'>");
+                        response("200 OK", &[], "text/html", page.as_bytes())
+                    }
+                }
+                // A full-window colour, or with `w` an N CSS px square of it at the top left, on white.
+                "/color" => {
+                    let (c, w) = (param("c"), param("w"));
+                    let page = if w.is_empty() {
+                        format!("<!doctype html><body style='margin:0;height:100vh;background:#{c}'>")
+                    } else {
+                        format!(
+                            "<!doctype html><body style='margin:0;background:#fff'>\
+                             <div style='width:{w}px;height:{w}px;background:#{c}'></div>"
+                        )
+                    };
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                // An iframe that navigates itself a second after load.
+                "/hop" => {
+                    let page = "<!doctype html><body><iframe src='/color?c=00ff00'></iframe><script>\
+                                setTimeout(() => { document.querySelector('iframe').contentWindow.location.href = \
+                                '/color?c=ff00ff'; }, 1000)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                // The page itself starts a slow top-level load a second after load.
+                "/go" => {
+                    let page =
+                        "<!doctype html><body>go<script>setTimeout(() => { location.href = '/slow'; }, 1000)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                // The page binds a new body once `/slow` has been requested, so the old document sends `HeadParsed` while
+                // that load is pending (once: libservo passes on a load status only when it changes).
+                "/swap" => {
+                    let page = "<!doctype html><body>swap<script>let done = false; \
+                                const t = setInterval(async () => { \
+                                if (done || await (await fetch('/armed')).text() !== '1') return; \
+                                done = true; clearInterval(t); const b = document.createElement('body'); \
+                                b.textContent = 'swapped'; document.documentElement.replaceChild(b, document.body); \
+                                fetch('/swapped'); }, 100)</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                "/armed" => {
+                    let armed = seen.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|t| t == "/slow");
+                    response("200 OK", &[], "text/plain", if armed { b"1" } else { b"0" })
+                }
+                "/swapped" => response("204 No Content", &[], "text/plain", b""),
+                // A page that, a second after load (a pushState during the load reads as a redirect), pushes an
+                // entry and then fetches `/slow`, reporting the reply at `/fetched`.
+                "/spa" => {
+                    let page = "<!doctype html><body>spa<script>onload = () => setTimeout(() => { \
+                                history.pushState({}, '', '/spa2'); \
+                                fetch('/slow').then(() => fetch('/fetched')); }, 1000);</script>";
+                    response("200 OK", &[], "text/html", page.as_bytes())
+                }
+                "/fetched" => response("204 No Content", &[], "text/plain", b""),
+                // A chain of pages, each loading the next a moment after load, whose last steps back to the first:
+                // past Servo's 20 kept entries, so that entry was discarded and the Back refetches it. That refetch
+                // waits 4 s. `no-store` keeps WebView2 from serving the Back from its caches.
+                "/deep" => {
+                    const LAST: u32 = 22;
+                    let again =
+                        seen.lock().unwrap_or_else(PoisonError::into_inner).iter().filter(|t| *t == target).count();
+                    let n: u32 = param("n").parse().unwrap_or(1);
+                    let script = if again > 1 {
+                        sleep(Duration::from_secs(4));
+                        String::new()
+                    } else if n < LAST {
+                        format!("location.href = '/deep?n={}'", n + 1)
+                    } else {
+                        format!("history.go(-{})", LAST - 1)
+                    };
+                    let page = format!(
+                        "<!doctype html><body>deep {n}<script>onload = () => setTimeout(() => {{ {script} }}, 100);</script>"
+                    );
+                    response("200 OK", &[("Cache-Control", "no-store")], "text/html", page.as_bytes())
+                }
                 _ => response("200 OK", &[], "text/html", PAGE.as_bytes()),
             }
         }))?;

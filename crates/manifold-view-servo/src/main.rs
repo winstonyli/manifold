@@ -4,21 +4,21 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
-use manifold_view_protocol::nav_state::NavState;
 use manifold_view_protocol::wake::WakeEvent;
 use manifold_view_protocol::{
     modifiers as host_modifiers, HostToView, InputEvent as HostInputEvent, KeyCode as HostKeyCode, ScrollDelta,
     ViewToHost,
 };
 use servo::{
-    Code, EmbedderControl, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent,
-    Location, Modifiers, MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent,
-    NamedKey, RenderingContext, ServoBuilder, SoftwareRenderingContext, WebView, WebViewBuilder, WebViewDelegate,
-    WebViewPoint, WheelDelta, WheelEvent, WheelMode,
+    Code, EventLoopWaker, InputEvent as ServoInputEvent, JSValue, Key, KeyState, KeyboardEvent, Location, Modifiers,
+    MouseButton as ServoMouseButton, MouseButtonAction, MouseButtonEvent, MouseMoveEvent, NamedKey, RenderingContext,
+    ServoBuilder, SoftwareRenderingContext, WebViewPoint, WheelDelta, WheelEvent, WheelMode,
 };
 use url::Url;
 
 mod pages;
+mod views;
+use views::{Load, Views};
 use webrender_api::units::DevicePoint;
 
 const DEFAULT_WIDTH: u32 = 1024;
@@ -36,107 +36,6 @@ impl EventLoopWaker for LoopWaker {
     }
     fn wake(&self) {
         self.0.set();
-    }
-}
-
-struct Delegate {
-    frame_ready: RefCell<bool>,
-    nav: RefCell<NavState>,
-    /// `(x, y, href)` for a right-click that landed on a link -- see
-    /// `manifold_view_protocol::ViewToHost::ContextMenuLink`'s doc comment. Servo
-    /// hands this over directly via `ContextMenuElementInformation::link_url`
-    /// on the `EmbedderControl::ContextMenu` it requests for every right-
-    /// click, unlike WebKit/WebView2's own `document.elementFromPoint`
-    /// JS-query workaround -- no script round-trip needed here.
-    context_menu_link: RefCell<Option<(f64, f64, String)>>,
-    /// See `manifold_view_protocol::ViewToHost::JsonBody`'s own doc comment --
-    /// filled in once per navigation by `notify_load_status_changed`'s own
-    /// `WebView::evaluate_javascript` call. `Rc`-wrapped (unlike every
-    /// other field here) specifically so its own callback -- a `'static`
-    /// closure `evaluate_javascript` stores and invokes later, well after
-    /// this method's `&self` borrow has ended -- can hold an owned clone of
-    /// just this one cell, not the whole `Delegate`.
-    json_body: Rc<RefCell<Option<String>>>,
-    /// See `manifold_view_protocol::ViewToHost::RedirectableContent`'s own doc
-    /// comment -- same `evaluate_javascript` call as `json_body`, just the
-    /// other branch of the same `document.contentType` check, `Rc`-wrapped
-    /// for the same reason.
-    redirect_content_type: Rc<RefCell<Option<String>>>,
-}
-
-impl WebViewDelegate for Delegate {
-    fn notify_new_frame_ready(&self, _webview: WebView) {
-        *self.frame_ready.borrow_mut() = true;
-    }
-
-    /// Fires for every kind of native-ish prompt Servo wants to show
-    /// (`<select>`/color/file pickers, IME, `alert()`/`confirm()`, and a
-    /// right-click's own context menu) -- only `ContextMenu` is handled
-    /// here, since none of the others are wired up by this view-host at
-    /// all. Dropping `menu` without calling `.select()`/`.dismiss()`
-    /// explicitly still tells Servo the menu was dismissed with no
-    /// selection (see `ContextMenu`'s own `Drop` impl) -- exactly the
-    /// "suppress the real menu, use it only as a data source" posture
-    /// WebKit/WebView2/CEF's own equivalents already have, so a real
-    /// native-looking popup never appears over the page.
-    fn show_embedder_control(&self, _webview: WebView, embedder_control: EmbedderControl) {
-        if let EmbedderControl::ContextMenu(menu) = embedder_control {
-            if let Some(url) = menu.element_info().link_url.clone() {
-                let position = menu.position();
-                *self.context_menu_link.borrow_mut() =
-                    Some((position.min.x as f64, position.min.y as f64, url.to_string()));
-            }
-        }
-    }
-
-    fn notify_url_changed(&self, _webview: WebView, url: Url) {
-        let mut nav = self.nav.borrow_mut();
-        nav.url = url.to_string();
-        nav.dirty = true;
-    }
-
-    fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
-        let mut nav = self.nav.borrow_mut();
-        nav.title = title.unwrap_or_default();
-        nav.dirty = true;
-    }
-
-    fn notify_load_status_changed(&self, webview: WebView, status: servo::LoadStatus) {
-        let complete = matches!(status, servo::LoadStatus::Complete);
-        let mut nav = self.nav.borrow_mut();
-        nav.loading = !complete;
-        nav.dirty = true;
-        drop(nav);
-
-        // See `manifold_view_protocol::ViewToHost::JsonBody`/`RedirectableContent`'s
-        // own doc comments. Unlike WebKit/WebView2's `ExecuteScript`,
-        // Servo's own `evaluate_javascript` hands back a real structured
-        // `JSValue`, not a JSON-encoded string -- no unescaping step needed
-        // here. The `"json\n"`/`"type\n"` prefixes still disambiguate the
-        // two outcomes over this one script round trip, same as the other
-        // two script-eval engines.
-        if complete {
-            let json_body = self.json_body.clone();
-            let redirect_content_type = self.redirect_content_type.clone();
-            webview.evaluate_javascript(manifold_view_protocol::PAGE_KIND_SCRIPT, move |result| {
-                if let Ok(JSValue::String(text)) = result {
-                    match manifold_view_protocol::PageKindReply::parse(&text) {
-                        Some(manifold_view_protocol::PageKindReply::Json(body)) => *json_body.borrow_mut() = Some(body),
-                        Some(manifold_view_protocol::PageKindReply::Other(t)) => {
-                            *redirect_content_type.borrow_mut() = Some(t)
-                        }
-                        None => {}
-                    }
-                }
-            });
-        }
-    }
-
-    fn notify_history_changed(&self, _webview: WebView, entries: Vec<Url>, current: usize) {
-        let mut nav = self.nav.borrow_mut();
-        nav.can_go_back = current > 0;
-        nav.can_go_forward = current + 1 < entries.len();
-        nav.dirty = true;
     }
 }
 
@@ -188,18 +87,6 @@ fn main() {
     // `RUST_LOG` (e.g. `servo_constellation=warn` shows a load the constellation drops).
     servo.setup_logging();
 
-    // Drained as late as possible before the view is built (see `take_start_url`); the rest is handled by the loop.
-    let (initial_url, early) = take_start_url(initial_url, rx.try_iter().collect());
-    let mut early = early.into_iter();
-
-    let delegate = Rc::new(Delegate {
-        frame_ready: RefCell::new(false),
-        nav: RefCell::new(NavState::new(initial_url.clone(), false)),
-        context_menu_link: RefCell::new(None),
-        json_body: Rc::new(RefCell::new(None)),
-        redirect_content_type: Rc::new(RefCell::new(None)),
-    });
-
     // Filled by the `QueryPageState` script callback, drained and sent each tick.
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
     // Filled by the `QueryPageText` script callback, drained and sent each tick.
@@ -210,10 +97,7 @@ fn main() {
         eprintln!("initial url {initial_url:?} doesn't parse ({err}); opening about:blank");
         Url::parse("about:blank").expect("about:blank parses")
     });
-    let webview = WebViewBuilder::new(&servo, rendering_context.clone() as Rc<dyn RenderingContext>)
-        .url(start)
-        .delegate(delegate.clone())
-        .build();
+    let mut views = Views::new(&servo, &rendering_context, start, PhysicalSize::new(DEFAULT_WIDTH, DEFAULT_HEIGHT));
 
     let mut sink = manifold_view_protocol::FrameSink::shared(&socket_id);
     let mut width = DEFAULT_WIDTH;
@@ -221,27 +105,20 @@ fn main() {
 
     loop {
         servo.spin_event_loop();
+        views.promote();
 
-        while let Some(msg) = early.next().or_else(|| rx.try_recv().ok()) {
+        while let Ok(msg) = rx.try_recv() {
+            // Handles to the shown view, so the arms below that change `views` can run beside them.
+            let (webview, delegate) = (views.shown().webview.clone(), views.shown().delegate.clone());
             match msg {
                 HostToView::Navigate { url, .. } => {
                     if let Ok(parsed) = Url::parse(&url) {
-                        webview.load(parsed);
+                        views.load(&servo, &rendering_context, Load::Url(parsed));
                     }
                 }
-                HostToView::GoBack => {
-                    if delegate.nav.borrow().can_go_back {
-                        webview.go_back(1);
-                    }
-                }
-                HostToView::GoForward => {
-                    if delegate.nav.borrow().can_go_forward {
-                        webview.go_forward(1);
-                    }
-                }
-                HostToView::Reload => {
-                    webview.reload();
-                }
+                HostToView::GoBack => views.traverse(&servo, &rendering_context, true),
+                HostToView::GoForward => views.traverse(&servo, &rendering_context, false),
+                HostToView::Reload => views.load(&servo, &rendering_context, Load::Reload),
                 HostToView::Resize { width: w, height: h, .. } => {
                     // A minimized window delivers a real 0x0 `inner_size()`
                     // on Windows — nothing to render either way, and a
@@ -256,7 +133,7 @@ fn main() {
                     // Only the webview: it resizes the rendering context itself, and Servo's painter skips its
                     // viewport update when the context already has the new size (resizing it here left the page
                     // laid out at the old width).
-                    webview.resize(PhysicalSize::new(w, h));
+                    views.resize(PhysicalSize::new(w, h));
                     // A static page paints nothing by itself after a resize, so the old frame would stay on screen
                     // stretched: force one paint at the new size (as `SetVisible` does).
                     *delegate.frame_ready.borrow_mut() = true;
@@ -271,7 +148,7 @@ fn main() {
                     // 100%, clamped internally to [0.1, 10.0]) — matches
                     // `factor`'s own semantics directly, no conversion
                     // needed (contrast CEF's log-scale zoom_level).
-                    webview.set_page_zoom(factor as f32);
+                    views.set_zoom(factor as f32);
                 }
                 HostToView::SetVisible(v) => {
                     // Resuming from background: force one repaint even if
@@ -315,7 +192,7 @@ fn main() {
                 HostToView::RestoreScroll { x, y } => {
                     webview.evaluate_javascript(manifold_view_protocol::restore_scroll_script(x, y), |_| {});
                 }
-                // Servo's embedding API (the pinned 0.5.0 `WebView`) has no
+                // Servo's embedding API (`WebView`) has no
                 // find-in-page method at all — silent no-op, same per-engine
                 // support gap as popup interception (see
                 // `manifold_view_protocol::ViewToHost::OpenTabRequested`'s doc
@@ -335,6 +212,7 @@ fn main() {
             }
         }
 
+        let views::View { webview, delegate } = views.shown();
         // Servo's `NavigationRequest` carries only the url, so after the host's own first navigation
         // (`NavState::new`) `nav.label` stays at its default and every message says `user_started: None`.
         if let Some(m) = delegate.nav.borrow_mut().take_message() {
@@ -380,26 +258,6 @@ fn main() {
         // missed wake.
         wake.wait(Instant::now() + Duration::from_secs(60));
     }
-}
-
-/// Servo drops a load sent before a new view's first document commits (PARKED "Servo drops a load sent before the
-/// previous one commits", case (a)), so the newest `Navigate` that arrived while the host started (one whose url
-/// parses, as the loop requires) becomes the view's first load instead. Returns that url and the other early
-/// messages, in order.
-fn take_start_url(initial_url: String, early: Vec<HostToView>) -> (String, Vec<HostToView>) {
-    let mut start = initial_url;
-    let mut rest = Vec::new();
-    for msg in early {
-        match msg {
-            HostToView::Navigate { url, .. } => {
-                if Url::parse(&url).is_ok() {
-                    start = url;
-                }
-            }
-            other => rest.push(other),
-        }
-    }
-    (start, rest)
 }
 
 fn translate_input_event(event: HostInputEvent) -> Option<ServoInputEvent> {
@@ -532,40 +390,16 @@ fn webview_point(x: f64, y: f64) -> WebViewPoint {
 }
 
 fn translate_mouse_button(button: manifold_view_protocol::MouseButton) -> ServoMouseButton {
-    // Our pinned `servo = "0.5.0"` still uses Left/Middle/Right; the
-    // W3C-aligned Primary/Auxiliary/Secondary rename (visible on
-    // doc.servo.org, which tracks the `main` branch) hasn't been published
-    // to crates.io yet.
     match button {
-        manifold_view_protocol::MouseButton::Left => ServoMouseButton::Left,
-        manifold_view_protocol::MouseButton::Middle => ServoMouseButton::Middle,
-        manifold_view_protocol::MouseButton::Right => ServoMouseButton::Right,
+        manifold_view_protocol::MouseButton::Left => ServoMouseButton::Primary,
+        manifold_view_protocol::MouseButton::Middle => ServoMouseButton::Auxiliary,
+        manifold_view_protocol::MouseButton::Right => ServoMouseButton::Secondary,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_newest_early_navigate_becomes_the_start_url() {
-        let early = vec![
-            HostToView::Navigate { url: "https://a.test/".into(), referrer: None },
-            HostToView::SetVisible(true),
-            HostToView::Navigate { url: "https://b.test/".into(), referrer: None },
-            HostToView::Navigate { url: "not a url".into(), referrer: None },
-        ];
-        let (start, rest) = take_start_url("https://initial.test/".into(), early);
-        assert_eq!(start, "https://b.test/");
-        assert!(matches!(rest[..], [HostToView::SetVisible(true)]), "{rest:?}");
-    }
-
-    #[test]
-    fn without_an_early_navigate_the_initial_url_stays() {
-        let (start, rest) = take_start_url("https://initial.test/".into(), vec![HostToView::Reload]);
-        assert_eq!(start, "https://initial.test/");
-        assert!(matches!(rest[..], [HostToView::Reload]), "{rest:?}");
-    }
 
     #[test]
     fn every_host_key_has_a_servo_code() {

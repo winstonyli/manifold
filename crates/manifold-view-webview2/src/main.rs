@@ -222,7 +222,7 @@ fn main() {
     let pending_page_state: Rc<RefCell<Option<manifold_view_protocol::PageState>>> = Rc::new(RefCell::new(None));
     let pending_page_text: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let pending_cookies: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    nav_state::register_handlers(
+    let committed = nav_state::register_handlers(
         &webview,
         nav_state.clone(),
         pending_json_body.clone(),
@@ -251,10 +251,13 @@ fn main() {
 
     // A tab's stored URL can be anything (an old build's, an import's): one WebView2 rejects opens about:blank,
     // where the user can type another, instead of panicking the host into the crash-respawn loop.
+    // The url last sent, which a Reload before any document commits loads (the `Reload` arm below).
+    let mut requested = initial_url.clone();
     unsafe {
         if let Err(err) = webview.Navigate(&HSTRING::from(&initial_url)) {
             eprintln!("initial navigate to {initial_url:?} failed ({err}); opening about:blank");
-            let _ = webview.Navigate(&HSTRING::from("about:blank"));
+            requested = "about:blank".into();
+            let _ = webview.Navigate(&HSTRING::from(&requested));
         }
     }
 
@@ -270,23 +273,41 @@ fn main() {
                 HostToView::Navigate { url, .. } => unsafe {
                     nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
                     let _ = webview.Navigate(&HSTRING::from(&url));
+                    requested = url;
                 },
+                // A Back or Forward cancels a pending load first: WebView2 cancels it itself when the step is the
+                // main frame's, but lets it commit over a step that is only an iframe's (runtime tested 2026-11-10).
+                // Only while loading: `Stop` also aborts the page's own fetches (`gate loads` case `spa-back`).
                 HostToView::GoBack => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoBack(&mut can_go);
                     if can_go.as_bool() {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
+                        if nav_state.borrow().loading {
+                            let _ = webview.Stop();
+                        }
                         let _ = webview.GoBack();
                     }
                 },
+                // Before any document commits, WebView2's Reload reloads its initial about:blank (or nothing, by a
+                // race with the first navigation, runtime tested 2026-11-10): the page the tab asked for is loaded
+                // again instead.
                 HostToView::Reload => unsafe {
-                    let _ = webview.Reload();
+                    if committed.get() {
+                        let _ = webview.Reload();
+                    } else {
+                        nav_state.borrow_mut().label.host_started = Some((false, std::time::Instant::now()));
+                        let _ = webview.Navigate(&HSTRING::from(&requested));
+                    }
                 },
                 HostToView::GoForward => unsafe {
                     let mut can_go = BOOL(0);
                     let _ = webview.CanGoForward(&mut can_go);
                     if can_go.as_bool() {
                         nav_state.borrow_mut().label.host_started = Some((true, std::time::Instant::now()));
+                        if nav_state.borrow().loading {
+                            let _ = webview.Stop();
+                        }
                         let _ = webview.GoForward();
                     }
                 },
