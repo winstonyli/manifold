@@ -333,3 +333,24 @@ fn enter_with_no_matching_card_searches_for_the_text() {
     let (spawn, _) = app.test_spawns.last().expect("a search tab");
     assert_eq!(spawn.url, app.settings.value.default_search_engine.search_url("no such tab"));
 }
+
+/// A Ctrl+L or `ADDRESSBAR` made while the Graph bar still draws (the 220 ms open-card transition) waits for the Item
+/// bar: the Graph bar took it before, and the Item bar came up unfocused, so the typed url and its Enter were lost.
+#[test]
+fn an_address_bar_focus_request_waits_out_the_graph_bar() {
+    let mut app = App::default();
+    let ctx = crate::theme::testutil::ctx(true);
+    app.pending_focus = Some(FocusTarget::Omni(Host::Item));
+    for host in [Host::Graph, Host::Item] {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            app.omni_ui(ui, host, 200.0);
+        });
+        output.textures_delta.clear();
+        if host == Host::Graph {
+            assert!(app.pending_focus.is_some(), "the Graph bar took the address bar's request");
+            assert_eq!(ctx.memory(|m| m.focused()), None);
+        }
+    }
+    assert_eq!(app.pending_focus, None, "the Item bar took it");
+    assert!(ctx.memory(|m| m.focused()).is_some());
+}

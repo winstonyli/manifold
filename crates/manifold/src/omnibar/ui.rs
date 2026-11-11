@@ -86,7 +86,7 @@ impl App {
         let response = toolbar_field(ui, |ui| {
             ui.add(field_edit_inset(&mut bar.text, left, right).desired_width(width).hint_text(hint))
         });
-        if take_focus(&mut self.pending_focus, FocusTarget::OmniBar) {
+        if take_focus(&mut self.pending_focus, FocusTarget::Omni(host)) {
             response.request_focus();
         }
         // Egui's own focus, not `response.has_focus()`: that is also false while the OS window is unfocused, yet the
@@ -221,7 +221,7 @@ impl App {
                                 .hint_text("Search cards, history, settings..."),
                         )
                     });
-                    if take_focus(&mut self.pending_focus, FocusTarget::OmniPopup) {
+                    if take_focus(&mut self.pending_focus, FocusTarget::Omni(Host::Popup)) {
                         response.request_focus();
                     }
                     if response.changed() {

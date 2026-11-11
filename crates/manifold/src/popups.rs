@@ -26,10 +26,10 @@ pub(crate) use popup_frame::*;
 /// only one widget can hold focus.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum FocusTarget {
-    /// The inline omnibar (`App::omni`), whichever view shows it.
-    OmniBar,
-    /// The Ctrl+K popup's omnibar (`App::omni_popup`).
-    OmniPopup,
+    /// The omnibar drawn in this host: a view's inline bar (`App::omni`) or the Ctrl+K popup's (`App::omni_popup`).
+    /// Only that host's bar takes it, so a request for the Item view's bar waits out the open-card transition, in
+    /// which the Graph view's bar still draws.
+    Omni(Host),
     FindBar,
     GroupRename,
     BookmarkFolder,
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn a_focus_request_is_taken_once_by_its_own_widget() {
         let mut pending = Some(FocusTarget::FindBar);
-        assert!(!take_focus(&mut pending, FocusTarget::OmniBar));
+        assert!(!take_focus(&mut pending, FocusTarget::Omni(Host::Item)));
         assert!(take_focus(&mut pending, FocusTarget::FindBar));
         assert!(!take_focus(&mut pending, FocusTarget::FindBar));
     }

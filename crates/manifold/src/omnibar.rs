@@ -320,7 +320,7 @@ impl App {
         self.omni_popup = bar;
         self.omni_text_changed(Host::Popup);
         self.menus.omni_popup.open = Some(());
-        self.pending_focus = Some(FocusTarget::OmniPopup);
+        self.pending_focus = Some(FocusTarget::Omni(Host::Popup));
     }
 
     fn omni_open_url(&mut self, url: String, host: Host) {

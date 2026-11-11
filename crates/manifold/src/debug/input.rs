@@ -23,7 +23,7 @@ impl App {
     pub(crate) fn debug_input_pending(&self) -> bool {
         !self.debug.debug_input_events.is_empty()
             || self.debug.debug_address_bar_typing.is_some()
-            || self.pending_focus == Some(FocusTarget::OmniBar)
+            || self.pending_focus == Some(FocusTarget::Omni(Host::Item))
             || self.debug.pending_screenshot.is_some()
     }
 

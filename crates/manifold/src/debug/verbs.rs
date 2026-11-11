@@ -269,7 +269,7 @@ pub(super) const VERBS: &[Verb] = &[
     // `Text` input in the first frame the bar has it (see `debug_address_bar_typing`).
     row("ADDRESSBAR text", "Set the address bar's text and focus (Tab view only)", |rest| with_str(rest, |app, text| {
         if app.showing_tab_view() {
-            app.pending_focus = Some(FocusTarget::OmniBar);
+            app.pending_focus = Some(FocusTarget::Omni(Host::Item));
             app.debug.debug_address_bar_typing = Some(text);
             if let Some(window) = &app.window {
                 window.request_redraw();

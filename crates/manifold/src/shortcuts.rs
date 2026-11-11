@@ -475,7 +475,7 @@ impl App {
     /// it (see `FocusTarget`).
     pub(crate) fn focus_address_bar_shortcut(&mut self) {
         if self.showing_tab_view() {
-            self.pending_focus = Some(FocusTarget::OmniBar);
+            self.pending_focus = Some(FocusTarget::Omni(Host::Item));
             // `request_focus()` only takes hold starting the *next* frame
             // after it's called (immediate-mode: the widget this frame
             // already painted before `build_tab_view_ui` gets to call it) — a
