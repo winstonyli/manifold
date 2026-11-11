@@ -387,12 +387,15 @@ fn run_case(ctx: &Ctx, name: &str, view: &str) -> io::Result<()> {
             c.requested("/slow")?;
             c.send("GOBACK")?;
             // Past /slow's headers: a /slow that commits over the Back replaces the page. The screen, not the app's
-            // url, says which page is shown (the app shows the typed url until the trail settles).
+            // url, says which page is shown (the app shows the typed url until the trail settles). The frame's page
+            // is either: WebView2's Back moves only the frame (green), Servo's swap loads /hop afresh, whose frame
+            // hops again (magenta).
             c.send("SLEEP 8")?;
-            let green = pixels(&c.shot("back")?, [0, 255, 0])?;
+            let shot = c.shot("back")?;
+            let frame = pixels(&shot, [0, 255, 0])? + pixels(&shot, [255, 0, 255])?;
             c.then()?;
             let end = c.state("end")?;
-            check(&c.label("the Back shows the frame's first page and /slow never replaces it"), green > 10_000);
+            check(&c.label("the Back shows /hop's frame and /slow never replaces it"), frame > 10_000);
             check(&c.label("the tab ends on /hop"), end.focused_url() == c.at("/hop"));
             c.finish(&["load in place", "swap", "history swap"]);
         }
